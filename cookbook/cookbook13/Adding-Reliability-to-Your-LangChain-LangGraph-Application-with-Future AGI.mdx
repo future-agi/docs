@@ -1,0 +1,323 @@
+---
+title: "Adding Reliability to Your LangChain/LangGraph Application with Future AGI"
+---
+
+Learn how to enhance the reliability of your LangChain/LangGraph application by integrating Future AGI’s observability framework <a href="https://colab.research.google.com/drive/1qmf7I1u1jGUf_imR8oxnT7y3IJishJZS?usp=sharing"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
+
+
+## Introduction
+
+LLM applications often rely on agents that retrieve data, invoke tools and respond to user queries. This can sometimes lead to unpredictable behaviour. Ensuring that each response of such application in a production environment is complete, grounded and reliable has become essential. 
+
+As these applications grow in complexity, simply returning an answer is no longer enough. Developers need visibility into how each response is generated, what tools were used, what data was retrieved, and how decisions were made. This level of transparency is critical for debugging, monitoring, and improving reliability of such applications over time.
+
+This tutorial demonstrates how to add reliability to your LLM application by incorporating evaluation and observability into your LangChain or LangGraph application using Future AGI's instrumentation SDK.
+
+## Methodology
+
+In this tutorial, we focus on building and evaluating a tool-augmented LLM agent capable of answering user queries using both its internal knowledge and real-time web search as shown in Fig 1. The objective is not just to generate responses, but to systematically monitor and assess their quality based on relevant metrics.
+
+![Fig 1: Framework for evaluating LangChain chatbot using Future AGI](/cookbook/cookbook13/images/fig1.png)
+_Fig 1: Framework for evaluating LangChain chatbot using Future AGI_
+
+To achieve this, we will build a conversational agent using LangGraph, that combines OpenAI’s model with the [Google Search API](https://python.langchain.com/docs/integrations/tools/google_search/) as tool. The agent receives user query and then decides whether it can respond directly or requires web search for up-to-date information. When the tool is required, it performs a real-time Google Search and uses the results into its response. 
+
+To monitor how the agent behaves at each step, we will use Future AGI’s `traceAI-langchain` python package, which records detailed traces of the model’s reasoning, tool usage, and responses. These traces are then evaluated for quality aspects like completeness, groundedness, hallucination, and correct use of tools. Completeness ensures the answer fully addresses the user’s query, groundedness verifies that the response is based on retrieved evidence, hallucination detection flags unsupported or fabricated content, and tool usage eval checks whether the agent invokes external tools appropriately and integrates results correctly. Together, these metrics help developers build agents that are not only intelligent, but also reliable, explainable, and production-ready.
+
+## Installing Required Packages
+
+```python
+pip install fi-instrumentation
+pip install traceAI-langchain
+
+pip install openai
+pip install langgraph
+pip install langchain
+pip install langchain-openai
+pip install langchain-core
+pip install langchain-community
+pip install langchain-google-community
+
+pip install google-api-python-client
+```
+
+## Importing Required Packages
+
+```python
+import os
+import json
+from typing import Annotated
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain.tools import Tool
+from langchain_google_community import GoogleSearchAPIWrapper
+from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
+from langgraph.graph import MessagesState
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import (
+    ProjectType,
+    EvalName,
+    EvalTag,
+    EvalTagType,
+    EvalSpanKind,
+    ModelChoices
+)
+from traceai_langchain import LangChainInstrumentor
+```
+
+## **Setting Up Environment**
+
+- Click [here](https://python.langchain.com/docs/integrations/tools/google_search/) to learn how to access your `GOOGLE_API_KEY` and `GOOGLE_CSE_ID`
+- Click [here](https://platform.openai.com/account/api-keys) to access your `OPENAI_API_KEY`
+- Click [here](https://app.futureagi.com/dashboard/keys) to access your `FI_API_KEY` and `FI_SECRET_KEY`
+
+```python
+os.environ["GOOGLE_CSE_ID"] = "google_cse_id"
+os.environ["GOOGLE_API_KEY"] = "google_api_key"
+os.environ["OPENAI_API_KEY"] = "openai_api_key"
+os.environ["FI_API_KEY"] = "fi_api_key"
+os.environ["FI_SECRET_KEY"] = "fi_secret_key"
+os.environ["FI_BASE_URL"] = "https://api.futureagi.com"
+```
+
+## **Instrumenting LangGraph Project**
+
+It is the process of adding tracing to your LLM applications. Tracing helps you monitor critical metrics like cost, latency, and evaluation results.
+
+Where a span represents a single operation within an execution flow, recording input-output data, execution time, and errors, a trace connects multiple spans to represent the full execution flow of a request.
+
+Instrumentation of such project requires 3 steps:
+
+1.  **Setting Up Eval Tags:**
+    
+    To evaluate traces, we will use appropriate eval templates provided by Future AGI. Since we are dealing with tool-based chatbot agent, we will evaluate the agent’s behaviour on these metrics:
+    
+    - **Completeness:** Evaluates whether the response fully addresses the input query.
+    - **Groundedness:** Evaluates whether the response is firmly based on provided input context.
+    - **LLM Function Calling:** Evaluates whether the output correctly identifies the need for a tool call and whether it accurately includes the tool.
+    - **Detect Hallucination:** Evaluates whether the model fabricated facts or added information that was not present in the input.
+    
+    While these are the metrics we decided to use for this tutorial, Future AGI supports 50+ pre-built eval templates depending on different use-cases such as context adherence if you want to evaluate how well the model’s response stays within the given context, context retrieval quality if you want to measure the usefulness of the retrieved document, etc. You can also create custom eval if the existing template doesn’t fit your use-case.
+    
+    Depending on your application’s requirements, additional metrics such as factual accuracy, chunk attribution, or stylistic quality can also be incorporated to provide a more comprehensive evaluation.
+    
+    The **`eval_tags`** list contains multiple instances of **`EvalTag`**. Each **`EvalTag`** represents a specific evaluation configuration to be applied during runtime, encapsulating all necessary parameters for the evaluation process.
+    
+    - **`type`:** Specifies the category of the evaluation tag. In this cookbook, **`EvalTagType.OBSERVATION_SPAN`** is used.
+    - **`value`**: Defines the kind of operation the evaluation tag is concerned with.
+        - **`EvalSpanKind.AGENT`** indicates that the evaluation targets operations involving Agent.
+        - **`EvalSpanKind.TOOL`**: For operations involving tools.
+    - **`eval_name`**: The name of the evaluation to be performed.
+    - **`config`**: Dictionary for providing specific configurations for the evaluation. An empty dictionary  means that default configuration parameters will be used.
+    - **`mapping`**: This dictionary maps the required inputs for the evaluation to specific attributes of the operation.
+    - **`custom_eval_name`**: A user-defined name for the specific evaluation instance.
+    
+    > Click [**here**](https://docs.futureagi.com/future-agi/products/prototype/evals) to learn more about the evals provided by Future AGI
+    > 
+2. **Setting Up Trace Provider:**
+    
+    The trace provider is part of the traceAI ecosystem, which is an OSS package that enables tracing of AI applications and frameworks. It works in conjunction with OpenTelemetry to monitor code executions across different models, frameworks, and vendors.
+    
+    To configure a **`trace_provider`**, we need to pass following parameters to **`register`** function:
+    
+    - **`project_type`**: Specifies the type of project. Here, **`ProjectType.EXPERIMENT`** is used since the evaluation setup is more inclined towards experimentation of finding and evaluating chatbot.
+    - **`project_name`**: User-defined name of the project.
+    - **`project_version_name:`**The version name of the project to track different runs of experiment.
+    - **`eval_tags`**: A list of evaluation tags that define specific evaluations to be applied.
+3. **Setting Up LangChain Instrumentor:**
+    
+    This is done to integrate with the LangChain framework for the collection of telemetry data. The **`instrument`** method is called on the **`LangChainInstrumentor`** instance. This method is responsible for setting up the instrumentation of the LangChain framework using the provided **`tracer_provider`**.
+    
+
+```python
+eval_tags=[
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.AGENT,
+            eval_name=EvalName.COMPLETENESS,
+            config={},
+            mapping={
+                "input": "raw.input",
+                "output": "raw.output"
+            },
+            custom_eval_name="Completeness",
+            model=ModelChoices.TURING_LARGE
+
+        ),
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.AGENT,
+            eval_name=EvalName.GROUNDEDNESS,
+            config={},
+            mapping={
+                "input": "raw.input",
+                "output": "raw.output"
+            },
+            custom_eval_name="Groundedness",
+            model=ModelChoices.TURING_LARGE
+
+        ),
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.TOOL,
+            eval_name=EvalName.EVALUATE_LLM_FUNCTION_CALLING,
+            config={},
+            mapping={
+                "input": "raw.input",
+                "output": "tool.name"
+            },
+            custom_eval_name="Tool_Calling",
+            model=ModelChoices.TURING_LARGE
+
+        ),
+
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.AGENT,
+            eval_name=EvalName.DETECT_HALLUCINATION,
+            config={},
+            mapping={
+                "input": "raw.input",
+                "output": "raw.output"
+            },
+            custom_eval_name="Hallucination",
+            model=ModelChoices.TURING_LARGE
+
+        )
+]
+
+trace_provider = register(
+    project_type=ProjectType.EXPERIMENT,
+    project_name="LangGraph-Google-Search-App",
+    project_version_name="v1",
+    eval_tags=eval_tags
+)
+
+LangChainInstrumentor().instrument(tracer_provider=trace_provider)
+```
+
+## **Creating LangGraph Application**
+
+We start by setting up a **Google Search tool** using the `GoogleSearchAPIWrapper`. This tool acts as an external data source the agent can call when it needs current information. We then use `ChatOpenAI` with the `gpt-4o-mini` model and bind it to the search tool. 
+
+In LangGraph, each step in the agent’s logic is represented as a **node** in a graph. Each node handles a specific task, and the application moves from one node to another depending on the current state of the conversation. In our chatbot, we define three main nodes:
+
+- **Agent Node:** This is the primary reasoning step. It receives the current conversation history, optionally includes past tool results, and generates a response or triggers a tool call.
+- **Tool Node:** If the agent requests a tool, this node executes the Google Search and appends the result to the conversation context. It also logs the intermediate interaction.
+- **Final Node:** If no further tools are needed, this node finalises the answer and returns it to the user.
+
+A `router` function then checks whether the agent has requested a tool. If it has, the flow moves to the tool node. If not, the agent proceeds directly to the final node to generate the response. This allows the agent to make decisions dynamically based on the query. 
+
+We then combine all the nodes into a complete graph using `StateGraph`. This graph keeps track of the message history and tool results as the conversation progresses. Finally, we test the chatbot by running it on a few sample queries.
+
+```python
+# Google Search Tool
+search = GoogleSearchAPIWrapper()
+google_tool = Tool(
+    name="google_search",
+    description="Use this to search Google for current events or factual knowledge.",
+    func=search.run
+)
+
+# LLM bound to tool
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools([google_tool])
+
+# LangGraph State
+State = Annotated[dict, MessagesState]
+
+# Node 1: Agent node
+def agent_node(state: State) -> State:
+    messages = state["messages"]
+    steps = state.get("intermediate_steps", [])
+    tool_msgs = format_to_openai_tool_messages(steps)
+    response = llm.invoke(messages + tool_msgs)
+    return {
+        "messages": messages + [response],
+        "intermediate_steps": steps
+    }
+
+# Node 2: Tool handler
+def tool_node(state: MessagesState) -> MessagesState:
+    messages = state["messages"]
+    tool_call = messages[-1].tool_calls[0]
+
+    tool_name = tool_call["name"]
+    args = tool_call.get("args") or json.loads(tool_call.get("arguments", "{}"))
+
+    result = google_tool.invoke(args)
+    tool_msg = ToolMessage(tool_call_id=tool_call["id"], content=str(result))
+
+    return {
+        "messages": messages + [tool_msg],
+        "intermediate_steps": state.get("intermediate_steps", []) + [(messages[-1], tool_msg)]
+    }
+
+# Node 3: Final responder
+def final_node(state: State) -> State:
+    response = llm.invoke(state["messages"])
+    return {"messages": state["messages"] + [response]}
+
+# Router
+def router(state: State) -> str:
+    msg = state["messages"][-1]
+    if getattr(msg, "tool_calls", None):
+        return "tool"
+    return "final"
+
+# Graph assembly
+graph = StateGraph(MessagesState)
+graph.add_node("agent", agent_node)
+graph.add_node("tool", tool_node)
+graph.add_node("final", final_node)
+
+graph.set_entry_point("agent")
+graph.add_conditional_edges("agent", router, {
+    "tool": "tool",
+    "final": "final"
+})
+graph.add_edge("tool", "agent")
+graph.add_edge("final", END)
+
+memory = MemorySaver()
+app = graph.compile(checkpointer=memory)
+
+example_queries = [
+    "Who won the 2024 Nobel Prize in Physics?",
+    "Who won Game of the Year at The Game Awards 2024?",
+    "When was GPT-4o released by OpenAI?"
+]
+
+# Run the agent with multiple queries
+for i, query in enumerate(example_queries):
+    print(f"\n\nQUERY {i+1}: {query}\n")
+
+    config = {"configurable": {"thread_id": f"multi-tool-agent-{i}"}}
+    input_messages = [HumanMessage(content=query)]
+
+    output = app.invoke({"messages": input_messages}, config)
+    output["messages"][-1].pretty_print()
+    print("\n" + "--"*50)
+```
+
+Fig 2 shows the LangGraph execution hierarchy as a tree, which is displayed as a tree, showing the full call stack.  It starts with the **agent** node, which uses the GPT-4o-mini model (`ChatOpenAI`) to interpret the user’s query. The model decides to use the **tool node**, which performs a Google Search (`google_search`) using LangChain’s wrapper. After fetching results, control returns to the **agent node** again to interpret the tool response. Finally, the system reaches the **final node**, which generates the output. Bottom panel shows the results of the evals used at span level.
+
+![Fig 2: Future AGI dashboard for visualising traces and evals](/cookbook/cookbook13/images/fig2.png)
+_Fig 2: Future AGI dashboard for visualising traces and evals_
+
+Fig 3 shows an aggregated view of all spans, including the average latency, token usage and cost, along with evaluation scores. These scores provide quick insight into the quality of the agent’s behavior. In this example, the agent achieved 100% pass rates on Tool_Calling, Hallucination, and Groundedness, indicating correct tool usage, factual accuracy, and strong contextual grounding. However, the Completeness score is only 50%, suggesting that some responses did not fully address the user’s query.
+
+![Fig 3: Aggregated scores of evals](/cookbook/cookbook13/images/fig3.png)
+_Fig 3: Aggregated scores of evals_
+
+## Conclusion
+
+In this tutorial, we demonstrated how to build a trustworthy and reliable LangGraph-based conversational agent by combining OpenAI’s model with Google Search API. To ensure transparency and reliability, we integrated Future AGI’s evaluation and tracing framework. This allowed us to automatically capture detailed execution traces and assess the agent's behavior. 
+
+## **Ready to Make your LangChain Application Reliable?**
+
+Start evaluating your LangChain/LangGraph applications with confidence using Future AGI’s observability framework. Future AGI provides the tools you need to build applications that are reliable, explainable, and production-ready.
+
+Click [**here**](https://futureagi.com/contact-us) to schedule a demo with us now!
