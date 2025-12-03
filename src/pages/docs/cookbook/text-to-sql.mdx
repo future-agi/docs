@@ -1,0 +1,571 @@
+---
+layout: ../../../layouts/DocsLayout.astro
+title: "Text-to-SQL Agent"
+---
+import Tip from '../../../components/docs/Tip.astro'
+
+This cookbook will walk you through building a complete Text-to-SQL agent evaluation setup using Future AGI. You will ask natural language questions against a realistic database and explore how different agent configurations convert them into SQL. By the end of it, you will not only understand what makes a good Text-to-SQL agent but also have the tools to measure and improve it.
+
+
+## 1. Installing Dependencies
+
+```bash
+pip install ai-evaluation futureagi
+pip -qq install langchain
+pip -qq install langchain-core
+pip -qq install langchain-community
+pip -qq install langchain_experimental
+pip -qq install langchain-openai
+pip -qq install traceai_langchain
+pip install langchain beautifulsoup4 chromadb gradio futureagi  -q
+pip install langchain openai chromadb tiktoken
+
+```
+
+## 2. Importing Modules
+
+```python
+import pandas as pd
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+import time
+import sqlite3
+import os
+import json
+from traceai_langchain import LangChainInstrumentor
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import (
+    EvalName,
+    EvalSpanKind,
+    EvalTag,
+    EvalTagType,
+    ProjectType
+)
+from fi_instrumentation.fi_types import ProjectType, EvalSpanKind, EvalName, EvalTag, EvalTagType, ModelChoices
+
+from langchain.schema.runnable import RunnablePassthrough
+from langchain_community.agent_toolkits import create_sql_agent
+from langchain_community.utilities import SQLDatabase
+from langchain_core.tools import Tool
+from sqlalchemy import create_engine, text
+
+```
+
+
+## 3. Configuring Environment Variables
+
+```python
+
+os.environ["FI_API_KEY"] = "fi_api_key"
+os.environ["FI_SECRET_KEY"] = "fi_secret_key"
+os.environ["OPENAI_API_KEY"] = "openai_api_key" 
+os.environ["FI_BASE_URL"] = "http://api.futureagi.com"
+
+```
+
+<Tip>
+Click [here](https://app.futureagi.com/dashboard/keys) to access FutureAGI API Key and Secret Key.
+</Tip>
+
+## 4. Defining Database Schema
+
+To test your Text-to-SQL agent, you will need a realistic data model. The schema below is complex enough to exercise real-world SQL features like joins, aggregations, filters.
+
+Once the tables are defined, you’ll fill them with a handful of rows. This curated dataset ensures that your agent’s SQL queries will encounter both common and edge-case scenarios like products with no orders, users spanning multiple categories, and so on.
+
+```python
+# Complex database schema for e-commerce platform
+COMPLEX_DB_SCHEMA = """
+CREATE TABLE users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    first_name TEXT,
+    last_name TEXT,
+    date_of_birth DATE,
+    registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_login TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    account_type TEXT CHECK (account_type IN ('standard', 'premium', 'admin')) DEFAULT 'standard'
+);
+
+CREATE TABLE product_categories (
+    category_id INTEGER PRIMARY KEY,
+    parent_category_id INTEGER,
+    name TEXT NOT NULL,
+    description TEXT,
+    display_order INTEGER DEFAULT 0,
+    FOREIGN KEY (parent_category_id) REFERENCES product_categories(category_id) ON DELETE SET NULL
+);
+
+CREATE TABLE products (
+    product_id INTEGER PRIMARY KEY,
+    sku TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT,
+    price DECIMAL(10, 2) NOT NULL,
+    cost DECIMAL(10, 2),
+    inventory_count INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated TIMESTAMP
+);
+
+CREATE TABLE product_category_mappings (
+    product_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    PRIMARY KEY (product_id, category_id),
+    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES product_categories(category_id) ON DELETE CASCADE
+);
+
+CREATE TABLE orders (
+    order_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status TEXT CHECK (status IN ('pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded')) DEFAULT 'pending',
+    total_amount DECIMAL(10, 2) NOT NULL,
+    payment_method TEXT NOT NULL,
+    payment_status TEXT CHECK (payment_status IN ('pending', 'authorized', 'paid', 'refunded', 'failed')) DEFAULT 'pending',
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE order_items (
+    order_item_id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL,
+    unit_price DECIMAL(10, 2) NOT NULL,
+    total_price DECIMAL(10, 2) NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES orders(order_id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE reviews (
+    review_id INTEGER PRIMARY KEY,
+    product_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    title TEXT,
+    content TEXT,
+    review_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_verified_purchase BOOLEAN DEFAULT FALSE,
+    helpful_votes INTEGER DEFAULT 0,
+    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+"""
+
+```
+
+
+## 5. Defining Text2SQL Prompt Template
+
+```python
+complex_text2sql_template = """You are an expert SQL query generator for an e-commerce database.
+Given the following complex database schema:
+
+{schema}
+
+Generate a SQL query to answer the following question:
+{question}
+
+Return only the SQL query without any explanations.
+"""
+
+```
+
+## 6. Building SQL Agent
+
+To show best practices for text-to-sql agent, we will define a robust setup with multiple retries, smart early stopping, and both parsing and execution error handling. This agent represents a production-ready configuration.
+
+```python
+
+def create_improved_sql_agent(llm, db):
+    """Creates an improved SQL agent with better configuration"""
+    agent_executor = create_sql_agent(
+        llm=llm,
+        db=db,
+        agent_type="tool-calling",
+        verbose=True,
+        max_iterations=5,
+        early_stopping_method="generate",  # More iterations allowed with better stopping criteria
+        handle_parsing_errors=True,  # Better error handling
+        handle_tool_errors=True      # Better tool error handling
+    )
+    return agent_executor
+
+```
+
+
+## 7. Experiment Runner
+
+This experiment orchestration ensures that every test case runs in a consistent environment and that results are easy to inspect.
+
+This experiment runner executes the following steps:
+
+- Spins up the in-memory database with schema and sample data.
+- Instantiates the chosen SQL agent.
+- Iterates over every ground-truth question:
+    - Invokes the agent.
+    - Captures the generated SQL, execution results, any errors, and elapsed time.
+- Collects all outcomes into organized tables for analysis.
+
+After running all queries, we will evaluate the performance of the agent by calculating the following metrics:
+
+- **Success Rate**: Percentage of queries that returned correct SQL.
+- **Average Latency**: Mean time per query.
+- **Failure Counts**: How many queries failed or timed out.
+- **Latency Extremes**: Minimum and maximum execution times
+
+```python
+# Modify the run_complex_text2sql_experiment function
+def run_complex_text2sql_experiment(model_name, agent_version="basic"):
+    results = []
+    dataset = []
+    model = get_model(model_name)
+
+    # Setup database
+    db = setup_database()
+
+    # Create agent
+    agent_executor = (create_basic_sql_agent(model, db) if agent_version == "basic"
+                     else create_improved_sql_agent(model, db))
+
+    # Run experiments
+    for question, ground_truth in COMPLEX_TEXT2SQL_GROUND_TRUTH.items():
+        query_result = execute_sql_query(agent_executor, question, ground_truth)
+
+        # Store results
+        results.append({
+            "model": model_name,
+            "question": question,
+            "generated_sql": query_result["sql_query"],
+            "ground_truth_sql": ground_truth,
+            "execution_success": query_result["execution_success"],
+            "result": query_result["result"],
+            "error": query_result["error"],
+            "latency": query_result["latency"]
+        })
+
+        # Store dataset entry
+        dataset.append({
+            "input": question,
+            "output": query_result["sql_query"],
+            "ground_truth": ground_truth,
+            "execution_result": query_result["result"],
+            "success": query_result["execution_success"]
+        })
+
+    return pd.DataFrame(results), pd.DataFrame(dataset)
+
+```
+
+## 8. Extracting and Evaluating SQL Queries
+
+When you invoke the agent, you’ll ask for its intermediate reasoning steps. This lets you pull out the exact SQL that was executed, not just the final printed output. By comparing that SQL against your ground-truth queries, you can automatically mark successes and failures.
+
+```python
+def execute_sql_query(agent_executor, question, ground_truth):
+    """Executes a single SQL query and returns results and dataset entry"""
+    start_time = time.time()
+    try:
+        agent_result = agent_executor.invoke({"input": question})
+        latency = time.time() - start_time
+
+        # Extract SQL query
+        sql_query = ""
+        for step in agent_result.get("intermediate_steps", []):
+            if isinstance(step[0].tool_input, str) and any(keyword in step[0].tool_input for keyword in ["SELECT", "INSERT", "UPDATE"]):
+                sql_query = step[0].tool_input
+                break
+
+        result = {
+            "execution_success": True,
+            "sql_query": sql_query,
+            "result": agent_result["output"],
+            "error": "",
+            "latency": latency
+        }
+
+    except Exception as e:
+        result = {
+            "execution_success": False,
+            "sql_query": "Error: Could not extract SQL query",
+            "result": "",
+            "error": str(e),
+            "latency": time.time() - start_time
+        }
+
+    return result
+
+```
+
+
+## 9. Setting up Database
+
+This creates each table from the schema, bulk-inserts your sample rows, and wraps the database engine in a LangChain helper so the agent can query it as if it were any other tool.
+
+```python
+def setup_database():
+    """Creates and initializes the SQLite database with schema and sample data"""
+    engine = create_engine("sqlite:///:memory:")
+
+    # Create tables
+    with engine.connect() as conn:
+        for statement in COMPLEX_DB_SCHEMA.split(';'):
+            statement = statement.strip()
+            if statement:
+                conn.execute(text(statement))
+        conn.commit()
+
+        # Insert sample data
+        for table_name, rows in COMPLEX_SAMPLE_DATA.items():
+            if not rows or not isinstance(rows, list) or len(rows) == 0:
+                continue
+
+            columns = list(rows[0].keys())
+            for row in rows:
+                params = {col: row[col] for col in columns}
+                placeholders = ', '.join([f":{col}" for col in columns])
+                column_str = ', '.join(columns)
+                insert_query = f"INSERT INTO {table_name} ({column_str}) VALUES ({placeholders})"
+                conn.execute(text(insert_query), params)
+            conn.commit()
+
+    return SQLDatabase(engine=engine)
+
+```
+
+---
+---
+
+## 10. Registering Tracing with Future AGI
+
+- It is the process of adding tracing to your LLM applications. Tracing helps you monitor critical metrics like cost, latency, and evaluation results.
+- Where a span represents a single operation within an execution flow, recording input-output data, execution time, and errors, a trace connects multiple spans to represent the full execution flow of a request.
+    
+    > **Click [here](/docs/products/observability/concept/core-components) to learn more about traces and spans**
+    > 
+- Tracing using Future AGI requires following steps:
+
+### Step 1: Setting up Eval Tags
+
+- To quantify performance, a set of evals according to the use-case are chosen. In this cookbook, since we are dealing with Text-to-SQL agent, so following built-in evals are chosen for evaluation:
+    - `COMPLETENESS`: Evaluates whether the agent's response fully addresses the user's query, ensuring all aspects of the SQL request are properly implemented.
+    - `GROUNDEDNESS`: Assesses how well the agent's responses are grounded in the actual database schema and tables, ensuring SQL queries reference valid tables, columns, and relationships.
+    - `TEXT_TO_SQL`: Specifically evaluates the quality of natural language to SQL translation, measuring how accurately the agent converts user questions into syntactically correct and semantically appropriate SQL queries.
+    - `DETECT_HALLUCINATION`: Identifies instances where the agent generates SQL that references non-existent tables, columns, or relationships that aren't present in the database schema.
+    - `table_checker`: A custom evaluation that verifies whether the SQL queries reference the appropriate tables needed to satisfy the user's request, ensuring optimal join patterns and table selection.
+    
+    > **Click [here](/docs/products/prototype/evals) to learn more about the evals provided by Future AGI**
+    > 
+- The **`eval_tags`** list contains multiple instances of **`EvalTag`**. Each **`EvalTag`** represents a specific evaluation configuration to be applied during runtime, encapsulating all necessary parameters for the evaluation process.
+- Parameters of **`EvalTag`** :
+    - **`type`:** Specifies the category of the evaluation tag. In this cookbook, **`EvalTagType.OBSERVATION_SPAN`** is used.
+    - **`value`**: Defines the kind of operation the evaluation tag is concerned with.
+        - **`EvalSpanKind.LLM`** indicates that the evaluation targets operations involving Large Language Models.
+        - **`EvalSpanKind.TOOL`**: For operations involving tools.
+    - **`eval_name`**: The name of the evaluation to be performed.
+        
+        > Click [**here**](/docs/products/prototype/evals) to get complete list of evals provided by Future AGI
+        > 
+    - **`config`**: Dictionary for providing specific configurations for the evaluation. An empty dictionary means that default configuration parameters will be used.
+        
+        Click [**here**](/docs/products/prototype/evals) to learn more about what config is required for corresponding evals
+        
+    - **`mapping`**: This dictionary maps the required inputs for the evaluation to specific attributes of the operation.
+        
+        Click [**here**](/docs/products/prototype/evals) to learn more about what inputs are required for corresponding evals
+        
+    - **`custom_eval_name`**: A user-defined name for the specific evaluation instance.
+    - `model`: LLM model name required to perform the evaluation. Such as `TURING_LARGE`, which is a proprietary model provided by Future AGI.
+        
+        > **Click [here](/docs/products/evaluation/future-agi-models) to learn more about all the proprietary models provided by Future AGI**
+        > 
+
+### **Step 2: Setting Up Trace Provider**
+
+- The trace provider is part of the traceAI ecosystem, which is an OSS package that enables tracing of AI applications and frameworks. It works in conjunction with OpenTelemetry to monitor code executions across different models, frameworks, and vendors.
+    
+    > Click [**here**](/docs/products/observability/concept/traceai) to learn more about the list of supported frameworks
+    > 
+- To configure a **`trace_provider`**, we need to pass following parameters to **`register`** function:
+    - **`project_type`**: Specifies the type of project. In this cookbook, **`ProjectType.EXPERIMENT`** is used since we are experimenting to test agent before deploying in production. **`ProjectType.OBSERVE`** is used to observe your AI application in production and measure the performance in real-time.
+    - **`project_name`**: The name of the project. This is dynamically set from a configuration dictionary, **`config['future_agi']['project_name']`**
+    - ***`project_version_name**:`**The version name of the project. Similar to project_name, this is also dynamically set from the configuration dictionary, **`config['future_agi']['project_version']`**
+    - **`eval_tags`**: A list of evaluation tags that define specific evaluations to be applied.
+
+### **Step 3: Setting Up LangChain Instrumentor**
+
+- This is done to integrate with the LangChain framework for the collection of telemetry data.
+
+> **Click [here](/docs/products/observability/auto-instrumentation/overview) to know about all the supported frameworks by Future AGI**
+> 
+- The **`instrument`** method is called on the **`LangChainInstrumentor`** instance. This method is responsible for setting up the instrumentation of the LangChain framework using the provided **`tracer_provider`**.
+- Putting it all together, below is the code that configures **`eval_tags`**, and sets up **`trace_provider`**, which is then passed onto **`LangChainInstrumentor`** .
+
+```python
+trace_provider = register(
+    project_type=ProjectType.EXPERIMENT,
+    project_name="TEXT_TO_SQL",
+    eval_tags=[
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.AGENT,
+            eval_name=EvalName.COMPLETENESS,
+            config={},
+            mapping={
+                "input": "raw.input",
+                "output": "raw.output"
+            },
+            custom_eval_name="Completeness",
+            model=ModelChoices.TURING_LARGE
+
+        ),
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.AGENT,
+            eval_name=EvalName.GROUNDEDNESS,
+            config={},
+            mapping={
+                "input": "raw.input",
+                "output": "raw.output"
+            },
+            custom_eval_name="Groundedness",
+            model=ModelChoices.TURING_LARGE
+
+        ),
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.TOOL,
+            eval_name=EvalName.TEXT_TO_SQL,
+            config={},
+            mapping={
+                "input": "metadata",
+                "output": "raw.input"
+            },
+            custom_eval_name="Text-to-SQL",
+            model=ModelChoices.TURING_LARGE
+
+        ),
+
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.AGENT,
+            eval_name=EvalName.DETECT_HALLUCINATION,
+            config={},
+            mapping={
+                "input": "raw.input",
+                "output": "raw.output"
+            },
+            custom_eval_name="Hallucination",
+            model=ModelChoices.TURING_LARGE
+
+        ),
+
+        EvalTag(
+            type=EvalTagType.OBSERVATION_SPAN,
+            value=EvalSpanKind.TOOL,
+            eval_name="table_checker",
+            config={},
+            mapping={
+                "query": "metadata",
+                "tables": "raw.input"
+            },
+            custom_eval_name="table_checker",
+
+        ),
+       
+    ]
+)
+
+LangChainInstrumentor().instrument(tracer_provider=trace_provider)
+```
+
+## 11. Main Function
+
+This lets you run the experiment with your chosen agent, save detailed results and raw input/output pairs to CSV for audit and offline analysis, and print a concise summary of metrics so you can see at a glance how the agent performed.
+
+```python
+def main():
+    # Run experiment with basic agent
+    print("Running Complex Text2SQL Experiment with Basic Agent...")
+    basic_results, basic_dataset = run_complex_text2sql_experiment("gpt-4o", "basic")
+    basic_metrics = collect_metrics(basic_results.to_dict('records'))
+
+    # Save basic results
+    basic_results.to_csv("complex_text2sql_results_improved.csv", index=False)
+    basic_dataset.to_csv("text2sql_dataset_improved.csv", index=False)
+
+    # Print basic metrics
+    print("\\nBasic Agent Metrics:")
+    for metric, value in basic_metrics.items():
+        print(f"{metric}: {value}")
+
+    # Save basic summary
+    summary = {
+        "complex_text2sql": {
+            "agent": basic_metrics,
+        }
+    }
+
+    with open("complex_experiment_summary_basic.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+if __name__ == "__main__":
+    main()
+
+```
+
+
+## Result
+
+- The agent starts by asking database for a list of all available tables. The database then responds with seven table names (order_items, orders, product_categories, product_category_mappings, products, reviews, users).
+- It then requests the detailed schema (column definitions and constraints) plus a few example rows for exactly the tables needed to answer the question.
+- Using that schema and sample data, the agent formulates a SQL statement that matches the natural-language requirement.
+- Before execution, the agent submits the generated SQL to a validation tool that checks syntax and logical consistency. Once the query passes, the agent runs it against the database and retrieves the results.
+- A ‘finished’ message confirms the entire cycle of introspecting tables, fetching schema, generating SQL, validating, and executing is completed without errors.
+- For the next question, the same four-step workflow repeats (listing tables, fetching schema & samples, generating SQL, validating and executing).
+- This process is repeated for all test queries, resulting a perfect success rate and low round-trip times (average of 43.6 ms, ranging from 29.5 ms to 77.1 ms).
+
+The dashboard below visualises the complete execution flow as a hierarchical tree, with the SQL Agent Executor at the top level, followed by nested components.
+
+![Trace detail view of observability of Text-To-SQL Agent in Future AGI's dashboard](/docs/cookbook/cookbook12/images/fig1.png)
+_Fig 1:Trace detail view of observability of Text-To-SQL Agent in Future AGI's dashboard_
+
+Each operation is represented as a span with precise timing measurements, allowing identification of performance bottlenecks.  
+
+![Evaluation dashboard for quantifying performance of the agent](/docs/cookbook/cookbook12/images/fig2.png)
+_Fig 2: Evaluation dashboard for quantifying performance of the agent_
+
+The Future AGI dashboard provides a comprehensive performance analysis of the Text-to-SQL agent across traces:
+
+- The agent demonstrates consistent table identification capabilities with scores ranging from 75-80% across the query set, indicating robust schema comprehension.
+- Minimal hallucination metrics confirm the agent's precision in referencing only existing database structures.
+- Text-to-SQL Translation accuracy exhibits variance (25-75%) correlating with query complexity, indicating scope for enhancement.
+- The agent maintains grounding in database schema (53-81%).
+- Completeness metrics indicate potential areas for improvement.
+
+This comprehensive performance analysis provides actionable insights for targeted enhancement of this Text-to-SQL agent's capabilities.
+
+## Conclusion
+
+This cookbook demonstrated how to build, evaluate, and trace a complete Text-to-SQL agent using Future AGI. From defining a realistic e-commerce schema to generating SQL queries and setting up robust agents, each component was designed such a way to reflect real-world complexity.
+
+With the help of Future AGI’s built-in evals and tracing, you can now have a framework not just for building agents but for auditing, debugging, and iterating toward production ready Text-to-SQL Agent.
+
+
+### **Ready To Evaluate Your Text-to-SQL Agent?**
+
+Start evaluating your AI agents with confidence using Future AGI’s tracing. Future AGI provides the tools you need to systematically improve your text-to-SQL agent.
+
+<Tip>
+
+Click [**here**](https://futureagi.com/contact-us) to schedule a demo with us now!
+
+</Tip>
+
+---

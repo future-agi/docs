@@ -1,0 +1,313 @@
+---
+layout: ../../../layouts/DocsLayout.astro
+title: 'Testing a Voice AI Agent with Agent Simulate SDK'
+description: 'This cookbook demonstrates how to use the agent-simulate SDK to test a conversational voice AI agent.'
+---
+# Testing a Voice AI Agent with Agent Simulate SDK
+
+This notebook demonstrates how to use the `agent-simulate` SDK to test a conversational voice AI agent.
+
+We will:
+1.  Install the necessary libraries.
+2.  Start a local LiveKit development server.
+3.  Set up environment variables.
+4.  Define a simple, local support agent to act as the agent-under-test.
+5.  Define a test scenario with a simulated customer persona.
+6.  Run the simulation and record the conversation.
+7.  Display the transcript and play back the recorded audio.
+8.  Run evaluations on the conversation.
+
+<a href="https://colab.research.google.com/drive/1797WnqUvxVgZPCELWsO9SR_054G0-GmC?usp=sharing"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
+
+## 1. Installation
+
+First, let's install the `agent-simulate` SDK and other required Python packages.
+
+```python
+pip install agent-simulate
+```
+
+### Download VAD Model
+
+The `livekit-agents` SDK uses the Silero VAD (Voice Activity Detection) plugin. We need to download its model weights before we can start the simulation.
+
+```python
+from livekit.plugins import silero
+
+print("Downloading Silero VAD model...")
+silero.VAD.load()
+print("Download complete.")
+```
+
+## 2. Start LiveKit Server
+
+For this demo, we'll run a local LiveKit development server. Open a new terminal and run the following commands to download and start the server:
+
+```bash
+curl -sSL https://get.livekit.io | bash
+livekit-server --dev --bind 127.0.0.1
+```
+
+The server will keep running in that terminal.
+
+## 3. Set Environment Variables
+
+We need to configure our API keys and LiveKit server details. The `livekit-server --dev` command prints the key, secret, and URL you need.
+
+**Important**:
+- Copy the `API Key`, `API Secret`, and `URL` from the `livekit-server` output.
+- You will also need an `OPENAI_API_KEY` for the simulated customer's LLM.
+- If you want to run evaluations, you'll also need your `FI_API_KEY` and `FI_SECRET_KEY`.
+
+```python
+import os
+import getpass
+
+os.environ["LIVEKIT_URL"] = "http://127.0.0.1:7880"
+os.environ["LIVEKIT_API_KEY"] = "devkey"  # From livekit-server output
+os.environ["LIVEKIT_API_SECRET"] = "secret"  # From livekit-server output
+os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter your OpenAI API key: ")
+
+# For evaluations
+os.environ["FI_API_KEY"] = getpass.getpass("Enter your FI API key: ")
+os.environ["FI_SECRET_KEY"] = getpass.getpass("Enter your FI secret key: ")
+```
+
+## 4. Define the Agent-Under-Test
+
+Instead of connecting to a remote, deployed agent, we'll define and run a simple `SupportAgent` locally. The `TestRunner` will manage spawning this agent for each test case.
+
+```python
+import asyncio
+import uuid
+import contextlib
+from dotenv import load_dotenv
+from fi.simulate import AgentDefinition, Scenario, Persona, TestRunner, evaluate_report
+from livekit import rtc
+from livekit.api import AccessToken, VideoGrants
+from livekit.agents import Agent, AgentSession, function_tool
+from livekit.plugins import openai, silero
+from livekit.agents.voice.room_io import RoomInputOptions, RoomOutputOptions
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+class SupportAgent(Agent):
+    def __init__(self, *, room: rtc.Room, **kwargs):
+        super().__init__(**kwargs)
+        self._room = room
+
+    @function_tool()
+    async def end_call(self) -> None:
+        self.session.say("I'm glad I could help. Have a great day! Goodbye.")
+        await asyncio.sleep(0.2)
+        self.session.shutdown()
+        # Disconnect room if still connected
+        try:
+            if getattr(self._room, "isconnected", False):
+                if callable(self._room.isconnected):
+                    if self._room.isconnected():
+                        await self._room.disconnect()
+                elif self._room.isconnected:
+                    await self._room.disconnect()
+        except Exception:
+            pass
+
+async def run_support_agent(lk_url: str, lk_api_key: str, lk_api_secret: str, room_name: str):
+    token = (
+        AccessToken(lk_api_key, lk_api_secret)
+        .with_identity("support-agent")
+        .with_grants(VideoGrants(room_join=True, room=room_name))
+        .to_jwt()
+    )
+    room = rtc.Room()
+    await room.connect(lk_url, token)
+
+    agent = SupportAgent(
+        room=room,
+        stt=openai.STT(),
+        llm=openai.LLM(model="gpt-4o-mini", temperature=0.7),
+        tts=openai.TTS(voice="alloy"),
+        vad=silero.VAD.load(),
+        allow_interruptions=True,
+        min_endpointing_delay=0.4,
+        max_endpointing_delay=2.2,
+        instructions=(
+            "You are a helpful support agent. Be friendly and proactive. "
+            "Ask clarifying questions and provide step-by-step guidance. "
+            "Keep the conversation going for at least 6 turns unless the issue is resolved. "
+            "When the customer confirms their issue is resolved or they say they're done, "
+            "call the `end_call` tool to gracefully end the call."
+        ),
+    )
+
+    session = AgentSession(
+        stt=agent.stt,
+        llm=agent.llm,
+        tts=agent.tts,
+        vad=None,
+        turn_detection="stt",
+        allow_interruptions=True,
+        discard_audio_if_uninterruptible=True,
+        min_interruption_duration=0.25,
+        min_endpointing_delay=0.35,
+        max_endpointing_delay=2.0,
+        preemptive_generation=True,
+    )
+    await session.start(
+        agent,
+        room=room,
+        room_input_options=RoomInputOptions(
+            delete_room_on_close=False,
+            # ensure the agent hears both simulator and other agents
+            participant_kinds=[rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD,
+                              rtc.ParticipantKind.PARTICIPANT_KIND_AGENT],
+        ),
+        room_output_options=RoomOutputOptions(transcription_enabled=False),
+    )
+
+    # small delay so tracks publish before the greeting
+    await asyncio.sleep(0.6)
+    session.say("Hello! How can I help you today?")
+
+    # Wait until session closes
+    closed = asyncio.Event()
+    session.on("close", lambda ev: closed.set())
+    await closed.wait()
+    # Ensure disconnect
+    try:
+        if getattr(room, "isconnected", False):
+            if callable(room.isconnected):
+                if room.isconnected():
+                    await room.disconnect()
+            elif room.isconnected:
+                await room.disconnect()
+    except Exception:
+        pass
+```
+
+## 5. Define Test Scenario & Persona
+
+Now we'll use the `agent-simulate` SDK to define the test case. We need two main components:
+
+1.  **`AgentDefinition`**: Tells the `TestRunner` how to spawn our local `SupportAgent`.
+2.  **`Scenario`**: Contains one or more `Persona` objects that define the simulated customer's details.
+
+```python
+from fi.simulate import AgentDefinition, Scenario, Persona, TestRunner
+
+room_name = "test-room-1"
+# 1. Define the agent to be tested.
+# Since it's a local agent, we provide the class and constructor arguments.
+agent_definition = AgentDefinition(
+    name="deployed-support-agent",
+    url=os.environ["LIVEKIT_URL"],
+    room_name=room_name,
+    system_prompt="Helpful support agent",
+)
+
+# 2. Create a test scenario
+scenario = Scenario(
+    name="Account Login Support",
+    dataset=[
+        Persona(
+            persona={"name": "Fubar", "mood": "annoyed"},
+            situation="He is trying to log into his account but keeps getting an 'invalid password' error, even though he's sure it's correct.",
+            outcome="The agent should calmly guide him to reset his password.",
+        ),
+    ]
+)
+```
+
+## 6. Run the Simulation
+
+Now we'll instantiate the `TestRunner` and call `run_test`. This will:
+1.  Create a new, unique LiveKit room for this test.
+2.  Spawn our `SupportAgent` and connect it to the room.
+3.  Connect the simulated customer ("Fubar") to the room.
+4.  Record the full conversation.
+5.  Return a `TestReport` containing the results.
+
+```python
+# This can take a few minutes to run
+
+support_task = asyncio.create_task(
+    run_support_agent(
+        os.environ["LIVEKIT_URL"],
+        os.environ["LIVEKIT_API_KEY"],
+        os.environ["LIVEKIT_API_SECRET"],
+        room_name,
+    )
+)
+
+try:
+    runner = TestRunner()
+    report = await runner.run_test(
+        agent_definition,
+        scenario,
+        record_audio=True,
+        max_seconds=240.0,
+    )
+except Exception as e:
+  print(f"Error: {e}")
+
+# Print the report for inspection
+print(report.model_dump_json(indent=2))
+```
+
+## 7. View Results
+
+The `TestReport` object contains the full transcript and paths to the recorded audio files. Let's display the transcript. In an interactive notebook, you could use `IPython.display.Audio` to play back the combined conversation.
+
+```python
+for result in report.results:
+    print("--- Transcript ---")
+    print(result.transcript)
+    print("\n--- Audio Playback ---")
+    if result.audio_combined_path and os.path.exists(result.audio_combined_path):
+        print(f"Audio file saved at: {result.audio_combined_path}")
+    else:
+        print("Combined audio file not found.")
+```
+
+## 8. Run Evaluations
+
+The `agent-simulate` SDK includes a helper function, `evaluate_report`, to easily run evaluations on your test results using the `ai-evaluation` library.
+
+You define a list of `eval_specs`, which map fields from the `TestReport` (like `transcript` or `audio_combined_path`) to the inputs required by your chosen evaluation templates.
+
+```python
+from fi.simulate.evaluation import evaluate_report
+
+# Ensure you have set your FI_API_KEY and FI_SECRET_KEY in step 3
+if os.environ.get("FI_API_KEY"):
+    eval_specs = [
+        {"template": "task_completion", "map": {"input": "persona.situation", "output": "transcript"}},
+        {"template": "tone", "map": {"output": "transcript"}},
+        {"template": "is_harmful_advice", "map": {"output": "transcript"}},
+        {"template": "answer_refusal", "map": {"input": "persona.situation", "output": "transcript"}}
+    ]
+
+    report = evaluate_report(
+        report,
+        eval_specs=eval_specs,
+        model_name="turing_large",
+        api_key=os.environ.get("FI_API_KEY"),
+        secret_key=os.environ.get("FI_SECRET_KEY"),
+    )
+
+    print("\n--- Test Report ---")
+    for result in report.results:
+        print(f"\n--- Persona: {result.persona.persona['name']} ---")
+        print("Transcript:")
+        print(result.transcript)
+        if getattr(result, "audio_combined_path", None):
+            print(f"Combined audio: {result.audio_combined_path}")
+        if result.evaluation:
+            print("Evaluation:")
+            for k, v in result.evaluation.items():
+                print(f"  - {k}: {v}")
+    print("\n--- End of Report ---")
+else:
+    print("Skipping evaluations. Set FI_API_KEY and FI_SECRET_KEY to run.")
+```
