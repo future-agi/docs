@@ -502,6 +502,34 @@ export function getActiveTab(currentPath: string): NavTab | undefined {
   return tabNavigation[0];
 }
 
+// Find the active group within the Docs tab based on current path
+export function getActiveGroup(currentPath: string): NavGroup | undefined {
+  const docsTab = tabNavigation[0]; // Docs tab
+  const normalizedPath = currentPath.replace(/\/$/, '') || '/';
+
+  for (const group of docsTab.groups) {
+    for (const item of group.items) {
+      if (item.href) {
+        const normalizedHref = item.href.replace(/\/$/, '') || '/';
+        if (normalizedHref === normalizedPath) return group;
+        if (normalizedHref !== '/' && normalizedHref !== '/docs' && normalizedPath.startsWith(normalizedHref + '/')) return group;
+      }
+      if (item.items) {
+        for (const child of item.items) {
+          if (child.href) {
+            const normalizedChild = child.href.replace(/\/$/, '') || '/';
+            if (normalizedChild === normalizedPath) return group;
+            if (normalizedChild !== '/' && normalizedPath.startsWith(normalizedChild + '/')) return group;
+          }
+        }
+      }
+    }
+  }
+
+  // Default to first group (Get Started)
+  return docsTab.groups[0];
+}
+
 // Backwards compatibility exports
 export const navigation = tabNavigation[0].groups.map(g => ({
   title: g.group,
