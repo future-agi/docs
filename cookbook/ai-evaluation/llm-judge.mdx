@@ -1,0 +1,241 @@
+---
+title: "When Heuristics Aren't Enough: LLM-as-Judge"
+description: "Use an LLM to judge accuracy when local heuristics miss paraphrases, then build custom domain-specific judges and batch QA review pipelines."
+---
+
+## The Problem
+
+Your medical chatbot's local faithfulness check gives a score of 0.4 to "Take ibuprofen twice daily" when the context says "Prescribe ibuprofen 2x per day." The heuristic does not understand that "twice daily" and "2x per day" mean the same thing. You need a smarter judge.
+
+This cookbook shows three ways to use an LLM as your evaluation judge:
+
+1. **`augment=True`** -- local heuristic first, then LLM refines the judgment (best of both worlds)
+2. **Custom prompt** -- write your own domain-specific rubric
+3. **Direct LLM** -- bypass heuristics entirely with `engine="llm"`
+
+## What You Will Learn
+
+- How `augment=True` combines local speed with LLM intelligence
+- How to write custom evaluation prompts for any domain
+- How to run a batch QA review pipeline that flags responses for human review
+- How to build a tone/empathy judge for customer support
+
+## Prerequisites
+
+```bash
+pip install ai-evaluation
+export GOOGLE_API_KEY=your-gemini-api-key
+```
+
+<Note>
+This cookbook requires a `GOOGLE_API_KEY` for Gemini. The SDK uses [LiteLLM](https://docs.litellm.ai/) under the hood, so any LiteLLM-compatible model string works (e.g., `openai/gpt-4o`, `anthropic/claude-sonnet-4-20250514`).
+</Note>
+
+## Solution 1: augment=True
+
+The simplest upgrade. Pass `model=` and `augment=True` to any built-in metric. The SDK runs the local heuristic first, then sends the heuristic result plus the inputs to the LLM for refinement.
+
+```python
+from fi.evals import evaluate
+
+MODEL = "gemini/gemini-2.5-flash"
+
+output = "Take ibuprofen twice daily for pain relief"
+context = "Prescribe ibuprofen 2x per day for pain management"
+
+# Local heuristic alone
+local = evaluate("faithfulness", output=output, context=context)
+print(f"Local heuristic score: {local.score:.2f}")
+
+# Local heuristic + LLM refinement
+augmented = evaluate(
+    "faithfulness",
+    output=output,
+    context=context,
+    model=MODEL,
+    augment=True,
+)
+print(f"Augmented score: {augmented.score}")
+print(f"Engine:          {augmented.metadata.get('engine')}")
+print(f"Reason:          {augmented.reason[:200]}")
+```
+
+**Expected output:**
+
+```
+Local heuristic score: 0.40
+Augmented score: 0.95
+Engine:          llm_augmented
+Reason: The output is faithful to the context. "Twice daily" is semantically
+        equivalent to "2x per day", and "pain relief" aligns with "pain management".
+```
+
+The heuristic scored low because the words differ. The LLM understands the semantic equivalence and corrects the score.
+
+## Solution 2: Custom Domain-Specific Judge
+
+For specialized domains, write a prompt that encodes your own evaluation criteria. Use `{context}`, `{output}`, and `{input}` as placeholders -- the SDK fills them in automatically.
+
+### Medical Accuracy Judge
+
+```python
+medical_judge_prompt = (
+    "You are a medical accuracy reviewer at a hospital.\n\n"
+    "A patient chatbot generated this response based on the provided "
+    "medical records. Your job is to verify:\n"
+    "1. All dosages are correct\n"
+    "2. No dangerous drug interactions are suggested\n"
+    "3. The response doesn't contradict the source material\n"
+    "4. The advice is safe for a patient to follow\n\n"
+    "Medical record: {context}\n"
+    "Chatbot response: {output}\n\n"
+    'Return JSON: {{"score": <0.0-1.0>, "reason": "<your analysis>"}}\n'
+    "Score 0.0 = dangerous/inaccurate, 1.0 = perfectly safe and accurate."
+)
+
+# Correct response
+r = evaluate(
+    prompt=medical_judge_prompt,
+    output="Take 200-400mg ibuprofen every 4-6 hours. Do not exceed 1200mg daily.",
+    context="Ibuprofen: 200-400mg q4-6h PRN. Max 1200mg/day OTC. Avoid with NSAIDs.",
+    engine="llm",
+    model=MODEL,
+)
+print(f"Correct response:   score={r.score}  reason: {r.reason[:120]}")
+
+# Dangerous response
+r = evaluate(
+    prompt=medical_judge_prompt,
+    output="Take 2000mg ibuprofen every 2 hours with aspirin for maximum effect.",
+    context="Ibuprofen: 200-400mg q4-6h PRN. Max 1200mg/day OTC. Avoid with NSAIDs.",
+    engine="llm",
+    model=MODEL,
+)
+print(f"Dangerous response: score={r.score}  reason: {r.reason[:120]}")
+```
+
+**Expected output:**
+
+```
+Correct response:   score=0.95  reason: All dosages match the medical record exactly...
+Dangerous response: score=0.05  reason: DANGEROUS - recommends 2000mg (5x the max OTC dose)
+                                        and aspirin combination which is contraindicated...
+```
+
+### Customer Support Tone Judge
+
+The same pattern works for any domain. Here is a judge that evaluates empathy and professionalism in customer support:
+
+```python
+tone_prompt = (
+    "You are reviewing customer support agent responses.\n\n"
+    "The customer is upset: {input}\n"
+    "The agent responded: {output}\n\n"
+    "Rate the agent's response on:\n"
+    "- Empathy: Does the agent acknowledge the customer's feelings?\n"
+    "- Professionalism: Is the tone appropriate?\n"
+    "- Action: Does the agent commit to solving the problem?\n\n"
+    'Return JSON: {{"score": <0.0-1.0>, "reason": "<analysis>"}}'
+)
+
+angry_customer = "I've been waiting 3 WEEKS for my order. This is unacceptable!"
+
+# Good response
+r = evaluate(
+    prompt=tone_prompt,
+    input=angry_customer,
+    output="I completely understand your frustration, and I sincerely apologize "
+           "for this delay. Let me track your order right now and ensure it "
+           "ships today. I'll also apply a 20% discount for the inconvenience.",
+    engine="llm",
+    model=MODEL,
+)
+print(f"Good agent:  score={r.score}")
+
+# Bad response
+r = evaluate(
+    prompt=tone_prompt,
+    input=angry_customer,
+    output="Orders take the time they take. Check the tracking link we sent.",
+    engine="llm",
+    model=MODEL,
+)
+print(f"Bad agent:   score={r.score}")
+```
+
+## Use Case: Automated QA Review Pipeline
+
+In production, you likely have a batch of chatbot responses to review before deployment. Use `augment=True` to score each one and flag failures for human review.
+
+```python
+qa_samples = [
+    {
+        "id": "QA-001",
+        "question": "What's the ibuprofen dosage?",
+        "response": "Take 200-400mg every 4-6 hours as needed for pain.",
+        "context": "Ibuprofen: 200-400mg q4-6h PRN. Max 1200mg/day.",
+    },
+    {
+        "id": "QA-002",
+        "question": "Can I take ibuprofen with aspirin?",
+        "response": "Yes, combining ibuprofen and aspirin is perfectly safe.",
+        "context": "Do NOT combine ibuprofen with aspirin or other NSAIDs.",
+    },
+    {
+        "id": "QA-003",
+        "question": "How should I take metformin?",
+        "response": "Take 500mg twice daily with meals.",
+        "context": "Metformin: starting dose 500mg BID with meals. Max 2000mg/day.",
+    },
+    {
+        "id": "QA-004",
+        "question": "Is metformin safe with kidney disease?",
+        "response": "Metformin is fine for all patients regardless of kidney function.",
+        "context": "Do not use metformin in patients with eGFR < 30.",
+    },
+]
+
+flagged = []
+
+for sample in qa_samples:
+    r = evaluate(
+        "faithfulness",
+        output=sample["response"],
+        context=sample["context"],
+        model=MODEL,
+        augment=True,
+    )
+
+    status = "PASS" if r.passed else "FLAG"
+    if not r.passed:
+        flagged.append(sample["id"])
+
+    reason = r.reason[:80].replace("\n", " ")
+    print(f"{sample['id']}  {r.score:.2f}  {status}  {reason}")
+
+print(f"\nFlagged for human review: {flagged}")
+print(f"Pass rate: {(len(qa_samples) - len(flagged)) / len(qa_samples):.0%}")
+```
+
+**Expected output:**
+
+```
+QA-001  0.95  PASS   Accurate dosage information matching the context...
+QA-002  0.05  FLAG   CONTRADICTS context - ibuprofen should NOT be combined with aspirin
+QA-003  0.92  PASS   Correct starting dose and administration instructions...
+QA-004  0.08  FLAG   Dangerous claim - metformin is contraindicated in patients with low eGFR
+```
+
+QA-002 and QA-004 are flagged for the medical review team before the chatbot goes live.
+
+## What to Try Next
+
+Now that you can judge individual responses, learn how to diagnose failures across an entire RAG pipeline -- separating retrieval problems from generation problems.
+
+<Card
+  title="Next: RAG Evaluation"
+  icon="arrow-right"
+  href="/cookbook/ai-evaluation/rag-evaluation"
+>
+  Measure retrieval quality and generation quality independently to know exactly what to fix.
+</Card>
