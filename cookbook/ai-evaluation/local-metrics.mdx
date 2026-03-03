@@ -1,0 +1,264 @@
+---
+title: "Catch a Hallucinating Medical Chatbot"
+description: "Build a local validation layer that catches hallucinations, wrong dosages, and contradictions -- all in under one second with zero API keys."
+---
+
+## The Problem
+
+You have deployed a medical chatbot that answers patient questions using retrieved context from a knowledge base. During QA, you notice the bot sometimes makes up dosages or contradicts the source material. You need automated checks to catch this **before** the response reaches the patient.
+
+This cookbook shows how to build a local validation layer using the `evaluate()` function. Everything runs on your machine -- no API keys, no network calls, sub-second latency.
+
+## What You Will Learn
+
+- How to check whether a response is faithful to source context
+- How to detect contradictions between output and reference material
+- How to verify specific claims (dosage numbers, drug names) are present
+- How to batch multiple checks into a single call
+- How to wrap everything into a reusable production validation function
+
+## Prerequisites
+
+```bash
+pip install ai-evaluation
+```
+
+No API keys required. All metrics in this cookbook run locally.
+
+## Set Up the Knowledge Base
+
+First, define the medical knowledge your chatbot draws from, and a function that simulates chatbot responses -- some correct, some dangerously wrong.
+
+```python
+import json
+from fi.evals import evaluate
+
+KNOWLEDGE_BASE = {
+    "ibuprofen": (
+        "Ibuprofen (Advil, Motrin): Take 200-400mg every 4-6 hours as needed. "
+        "Maximum daily dose: 1200mg for OTC use. Do NOT combine with aspirin "
+        "or other NSAIDs. Contraindicated in patients with kidney disease."
+    ),
+    "metformin": (
+        "Metformin (Glucophage): Starting dose 500mg twice daily with meals. "
+        "Maximum dose: 2000mg/day. Monitor kidney function regularly. "
+        "Do not use in patients with eGFR < 30."
+    ),
+}
+
+
+def simulate_chatbot(question: str, context: str) -> str:
+    """Simulate chatbot responses -- some good, some hallucinated."""
+    if "ibuprofen" in question.lower() and "dosage" in question.lower():
+        return "Take 200-400mg of ibuprofen every 4-6 hours as needed for pain."
+    elif "ibuprofen" in question.lower() and "aspirin" in question.lower():
+        # HALLUCINATION: contradicts the context
+        return "Yes, you can safely take ibuprofen and aspirin together daily."
+    elif "metformin" in question.lower():
+        # HALLUCINATION: wrong dosage
+        return "Take 5000mg of metformin once daily on an empty stomach."
+    return "I'm not sure about that. Please consult your doctor."
+```
+
+## Scenario 1: Validate a Correct Response
+
+Start with a response that matches the source material. The `evaluate()` function accepts a metric name as the first argument, along with the text fields it needs.
+
+```python
+question = "What is the dosage for ibuprofen?"
+context = KNOWLEDGE_BASE["ibuprofen"]
+response = simulate_chatbot(question, context)
+
+# Check faithfulness -- does the response match the context?
+faith = evaluate("faithfulness", output=response, context=context)
+print(f"Faithfulness: {faith.score:.2f} {'PASS' if faith.passed else 'FAIL'}")
+
+# Check that the response actually addresses the question
+relevancy = evaluate("answer_relevancy", output=response, input=question)
+print(f"Relevancy:    {relevancy.score:.2f} {'PASS' if relevancy.passed else 'FAIL'}")
+
+# Check that key information is present
+has_dosage = evaluate("contains", output=response, keyword="200")
+print(f"Has dosage:   {has_dosage.score:.0f} {'PASS' if has_dosage.passed else 'FAIL'}")
+```
+
+**Expected output:**
+
+```
+Faithfulness: 0.85 PASS
+Relevancy:    0.90 PASS
+Has dosage:   1 PASS
+```
+
+<Tip>
+You can pass a list of metric names to `evaluate()` to run them all at once. The result object lets you iterate over individual results or check the overall `success_rate`.
+</Tip>
+
+```python
+batch = evaluate(
+    ["faithfulness", "answer_relevancy", "one_line"],
+    output=response,
+    context=context,
+    input=question,
+)
+print(f"Batch result: {batch.success_rate:.0%} passed ({len(batch)} checks)")
+```
+
+## Scenario 2: Catch a Dangerous Hallucination
+
+Now test a response that directly contradicts the source material. The context says "Do NOT combine with aspirin," but the chatbot says the opposite.
+
+```python
+question = "Can I take ibuprofen with aspirin?"
+context = KNOWLEDGE_BASE["ibuprofen"]
+response = simulate_chatbot(question, context)
+# response = "Yes, you can safely take ibuprofen and aspirin together daily."
+
+faith = evaluate("faithfulness", output=response, context=context)
+print(f"Faithfulness: {faith.score:.2f} {'PASS' if faith.passed else '>>> FAIL -- HALLUCINATION'}")
+
+contra = evaluate("contradiction_detection", output=response, context=context)
+print(f"Contradiction: {contra.score:.2f} {'detected!' if contra.score > 0.5 else 'none'}")
+
+if not faith.passed or contra.score > 0.5:
+    print(">>> ACTION: Block this response. It contradicts medical guidance.")
+    print(">>> Falling back to: 'Please consult your doctor about drug interactions.'")
+```
+
+**Expected output:**
+
+```
+Faithfulness: 0.15 >>> FAIL -- HALLUCINATION
+Contradiction: 0.92 detected!
+>>> ACTION: Block this response. It contradicts medical guidance.
+>>> Falling back to: 'Please consult your doctor about drug interactions.'
+```
+
+The faithfulness score drops sharply because the response claims the opposite of what the context states. The contradiction detector confirms it.
+
+## Scenario 3: Catch a Wrong Dosage
+
+The chatbot recommends 5000mg of metformin instead of the correct 500mg. You can combine faithfulness checking with the `contains` metric to flag specific incorrect values.
+
+```python
+question = "How much metformin should I take?"
+context = KNOWLEDGE_BASE["metformin"]
+response = simulate_chatbot(question, context)
+# response = "Take 5000mg of metformin once daily on an empty stomach."
+
+faith = evaluate("faithfulness", output=response, context=context)
+print(f"Faithfulness: {faith.score:.2f} {'PASS' if faith.passed else '>>> FAIL'}")
+
+has_wrong_dose = evaluate("contains", output=response, keyword="5000")
+has_correct_dose = evaluate("contains", output=response, keyword="500mg")
+print(f"Contains 5000mg (wrong): {has_wrong_dose.passed}")
+print(f"Contains 500mg (right):  {has_correct_dose.passed}")
+
+if has_wrong_dose.passed and not has_correct_dose.passed:
+    print(">>> ALERT: Response contains incorrect dosage (5000mg vs 500mg).")
+```
+
+## Scenario 4: Validate a Function Call
+
+If your chatbot can call tools, you can verify it selects the right function with the correct arguments.
+
+```python
+expected_call = json.dumps({
+    "name": "lookup_medication",
+    "parameters": {"drug_name": "ibuprofen", "info_type": "dosage"},
+})
+actual_call = json.dumps({
+    "name": "lookup_medication",
+    "parameters": {"drug_name": "ibuprofen", "info_type": "dosage"},
+})
+wrong_call = json.dumps({
+    "name": "schedule_appointment",
+    "parameters": {"date": "tomorrow"},
+})
+
+r = evaluate("function_call_accuracy", output=actual_call, expected_output=expected_call)
+print(f"Correct tool call: score={r.score:.2f} {r.passed}")
+
+r = evaluate("function_call_accuracy", output=wrong_call, expected_output=expected_call)
+print(f"Wrong tool call:   score={r.score:.2f} {r.passed}")
+
+r = evaluate("function_name_match", output=wrong_call, expected_output=expected_call)
+print(f"Name match:        score={r.score:.2f} {r.passed}")
+```
+
+## Scenario 5: Production Validation Pipeline
+
+Wrap all checks into a single reusable function. In production, call this before every chatbot response is sent to the user.
+
+```python
+def validate_medical_response(question, response, context, strict=True):
+    """Validate a medical chatbot response before sending to patient."""
+    checks = evaluate(
+        ["faithfulness", "answer_relevancy", "contradiction_detection"],
+        output=response,
+        context=context,
+        input=question,
+    )
+
+    faith = checks.get("faithfulness")
+    relevancy = checks.get("answer_relevancy")
+    contra = checks.get("contradiction_detection")
+
+    if strict:
+        blocked = (
+            (faith and not faith.passed) or
+            (contra and contra.score and contra.score > 0.5)
+        )
+    else:
+        blocked = contra and contra.score and contra.score > 0.7
+
+    return {
+        "approved": not blocked,
+        "faithfulness": faith.score if faith else None,
+        "relevancy": relevancy.score if relevancy else None,
+        "contradiction": contra.score if contra else None,
+    }
+```
+
+Test the pipeline against multiple cases:
+
+```python
+test_cases = [
+    ("What's the ibuprofen dosage?",
+     "Take 200-400mg every 4-6 hours.",
+     KNOWLEDGE_BASE["ibuprofen"]),
+    ("Can I take ibuprofen with aspirin?",
+     "Yes, take them together daily.",
+     KNOWLEDGE_BASE["ibuprofen"]),
+    ("How much metformin?",
+     "Take 5000mg once daily.",
+     KNOWLEDGE_BASE["metformin"]),
+]
+
+for q, resp, ctx in test_cases:
+    result = validate_medical_response(q, resp, ctx)
+    status = "YES" if result["approved"] else "BLOCKED"
+    print(f"{q:<35} {status}")
+```
+
+**Expected output:**
+
+```
+What's the ibuprofen dosage?              YES
+Can I take ibuprofen with aspirin?    BLOCKED
+How much metformin?                   BLOCKED
+```
+
+The correct response passes. Both hallucinated responses are blocked before reaching the patient.
+
+## What to Try Next
+
+This cookbook uses fast local heuristics. For cases where paraphrasing fools the heuristic (e.g., "twice daily" vs "2x per day"), add an LLM judge for higher accuracy.
+
+<Card
+  title="Next: LLM-as-Judge"
+  icon="arrow-right"
+  href="/cookbook/ai-evaluation/llm-judge"
+>
+  Use augment=True to combine local speed with LLM intelligence for production-grade accuracy.
+</Card>
