@@ -36,8 +36,12 @@ product-docs/
 │   ├── lib/
 │   │   └── navigation.ts   # Sidebar navigation structure
 │   ├── pages/docs/          # All documentation pages (MDX)
+│   ├── plugins/
+│   │   └── vite-docs-transform.mjs  # Auto-layout & auto-import plugin
 │   └── styles/
 │       └── global.css       # Design tokens & CSS variables
+├── scripts/
+│   └── new-doc.mjs          # Scaffold script for new pages
 ├── public/
 │   └── images/docs/         # Documentation images
 └── astro.config.mjs
@@ -47,7 +51,29 @@ product-docs/
 
 ## Writing Documentation
 
-### Creating a New Page
+### Creating a New Page (Recommended)
+
+Use the scaffold command to create a page and add it to navigation in one step:
+
+```bash
+pnpm new-doc docs/evaluation/my-eval "My Custom Eval"
+```
+
+This will:
+1. Create `src/pages/docs/evaluation/my-eval.mdx` with minimal frontmatter
+2. Add the page to `src/lib/navigation.ts` in the correct group
+3. Print the local URL so you can open it immediately
+
+```bash
+# More examples
+pnpm new-doc docs/tracing/auto/newprovider "New Provider"
+pnpm new-doc docs/dataset/concepts/overview
+pnpm new-doc docs/cookbook/my-recipe "My Recipe"
+```
+
+If the title argument is omitted, it defaults to the filename in Title Case.
+
+### Creating a Page Manually
 
 **1. Create the MDX file** at the appropriate path under `src/pages/docs/`:
 
@@ -58,50 +84,38 @@ src/pages/docs/
 │   ├── overview.mdx          → /docs/evaluation/overview
 │   └── builtin/
 │       └── audio/
-│           ├── index.mdx     → /docs/evaluation/builtin/audio
 │           └── audio-quality.mdx → /docs/evaluation/builtin/audio/audio-quality
 ```
 
 File paths map directly to URLs. `index.mdx` serves at the directory path.
 
-**2. Add frontmatter** at the top of the file:
+**2. Add frontmatter** — just `title` and `description`:
 
 ```mdx
 ---
-layout: ../../layouts/DocsLayout.astro
 title: "Your Page Title"
 description: "A brief description for search engines and page header"
 ---
-```
-
-The `layout` path must be **relative** to the MDX file. Count directory levels:
-
-| File location | Layout path |
-|---|---|
-| `src/pages/docs/page.mdx` | `../../layouts/DocsLayout.astro` |
-| `src/pages/docs/section/page.mdx` | `../../../layouts/DocsLayout.astro` |
-| `src/pages/docs/section/sub/page.mdx` | `../../../../layouts/DocsLayout.astro` |
-
-**3. Import components** you need (after the frontmatter `---`, before content):
-
-```mdx
----
-layout: ../../../layouts/DocsLayout.astro
-title: "Getting Started"
-description: "Set up your first evaluation"
----
-import Card from '../../../components/docs/Card.astro'
-import CardGroup from '../../../components/docs/CardGroup.astro'
-import Note from '../../../components/docs/Note.astro'
-import Steps from '../../../components/docs/Steps.astro'
-import Step from '../../../components/docs/Step.astro'
 
 Your markdown content starts here...
 ```
 
-**Important**: There must be a **blank line** between the last `import` statement and the first line of markdown content. Without this, the build will fail with an acorn parse error.
+That's it. No `layout` field, no `import` statements. The build system handles both automatically via a Vite plugin.
 
-**4. Add the page to navigation** in `src/lib/navigation.ts` (see [Navigation](#navigation) section below).
+**3. Add the page to navigation** in `src/lib/navigation.ts` (see [Navigation](#navigation) section below).
+
+---
+
+### How Auto-Injection Works
+
+A Vite plugin (`src/plugins/vite-docs-transform.mjs`) runs at build time and automatically:
+
+1. **Injects the `layout` field** into frontmatter with the correct relative path to `DocsLayout.astro` — no more counting `../`
+2. **Injects component imports** by scanning your content for `<ComponentName` usage and adding the necessary `import` statements
+
+You just write content using components like `<Card>`, `<Note>`, `<Tabs>`, etc. directly — the plugin detects them and injects the imports for you.
+
+**29 auto-imported components**: Accordion, AccordionGroup, ApiEndpoint, ApiPlayground, Callout, Card, CardGrid, CardGroup, Check, CodeBlock, CodeGroup, CodePanel, CopyButton, Expandable, Icon, Note, ParamField, Prerequisites, ResponseField, Step, Steps, Tab, TabPanel, Tabs, Tip, TLDR, Tooltip, Update, Warning
 
 ---
 
@@ -131,16 +145,9 @@ Regular paragraph text with **bold** and *italic*.
 
 ## Available Components
 
-Import any of these from `src/components/docs/` using relative paths.
+Use any of these directly in your MDX — no imports needed.
 
 ### Callouts
-
-```mdx
-import Note from '../../../components/docs/Note.astro'
-import Tip from '../../../components/docs/Tip.astro'
-import Warning from '../../../components/docs/Warning.astro'
-import Callout from '../../../components/docs/Callout.astro'
-```
 
 ```mdx
 <Note>
@@ -171,11 +178,6 @@ import Callout from '../../../components/docs/Callout.astro'
 ### Cards
 
 ```mdx
-import Card from '../../../components/docs/Card.astro'
-import CardGroup from '../../../components/docs/CardGroup.astro'
-```
-
-```mdx
 <CardGroup cols={3}>
   <Card title="Evaluation" icon="chart-mixed" href="/docs/evaluation">
     Test and measure AI output quality.
@@ -196,11 +198,6 @@ import CardGroup from '../../../components/docs/CardGroup.astro'
 ---
 
 ### Steps
-
-```mdx
-import Steps from '../../../components/docs/Steps.astro'
-import Step from '../../../components/docs/Step.astro'
-```
 
 ```mdx
 <Steps>
@@ -227,11 +224,6 @@ import Step from '../../../components/docs/Step.astro'
 
 ### Tabs
 
-```mdx
-import Tabs from '../../../components/docs/Tabs.astro'
-import Tab from '../../../components/docs/Tab.astro'
-```
-
 **Pattern 1 — With `Tab` children** (recommended):
 
 ```mdx
@@ -250,11 +242,6 @@ import Tab from '../../../components/docs/Tab.astro'
 ```
 
 **Pattern 2 — With `items` prop and `TabPanel`**:
-
-```mdx
-import Tabs from '../../../components/docs/Tabs.astro'
-import TabPanel from '../../../components/docs/TabPanel.astro'
-```
 
 ```mdx
 <Tabs items={["Python", "JavaScript"]}>
@@ -276,11 +263,6 @@ import TabPanel from '../../../components/docs/TabPanel.astro'
 ### Accordions
 
 ```mdx
-import Accordion from '../../../components/docs/Accordion.astro'
-import AccordionGroup from '../../../components/docs/AccordionGroup.astro'
-```
-
-```mdx
 <AccordionGroup>
   <Accordion title="How do I get an API key?">
     Go to **Settings > API Keys** in the Future AGI dashboard.
@@ -294,11 +276,6 @@ import AccordionGroup from '../../../components/docs/AccordionGroup.astro'
 ---
 
 ### API Documentation
-
-```mdx
-import ParamField from '../../../../components/docs/ParamField.astro'
-import ResponseField from '../../../../components/docs/ResponseField.astro'
-```
 
 ```mdx
 ## Parameters
@@ -362,7 +339,7 @@ Tabs:  [Docs]  [Integrations]  [Cookbooks]  [SDK]  [API]
 
 ### Adding a Page to Navigation
 
-Open `src/lib/navigation.ts` and add your page to the appropriate group:
+If you used `pnpm new-doc`, navigation was updated automatically. To add manually, open `src/lib/navigation.ts` and add your page to the appropriate group:
 
 ```typescript
 // Simple page link
@@ -437,22 +414,6 @@ Reference in MDX with absolute paths from `public/`:
 
 ## Common Pitfalls
 
-### Build fails with "Unexpected character '#'"
-
-Missing blank line between `import` statements and markdown content:
-
-```mdx
----
-layout: ../../layouts/DocsLayout.astro
-title: "Page"
----
-import Note from '../../components/docs/Note.astro'
-
-## Heading starts here
-```
-
-The blank line after the import is **required**.
-
 ### Build fails with "Unexpected character '<' or '='"
 
 Raw `<` and `<=` in prose get parsed as JSX. Wrap in backticks:
@@ -463,16 +424,6 @@ The value must be <= 100.
 
 <!-- Good -->
 The value must be `<= 100`.
-```
-
-### Layout path is wrong
-
-Count the directory depth from your MDX file to `src/layouts/`:
-
-```
-src/pages/docs/page.mdx                    → ../../layouts/DocsLayout.astro
-src/pages/docs/section/page.mdx            → ../../../layouts/DocsLayout.astro
-src/pages/docs/section/sub/page.mdx        → ../../../../layouts/DocsLayout.astro
 ```
 
 ### Page exists but doesn't appear in sidebar
@@ -500,22 +451,13 @@ The `DocsLayout` automatically handles these — you don't need to add them:
 
 ## Full Page Example
 
-A complete, well-structured doc page:
+A complete, well-structured doc page — no layout or imports needed:
 
 ```mdx
 ---
-layout: ../../../layouts/DocsLayout.astro
 title: "Create a Dataset"
 description: "Learn how to create and populate datasets for evaluation"
 ---
-import Card from '../../../components/docs/Card.astro'
-import CardGroup from '../../../components/docs/CardGroup.astro'
-import Note from '../../../components/docs/Note.astro'
-import Tip from '../../../components/docs/Tip.astro'
-import Steps from '../../../components/docs/Steps.astro'
-import Step from '../../../components/docs/Step.astro'
-import Tabs from '../../../components/docs/Tabs.astro'
-import Tab from '../../../components/docs/Tab.astro'
 
 Datasets are structured collections of inputs and expected outputs used
 to evaluate your AI application.
@@ -578,8 +520,8 @@ to evaluate your AI application.
 
 ## Development Workflow
 
-1. **Create/edit** MDX file in `src/pages/docs/`
-2. **Add to navigation** in `src/lib/navigation.ts`
+1. **Create page**: `pnpm new-doc docs/section/page-name "Page Title"`
+2. **Write content** using markdown and components — no imports needed
 3. **Add images** to `public/images/docs/` if needed
 4. **Run `pnpm dev`** and verify in browser
 5. **Run `pnpm build`** to check for errors before pushing
@@ -594,3 +536,4 @@ to evaluate your AI application.
 | `pnpm dev` | Start dev server at `localhost:4321` |
 | `pnpm build` | Production build to `./dist/` (includes Pagefind indexing) |
 | `pnpm preview` | Preview production build locally |
+| `pnpm new-doc <path> [title]` | Scaffold a new doc page and add to navigation |
