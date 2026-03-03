@@ -10,16 +10,16 @@ Built with [Astro](https://astro.build), MDX, React islands, and Tailwind CSS v4
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Start dev server (http://localhost:4321)
-npm run dev
+pnpm dev
 
 # Production build
-npm run build
+pnpm build
 
 # Preview production build
-npm run preview
+pnpm preview
 ```
 
 ---
@@ -581,8 +581,8 @@ to evaluate your AI application.
 1. **Create/edit** MDX file in `src/pages/docs/`
 2. **Add to navigation** in `src/lib/navigation.ts`
 3. **Add images** to `public/images/docs/` if needed
-4. **Run `npm run dev`** and verify in browser
-5. **Run `npm run build`** to check for errors before pushing
+4. **Run `pnpm dev`** and verify in browser
+5. **Run `pnpm build`** to check for errors before pushing
 
 ---
 
@@ -590,7 +590,7 @@ to evaluate your AI application.
 
 | Command | Action |
 |---|---|
-| `npm install` | Install dependencies |
-| `npm run dev` | Start dev server at `localhost:4321` |
-| `npm run build` | Production build to `./dist/` (includes Pagefind indexing) |
-| `npm run preview` | Preview production build locally |
+| `pnpm install` | Install dependencies |
+| `pnpm dev` | Start dev server at `localhost:4321` |
+| `pnpm build` | Production build to `./dist/` (includes Pagefind indexing) |
+| `pnpm preview` | Preview production build locally |
