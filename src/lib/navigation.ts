@@ -346,27 +346,28 @@ export const tabNavigation: NavTab[] = [
         icon: 'play',
         items: [
           { title: 'Overview', href: '/docs/simulation' },
-          { title: 'Concepts', href: '/docs/simulation/concepts' },
-          { title: 'Getting Started', href: '/docs/simulation/getting-started' },
-          { title: 'Agent Definition', href: '/docs/simulation/agent-definition' },
-          { title: 'Test Agent', href: '/docs/simulation/test-agent' },
-          { title: 'Scenarios', href: '/docs/simulation/scenarios' },
-          { title: 'Personas', href: '/docs/simulation/personas' },
-          { title: 'Run Tests', href: '/docs/simulation/run-tests' },
-          { title: 'Run Test', href: '/docs/simulation/run-test' },
-          { title: 'Tool Calling', href: '/docs/simulation/tool-calling' },
-          { title: 'Voice', href: '/docs/simulation/voice' },
-          { title: 'SDK', href: '/docs/simulation/sdk' },
           {
-            title: 'How To',
+            title: 'Set Up',
             items: [
-              { title: 'Chat Simulation Using SDK', href: '/docs/simulation/how-to/chat-simulation-using-sdk' },
-              { title: 'Simulation Using SDK', href: '/docs/simulation/how-to/simulation-using-sdk' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/how-to/evaluate-tool-calling' },
-              { title: 'Fix My Agent', href: '/docs/simulation/how-to/fix-my-agent' },
-              { title: 'Observe to Simulate', href: '/docs/simulation/how-to/observe-to-simulate' },
-              { title: 'Prompt Simulation', href: '/docs/simulation/how-to/prompt-simulation' },
-              { title: 'Voice Observability', href: '/docs/simulation/how-to/voice-observability' },
+              { title: 'Agent Definition', href: '/docs/simulation/set-up/agent-definition' },
+              { title: 'Scenarios', href: '/docs/simulation/set-up/scenarios' },
+              { title: 'Personas', href: '/docs/simulation/set-up/personas' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
+              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
+              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
+              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
+            ]
+          },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Concepts', href: '/docs/simulation/concepts/concepts' },
             ]
           },
         ]
