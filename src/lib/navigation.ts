@@ -318,8 +318,18 @@ export const tabNavigation: NavTab[] = [
         icon: 'table',
         items: [
           { title: 'Overview', href: '/docs/dataset' },
-          { title: 'Getting Started', href: '/docs/dataset/getting-started' },
           { title: 'Quickstart', href: '/docs/dataset/quickstart' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
+              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
+              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
+              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
+              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
+              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
+            ]
+          },
           {
             title: 'Concepts',
             items: [
@@ -329,41 +339,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Synthetic Data', href: '/docs/dataset/concept/synthetic-data' },
             ]
           },
-          { title: 'Create New Dataset', href: '/docs/dataset/create' },
-          {
-            title: 'Adding Data',
-            items: [
-              { title: 'Manually Creating', href: '/docs/dataset/adding-dataset/manually-creating' },
-              { title: 'Upload File', href: '/docs/dataset/adding-dataset/upload-file' },
-              { title: 'From Existing Dataset', href: '/docs/dataset/adding-dataset/from-existing-dataset' },
-              { title: 'Import from HuggingFace', href: '/docs/dataset/adding-dataset/by-importing-through-huggingface' },
-              { title: 'Using SDK', href: '/docs/dataset/adding-dataset/using-sdk' },
-            ]
-          },
-          { title: 'Add Rows to Dataset', href: '/docs/dataset/add-rows' },
-          { title: 'Add Columns', href: '/docs/dataset/add-columns' },
-          { title: 'Change Column Type', href: '/docs/dataset/change-column-type' },
-          { title: 'Create Static Column', href: '/docs/dataset/create-static-column' },
-          {
-            title: 'Create Dynamic Column',
-            items: [
-              { title: 'Using Run Prompt', href: '/docs/dataset/dynamic-column/using-run-prompt' },
-              { title: 'Using Vector DB', href: '/docs/dataset/dynamic-column/using-vector-db' },
-              { title: 'By Extracting Entities', href: '/docs/dataset/dynamic-column/by-extracting-entities' },
-              { title: 'By Extracting JSON', href: '/docs/dataset/dynamic-column/by-extracting-json' },
-              { title: 'By Executing Code', href: '/docs/dataset/dynamic-column/by-executing-code' },
-              { title: 'Using Classification', href: '/docs/dataset/dynamic-column/using-classification' },
-              { title: 'Using API Calls', href: '/docs/dataset/dynamic-column/using-api-calls' },
-              { title: 'Using Conditional Node', href: '/docs/dataset/dynamic-column/using-conditional-node' },
-            ]
-          },
-          { title: 'Run Prompt in Dataset', href: '/docs/dataset/run-prompt' },
-          { title: 'Add Evaluations', href: '/docs/dataset/add-evaluations' },
-          { title: 'Evaluate Dataset', href: '/docs/dataset/evaluate-dataset' },
-          { title: 'Experiments in Dataset', href: '/docs/dataset/experiments' },
-          { title: 'Annotate Dataset', href: '/docs/dataset/annotate' },
-          { title: 'Add Annotations', href: '/docs/dataset/add-annotations' },
-          { title: 'Optimizations', href: '/docs/dataset/optimizations' },
         ]
       },
       {
