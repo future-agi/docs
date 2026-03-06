@@ -318,7 +318,6 @@ export const tabNavigation: NavTab[] = [
         icon: 'table',
         items: [
           { title: 'Overview', href: '/docs/dataset' },
-          { title: 'Quickstart', href: '/docs/dataset/quickstart' },
           {
             title: 'Features',
             items: [
