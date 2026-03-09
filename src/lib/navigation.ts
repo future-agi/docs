@@ -472,9 +472,19 @@ export const tabNavigation: NavTab[] = [
         icon: 'brain',
         items: [
           { title: 'Overview', href: '/docs/knowledge-base' },
-          { title: 'Concept', href: '/docs/knowledge-base/concept' },
-          { title: 'Create KB Using SDK', href: '/docs/knowledge-base/sdk' },
-          { title: 'Create KB Using UI', href: '/docs/knowledge-base/ui' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Concept', href: '/docs/knowledge-base/concepts/concept' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
+              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
+            ]
+          },
         ]
       },
       {
