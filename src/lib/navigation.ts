@@ -445,13 +445,11 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Agent Compass',
+        group: 'Error Feed',
         icon: 'compass',
         items: [
-          { title: 'Overview', href: '/docs/agent-compass' },
-          { title: 'Introduction', href: '/docs/agent-compass/overview' },
-          { title: 'Quickstart', href: '/docs/agent-compass/quickstart' },
-          { title: 'Taxonomy', href: '/docs/agent-compass/taxonomy' },
+          { title: 'Overview', href: '/docs/error-feed' },
+          { title: 'Taxonomy', href: '/docs/error-feed/taxonomy' },
         ]
       },
       {
