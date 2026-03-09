@@ -450,7 +450,6 @@ export const tabNavigation: NavTab[] = [
         icon: 'compass',
         items: [
           { title: 'Overview', href: '/docs/error-feed' },
-          { title: 'Using Google ADK', href: '/docs/error-feed/features/using-google-adk' },
           { title: 'Taxonomy', href: '/docs/error-feed/taxonomy' },
         ]
       },
