@@ -400,9 +400,14 @@ export const tabNavigation: NavTab[] = [
         icon: 'flask',
         items: [
           { title: 'Overview', href: '/docs/prototype' },
-          { title: 'Set Up Prototype', href: '/docs/prototype/quickstart' },
-          { title: 'Evals', href: '/docs/prototype/evals' },
-          { title: 'Choose Winner', href: '/docs/prototype/winner' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
+              { title: 'Evals', href: '/docs/prototype/features/evals' },
+              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
+            ]
+          },
         ]
       },
       {
