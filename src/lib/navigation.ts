@@ -50,7 +50,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
               { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
               { title: 'Prompts', href: '/docs/quickstart/prompts' },
-              { title: 'Create Prompt from Scratch', href: '/docs/prompt/create-from-scratch' },
+              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
             ]
           },
@@ -377,22 +377,21 @@ export const tabNavigation: NavTab[] = [
         icon: 'zap',
         items: [
           { title: 'Overview', href: '/docs/prompt' },
-          { title: 'Concept', href: '/docs/prompt/concept' },
-          { title: 'Create Prompt', href: '/docs/prompt/create' },
-          { title: 'Create Prompt from Scratch', href: '/docs/prompt/create-from-scratch' },
-          { title: 'Create from Existing Template', href: '/docs/prompt/create-from-template' },
-          { title: 'Create with AI', href: '/docs/prompt/create-with-ai' },
-          { title: 'Generate Prompt', href: '/docs/prompt/generate' },
-          { title: 'Prompt Templates', href: '/docs/prompt/templates' },
-          { title: 'Prompt Workbench Using SDK', href: '/docs/prompt/sdk' },
-          { title: 'Linked Traces', href: '/docs/prompt/linked-traces' },
-          { title: 'Manage Folders', href: '/docs/prompt/folders' },
           {
-            title: 'Prompt Workbench',
+            title: 'Concepts',
             items: [
-              { title: 'Overview', href: '/docs/prompt-workbench' },
-              { title: 'Concept', href: '/docs/prompt-workbench/concept' },
-              { title: 'Using SDK', href: '/docs/prompt-workbench/sdk' },
+              { title: 'Concept', href: '/docs/prompt/concepts/concept' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
+              { title: 'Create from Existing Template', href: '/docs/prompt/features/create-from-template' },
+              { title: 'Create with AI', href: '/docs/prompt/features/create-with-ai' },
+              { title: 'Prompt Workbench Using SDK', href: '/docs/prompt/features/sdk' },
+              { title: 'Linked Traces', href: '/docs/prompt/features/linked-traces' },
+              { title: 'Manage Folders', href: '/docs/prompt/features/folders' },
             ]
           },
         ]
