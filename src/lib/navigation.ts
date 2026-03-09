@@ -61,13 +61,18 @@ export const tabNavigation: NavTab[] = [
         group: 'Evaluation',
         icon: 'chart',
         items: [
-          { title: 'Overview', href: '/docs/evaluation/overview' },
-          { title: 'Running Your First Eval', href: '/docs/evaluation' },
-          { title: 'Create Custom Evals', href: '/docs/evaluation/custom' },
-          { title: 'Eval Groups', href: '/docs/evaluation/groups' },
-          { title: 'Use Custom Models', href: '/docs/evaluation/custom-models' },
-          { title: 'Future AGI Models', href: '/docs/evaluation/futureagi-models' },
-          { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/cicd' },
+          { title: 'Overview', href: '/docs/evaluation' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Running Your First Eval', href: '/docs/evaluation/features/running-your-first-eval' },
+              { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
+              { title: 'Eval Groups', href: '/docs/evaluation/features/groups' },
+              { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
+              { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
+              { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
+            ]
+          },
           {
             title: 'Built-in Evals',
             href: '/docs/evaluation/builtin',
