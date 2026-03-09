@@ -95,7 +95,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Voice Observability',
             items: [
               { title: 'Overview', href: '/docs/observe/voice' },
-              { title: 'Quickstart', href: '/docs/observe/voice/quickstart' },
+              { title: 'Set Up Voice Observability', href: '/docs/observe/voice/set-up' },
             ]
           },
           {
