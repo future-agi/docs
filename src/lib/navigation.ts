@@ -323,9 +323,18 @@ export const tabNavigation: NavTab[] = [
         icon: 'shield',
         items: [
           { title: 'Overview', href: '/docs/protect' },
-          { title: 'Concept', href: '/docs/protect/concept' },
-          { title: 'How To', href: '/docs/protect/how-to' },
-          { title: 'FAQ', href: '/docs/protect/faq' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Concept', href: '/docs/protect/concepts/concept' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Run Protect via SDK', href: '/docs/protect/features/run-protect' },
+            ]
+          },
         ]
       },
       {
