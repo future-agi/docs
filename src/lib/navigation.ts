@@ -81,11 +81,16 @@ export const tabNavigation: NavTab[] = [
         icon: 'eye',
         items: [
           { title: 'Overview', href: '/docs/observe' },
-          { title: 'Set Up Observability', href: '/docs/observe/quickstart' },
-          { title: 'Evals', href: '/docs/observe/evals' },
-          { title: 'Sessions', href: '/docs/observe/session' },
-          { title: 'Users', href: '/docs/observe/users' },
-          { title: 'Alerts & Monitors', href: '/docs/observe/alerts' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
+              { title: 'Evals', href: '/docs/observe/features/evals' },
+              { title: 'Sessions', href: '/docs/observe/features/session' },
+              { title: 'Users', href: '/docs/observe/features/users' },
+              { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
+            ]
+          },
           {
             title: 'Voice Observability',
             items: [
