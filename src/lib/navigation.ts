@@ -415,29 +415,31 @@ export const tabNavigation: NavTab[] = [
         icon: 'gauge',
         items: [
           { title: 'Overview', href: '/docs/optimization' },
-          { title: 'Concept', href: '/docs/optimization/concept' },
-          { title: 'Product Overview', href: '/docs/optimization/product-overview' },
-          { title: 'Quickstart', href: '/docs/optimization/quickstart' },
           {
-            title: 'Algorithms',
+            title: 'Concepts',
             items: [
-              { title: 'Overview', href: '/docs/optimization/overview' },
-              { title: 'Bayesian Search', href: '/docs/optimization/bayesian' },
-              { title: 'Meta-Prompt', href: '/docs/optimization/meta-prompt' },
-              { title: 'ProTeGi', href: '/docs/optimization/protegi' },
-              { title: 'PromptWizard', href: '/docs/optimization/promptwizard' },
-              { title: 'GEPA', href: '/docs/optimization/gepa' },
-              { title: 'Random Search', href: '/docs/optimization/random-search' },
+              { title: 'Concept', href: 'docs/optimization/concepts/concept' },
             ]
           },
           {
-            title: 'How To',
+            title: 'Algorithms',
             items: [
-              { title: 'Optimize Your First Prompt', href: '/docs/optimization/optimize-first-prompt' },
-              { title: 'Using Python SDK', href: '/docs/optimization/using-sdk' },
-              { title: 'Using Platform', href: '/docs/optimization/using-platform' },
-              { title: 'Dataset Optimization', href: '/docs/optimization/howto-dataset-optimization' },
-              { title: 'Dataset Optimization Guide', href: '/docs/optimization/dataset-optimization' },
+              { title: 'Overview', href: '/docs/optimization/optimizers/overview' },
+              { title: 'Bayesian Search', href: '/docs/optimization/optimizers/bayesian-search' },
+              { title: 'Meta-Prompt', href: '/docs/optimization/optimizers/meta-prompt' },
+              { title: 'ProTeGi', href: '/docs/optimization/optimizers/protegi' },
+              { title: 'PromptWizard', href: '/docs/optimization/optimizers/promptwizard' },
+              { title: 'GEPA', href: '/docs/optimization/optimizers/gepa' },
+              { title: 'Random Search', href: '/docs/optimization/optimizers/random-search' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Optimize Your First Prompt', href: '/docs/optimization/features/optimize-your-first-prompt' },
+              { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
+              { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
+              { title: 'Dataset Optimization', href: '/docs/optimization/features/dataset-optimization' },
             ]
           },
         ]
