@@ -421,8 +421,99 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/cookbook' },
           {
-            title: 'Getting Started',
+            title: 'Quickstart',
             icon: 'rocket',
+            items: [
+              {
+                title: 'Evaluation',
+                items: [
+                  { title: 'Running Your First Eval', href: '/docs/cookbook/quickstart/first-eval' },
+                  { title: 'Running Your First Eval (Original)', href: '/docs/cookbook/quickstart/first-eval-old' },
+                  { title: 'Custom Eval Metrics', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
+                  { title: 'Hallucination Detection', href: '/docs/cookbook/quickstart/hallucination-detection' },
+                  { title: 'RAG Pipeline Evaluation', href: '/docs/cookbook/quickstart/rag-evaluation' },
+                  { title: 'Multimodal Evaluation', href: '/docs/cookbook/quickstart/multimodal-eval' },
+                  { title: 'Tone, Toxicity & Bias', href: '/docs/cookbook/quickstart/tone-toxicity-bias-eval' },
+                  { title: 'Conversation Evaluation', href: '/docs/cookbook/quickstart/conversation-eval' },
+                  { title: 'Batch Evaluation', href: '/docs/cookbook/quickstart/batch-eval' },
+                  { title: 'Async Evaluations', href: '/docs/cookbook/quickstart/async-batch-eval' },
+                  { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
+                ]
+              },
+              {
+                title: 'Simulation',
+                items: [
+                  { title: 'Chat Simulation with Personas', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
+                  { title: 'Voice Simulation', href: '/docs/cookbook/quickstart/voice-simulation' },
+                  { title: 'Tool-Calling Simulation', href: '/docs/cookbook/quickstart/tool-calling-simulation' },
+                  { title: 'Prompt Workbench Simulation', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
+                ]
+              },
+              {
+                title: 'Dataset',
+                items: [
+                  { title: 'Dataset Management', href: '/docs/cookbook/quickstart/dataset-management' },
+                  { title: 'Synthetic Data Generation', href: '/docs/cookbook/quickstart/synthetic-data-generation' },
+                  { title: 'Dataset Annotation', href: '/docs/cookbook/quickstart/dataset-annotation' },
+                  { title: 'Hugging Face Import', href: '/docs/cookbook/quickstart/huggingface-dataset-import' },
+                  { title: 'Dynamic Columns', href: '/docs/cookbook/quickstart/dynamic-dataset-columns' },
+                ]
+              },
+              {
+                title: 'Prompt',
+                items: [
+                  { title: 'Prompt Versioning', href: '/docs/cookbook/quickstart/prompt-versioning' },
+                  { title: 'Prototype & Iterate', href: '/docs/cookbook/quickstart/prototype-llm-app' },
+                ]
+              },
+              {
+                title: 'Observability',
+                items: [
+                  { title: 'Manual Tracing', href: '/docs/cookbook/quickstart/manual-tracing' },
+                  { title: 'Session Observability', href: '/docs/cookbook/quickstart/session-observability' },
+                  { title: 'Monitoring & Alerts', href: '/docs/cookbook/quickstart/monitoring-alerts' },
+                  { title: 'Inline Evals in Tracing', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
+                ]
+              },
+              {
+                title: 'Optimization',
+                items: [
+                  { title: 'Prompt Optimization', href: '/docs/cookbook/quickstart/prompt-optimization' },
+                  { title: 'Compare Optimizers', href: '/docs/cookbook/quickstart/compare-optimizers' },
+                  { title: 'Dataset Optimization', href: '/docs/cookbook/quickstart/dataset-optimization' },
+                ]
+              },
+              {
+                title: 'Protect',
+                items: [
+                  { title: 'Safety Guardrails', href: '/docs/cookbook/quickstart/protect-guardrails' },
+                ]
+              },
+              {
+                title: 'Knowledge Base',
+                items: [
+                  { title: 'Knowledge Base', href: '/docs/cookbook/quickstart/knowledge-base' },
+                ]
+              },
+              {
+                title: 'Experimentation',
+                items: [
+                  { title: 'Compare Prompts & Models', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
+                  { title: 'Eval-Driven Development', href: '/docs/cookbook/quickstart/eval-driven-dev' },
+                  { title: 'CI/CD Eval Pipeline', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
+                ]
+              },
+              {
+                title: 'Agent Compass',
+                items: [
+                  { title: 'Agent Compass Debug', href: '/docs/cookbook/quickstart/agent-compass-debug' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'Getting Started',
+            icon: 'zap',
             items: [
               { title: 'Using FutureAGI Evals', href: '/docs/cookbook/using-futureagi-evals' },
               { title: 'Using FutureAGI Protect', href: '/docs/cookbook/using-futureagi-protect' },

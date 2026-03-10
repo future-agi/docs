@@ -1,0 +1,253 @@
+---
+title: "Automated Eval in CI/CD: Block Bad Prompts from Shipping"
+description: "Add a GitHub Actions workflow that runs evals on every pull request and fails the build when response quality drops below your threshold."
+---
+
+By the end of this guide you will have a GitHub Actions workflow that runs faithfulness and toxicity evals on every PR, posts a pass/fail summary as a PR comment, and blocks merges when scores fall below threshold.
+
+<Note>
+**Prerequisites**
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- A GitHub repository with Actions enabled
+- Python 3.9+
+</Note>
+
+---
+
+## Why eval in CI/CD?
+
+Prompts change. Models drift. When you update a system prompt or swap a model, you want to know immediately if response quality dropped before it reaches users. A CI/CD eval pipeline catches regressions at review time with the same rigor you apply to code tests.
+
+---
+
+## Step 1: Create the eval script
+
+Create `scripts/evaluate_pipeline.py` in your repository. This script runs evals on a fixed test dataset and exits with a non-zero code if any metric falls below threshold; this causes the GitHub Actions step to fail.
+
+```python
+#!/usr/bin/env python3
+"""
+Evaluation pipeline for CI/CD.
+Exit code 0 = all evals passed. Exit code 1 = one or more evals failed.
+"""
+import os
+import sys
+from openai import OpenAI
+from fi.evals import evaluate
+
+FI_API_KEY    = os.environ["FI_API_KEY"]
+FI_SECRET_KEY = os.environ["FI_SECRET_KEY"]
+
+client = OpenAI()
+
+# Thresholds - adjust to match your quality bar
+FAITHFULNESS_THRESHOLD = 0.85
+TOXICITY_THRESHOLD     = 0.90  # toxicity score: higher = safer
+
+# Your system prompt — replace with your actual production prompt
+SYSTEM_PROMPT = """You are a customer support agent for an electronics retailer.
+Answer questions accurately using only the information provided in the context.
+Be concise and helpful. If you are unsure, say so rather than guessing."""
+
+# Test dataset - question + expected grounding context
+TEST_CASES = [
+    {
+        "question": "What is the return window for electronics?",
+        "context":  "Electronics may be returned within 30 days of purchase with original packaging.",
+    },
+    {
+        "question": "How long does standard shipping take?",
+        "context":  "Standard shipping takes 5-7 business days within the continental US.",
+    },
+    {
+        "question": "Can I return a product bought on sale?",
+        "context":  "Sale items are eligible for exchange only. Full refunds are not available on sale purchases.",
+    },
+    {
+        "question": "What payment methods do you accept?",
+        "context":  "We accept Visa, Mastercard, American Express, PayPal, and Apple Pay.",
+    },
+    {
+        "question": "Do you offer international shipping?",
+        "context":  "International shipping is available to 45 countries. Delivery takes 10-21 business days.",
+    },
+]
+
+
+def run_evals() -> bool:
+    all_passed = True
+    results = []
+
+    print(f"\n{'Question':<45} {'Faithfulness':>14} {'Toxicity':>10} {'Status':>8}")
+    print("-" * 81)
+
+    for case in TEST_CASES:
+        # Generate response from the agent
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": case["question"]},
+            ],
+        )
+        output = response.choices[0].message.content
+
+        # Run evals
+        faithfulness = evaluate(
+            "faithfulness",
+            output=output,
+            context=case["context"],
+        )
+        toxicity = evaluate(
+            "toxicity",
+            output=output,
+            model="turing_small",
+        )
+
+        faith_pass = faithfulness.score >= FAITHFULNESS_THRESHOLD
+        toxic_pass = toxicity.score >= TOXICITY_THRESHOLD
+        row_passed = faith_pass and toxic_pass
+
+        if not row_passed:
+            all_passed = False
+
+        status = "PASS" if row_passed else "FAIL"
+        print(
+            f"{case['question'][:43]:<45} "
+            f"{faithfulness.score:>14.2f} "
+            f"{toxicity.score:>10.2f} "
+            f"{status:>8}"
+        )
+
+        results.append({
+            "question":    case["question"],
+            "faithfulness": faithfulness.score,
+            "toxicity":    toxicity.score,
+            "passed":      row_passed,
+        })
+
+    passed_count = sum(1 for r in results if r["passed"])
+    print(f"\nResult: {passed_count}/{len(results)} test cases passed.")
+    print(f"Faithfulness threshold: {FAITHFULNESS_THRESHOLD}")
+    print(f"Toxicity threshold:     {TOXICITY_THRESHOLD}")
+
+    return all_passed
+
+
+if __name__ == "__main__":
+    passed = run_evals()
+    sys.exit(0 if passed else 1)
+```
+
+---
+
+## Step 2: Create the GitHub Actions workflow
+
+Create `.github/workflows/eval.yml`:
+
+```yaml
+name: Eval Pipeline
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "prompts/**"       # run evals when prompts change
+      - "scripts/**"       # run evals when eval scripts change
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install ai-evaluation openai
+
+      - name: Run eval pipeline
+        env:
+          FI_API_KEY:    ${{ secrets.FI_API_KEY }}
+          FI_SECRET_KEY: ${{ secrets.FI_SECRET_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python scripts/evaluate_pipeline.py
+
+      - name: Post results as PR comment
+        if: always()   # post even if the eval step failed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const outcome = '${{ job.status }}';
+            const status  = outcome === 'success' ? '✅ All evals passed' : '❌ Evals failed - merge blocked';
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Eval Pipeline Results\n\n${status}\n\nSee the [Actions run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for full output.`,
+            });
+```
+
+---
+
+## Step 3: Add secrets to GitHub
+
+Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**.
+
+Add three secrets:
+- `FI_API_KEY` - your FutureAGI API key
+- `FI_SECRET_KEY` - your FutureAGI secret key
+- `OPENAI_API_KEY` - your OpenAI API key
+
+---
+
+## Step 4: Trigger the pipeline
+
+Open a pull request that modifies a file in `prompts/`. The workflow triggers automatically.
+
+When a PR introduces a prompt change that hurts quality:
+- The `run eval pipeline` step exits with code 1
+- GitHub marks the check as failed
+- The PR cannot be merged (if branch protection rules are enabled)
+
+---
+
+## Step 5: Enable branch protection (recommended)
+
+Go to your GitHub repository → **Settings** → **Branches** → **Add rule**.
+
+- **Branch name pattern**: `main`
+- Check: **Require status checks to pass before merging**
+- Add: `Eval Pipeline / evaluate` to the required checks list
+
+Now the eval must pass before any PR can merge to main.
+
+---
+
+## What you built
+
+- Created `evaluate_pipeline.py` that runs faithfulness and toxicity evals on 5 test cases
+- Built a GitHub Actions workflow that triggers on prompt changes, runs evals, and posts a PR comment
+- Added FutureAGI and OpenAI secrets to GitHub
+- Enabled branch protection so failing evals block merges
+
+<CardGroup cols={2}>
+  <Card title="Running Your First Eval" icon="chart-line" href="/docs/cookbook/quickstart/first-eval">
+    All built-in eval metrics available for CI/CD pipelines.
+  </Card>
+  <Card title="Custom Eval Metrics" icon="pen-to-square" href="/docs/cookbook/quickstart/custom-eval-metrics">
+    Write domain-specific quality rubrics for your CI/CD eval script.
+  </Card>
+  <Card title="Experimentation" icon="flask" href="/docs/cookbook/quickstart/experimentation-compare-prompts">
+    A/B test prompt variants in the FutureAGI dashboard before opening a PR.
+  </Card>
+  <Card title="Prompt Versioning" icon="code-branch" href="/docs/cookbook/quickstart/prompt-versioning">
+    Version-control prompts in FutureAGI so CI/CD always tests the active version.
+  </Card>
+</CardGroup>

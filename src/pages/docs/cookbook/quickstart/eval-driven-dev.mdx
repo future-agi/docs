@@ -1,0 +1,322 @@
+---
+title: "Evaluation-Driven Development: Score Every Prompt Change Before Shipping"
+description: "Build a local eval loop that scores prompts against a test suite, compare before-and-after results, and gate promotion on quality thresholds."
+---
+
+By the end of this guide you will have a `score_prompt()` function that runs faithfulness and toxicity evals across a test suite, a before-and-after comparison showing prompt revision impact, and an eval gate that blocks promotion when scores fall below threshold.
+
+<CardGroup cols={2}>
+  <Card title="Open in Colab" icon="google" href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/quickstart/eval-driven-dev.ipynb">
+    Run this cookbook interactively in Google Colab.
+  </Card>
+  <Card title="View on GitHub" icon="github" href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/quickstart/eval-driven-dev.ipynb">
+    View the source notebook on GitHub.
+  </Card>
+</CardGroup>
+
+<Note>
+**Prerequisites**
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.9+
+- OpenAI API key (`OPENAI_API_KEY`)
+</Note>
+
+## Install
+
+```bash
+pip install ai-evaluation openai
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+## Step 1: Define the eval suite
+
+Each test case has a user `input` and a `context` the agent should draw from.
+
+```python
+TEST_CASES = [
+    {
+        "input": "What is your return window for electronics?",
+        "context": (
+            "Electronics may be returned within 30 days of purchase with original "
+            "packaging and proof of purchase. Items must be in unused condition."
+        ),
+    },
+    {
+        "input": "My order arrived damaged. What should I do?",
+        "context": (
+            "Customers who receive damaged items should photograph the damage and "
+            "contact support within 48 hours. A replacement or full refund will be "
+            "issued after review."
+        ),
+    },
+    {
+        "input": "Can I return a sale item for a full refund?",
+        "context": (
+            "Sale items are eligible for exchange only. Full refunds are not available "
+            "on sale purchases. Store credit may be offered at management discretion."
+        ),
+    },
+    {
+        "input": "How long does standard shipping take?",
+        "context": (
+            "Standard shipping takes 5-7 business days within the continental US. "
+            "Expedited options (2-day and overnight) are available at checkout."
+        ),
+    },
+    {
+        "input": "Do you price-match competitors?",
+        "context": (
+            "We offer a price-match guarantee for identical items sold by authorized "
+            "retailers. The match must be requested at the time of purchase. "
+            "Marketplace sellers and auction sites are excluded."
+        ),
+    },
+]
+```
+
+## Step 2: Write the scoring function
+
+`score_prompt()` calls OpenAI for each test case, runs two evals on every response, and returns per-metric pass rates.
+
+| Metric | Engine | `model=` required? |
+|---|---|---|
+| `faithfulness` | Local NLI | No; do NOT pass `model=` |
+| `toxicity` | FutureAGI Turing | Yes; pass `model="turing_small"` |
+
+```python
+import os
+from openai import OpenAI
+from fi.evals import evaluate
+
+openai_client = OpenAI()
+
+
+def score_prompt(prompt_template: str, test_cases: list) -> dict:
+    faithfulness_passes = 0
+    toxicity_passes = 0
+    per_case = []
+
+    for case in test_cases:
+        system_prompt = prompt_template.format(context=case["context"])
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": case["input"]},
+            ],
+        )
+        output = response.choices[0].message.content
+
+        # faithfulness: local NLI — no model= argument
+        faith_result = evaluate(
+            "faithfulness",
+            output=output,
+            context=case["context"],
+        )
+
+        # toxicity: Turing metric — model= is required
+        tox_result = evaluate(
+            "toxicity",
+            output=output,
+            model="turing_small",
+        )
+
+        if faith_result.passed:
+            faithfulness_passes += 1
+        if tox_result.passed:
+            toxicity_passes += 1
+
+        per_case.append({
+            "input":               case["input"],
+            "output":              output,
+            "faithfulness_score":  faith_result.score,
+            "faithfulness_pass":   faith_result.passed,
+            "faithfulness_reason": faith_result.reason,
+            "toxicity_score":      tox_result.score,
+            "toxicity_pass":       tox_result.passed,
+            "toxicity_reason":     tox_result.reason,
+        })
+
+    n = len(test_cases)
+    faith_rate = faithfulness_passes / n
+    tox_rate   = toxicity_passes / n
+
+    return {
+        "faithfulness": faith_rate,
+        "toxicity":     tox_rate,
+        "composite":    (faith_rate + tox_rate) / 2,
+        "per_case":     per_case,
+    }
+```
+
+## Step 3: Score baseline, revise, and compare
+
+Start with a thin prompt, score it, then revise and re-score.
+
+```python
+BASELINE_PROMPT = """\
+You are a customer support agent.
+Answer the customer's question using the information below.
+
+Context:
+{context}
+"""
+
+REVISED_PROMPT = """\
+You are a friendly and professional customer support agent for an e-commerce retailer.
+
+INSTRUCTIONS:
+1. Answer ONLY using the information provided in the Context section below.
+2. Do NOT add policies, timeframes, or details that are not stated in the Context.
+3. If the Context does not contain enough information to fully answer the question,
+   say so clearly and offer to escalate to the support team.
+4. Keep your response concise (2-4 sentences), empathetic, and solution-focused.
+
+Context:
+{context}
+"""
+
+
+def print_results(label: str, results: dict):
+    print(f"\n{'='*40}")
+    print(f"  {label}")
+    print(f"{'='*40}")
+    print(f"{'Metric':<16} {'Pass rate':>10}")
+    print("-" * 28)
+    print(f"{'faithfulness':<16} {results['faithfulness']:>9.0%}")
+    print(f"{'toxicity':<16} {results['toxicity']:>9.0%}")
+    print(f"{'composite':<16} {results['composite']:>9.0%}")
+
+    for i, case in enumerate(results["per_case"], 1):
+        faith = "PASS" if case["faithfulness_pass"] else "FAIL"
+        tox   = "PASS" if case["toxicity_pass"] else "FAIL"
+        print(f"  [{i}] {case['input'][:50]:<52} faith={faith}  tox={tox}")
+
+
+# Run both
+baseline = score_prompt(BASELINE_PROMPT, TEST_CASES)
+revised  = score_prompt(REVISED_PROMPT, TEST_CASES)
+
+print_results("BASELINE", baseline)
+print_results("REVISED", revised)
+
+# Show delta
+print(f"\n--- Improvement ---")
+print(f"faithfulness: {baseline['faithfulness']:.0%} → {revised['faithfulness']:.0%}")
+print(f"toxicity:     {baseline['toxicity']:.0%} → {revised['toxicity']:.0%}")
+print(f"composite:    {baseline['composite']:.0%} → {revised['composite']:.0%}")
+```
+
+Expected output:
+
+```
+========================================
+  BASELINE
+========================================
+Metric           Pass rate
+----------------------------
+faithfulness           60%
+toxicity               80%
+composite              70%
+
+  [1] What is your return window for electronics?       faith=PASS  tox=PASS
+  [2] My order arrived damaged. What should I do?       faith=FAIL  tox=PASS
+  [3] Can I return a sale item for a full refund?        faith=PASS  tox=PASS
+  [4] How long does standard shipping take?             faith=PASS  tox=PASS
+  [5] Do you price-match competitors?                   faith=FAIL  tox=FAIL
+
+========================================
+  REVISED
+========================================
+Metric           Pass rate
+----------------------------
+faithfulness           80%
+toxicity              100%
+composite              90%
+
+  [1] What is your return window for electronics?       faith=PASS  tox=PASS
+  [2] My order arrived damaged. What should I do?       faith=PASS  tox=PASS
+  [3] Can I return a sale item for a full refund?        faith=PASS  tox=PASS
+  [4] How long does standard shipping take?             faith=PASS  tox=PASS
+  [5] Do you price-match competitors?                   faith=FAIL  tox=PASS
+
+--- Improvement ---
+faithfulness: 60% → 80%
+toxicity:     80% → 100%
+composite:    70% → 90%
+```
+
+If any case still fails, inspect the reason to understand what the NLI model flagged:
+
+```python
+for case in revised["per_case"]:
+    if not case["faithfulness_pass"]:
+        print(f"Input:  {case['input']}")
+        print(f"Output: {case['output']}")
+        print(f"Score:  {case['faithfulness_score']:.2f}")
+        print(f"Reason: {case['faithfulness_reason']}")
+```
+
+## Step 4: Gate promotion on eval thresholds
+
+Block promotion if any metric falls below your quality bar. The non-zero exit code integrates with Makefiles, pre-commit hooks, and CI scripts.
+
+```python
+import sys
+
+FAITHFULNESS_THRESHOLD = 0.75
+TOXICITY_THRESHOLD     = 0.80
+
+results = score_prompt(REVISED_PROMPT, TEST_CASES)
+
+print(f"faithfulness: {results['faithfulness']:.0%}  (threshold: {FAITHFULNESS_THRESHOLD:.0%})")
+print(f"toxicity:     {results['toxicity']:.0%}  (threshold: {TOXICITY_THRESHOLD:.0%})")
+
+try:
+    assert results["faithfulness"] >= FAITHFULNESS_THRESHOLD, (
+        f"Faithfulness too low: {results['faithfulness']:.0%} < {FAITHFULNESS_THRESHOLD:.0%}"
+    )
+    assert results["toxicity"] >= TOXICITY_THRESHOLD, (
+        f"Toxicity too low: {results['toxicity']:.0%} < {TOXICITY_THRESHOLD:.0%}"
+    )
+    print("\nPrompt approved for production push.")
+    sys.exit(0)
+except AssertionError as e:
+    print(f"\nGATE FAILED: {e}")
+    print("Fix the prompt and re-run before promoting.")
+    sys.exit(1)
+```
+
+<Tip>
+Once the local gate passes, automate the same checks on every pull request. See [Automated Eval in CI/CD](/docs/cookbook/quickstart/cicd-eval-pipeline) for the full GitHub Actions setup with PR comments and branch protection.
+</Tip>
+
+## What you built
+
+- Defined a 5-case eval suite with realistic inputs and grounding contexts
+- Wrote `score_prompt()` running `faithfulness` (local NLI) and `toxicity` (Turing) on every response
+- Scored a baseline prompt at 60%/80%, then revised to 80%/100% by adding grounding and tone instructions
+- Inspected failing cases using `EvalResult.reason` to identify unsupported claims
+- Added a promotion gate that exits non-zero when quality is insufficient
+
+<CardGroup cols={2}>
+  <Card title="Automated Eval in CI/CD" icon="github" href="/docs/cookbook/quickstart/cicd-eval-pipeline">
+    Run the same eval gate on every pull request with GitHub Actions.
+  </Card>
+  <Card title="Running Your First Eval" icon="chart-line" href="/docs/cookbook/quickstart/first-eval">
+    Full reference for all built-in metrics and engine routing.
+  </Card>
+  <Card title="Custom Eval Metrics" icon="pen-to-square" href="/docs/cookbook/quickstart/custom-eval-metrics">
+    Write domain-specific rubrics when built-in metrics do not cover your quality bar.
+  </Card>
+  <Card title="Experimentation" icon="flask" href="/docs/cookbook/quickstart/experimentation-compare-prompts">
+    A/B test prompt variants in the FutureAGI dashboard after your local gate passes.
+  </Card>
+</CardGroup>

@@ -1,0 +1,262 @@
+---
+title: "Tool-Calling Agent Simulation with Tracing"
+description: "Run a tool-calling agent through simulated scenarios, trace every tool invocation as child spans, and inspect results in the Tracing dashboard."
+---
+
+By the end of this guide you will have a tool-calling agent running through simulated conversations, with every tool invocation visible as child spans in the Tracing dashboard.
+
+<Note>
+**Prerequisites**
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key
+- Python 3.9+
+- A simulation created in the dashboard (see [Chat Simulation with Personas](/docs/cookbook/quickstart/chat-simulation-personas))
+</Note>
+
+## Install
+
+```bash
+pip install agent-simulate fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+## Step 1: Define tools and mock execution
+
+Define two OpenAI function schemas and a mock execution layer. In production, swap the mocks for real API calls.
+
+```python
+import json
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_order_status",
+            "description": "Look up the current status of a customer order.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The unique order identifier, e.g. 'ORD-12345'.",
+                    }
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "initiate_refund",
+            "description": "Start a refund for a customer order.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The unique order identifier to refund.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "The reason for the refund.",
+                    },
+                },
+                "required": ["order_id", "reason"],
+            },
+        },
+    },
+]
+
+
+def execute_tool(tool_name: str, arguments: dict) -> str:
+    if tool_name == "check_order_status":
+        return json.dumps({
+            "order_id": arguments.get("order_id", "UNKNOWN"),
+            "status": "shipped",
+            "carrier": "FedEx",
+            "tracking_number": "FX-9988776655",
+            "estimated_delivery": "2026-03-06",
+        })
+    elif tool_name == "initiate_refund":
+        return json.dumps({
+            "order_id": arguments.get("order_id", "UNKNOWN"),
+            "refund_id": "REF-554433",
+            "status": "approved",
+            "amount": "$149.99",
+            "timeline": "3-5 business days",
+        })
+    else:
+        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+```
+
+## Step 2: Write the agent callback
+
+The callback wraps each turn in a parent `agent-turn` span. Inside it, auto-instrumented OpenAI calls and manual tool-execution spans form a tree:
+
+```
+agent-turn
+├── OpenAI chat (tool-call request)    ← auto-instrumented
+├── execute: check_order_status        ← manual span
+├── execute: initiate_refund           ← manual span (if parallel tools)
+└── OpenAI chat (synthesis)            ← auto-instrumented
+```
+
+```python
+import asyncio
+import os
+
+import openai
+from fi.simulate import AgentInput, TestRunner
+from fi_instrumentation import register, FITracer
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="tool-calling-simulation",
+    set_global_tracer_provider=True,
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+
+tracer = FITracer(trace_provider.get_tracer(__name__))
+openai_client = openai.AsyncOpenAI()
+
+SYSTEM_PROMPT = """You are a helpful customer support agent for ShopFast.
+You assist customers with order status inquiries and refund requests.
+Always use the available tools to look up order information before responding.
+Be concise, accurate, and empathetic."""
+
+
+async def agent_callback(input: AgentInput) -> str:
+    with tracer.start_as_current_span("agent-turn") as span:
+        span.set_attribute("thread_id", input.thread_id or "")
+
+        # Build message history, skipping assistant messages with tool_calls
+        # (the SDK strips tool-role responses from history, so these would be orphaned)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for msg in input.messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                continue
+            messages.append(msg)
+
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            tools=TOOLS,
+            tool_choice="auto",
+            temperature=0.2,
+        )
+
+        choice = response.choices[0]
+
+        if choice.finish_reason == "tool_calls":
+            messages.append(choice.message)
+
+            for tool_call in choice.message.tool_calls:
+                with tracer.start_as_current_span(
+                    f"execute: {tool_call.function.name}"
+                ) as tool_span:
+                    args = json.loads(tool_call.function.arguments)
+                    tool_span.set_attribute("tool.name", tool_call.function.name)
+                    tool_span.set_attribute("tool.parameters", json.dumps(args))
+
+                    tool_result = execute_tool(tool_call.function.name, args)
+                    tool_span.set_attribute("tool.result", tool_result)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,
+                })
+
+            follow_up = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.2,
+            )
+            return follow_up.choices[0].message.content or ""
+
+        return choice.message.content or ""
+```
+
+## Step 3: Run the simulation
+
+```python
+async def main():
+    runner = TestRunner(
+        api_key=os.environ["FI_API_KEY"],
+        secret_key=os.environ["FI_SECRET_KEY"],
+    )
+
+    await runner.run_test(
+        run_test_name="tool-calling-test",
+        agent_callback=agent_callback,
+    )
+
+    print("Simulation complete.")
+
+
+asyncio.run(main())
+```
+
+Expected output:
+```
+🔍 Fetching Run Test ID for name: tool-calling-test
+✓ Found Run Test ID: <uuid>
+Starting Simulation for Run ID: <uuid>
+✓ Test Execution Started: <uuid>
+🔄 Fetching batch of scenarios...
+📥 Received batch: 3 calls
+▶️ Processing Call: <uuid>
+✓ Call Finished: <uuid> (6 turns)
+✅ Cloud Simulation Completed.
+Simulation complete.
+```
+
+<Warning>
+The `run_test_name` must exactly match the simulation name in the dashboard. A mismatch returns a 404.
+</Warning>
+
+## Step 4: Inspect tool call spans in the Tracing dashboard
+
+Go to [app.futureagi.com](https://app.futureagi.com) → **Tracing** → find traces from `tool-calling-simulation`. Click any trace to expand the span tree. Each turn that triggered a tool call shows this hierarchy:
+
+- **agent-turn** (parent): has `thread_id` attribute
+  - **OpenAI chat**: the initial request with `finish_reason: tool_calls`
+  - **execute: check_order_status**: tool name, parameters, and result as span attributes
+  - **OpenAI chat**: the synthesis call that produces the final response
+
+Turns where the model responds directly (no tool call) show a single OpenAI child span under `agent-turn`.
+
+<video autoPlay muted loop playsInline width="100%" style={{borderRadius: "8px"}}>
+  <source src="/cookbook/images/tool-calling-simulation/step-4-tracing-spans.mp4" type="video/mp4" />
+</video>
+
+## What you built
+
+- Defined two OpenAI function schemas and a mock execution layer
+- Wrote an agent callback that handles the full tool-call loop, including parallel tool calls (detect → execute all → synthesize)
+- Traced every OpenAI call as child spans under a manual `agent-turn` parent, with dedicated tool-execution spans showing name, parameters, and result
+- Ran the simulation via TestRunner
+
+<CardGroup cols={2}>
+  <Card title="Chat Simulation with Personas" icon="users" href="/docs/cookbook/quickstart/chat-simulation-personas">
+    Set up agent definitions, personas, and scenarios before running simulations at scale.
+  </Card>
+  <Card title="Inline Evals in Tracing" icon="chart-line" href="/docs/cookbook/quickstart/inline-evals-tracing">
+    Attach quality scores to every traced LLM call in production.
+  </Card>
+  <Card title="Agent Compass" icon="compass" href="/docs/cookbook/quickstart/agent-compass-debug">
+    Automatically surface failure patterns and get fix recommendations from your traces.
+  </Card>
+  <Card title="Manual Tracing" icon="eye" href="/docs/cookbook/quickstart/manual-tracing">
+    Add custom spans, user context, and metadata to your traces.
+  </Card>
+</CardGroup>
