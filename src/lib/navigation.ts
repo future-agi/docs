@@ -428,7 +428,6 @@ export const tabNavigation: NavTab[] = [
                 title: 'Evaluation',
                 items: [
                   { title: 'Running Your First Eval', href: '/docs/cookbook/quickstart/first-eval' },
-                  { title: 'Running Your First Eval (Original)', href: '/docs/cookbook/quickstart/first-eval-old' },
                   { title: 'Custom Eval Metrics', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
                   { title: 'Hallucination Detection', href: '/docs/cookbook/quickstart/hallucination-detection' },
                   { title: 'RAG Pipeline Evaluation', href: '/docs/cookbook/quickstart/rag-evaluation' },
