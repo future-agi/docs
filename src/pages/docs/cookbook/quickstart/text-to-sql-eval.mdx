@@ -1,0 +1,382 @@
+---
+title: "Text-to-SQL Evaluation"
+description: "Evaluate LLM-generated SQL queries using the built-in text_to_sql Turing metric, local string comparison, and execution-based validation against a live database."
+---
+
+<TLDR>
+Evaluate LLM-generated SQL queries using Turing metrics, local string comparison, and execution-based validation against a live database.
+</TLDR>
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/quickstart/text-to-sql-eval.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/quickstart/text-to-sql-eval.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 15 min | Intermediate | `ai-evaluation` |
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install ai-evaluation
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+```
+
+## Tutorial
+
+<Steps>
+<Step title="Set up the evaluator and test database">
+
+Create an in-memory SQLite database with sample data and define a test suite of natural language questions, expected SQL, and LLM-generated SQL.
+
+```python
+import os
+import sqlite3
+from fi.evals import Evaluator, evaluate
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+conn = sqlite3.connect(":memory:")
+cursor = conn.cursor()
+
+cursor.executescript("""
+    CREATE TABLE customers (
+        id    INTEGER PRIMARY KEY,
+        name  TEXT NOT NULL,
+        email TEXT NOT NULL,
+        city  TEXT
+    );
+    CREATE TABLE orders (
+        id          INTEGER PRIMARY KEY,
+        customer_id INTEGER REFERENCES customers(id),
+        amount      REAL NOT NULL,
+        status      TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    );
+
+    INSERT INTO customers VALUES (1, 'Alice Johnson', 'alice@example.com', 'New York');
+    INSERT INTO customers VALUES (2, 'Bob Smith',     'bob@example.com',   'Austin');
+    INSERT INTO customers VALUES (3, 'Carol White',   'carol@example.com', 'Chicago');
+
+    INSERT INTO orders VALUES (1, 1, 120.00, 'completed', '2024-01-10');
+    INSERT INTO orders VALUES (2, 1,  80.50, 'completed', '2024-02-15');
+    INSERT INTO orders VALUES (3, 2, 200.00, 'pending',   '2024-03-01');
+    INSERT INTO orders VALUES (4, 3,  55.25, 'completed', '2024-03-10');
+    INSERT INTO orders VALUES (5, 2, 175.00, 'cancelled', '2024-03-20');
+""")
+
+
+def run_sql(sql: str) -> list:
+    """Execute SQL and return sorted rows for deterministic comparison."""
+    try:
+        cursor.execute(sql)
+        return sorted(cursor.fetchall())
+    except Exception as e:
+        return [("ERROR", str(e))]
+
+
+test_cases = [
+    {
+        "question": "Get all customer names",
+        "expected_sql": "SELECT name FROM customers;",
+        "generated_sql": "SELECT name FROM customers;",
+    },
+    {
+        "question": "Find completed orders",
+        "expected_sql": "SELECT * FROM orders WHERE status = 'completed';",
+        "generated_sql": "SELECT * FROM orders WHERE status='completed';",
+    },
+    {
+        "question": "Total spend per customer",
+        "expected_sql": "SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id;",
+        "generated_sql": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id;",
+    },
+    {
+        "question": "Customers who placed completed orders",
+        "expected_sql": "SELECT name FROM customers WHERE id IN (SELECT customer_id FROM orders WHERE status = 'completed');",
+        "generated_sql": "SELECT DISTINCT c.name FROM customers c JOIN orders o ON c.id = o.customer_id WHERE o.status = 'completed';",
+    },
+    {
+        "question": "Total revenue from all orders",
+        "expected_sql": "SELECT SUM(amount) FROM orders;",
+        "generated_sql": "SELECT SUM(amount) FROM orders WHERE status = 'completed';",
+    },
+]
+
+print(f"{len(test_cases)} test cases loaded, database ready.")
+```
+
+Case 1 is a perfect match. Case 2 has a whitespace difference. Case 3 has an alias difference. Case 4 uses a JOIN instead of a subquery. Case 5 has a logic error: it filters to completed orders instead of summing all.
+
+</Step>
+<Step title="Validate SQL intent with text_to_sql">
+
+The built-in `text_to_sql` metric checks whether generated SQL is valid and correctly matches the natural language question's intent. It does not need a reference query; just provide the question and the generated SQL.
+
+```python
+print(f"{'Question':<40}  text_to_sql")
+print("-" * 55)
+
+for tc in test_cases:
+    result = evaluator.evaluate(
+        eval_templates="text_to_sql",
+        inputs={
+            "input": tc["question"],
+            "output": tc["generated_sql"],
+        },
+        model_name="turing_small",
+    )
+    eval_result = result.eval_results[0]
+    print(f"{tc['question']:<40}  {eval_result.output}")
+```
+
+Expected output:
+
+```
+Question                                  text_to_sql
+-------------------------------------------------------
+Get all customer names                    Passed
+Find completed orders                     Passed
+Total spend per customer                  Passed
+Customers who placed completed orders     Passed
+Total revenue from all orders             Failed
+```
+
+The `text_to_sql` metric catches the logic error in case 5: the question asks for "all orders" but the SQL filters to completed only. Cases 2 to 4 pass because the generated SQL is valid and matches the question intent, regardless of formatting or structure differences.
+
+</Step>
+<Step title="Compare against reference with ground_truth_match">
+
+`ground_truth_match` checks whether the generated output matches a reference (expected) output. It evaluates semantic equivalence, not just string identity.
+
+```python
+print(f"{'Question':<40}  ground_truth_match")
+print("-" * 62)
+
+for tc in test_cases:
+    result = evaluator.evaluate(
+        eval_templates="ground_truth_match",
+        inputs={
+            "generated_value": tc["generated_sql"],
+            "expected_value": tc["expected_sql"],
+        },
+        model_name="turing_small",
+    )
+    eval_result = result.eval_results[0]
+    print(f"{tc['question']:<40}  {eval_result.output}")
+```
+
+Expected output:
+
+```
+Question                                  ground_truth_match
+--------------------------------------------------------------
+Get all customer names                    Passed
+Find completed orders                     Passed
+Total spend per customer                  Passed
+Customers who placed completed orders     Passed
+Total revenue from all orders             Failed
+```
+
+</Step>
+<Step title="Local string checks — equals and levenshtein_similarity">
+
+Local metrics run instantly with no API call. Use `equals` as a fast CI gate, and use `levenshtein_similarity` to catch near-matches.
+
+```python
+SIMILARITY_THRESHOLD = 0.85
+
+print(f"{'Question':<40}  {'Exact':>6}  {'Similarity':>11}")
+print("-" * 62)
+
+for tc in test_cases:
+    exact = evaluate(
+        "equals",
+        output=tc["generated_sql"].strip().rstrip(";").lower(),
+        expected_output=tc["expected_sql"].strip().rstrip(";").lower(),
+    )
+    sim = evaluate(
+        "levenshtein_similarity",
+        output=tc["generated_sql"],
+        expected_output=tc["expected_sql"],
+    )
+    exact_str = "PASS" if exact.passed else "FAIL"
+    sim_str = f"{sim.score:.2f}"
+    print(f"{tc['question']:<40}  {exact_str:>6}  {sim_str:>11}")
+```
+
+Expected output:
+
+```
+Question                                  Exact  Similarity
+--------------------------------------------------------------
+Get all customer names                     PASS        1.00
+Find completed orders                      FAIL        0.97
+Total spend per customer                   FAIL        0.91
+Customers who placed completed orders      FAIL        0.47
+Total revenue from all orders              FAIL        0.71
+```
+
+Case 2 (whitespace) and case 3 (alias) score high on similarity despite failing exact match. Case 4 scores low because the JOIN structure looks very different from the subquery, even though both are correct. This is why string metrics alone are not enough for SQL evaluation.
+
+<Tip>
+Normalize before exact comparison: `.strip().rstrip(";").lower()` removes trailing whitespace, semicolons, and casing differences. Use `levenshtein_similarity` to flag minor formatting noise, and Turing metrics (Steps 2 to 3) to judge actual correctness.
+</Tip>
+
+</Step>
+<Step title="Execution-based validation">
+
+The most reliable check: run both the generated and reference SQL on the same database and compare result sets. If they return the same rows, the generated SQL is correct regardless of structure.
+
+```python
+print(f"{'Question':<40}  Execution Match")
+print("-" * 60)
+
+for tc in test_cases:
+    gen_rows = run_sql(tc["generated_sql"])
+    ref_rows = run_sql(tc["expected_sql"])
+    match = gen_rows == ref_rows
+    status = "PASS" if match else "FAIL"
+    print(f"{tc['question']:<40}  {status}")
+    if not match:
+        print(f"  Generated: {gen_rows}")
+        print(f"  Reference: {ref_rows}")
+```
+
+Expected output:
+
+```
+Question                                  Execution Match
+------------------------------------------------------------
+Get all customer names                    PASS
+Find completed orders                     PASS
+Total spend per customer                  PASS
+Customers who placed completed orders     PASS
+Total revenue from all orders             FAIL
+  Generated: [(255.75,)]
+  Reference: [(630.75,)]
+```
+
+Cases 2 to 4 all pass execution even though they have different formatting, aliases, and structure. Case 5 fails because filtering to completed orders returns 255.75 instead of the full total of 630.75.
+
+</Step>
+<Step title="Combined diagnostic sweep">
+
+Combine all four methods into a single summary to see where each approach agrees or diverges.
+
+```python
+print(f"{'Question':<35}  {'SQL':>4}  {'GT':>4}  {'Exact':>6}  {'Sim':>5}  {'Exec':>5}")
+print("-" * 68)
+
+for tc in test_cases:
+    sql_eval = evaluator.evaluate(
+        eval_templates="text_to_sql",
+        inputs={"input": tc["question"], "output": tc["generated_sql"]},
+        model_name="turing_small",
+    )
+    gt_eval = evaluator.evaluate(
+        eval_templates="ground_truth_match",
+        inputs={"generated_value": tc["generated_sql"], "expected_value": tc["expected_sql"]},
+        model_name="turing_small",
+    )
+    exact = evaluate(
+        "equals",
+        output=tc["generated_sql"].strip().rstrip(";").lower(),
+        expected_output=tc["expected_sql"].strip().rstrip(";").lower(),
+    )
+    sim = evaluate(
+        "levenshtein_similarity",
+        output=tc["generated_sql"],
+        expected_output=tc["expected_sql"],
+    )
+    gen_rows = run_sql(tc["generated_sql"])
+    ref_rows = run_sql(tc["expected_sql"])
+    exec_pass = gen_rows == ref_rows
+
+    sql_str = "OK" if sql_eval.eval_results[0].output == "Passed" else "FAIL"
+    gt_str = "OK" if gt_eval.eval_results[0].output == "Passed" else "FAIL"
+    q = tc["question"][:33] + ".." if len(tc["question"]) > 33 else tc["question"]
+
+    print(
+        f"{q:<35}  "
+        f"{sql_str:>4}  "
+        f"{gt_str:>4}  "
+        f"{'OK' if exact.passed else 'FAIL':>6}  "
+        f"{sim.score:>5.2f}  "
+        f"{'OK' if exec_pass else 'FAIL':>5}"
+    )
+```
+
+Expected output:
+
+```
+Question                              SQL    GT  Exact    Sim   Exec
+--------------------------------------------------------------------
+Get all customer names                 OK    OK     OK   1.00     OK
+Find completed orders                  OK    OK   FAIL   0.97     OK
+Total spend per customer               OK    OK   FAIL   0.91     OK
+Customers who placed completed o..     OK    OK   FAIL   0.47     OK
+Total revenue from all orders        FAIL  FAIL   FAIL   0.71   FAIL
+```
+
+Cases 2 to 4 fail exact match and score low on string similarity but pass every meaningful check (Turing metrics + execution). Case 5 fails across all checks: a high-confidence logic error worth flagging.
+
+</Step>
+</Steps>
+
+## Eval reference
+
+| Eval | Type | Inputs | Output | API key needed |
+|---|---|---|---|---|
+| `text_to_sql` | Turing | `input` (question), `output` (SQL) | Pass/Fail | Yes |
+| `ground_truth_match` | Turing | `generated_value`, `expected_value` | Pass/Fail | Yes |
+| `equals` | Local | `output`, `expected_output` | Pass/Fail | No |
+| `levenshtein_similarity` | Local | `output`, `expected_output` | Score (0–1) | No |
+| Execution match | Custom | Run both queries, compare rows | PASS/FAIL | No |
+
+<Tip>
+In CI/CD, gate on `text_to_sql` + execution match combined. Exact match and string similarity are useful for dashboards but too strict to block on their own; they flag formatting noise as failures.
+</Tip>
+
+## What you built
+
+<Check>
+You can now evaluate LLM-generated SQL using intent validation, reference comparison, string metrics, and execution-based checks.
+</Check>
+
+- Validated generated SQL against question intent with the built-in `text_to_sql` Turing metric
+- Compared generated SQL to a reference query with `ground_truth_match`
+- Ran local `equals` and `levenshtein_similarity` checks for fast string-level comparison
+- Executed both queries on a live SQLite database and compared result sets
+- Combined all four methods into a diagnostic sweep that distinguishes logic errors from formatting noise
+
+## Next steps
+
+<CardGroup cols={4}>
+  <Card title="Running Your First Eval" icon="play" href="/docs/cookbook/quickstart/first-eval">
+    Core eval patterns
+  </Card>
+  <Card title="RAG Pipeline Evaluation" icon="magnifying-glass" href="/docs/cookbook/quickstart/rag-evaluation">
+    Debug RAG failures
+  </Card>
+  <Card title="Batch Evaluation" icon="list-check" href="/docs/cookbook/quickstart/batch-eval">
+    Scale to large datasets
+  </Card>
+  <Card title="Custom Eval Metrics" icon="pen-to-square" href="/docs/cookbook/quickstart/custom-eval-metrics">
+    Write your own metric
+  </Card>
+</CardGroup>

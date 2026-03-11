@@ -81,16 +81,21 @@ export const tabNavigation: NavTab[] = [
         icon: 'eye',
         items: [
           { title: 'Overview', href: '/docs/observe' },
-          { title: 'Set Up Observability', href: '/docs/observe/quickstart' },
-          { title: 'Evals', href: '/docs/observe/evals' },
-          { title: 'Sessions', href: '/docs/observe/session' },
-          { title: 'Users', href: '/docs/observe/users' },
-          { title: 'Alerts & Monitors', href: '/docs/observe/alerts' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
+              { title: 'Evals', href: '/docs/observe/features/evals' },
+              { title: 'Sessions', href: '/docs/observe/features/session' },
+              { title: 'Users', href: '/docs/observe/features/users' },
+              { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
+            ]
+          },
           {
             title: 'Voice Observability',
             items: [
               { title: 'Overview', href: '/docs/observe/voice' },
-              { title: 'Quickstart', href: '/docs/observe/voice/quickstart' },
+              { title: 'Set Up Voice Observability', href: '/docs/observe/voice/set-up' },
             ]
           },
           {
@@ -100,12 +105,12 @@ export const tabNavigation: NavTab[] = [
               {
                 title: 'Concept',
                 items: [
-                  { title: 'Overview', href: '/docs/tracing/concepts' },
-                  { title: 'Core Components', href: '/docs/tracing/components' },
-                  { title: 'Spans', href: '/docs/tracing/spans' },
-                  { title: 'Traces', href: '/docs/tracing/traces' },
-                  { title: 'OpenTelemetry', href: '/docs/tracing/otel' },
-                  { title: 'TraceAI', href: '/docs/tracing/traceai' },
+                  { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
+                  { title: 'Components of Observability', href: '/docs/tracing/concepts/components' },
+                  { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
+                  { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
+                  { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
+                  { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
                 ]
               },
               {
@@ -149,18 +154,18 @@ export const tabNavigation: NavTab[] = [
                 title: 'Manual Tracing',
                 items: [
                   { title: 'Set Up Tracing', href: '/docs/tracing/manual/set-up-tracing' },
-                  { title: 'Instrument with TraceAI', href: '/docs/tracing/manual/instrument-with-traceai-helpers' },
-                  { title: 'Get Current Span Context', href: '/docs/tracing/manual/get-current-span-context' },
-                  { title: 'Add Attributes & Metadata', href: '/docs/tracing/manual/add-attributes-metadata-tags' },
-                  { title: 'Log Prompt Templates', href: '/docs/tracing/manual/log-prompt-templates' },
-                  { title: 'Add Events & Exceptions', href: '/docs/tracing/manual/add-events-exceptions-status' },
-                  { title: 'Set Session & User ID', href: '/docs/tracing/manual/set-session-user-id' },
-                  { title: 'Create Tool Spans', href: '/docs/tracing/manual/create-tool-spans' },
+                  { title: 'Instrument with traceAI Helpers', href: '/docs/tracing/manual/instrument-with-traceai-helpers' },
+                  { title: 'Get Current Tracer and Span', href: '/docs/tracing/manual/get-current-span-context' },
+                  { title: 'Enriching Spans with Attributes, Metadata, and Tags', href: '/docs/tracing/manual/add-attributes-metadata-tags' },
+                  { title: 'Logging Prompt Templates & Variables', href: '/docs/tracing/manual/log-prompt-templates' },
+                  { title: 'Integrate Events, Exceptions, and Status into Spans', href: '/docs/tracing/manual/add-events-exceptions-status' },
+                  { title: 'Set Session ID and User ID', href: '/docs/tracing/manual/set-session-user-id' },
+                  { title: 'Tool Spans Creation', href: '/docs/tracing/manual/create-tool-spans' },
                   { title: 'Mask Span Attributes', href: '/docs/tracing/manual/mask-span-attributes' },
-                  { title: 'Advanced Examples', href: '/docs/tracing/manual/advanced-tracing-examples' },
-                  { title: 'Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
-                  { title: 'Inline Evals', href: '/docs/tracing/manual/in-line-evals' },
-                  { title: 'Annotating via API', href: '/docs/tracing/manual/annotating-using-api' },
+                  { title: 'Advanced Tracing (OTEL)', href: '/docs/tracing/manual/advanced-tracing-examples' },
+                  { title: 'FI Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
+                  { title: 'In-line Evaluations', href: '/docs/tracing/manual/in-line-evals' },
+                  { title: 'Adding Annotations to your Spans', href: '/docs/tracing/manual/annotating-using-api' },
                   { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-intergation' },
                 ]
               },
@@ -457,8 +462,98 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/cookbook' },
           {
-            title: 'Getting Started',
+            title: 'Quickstart',
             icon: 'rocket',
+            items: [
+              {
+                title: 'Evaluation',
+                items: [
+                  { title: 'Running Your First Eval', href: '/docs/cookbook/quickstart/first-eval' },
+                  { title: 'Custom Eval Metrics: Write Your Own Evaluation Criteria', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
+                  { title: 'Hallucination Detection with Faithfulness & Groundedness', href: '/docs/cookbook/quickstart/hallucination-detection' },
+                  { title: 'RAG Pipeline Evaluation: Debug Retrieval vs Generation', href: '/docs/cookbook/quickstart/rag-evaluation' },
+                  { title: 'Multimodal Evaluation: Images, Audio, and PDF', href: '/docs/cookbook/quickstart/multimodal-eval' },
+                  { title: 'Tone, Toxicity, and Bias Detection Evals', href: '/docs/cookbook/quickstart/tone-toxicity-bias-eval' },
+                  { title: 'Evaluate Customer Agent Conversations', href: '/docs/cookbook/quickstart/conversation-eval' },
+                  { title: 'Dataset SDK: Upload, Evaluate, and Download Results', href: '/docs/cookbook/quickstart/batch-eval' },
+                  { title: 'Async Evaluations for Large-Scale Testing', href: '/docs/cookbook/quickstart/async-batch-eval' },
+                  { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
+                ]
+              },
+              {
+                title: 'Simulation',
+                items: [
+                  { title: 'Chat Simulation: Run Multi-Persona Conversations via SDK', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
+                  { title: 'Voice Simulation: Define Agents, Personas, and Run Call Tests', href: '/docs/cookbook/quickstart/voice-simulation' },
+                  { title: 'Tool-Calling Agent Simulation with Tracing', href: '/docs/cookbook/quickstart/tool-calling-simulation' },
+                  { title: 'Simulate from the Prompt Workbench', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
+                ]
+              },
+              {
+                title: 'Dataset',
+                items: [
+                  { title: 'Create and Manage Datasets from the Dashboard', href: '/docs/cookbook/quickstart/dataset-management' },
+                  { title: 'Synthetic Data Generation: Create Test Datasets from a Schema', href: '/docs/cookbook/quickstart/synthetic-data-generation' },
+                  { title: 'Annotate Datasets with Human-in-the-Loop Workflows', href: '/docs/cookbook/quickstart/dataset-annotation' },
+                  { title: 'Import Datasets from Hugging Face', href: '/docs/cookbook/quickstart/huggingface-dataset-import' },
+                  { title: 'Dynamic Dataset Columns: Enrich Rows with AI-Generated Data', href: '/docs/cookbook/quickstart/dynamic-dataset-columns' },
+                ]
+              },
+              {
+                title: 'Prompt',
+                items: [
+                  { title: 'Prompt Versioning: Create, Label, and Serve Prompt Versions', href: '/docs/cookbook/quickstart/prompt-versioning' },
+                  { title: 'Prototype and Iterate on LLM Applications', href: '/docs/cookbook/quickstart/prototype-llm-app' },
+                ]
+              },
+              {
+                title: 'Observability',
+                items: [
+                  { title: 'Manual Tracing: Add Custom Spans to Any Application', href: '/docs/cookbook/quickstart/manual-tracing' },
+                  { title: 'Session-Based Observability for Multi-Turn Conversations', href: '/docs/cookbook/quickstart/session-observability' },
+                  { title: 'Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds', href: '/docs/cookbook/quickstart/monitoring-alerts' },
+                  { title: 'Inline Evals in Tracing: Score Every Response as It\'s Generated', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
+                ]
+              },
+              {
+                title: 'Optimization',
+                items: [
+                  { title: 'Prompt Optimization: Improve a Prompt Automatically', href: '/docs/cookbook/quickstart/prompt-optimization' },
+                  { title: 'Compare Optimization Strategies: ProTeGi, GEPA, and PromptWizard', href: '/docs/cookbook/quickstart/compare-optimizers' },
+                  { title: 'Dataset Optimization: Improve Prompts Directly in Your Dataset', href: '/docs/cookbook/quickstart/dataset-optimization' },
+                ]
+              },
+              {
+                title: 'Protect',
+                items: [
+                  { title: 'Protect: Add Safety Guardrails to LLM Outputs', href: '/docs/cookbook/quickstart/protect-guardrails' },
+                ]
+              },
+              {
+                title: 'Knowledge Base',
+                items: [
+                  { title: 'Knowledge Base: Upload Documents and Query with the SDK', href: '/docs/cookbook/quickstart/knowledge-base' },
+                ]
+              },
+              {
+                title: 'Experimentation',
+                items: [
+                  { title: 'Experimentation: Compare Prompts and Models on a Dataset', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
+                  { title: 'Evaluation-Driven Development: Score Every Prompt Change Before Shipping', href: '/docs/cookbook/quickstart/eval-driven-dev' },
+                  { title: 'CI/CD Eval Pipeline: Automate Quality Gates in GitHub Actions', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
+                ]
+              },
+              {
+                title: 'Agent Compass',
+                items: [
+                  { title: 'Agent Compass: Surface Agent Failures Automatically', href: '/docs/cookbook/quickstart/agent-compass-debug' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'Getting Started',
+            icon: 'zap',
             items: [
               { title: 'Using FutureAGI Evals', href: '/docs/cookbook/using-futureagi-evals' },
               { title: 'Using FutureAGI Protect', href: '/docs/cookbook/using-futureagi-protect' },
