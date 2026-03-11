@@ -477,7 +477,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Evaluate Customer Agent Conversations', href: '/docs/cookbook/quickstart/conversation-eval' },
                   { title: 'Dataset SDK: Upload, Evaluate, and Download Results', href: '/docs/cookbook/quickstart/batch-eval' },
                   { title: 'Async Evaluations for Large-Scale Testing', href: '/docs/cookbook/quickstart/async-batch-eval' },
-                  { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
                 ]
               },
               {
@@ -556,6 +555,19 @@ export const tabNavigation: NavTab[] = [
             icon: 'briefcase',
             items: [
               { title: 'Build a Self-Improving AI Sales Agent', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
+              { title: 'Optimize AI Agents with Simulation Feedback Loops', href: '/docs/cookbook/use-cases/simulation-optimization-loop' },
+              { title: 'Domain-Specific Hallucination Detection', href: '/docs/cookbook/use-cases/domain-hallucination-detection' },
+              { title: 'Full Prompt Lifecycle: Create, Optimize, A/B Test, Deploy', href: '/docs/cookbook/use-cases/full-prompt-lifecycle' },
+              { title: 'Building Secure AI Applications: Evals + Guardrails', href: '/docs/cookbook/use-cases/secure-ai-evals-guardrails' },
+              { title: 'Building Compliance-Ready AI: HIPAA and GDPR', href: '/docs/cookbook/use-cases/compliance-hipaa-gdpr' },
+              { title: 'Evaluating Translation Accuracy for Product Localization', href: '/docs/cookbook/use-cases/translation-eval' },
+              { title: 'AutoEval: Generate Test Pipelines from App Descriptions', href: '/docs/cookbook/use-cases/auto-eval-pipeline' },
+              { title: 'Streaming Safety: Cut Off Toxic Output Mid-Stream', href: '/docs/cookbook/use-cases/streaming-safety' },
+              { title: 'Production LLM Quality Monitoring', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
+              { title: 'Evaluating Coding Agents and Code Generation', href: '/docs/cookbook/use-cases/coding-agent-eval' },
+              { title: 'Red-Teaming LLM Applications', href: '/docs/cookbook/use-cases/red-teaming-llm' },
+              { title: 'Feedback Loop: Teach Your LLM Judge from Corrections', href: '/docs/cookbook/use-cases/feedback-loop-eval' },
+              { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/use-cases/text-to-sql-eval' },
             ]
           },
           {

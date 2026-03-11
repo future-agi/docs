@@ -1,0 +1,474 @@
+---
+title: "Feedback Loop: Teach Your LLM Judge from Corrections"
+description: "Build a human feedback loop that improves a custom eval metric over time — deploy an AI content moderation eval, have human annotators correct its mistakes, analyze the correction patterns, refine the eval's Rule Prompt, and measure the improvement."
+---
+
+| Time | Difficulty | Features Used |
+|------|-----------|---------------|
+| 30 min | Intermediate | Evaluation, Annotation |
+
+You're building the content moderation system for **SafePost**, a social media platform. An AI moderator reviews every user post and classifies it as safe, needs-review, or violating — with an explanation for each decision.
+
+The problem: your AI moderator disagrees with human moderators 30% of the time. Sarcasm gets flagged as toxic. Cultural references get misread. Gen-Z slang triggers false positives. The AI judge isn't wrong about everything — it just doesn't understand nuance yet.
+
+The fix isn't to throw out the AI judge. It's to teach it. You're going to build a feedback loop: run the eval, have humans correct the mistakes, find the patterns in those corrections, update the eval's Rule Prompt, and re-run to confirm it got smarter.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install futureagi ai-evaluation pandas
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+```
+
+<Steps>
+<Step title="Create your content moderation eval">
+
+First, define what "appropriate content" means for SafePost as a custom eval metric. This is your AI judge — the Rule Prompt is its rubric.
+
+**In the dashboard:**
+
+1. Go to [app.futureagi.com](https://app.futureagi.com) → **Evals** (left sidebar under BUILD)
+2. Click **Create Evaluation**
+3. Fill in:
+   - **Name**: `content_appropriateness`
+   - **Template type**: **Use Future AGI Agents**
+   - **Model**: `turing_small`
+   - **Output Type**: `Pass/Fail`
+4. Write the **Rule Prompt**:
+
+```
+You are a content moderator for a social media platform.
+
+Evaluate this user post: {{post_content}}
+
+Mark PASS if the post is appropriate for a general audience.
+Mark FAIL if the post contains:
+- Hate speech or slurs targeting any group
+- Explicit threats of violence
+- Graphic sexual content
+- Harassment directed at a specific individual
+
+Return a clear PASS/FAIL decision with a short reason.
+```
+
+5. Click **Create Evaluation**
+
+This is deliberately simple — no nuance for sarcasm, no awareness of slang, no cultural context. That's the point. We want to see where it breaks so we can fix it.
+
+<Note>
+**New to custom evals?** See [Custom Eval Metrics: Write Your Own Evaluation Criteria](/docs/cookbook/quickstart/custom-eval-metrics) for the full walkthrough on creating custom evals with Pass/Fail and percentage scoring.
+</Note>
+
+Now prepare a test dataset of social media posts. These are the kinds of posts that trip up a naive content moderator — sarcasm, cultural references, informal tone, coded language, and a few clearly safe or clearly violating posts as controls.
+
+Save this as `safepost_content.csv`:
+
+```csv
+post_id,post_content,expected_label
+1,"Just adopted the cutest golden retriever puppy! Meet Biscuit 🐕","safe"
+2,"lol i'm literally dead 💀 this meme has me on the floor","safe"
+3,"my mom's cooking could be classified as a war crime fr fr 😭","safe"
+4,"that referee needs to be fired into the sun, absolute garbage calls all game","needs-review"
+5,"she ate and left no crumbs 💅 queen behavior honestly","safe"
+6,"if you support [political party] you're actually braindead, no cap","needs-review"
+7,"I will find you and I will end your career. Sleep with one eye open.","violating"
+8,"ratio + L + you fell off + nobody asked 🤡","needs-review"
+```
+
+Upload this dataset:
+
+```python
+import os
+from fi.datasets import Dataset, DatasetConfig
+from fi.utils.types import ModelTypes
+
+dataset = Dataset(
+    dataset_config=DatasetConfig(
+        name="safepost-content-moderation",
+        model_type=ModelTypes.GENERATIVE_LLM,
+    ),
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+dataset.create(source="safepost_content.csv")
+
+print(f"Dataset created: {dataset.dataset_config.name}")
+print(f"Dataset ID: {dataset.dataset_config.id}")
+```
+
+</Step>
+<Step title="Run the initial evaluation">
+
+Run your `content_appropriateness` custom eval across every post in the dataset. This is the baseline — the "before" snapshot that you'll compare against after incorporating human feedback.
+
+```python
+dataset.add_evaluation(
+    name="appropriateness-v1",
+    eval_template="content_appropriateness",
+    required_keys_to_column_names={
+        "post_content": "post_content",
+    },
+    model="turing_small",
+    run=True,
+    reason_column=True,
+)
+
+print("Evaluation 'appropriateness-v1' started — check the dashboard for results")
+```
+
+Once the evaluation completes, open the dataset in the dashboard to review the results column. Each row now has a Pass/Fail score and a reason.
+
+Here's what you'll likely see with the naive Rule Prompt:
+
+| Post | Expected | Likely AI Verdict | Issue |
+|------|----------|-------------------|-------|
+| Post 1 (puppy adoption) | safe | Pass | Correct |
+| Post 2 ("literally dead") | safe | Fail | Flags "dead" as violent language |
+| Post 3 ("war crime") | safe | Fail | Flags "war crime" as violent content |
+| Post 4 (referee into the sun) | needs-review | Fail | Reasonable flag, but too aggressive |
+| Post 5 ("ate and left no crumbs") | safe | Pass or Fail | May misinterpret slang |
+| Post 6 ("braindead") | needs-review | Fail | Correct to flag, but reason may cite wrong rule |
+| Post 7 (explicit threat) | violating | Fail | Correct |
+| Post 8 ("ratio + L") | needs-review | Fail | Flags internet slang as harassment |
+
+The pattern is already visible: the eval treats informal language, sarcasm, and slang the same way it treats genuine threats. Posts 2, 3, 5, and 8 are the problem cases — they're socially normal posts that a human moderator would pass without hesitation.
+
+Download the scored results for later comparison:
+
+```python
+df_v1 = dataset.download(load_to_pandas=True)
+print("Columns:", list(df_v1.columns))
+print(df_v1[["post_id", "post_content", "appropriateness-v1"]].to_string())
+```
+
+<Note>
+**New to batch evaluation?** See [Dataset SDK: Upload, Evaluate, and Download Results](/docs/cookbook/quickstart/batch-eval) for the full dataset evaluation workflow — CSV upload, multi-metric runs, aggregate stats, and DataFrame export.
+</Note>
+
+</Step>
+<Step title="Set up annotation workflow">
+
+Now bring humans into the loop. You're going to create an annotation workflow where human moderators review the AI's decisions and mark where they disagree.
+
+**In the dashboard:**
+
+1. Go to **Dataset** → click `safepost-content-moderation`
+2. Click the **Annotations** tab
+3. Click **Create New View**
+4. Name the view: "Content Moderation Review"
+
+**Configure the view:**
+
+**Static Fields** — select `post_id` and `expected_label`. These give annotators context but can't be edited.
+
+**Response Fields** — select `post_content`. This is the content annotators are evaluating.
+
+**Labels** — click **New Label** for each:
+
+| Label name | Annotation Type | Description |
+|---|---|---|
+| Human Verdict | Categorical | Does this post actually violate content policy? Categories: "Agree with AI", "Disagree - Actually Safe", "Disagree - Actually Violating", "Ambiguous" |
+| Disagreement Reason | Text | If you disagree with the AI, explain why. What context is the AI missing? |
+| Confidence | Numeric (1-5) | How confident are you in your judgment? 1 = very unsure, 5 = certain |
+
+For the **Human Verdict** categorical label, define these four categories:
+- "Agree with AI"
+- "Disagree - Actually Safe"
+- "Disagree - Actually Violating"
+- "Ambiguous"
+
+**Annotators** — add your human moderators (team members in your workspace). Each annotator can independently label rows.
+
+Click **Save** to create the view.
+
+<Tip>
+Enable **Auto-Annotation** on the Human Verdict label. After your annotators label the first few rows, the platform learns the pattern and suggests labels for remaining rows. You can accept or override each suggestion.
+</Tip>
+
+<Note>
+**New to annotation?** See [Annotate Datasets with Human-in-the-Loop Workflows](/docs/cookbook/quickstart/dataset-annotation) for the full annotation setup — view creation, label types, auto-annotation learning, and programmatic annotation via SDK.
+</Note>
+
+</Step>
+<Step title="Annotate the disagreements">
+
+Now your human moderators work through the annotation view, focusing on the posts where the AI eval got it wrong. Here's what the annotation process looks like for four key disagreements.
+
+**Post 2: "lol i'm literally dead, this meme has me on the floor"**
+
+The AI flagged this as FAIL, citing violent language ("dead", "on the floor"). A human moderator annotates:
+- **Human Verdict**: "Disagree - Actually Safe"
+- **Disagreement Reason**: "This is standard Gen-Z hyperbole. 'Literally dead' and 'on the floor' are common expressions for finding something very funny. No actual violence referenced."
+- **Confidence**: 5
+
+**Post 3: "my mom's cooking could be classified as a war crime fr fr"**
+
+The AI flagged this as FAIL, citing references to violence/war. A human moderator annotates:
+- **Human Verdict**: "Disagree - Actually Safe"
+- **Disagreement Reason**: "Sarcastic joke about bad cooking. 'War crime' is used hyperbolically. 'fr fr' means 'for real for real' — emphasis, not a literal claim. This is a normal family humor post."
+- **Confidence**: 5
+
+**Post 5: "she ate and left no crumbs, queen behavior honestly"**
+
+If the AI flagged this as FAIL (misinterpreting "ate" in a non-food context), a human moderator annotates:
+- **Human Verdict**: "Disagree - Actually Safe"
+- **Disagreement Reason**: "'Ate and left no crumbs' is slang for 'performed exceptionally well.' This is a compliment. 'Queen behavior' reinforces the positive intent."
+- **Confidence**: 5
+
+**Post 8: "ratio + L + you fell off + nobody asked"**
+
+The AI flagged this as FAIL, citing harassment. A human moderator annotates:
+- **Human Verdict**: "Ambiguous"
+- **Disagreement Reason**: "This is standard internet discourse culture — 'ratio', 'L', and 'fell off' are competitive social media language. It's dismissive but not targeted harassment. Context matters: if directed at a specific person repeatedly, it could be harassment. As a standalone post, it's borderline."
+- **Confidence**: 3
+
+Each annotation captures not just whether the AI was right or wrong, but *why* — and that reasoning is the training data for your improved eval.
+
+</Step>
+<Step title="Analyze correction patterns">
+
+Export the annotated dataset and look for systematic patterns in the human corrections. This is where the feedback loop generates actionable insight.
+
+```python
+import os
+import pandas as pd
+from fi.datasets import Dataset
+
+annotated = Dataset.get_dataset_config(
+    "safepost-content-moderation",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+df = annotated.download(load_to_pandas=True)
+print("Columns:", list(df.columns))
+print(df.head())
+```
+
+Now analyze the disagreement patterns. Look at the Disagreement Reason text annotations to identify recurring themes:
+
+```python
+{/* Filter to rows where humans disagreed with the AI */}
+disagree_cols = [c for c in df.columns if "human_verdict" in c.lower() or "Human Verdict" in c]
+
+if disagree_cols:
+    col = disagree_cols[0]
+    disagreements = df[df[col].str.contains("Disagree", na=False)]
+    print(f"Total disagreements: {len(disagreements)}")
+    print(f"Total rows: {len(df)}")
+    print(f"Disagreement rate: {len(disagreements)/len(df)*100:.0f}%")
+```
+
+From the annotations, three clear patterns emerge:
+
+**Pattern 1: Sarcasm and hyperbole flagged as literal threats.** Posts 2 and 3 use words like "dead", "war crime", and "on the floor" in clearly non-literal ways. The eval has no instruction to distinguish figurative from literal language.
+
+**Pattern 2: Internet slang misclassified as harmful content.** Posts 5 and 8 use platform-specific slang ("ate and left no crumbs", "ratio + L") that the eval doesn't recognize. It defaults to flagging unfamiliar informal language.
+
+**Pattern 3: No severity gradient.** The eval treats a sarcastic joke about cooking and an explicit death threat with the same FAIL verdict. There's no instruction to weigh severity or consider intent.
+
+These three patterns directly map to gaps in the Rule Prompt — and that's exactly what we're going to fix.
+
+</Step>
+<Step title="Refine the eval Rule Prompt">
+
+Go back to the dashboard and update the custom eval with a Rule Prompt that addresses every pattern the human annotators identified.
+
+**In the dashboard:**
+
+1. Go to **Evals** → click `content_appropriateness`
+2. Edit the **Rule Prompt** — replace it with the refined version below:
+
+```
+You are a content moderator for a social media platform used primarily by a young adult audience (18-30).
+
+Evaluate this user post: {{post_content}}
+
+IMPORTANT CONTEXT FOR EVALUATION:
+
+1. SARCASM AND HYPERBOLE: Internet users frequently use exaggerated language for humor. Phrases like "I'm literally dead", "this killed me", "war crime" (about food/fashion/sports), "I'm going to scream", or "fire" are standard hyperbolic expressions — NOT literal threats or references to violence. If the surrounding context is clearly humorous or casual, treat exaggerated language as safe.
+
+2. INTERNET AND GEN-Z SLANG: The following are common slang expressions that are NOT harmful:
+   - "ate / ate and left no crumbs" = performed exceptionally well
+   - "slay / queen / king" = compliments
+   - "ratio / L / W" = competitive social media language (agreement/disagreement metrics)
+   - "fell off" = declined in quality or relevance
+   - "no cap / fr fr" = "for real" (emphasis)
+   - "bruh / bestie / sis" = casual address
+   - "it's giving" = it resembles or evokes
+   These expressions should not be flagged unless combined with genuinely harmful content.
+
+3. SEVERITY AND INTENT: Distinguish between:
+   - Casual negativity or competitive banter (safe — e.g., "that referee was garbage")
+   - Directed insults that dehumanize or use slurs (needs review)
+   - Explicit threats of physical harm with specific targets (violating)
+
+Mark PASS if the post is appropriate for a general audience, even if it uses informal language, sarcasm, hyperbole, or internet slang.
+
+Mark FAIL only if the post contains:
+- Hate speech or slurs targeting a protected group
+- Credible, specific threats of physical violence (not hyperbolic expressions)
+- Graphic sexual content
+- Sustained, targeted harassment of a specific individual (not general competitive banter)
+
+When in doubt about sarcasm or slang, lean toward PASS. False negatives (missing a genuinely harmful post) are corrected in human review. False positives (flagging safe posts) erode user trust at scale.
+
+Return a clear PASS/FAIL decision with a short reason.
+```
+
+3. Click **Save** to update the eval
+
+The refined Rule Prompt directly addresses each pattern from the human corrections:
+- **Pattern 1 (sarcasm)** → Section 1 explicitly instructs the eval to recognize hyperbolic language
+- **Pattern 2 (slang)** → Section 2 provides a glossary of common internet slang
+- **Pattern 3 (severity)** → Section 3 introduces a three-tier severity framework
+
+This is the feedback loop in action: human corrections identified the blind spots, and the Rule Prompt now has explicit instructions for each one.
+
+</Step>
+<Step title="Re-evaluate and measure improvement">
+
+Run the refined eval on the exact same dataset. Same posts, same expected labels — the only change is the Rule Prompt.
+
+```python
+import os
+from fi.datasets import Dataset
+
+dataset = Dataset.get_dataset_config(
+    "safepost-content-moderation",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+dataset.add_evaluation(
+    name="appropriateness-v2",
+    eval_template="content_appropriateness",
+    required_keys_to_column_names={
+        "post_content": "post_content",
+    },
+    model="turing_small",
+    run=True,
+    reason_column=True,
+)
+
+print("Evaluation 'appropriateness-v2' started — check the dashboard for results")
+```
+
+Once complete, download and compare both versions side by side:
+
+```python
+df = dataset.download(load_to_pandas=True)
+
+{/* Find the v1 and v2 eval columns */}
+v1_col = [c for c in df.columns if "appropriateness-v1" in c and "reason" not in c.lower()]
+v2_col = [c for c in df.columns if "appropriateness-v2" in c and "reason" not in c.lower()]
+
+if v1_col and v2_col:
+    comparison = df[["post_id", "post_content", "expected_label", v1_col[0], v2_col[0]]]
+    print(comparison.to_string())
+```
+
+With the refined Rule Prompt, you should see clear improvement on the problem cases:
+
+| Post | Expected | v1 Verdict | v2 Verdict | Fixed? |
+|------|----------|-----------|-----------|--------|
+| Post 1 (puppy) | safe | Pass | Pass | Was already correct |
+| Post 2 ("literally dead") | safe | Fail | Pass | Fixed — recognizes hyperbole |
+| Post 3 ("war crime" cooking) | safe | Fail | Pass | Fixed — recognizes sarcasm |
+| Post 4 (referee) | needs-review | Fail | Pass or Fail | Depends on severity read |
+| Post 5 ("ate no crumbs") | safe | Fail | Pass | Fixed — recognizes slang |
+| Post 6 ("braindead") | needs-review | Fail | Fail | Correct flag maintained |
+| Post 7 (explicit threat) | violating | Fail | Fail | Correct flag maintained |
+| Post 8 ("ratio + L") | needs-review | Fail | Pass | Fixed — recognizes banter |
+
+The feedback loop is now closed. Human corrections flowed into Rule Prompt improvements, and the eval is measurably better at distinguishing genuine threats from normal internet language.
+
+You can also run both versions through the `Evaluator` SDK for a quick spot-check on individual posts:
+
+```python
+import os
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+test_posts = [
+    "lol i'm literally dead 💀 this meme has me on the floor",
+    "she ate and left no crumbs 💅 queen behavior honestly",
+    "I will find you and I will end your career. Sleep with one eye open.",
+]
+
+for post in test_posts:
+    result = evaluator.evaluate(
+        eval_templates="content_appropriateness",
+        inputs={"post_content": post},
+    )
+
+    eval_result = result.eval_results[0]
+    verdict = eval_result.output
+    print(f"Post: {post[:60]}...")
+    print(f"  Verdict: {verdict}")
+    print(f"  Reason: {eval_result.reason}\n")
+```
+
+The sarcasm and slang posts should now pass, while the genuine threat still fails. That's the refinement working.
+
+<Note>
+**Want to run this comparison more rigorously?** Use FutureAGI's Experimentation feature to A/B test the v1 and v2 Rule Prompts on the same dataset with weighted scoring. See [Experimentation: Compare Prompts and Models on a Dataset](/docs/cookbook/quickstart/experimentation-compare-prompts).
+</Note>
+
+</Step>
+</Steps>
+
+## What you built
+
+<Check>
+You built a human feedback loop that makes your AI eval smarter over time — from a naive content moderator that flagged sarcasm as toxic, to one that understands internet language and distinguishes jokes from genuine threats.
+</Check>
+
+Here's the loop you can now repeat whenever the eval drifts:
+
+```
+Deploy custom eval → Run on dataset → Human annotators correct mistakes →
+Analyze correction patterns → Refine Rule Prompt → Re-evaluate to confirm
+```
+
+Each cycle makes the eval more aligned with human judgment. The patterns your annotators identify — sarcasm, slang, cultural context, severity — become explicit instructions in the Rule Prompt. The eval doesn't just get a better score; it gets a better understanding of the domain.
+
+- Created a `content_appropriateness` custom eval with a plain-English Rule Prompt
+- Ran the eval across a dataset of realistic social media posts
+- Set up an annotation workflow with categorical, text, and numeric labels
+- Annotated disagreements with human reasoning that explained *why* the AI was wrong
+- Identified three systematic patterns: sarcasm misreads, slang misclassification, missing severity gradient
+- Refined the Rule Prompt with explicit instructions for each pattern
+- Re-evaluated and confirmed measurable improvement on the same dataset
+
+## Next steps
+
+<CardGroup cols={4}>
+  <Card title="Custom Eval Metrics" icon="pen-to-square" href="/docs/cookbook/quickstart/custom-eval-metrics">
+    Create domain-specific evals
+  </Card>
+  <Card title="Dataset Annotation" icon="tag" href="/docs/cookbook/quickstart/dataset-annotation">
+    Full annotation workflow
+  </Card>
+  <Card title="Batch Evaluation" icon="chart-line" href="/docs/cookbook/quickstart/batch-eval">
+    Evaluate datasets at scale
+  </Card>
+  <Card title="Running Your First Eval" icon="flask" href="/docs/cookbook/quickstart/first-eval">
+    Three evaluation engines
+  </Card>
+</CardGroup>

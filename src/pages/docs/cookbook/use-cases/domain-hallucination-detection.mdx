@@ -1,0 +1,685 @@
+---
+title: "Domain-Specific Hallucination Detection for a Pharma Drug Info Chatbot"
+description: "Ground RAG evaluations in your drug formulary to catch invented dosages, missed drug interactions, and medication name confusion before they reach healthcare professionals. In pharma, a hallucination isn't a bad UX — it's a patient safety risk."
+---
+
+| Time | Difficulty | Features Used |
+|------|-----------|---------------|
+| 30 min | Intermediate | Knowledge Base, Evaluation, Custom Evals |
+
+You're building a drug information chatbot for **MediSafe Pharma**, a pharmaceutical company. The agent helps healthcare professionals look up medication details — dosages, contraindications, side effects, and drug interactions — using a RAG pipeline grounded in the company's drug formulary.
+
+It works most of the time. Then a doctor asks about acetaminophen dosing and the agent invents a maximum daily dose of 6,000 mg (the real limit is 4,000 mg). A pharmacist asks about drug interactions for lisinopril and the agent misses a critical one with potassium supplements. A nurse looks up metformin side effects and gets back a response that confuses it with metoprolol.
+
+In most domains, a hallucination is a bad UX. In pharma, a hallucination is a patient safety risk. An invented dosage can cause liver failure. A missed drug interaction can cause hyperkalemia. A medication name mix-up can mean the wrong drug gets administered. These aren't hypothetical scenarios — they're the kind of errors that trigger FDA adverse event reports.
+
+Catching these requires grounding your evaluations in your actual drug formulary, running targeted RAG diagnostics, and building domain-specific eval rules that understand pharmaceutical accuracy at a level generic hallucination detectors never will.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.9+
+- Drug formulary documents (PDF, TXT, DOCX, or RTF)
+</Prerequisites>
+
+## Install
+
+```bash
+pip install futureagi ai-evaluation
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+```
+
+<Steps>
+<Step title="Upload your drug formulary">
+
+First, get your drug formulary into FutureAGI's Knowledge Base. This is the pharmaceutical ground truth — the authoritative source that every agent response must be traceable to. You can do this from the dashboard or the SDK.
+
+**From the dashboard:**
+
+1. Go to [app.futureagi.com](https://app.futureagi.com) → **Knowledge base** (left sidebar) → **Create Knowledge Base**
+2. Name it `medisafe-formulary`
+3. Upload your drug monograph files
+4. Click **Create**
+
+**From the SDK:**
+
+```python
+import os
+from fi.kb import KnowledgeBase
+
+kb_client = KnowledgeBase(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+kb_client.create_kb(
+    name="medisafe-formulary",
+    file_paths=[
+        "./formulary/ibuprofen-monograph.pdf",
+        "./formulary/acetaminophen-monograph.pdf",
+        "./formulary/lisinopril-monograph.pdf",
+        "./formulary/metformin-monograph.pdf",
+    ],
+)
+
+print(f"Knowledge Base created: {kb_client.kb.name}")
+```
+
+For this cookbook, here's the drug formulary content we're working with. In a real deployment, these are your actual drug monographs — the ground truth that the chatbot should never deviate from:
+
+**MediSafe Drug Formulary (simplified excerpts):**
+
+- **Ibuprofen (Advil, Motrin):** NSAID. Adult dose: 200-400 mg every 4-6 hours. Max daily dose: 1,200 mg (OTC) / 3,200 mg (prescription). Contraindications: active GI bleeding, severe renal impairment, third trimester pregnancy. Common side effects: nausea, dyspepsia, headache, dizziness. Drug interactions: increased bleeding risk with anticoagulants (warfarin), reduced efficacy of ACE inhibitors and ARBs, increased risk of GI bleeding with SSRIs.
+- **Acetaminophen (Tylenol):** Analgesic/antipyretic. Adult dose: 325-1,000 mg every 4-6 hours. Max daily dose: 4,000 mg (3,000 mg for patients with hepatic impairment or chronic alcohol use). Contraindications: severe hepatic impairment, active liver disease. Common side effects: rare at therapeutic doses; hepatotoxicity at supratherapeutic doses. Drug interactions: warfarin (increased INR with chronic use), isoniazid (increased hepatotoxicity risk).
+- **Lisinopril (Zestril, Prinivil):** ACE inhibitor for hypertension and heart failure. Adult dose: 10-40 mg once daily. Max daily dose: 80 mg. Contraindications: history of angioedema, bilateral renal artery stenosis, pregnancy. Common side effects: dry cough, dizziness, hyperkalemia, headache. Drug interactions: potassium supplements and potassium-sparing diuretics (risk of hyperkalemia), NSAIDs (reduced antihypertensive effect), lithium (increased lithium levels).
+- **Metformin (Glucophage):** Biguanide for type 2 diabetes. Adult dose: 500 mg twice daily, titrated to max 2,550 mg/day. Contraindications: eGFR below 30 mL/min, metabolic acidosis, diabetic ketoacidosis. Common side effects: nausea, diarrhea, flatulence, vitamin B12 deficiency with long-term use. Drug interactions: contrast dyes (risk of lactic acidosis, hold 48 hours before/after), excessive alcohol (increased risk of lactic acidosis).
+
+When the chatbot says anything that contradicts these monographs — an invented dosage, a missed interaction, a confused medication — that's a domain-specific hallucination with real clinical consequences.
+
+<Note>
+**Deep dive:** See [Knowledge Base: Upload Documents and Query with the SDK](/docs/cookbook/quickstart/knowledge-base) for managing files programmatically, adding documents to an existing KB, and using Knowledge Bases for synthetic data generation.
+</Note>
+
+</Step>
+<Step title="Build a test dataset">
+
+Now build a test dataset that simulates what your RAG pipeline actually produces — a mix of correct responses and hallucinated ones. Each row has three parts: the healthcare professional's question (`input`), the agent's response (`output`), and the retrieved formulary chunks (`context`).
+
+The hallucinations here are deliberately the dangerous kind. They don't sound obviously wrong — they sound like plausible medical information. That's what makes them lethal in a clinical setting.
+
+```python
+test_cases = [
+    {
+        "input": "What is the recommended adult dose for ibuprofen, and what's the max daily OTC dose?",
+        "context": (
+            "Ibuprofen (Advil, Motrin): NSAID. Adult dose: 200-400 mg every 4-6 hours. "
+            "Max daily dose: 1,200 mg (OTC) / 3,200 mg (prescription). "
+            "Contraindications: active GI bleeding, severe renal impairment, third trimester pregnancy."
+        ),
+        "output": (
+            "Ibuprofen is dosed at 200-400 mg every 4-6 hours for adults. "
+            "The maximum OTC daily dose is 1,200 mg. For prescription use, the max is 3,200 mg per day. "
+            "It's contraindicated in patients with active GI bleeding, severe renal impairment, "
+            "or third trimester pregnancy."
+        ),
+        "label": "correct",
+    },
+    {
+        "input": "What is the maximum daily dose of acetaminophen for an adult?",
+        "context": (
+            "Acetaminophen (Tylenol): Analgesic/antipyretic. Adult dose: 325-1,000 mg every 4-6 hours. "
+            "Max daily dose: 4,000 mg (3,000 mg for patients with hepatic impairment or chronic "
+            "alcohol use). Contraindications: severe hepatic impairment, active liver disease."
+        ),
+        "output": (
+            "The maximum daily dose of acetaminophen for a healthy adult is 6,000 mg, taken as "
+            "1,500 mg every 6 hours. For patients with liver conditions, reduce to 4,000 mg per day. "
+            "Acetaminophen is very safe at therapeutic doses and rarely causes side effects."
+        ),
+        "label": "hallucinated — invented max dose of 6,000 mg (real limit is 4,000 mg), dangerous hepatotoxicity risk",
+    },
+    {
+        "input": "What drug interactions should I watch for with lisinopril?",
+        "context": (
+            "Lisinopril (Zestril, Prinivil): ACE inhibitor. Drug interactions: potassium supplements "
+            "and potassium-sparing diuretics (risk of hyperkalemia), NSAIDs (reduced antihypertensive "
+            "effect), lithium (increased lithium levels)."
+        ),
+        "output": (
+            "Lisinopril interacts with NSAIDs, which can reduce its blood pressure-lowering effect. "
+            "It can also increase lithium levels if used concurrently. No significant interactions "
+            "with potassium supplements have been reported."
+        ),
+        "label": "hallucinated — omits critical potassium interaction (hyperkalemia risk)",
+    },
+    {
+        "input": "What are the common side effects of metformin?",
+        "context": (
+            "Metformin (Glucophage): Biguanide for type 2 diabetes. Common side effects: nausea, "
+            "diarrhea, flatulence, vitamin B12 deficiency with long-term use. "
+            "Contraindications: eGFR below 30 mL/min, metabolic acidosis, diabetic ketoacidosis."
+        ),
+        "output": (
+            "Common side effects of metformin include nausea, diarrhea, flatulence, "
+            "and vitamin B12 deficiency with long-term use. These GI side effects often improve "
+            "with extended-release formulations or gradual dose titration."
+        ),
+        "label": "correct",
+    },
+    {
+        "input": "Can a patient on warfarin take ibuprofen for pain?",
+        "context": (
+            "Ibuprofen (Advil, Motrin): NSAID. Drug interactions: increased bleeding risk with "
+            "anticoagulants (warfarin), reduced efficacy of ACE inhibitors and ARBs, "
+            "increased risk of GI bleeding with SSRIs."
+        ),
+        "output": (
+            "Ibuprofen should be used with caution in patients on warfarin due to the increased "
+            "risk of bleeding. Both drugs affect hemostasis — warfarin inhibits clotting factors "
+            "while ibuprofen inhibits platelet aggregation and can cause GI irritation. "
+            "Consider acetaminophen as a safer alternative for pain management."
+        ),
+        "label": "correct",
+    },
+    {
+        "input": "What is the recommended starting dose and contraindications for metoprolol?",
+        "context": (
+            "Metformin (Glucophage): Biguanide for type 2 diabetes. Adult dose: 500 mg twice daily, "
+            "titrated to max 2,550 mg/day. Contraindications: eGFR below 30 mL/min, metabolic "
+            "acidosis, diabetic ketoacidosis."
+        ),
+        "output": (
+            "Metoprolol is typically started at 500 mg twice daily for type 2 diabetes management. "
+            "The maximum daily dose is 2,550 mg. It's contraindicated in patients with eGFR below "
+            "30 mL/min, metabolic acidosis, and diabetic ketoacidosis."
+        ),
+        "label": "hallucinated — confused metformin with metoprolol (different drug class entirely, applied diabetes drug info to a beta-blocker)",
+    },
+]
+```
+
+The mix is deliberate: three correct responses and three dangerous hallucinations. Look at what each hallucination does:
+
+- **Test case 2** invents a max dose 50% higher than reality. A patient taking 6,000 mg of acetaminophen could develop acute liver failure.
+- **Test case 3** omits the potassium-lisinopril interaction. A patient on both could develop life-threatening hyperkalemia without warning.
+- **Test case 6** confuses metformin (a diabetes drug) with metoprolol (a beta-blocker) — applying diabetes dosing and contraindications to a completely different medication. This is the medication name confusion problem, and it's one of the most common and dangerous patterns in pharma chatbots.
+
+A generic hallucination detector might catch the dosage invention. But will it catch an *omitted* interaction? Will it flag a name confusion where all the individual facts are "correct" for the wrong medication? That's why domain-specific evaluation matters.
+
+</Step>
+<Step title="Run RAG evaluation metrics">
+
+Run six evaluation metrics across each test case to diagnose what's going wrong and where. These metrics split into two groups: retrieval quality (did the retriever fetch the right drug monograph?) and generation quality (did the LLM use that monograph correctly?).
+
+```python
+from fi.evals import evaluate
+
+for i, test in enumerate(test_cases):
+    print(f"{'='*60}")
+    print(f"Test case {i+1}: {test['input'][:60]}...")
+    print(f"Label: {test['label'][:60]}...")
+    print(f"{'='*60}\n")
+
+    # --- Retrieval metrics ---
+
+    # Context relevance: did the retriever fetch the right drug monograph?
+    relevance = evaluate(
+        "context_relevance",
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+    print(f"context_relevance  : score={relevance.score}  passed={relevance.passed}")
+    print(f"  Reason: {relevance.reason}\n")
+
+    # Chunk attribution: can each claim be traced to a specific chunk?
+    attribution = evaluate(
+        "chunk_attribution",
+        output=test["output"],
+        context=test["context"],
+        model="turing_small",
+    )
+    print(f"chunk_attribution  : score={attribution.score}  passed={attribution.passed}")
+    print(f"  Reason: {attribution.reason}\n")
+
+    # Chunk utilization: how much of the formulary chunk was actually used?
+    utilization = evaluate(
+        "chunk_utilization",
+        output=test["output"],
+        context=test["context"],
+        model="turing_small",
+    )
+    print(f"chunk_utilization  : score={utilization.score}  passed={utilization.passed}")
+    print(f"  Reason: {utilization.reason}\n")
+
+    # --- Generation metrics ---
+
+    # Groundedness: is the response grounded in the formulary?
+    groundedness = evaluate(
+        "groundedness",
+        output=test["output"],
+        input=test["input"],
+        context=test["context"],
+        model="turing_small",
+    )
+    print(f"groundedness       : score={groundedness.score}  passed={groundedness.passed}")
+    print(f"  Reason: {groundedness.reason}\n")
+
+    # Completeness: did the response fully answer the clinical question?
+    completeness = evaluate(
+        "completeness",
+        input=test["input"],
+        output=test["output"],
+        model="turing_small",
+    )
+    print(f"completeness       : score={completeness.score}  passed={completeness.passed}")
+    print(f"  Reason: {completeness.reason}\n")
+
+    # Factual accuracy: are the medical facts correct given the formulary?
+    accuracy = evaluate(
+        "factual_accuracy",
+        input=test["input"],
+        output=test["output"],
+        context=test["context"],
+        model="turing_small",
+    )
+    print(f"factual_accuracy   : score={accuracy.score}  passed={accuracy.passed}")
+    print(f"  Reason: {accuracy.reason}\n")
+```
+
+This runs all six metrics on every test case. For the correctly-grounded responses (test cases 1, 4, and 5), expect all metrics to pass. For the hallucinated responses, the interesting part is *which* metrics flag the problem — and which ones miss it. That tells you the root cause and whether you need domain-specific evals on top of the built-in ones.
+
+<Note>
+**Deep dive:** See [RAG Pipeline Evaluation: Debug Retrieval vs Generation](/docs/cookbook/quickstart/rag-evaluation) for grouping metrics by required input keys, running batch diagnostics, and building decision logic for CI pipelines.
+</Note>
+
+</Step>
+<Step title="Diagnose the failures">
+
+Each metric tells you something different about what went wrong. In pharma, the diagnosis isn't just academic — it determines whether you fix the retriever, the generator, or the system prompt.
+
+| Metric | What a failure means | Clinical risk |
+|---|---|---|
+| `groundedness` fails | Response contains claims not in the formulary | Agent is inventing medical information — dosages, interactions, or indications that don't exist in the source |
+| `context_relevance` fails | Retriever fetched the wrong drug monograph | Agent could be answering about the wrong medication entirely |
+| `chunk_attribution` fails | Output claims can't be traced to any formulary chunk | Agent is fabricating details beyond what the monograph says |
+| `chunk_utilization` fails | Agent ignored most of the retrieved formulary content | Missed critical safety information like contraindications or interactions |
+| `completeness` fails | Response doesn't fully answer the clinical question | Healthcare provider gets partial information — a missed interaction could be life-threatening |
+| `factual_accuracy` fails | Stated facts are wrong given the formulary | Wrong dosage, wrong contraindication, wrong side effect — direct patient harm |
+
+Here's what to expect for each hallucinated test case:
+
+- **Test case 2 (invented acetaminophen dose):** Expect `groundedness` and `factual_accuracy` to fail — the response states 6,000 mg max when the formulary says 4,000 mg. The `chunk_attribution` should also fail since "6,000 mg" and "1,500 mg every 6 hours" can't be traced to any chunk. But `context_relevance` should pass — the retriever fetched the correct acetaminophen monograph.
+
+- **Test case 3 (omitted lisinopril interaction):** This is the subtle one. `completeness` should flag that the response fails to mention the potassium supplement interaction. `factual_accuracy` should catch the false claim that "no significant interactions with potassium supplements have been reported" — that directly contradicts the formulary. `context_relevance` passes; the retriever found the right monograph.
+
+- **Test case 6 (metformin/metoprolol confusion):** `context_relevance` is the key metric here. The retriever fetched the metformin monograph, but the question was about metoprolol. If `context_relevance` fails, the problem starts at retrieval — the system couldn't distinguish between two medications with similar names. If `context_relevance` passes (because the retrieved context is about medication dosing, broadly relevant), then `factual_accuracy` and `groundedness` should still fail because the response applies the wrong drug's information.
+
+The pattern across the hallucinated cases tells you the fix:
+
+```python
+for i, test in enumerate(test_cases):
+    relevance = evaluate(
+        "context_relevance",
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+    groundedness = evaluate(
+        "groundedness",
+        output=test["output"],
+        input=test["input"],
+        context=test["context"],
+        model="turing_small",
+    )
+
+    retrieval_ok = relevance.passed
+    generation_ok = groundedness.passed
+
+    if not retrieval_ok and not generation_ok:
+        diagnosis = "Both retrieval and generation failing"
+    elif not retrieval_ok:
+        diagnosis = "RETRIEVAL problem — wrong drug monograph fetched"
+    elif not generation_ok:
+        diagnosis = "GENERATION problem — LLM hallucinating despite correct formulary context"
+    else:
+        diagnosis = "Pipeline healthy"
+
+    print(f"Test {i+1}: {diagnosis}")
+    print(f"  Label: {test['label'][:60]}...\n")
+```
+
+<Note>
+**Deep dive:** See [Hallucination Detection with Faithfulness & Groundedness](/docs/cookbook/quickstart/hallucination-detection) for combining local NLI faithfulness checks with Turing-based groundedness scoring in a single `evaluate()` call.
+</Note>
+
+</Step>
+<Step title="Create a custom eval for medication accuracy">
+
+The built-in metrics catch general hallucination patterns. But pharma has domain-specific rules that generic evaluators don't know about — like "the max daily dose of acetaminophen is 4,000 mg" or "never confuse medications with similar-sounding names." You need a custom eval.
+
+**In the dashboard:**
+
+1. Go to [app.futureagi.com](https://app.futureagi.com) → **Evals** (left sidebar under BUILD)
+2. Click **Create Evaluation**
+3. Fill in:
+   - **Name**: `medication_accuracy`
+   - **Template type**: **Use Future AGI Agents**
+   - **Model**: `turing_small`
+   - **Output Type**: `Pass/Fail`
+4. Write the **Rule Prompt**:
+
+```
+You are a pharmaceutical accuracy checker for a drug information chatbot.
+
+The agent's response: {{output}}
+The source formulary: {{context}}
+The healthcare professional's question: {{input}}
+
+STRICT PHARMACEUTICAL RULES — mark FAIL if ANY are violated:
+
+1. DOSAGE ACCURACY
+   - All dosages must exactly match the source formulary
+   - No invented dose amounts, frequencies, or maximum daily limits
+   - If the formulary says max 4,000 mg/day, the response must not state a higher limit
+
+2. DRUG INTERACTION COMPLETENESS
+   - All drug interactions listed in the source formulary must be mentioned when asked
+   - Omitting a listed interaction is a FAIL — missing a drug interaction is clinically dangerous
+   - Downplaying a listed interaction (e.g., saying "no significant interaction" when one is documented) is a FAIL
+
+3. MEDICATION IDENTITY
+   - The response must be about the correct medication
+   - Applying Drug A's information to Drug B is a FAIL, even if the individual facts are accurate for Drug A
+   - Watch for similar-sounding drug names: metformin vs metoprolol, hydroxyzine vs hydralazine, etc.
+
+4. CONTRAINDICATION ACCURACY
+   - All contraindications must match the source formulary
+   - No invented contraindications; no omitted contraindications when asked
+   - Safety-critical omissions are always a FAIL
+
+5. SIDE EFFECT ACCURACY
+   - Listed side effects must match the source formulary
+   - Do not attribute side effects from one medication to another
+
+Mark PASS only if every clinical claim in the response is accurate according to the source formulary, no critical information is omitted, and the response is about the correct medication.
+
+Return PASS or FAIL with a specific reason identifying which rule was violated and the exact clinical error.
+```
+
+5. Click **Create Evaluation**
+
+Now run it via SDK against each test case:
+
+```python
+import os
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+# Test against the hallucinated acetaminophen dose
+result = evaluator.evaluate(
+    eval_templates="medication_accuracy",
+    inputs={
+        "output": (
+            "The maximum daily dose of acetaminophen for a healthy adult is 6,000 mg, taken as "
+            "1,500 mg every 6 hours. For patients with liver conditions, reduce to 4,000 mg per day. "
+            "Acetaminophen is very safe at therapeutic doses and rarely causes side effects."
+        ),
+        "context": (
+            "Acetaminophen (Tylenol): Analgesic/antipyretic. Adult dose: 325-1,000 mg every 4-6 hours. "
+            "Max daily dose: 4,000 mg (3,000 mg for patients with hepatic impairment or chronic "
+            "alcohol use). Contraindications: severe hepatic impairment, active liver disease."
+        ),
+        "input": "What is the maximum daily dose of acetaminophen for an adult?",
+    },
+)
+
+eval_result = result.eval_results[0]
+print(f"Result: {eval_result.output}")
+print(f"Reason: {eval_result.reason}")
+```
+
+Expect this to fail with a reason identifying the invented 6,000 mg max dose. The custom eval knows that the formulary says 4,000 mg and flags the 50% inflation as a clinical error.
+
+Now test the omitted lisinopril interaction:
+
+```python
+result = evaluator.evaluate(
+    eval_templates="medication_accuracy",
+    inputs={
+        "output": (
+            "Lisinopril interacts with NSAIDs, which can reduce its blood pressure-lowering effect. "
+            "It can also increase lithium levels if used concurrently. No significant interactions "
+            "with potassium supplements have been reported."
+        ),
+        "context": (
+            "Lisinopril (Zestril, Prinivil): ACE inhibitor. Drug interactions: potassium supplements "
+            "and potassium-sparing diuretics (risk of hyperkalemia), NSAIDs (reduced antihypertensive "
+            "effect), lithium (increased lithium levels)."
+        ),
+        "input": "What drug interactions should I watch for with lisinopril?",
+    },
+)
+
+eval_result = result.eval_results[0]
+print(f"Result: {eval_result.output}")
+print(f"Reason: {eval_result.reason}")
+```
+
+This should fail on rule 2 (Drug Interaction Completeness) — the response claims no potassium interaction when the formulary explicitly lists one. A generic groundedness check might miss this because the response doesn't *contradict* the context — it *omits* critical safety information and then actively denies it. The custom eval catches it because it knows that omitting a listed interaction is a clinical failure.
+
+And test the metformin/metoprolol confusion:
+
+```python
+result = evaluator.evaluate(
+    eval_templates="medication_accuracy",
+    inputs={
+        "output": (
+            "Metoprolol is typically started at 500 mg twice daily for type 2 diabetes management. "
+            "The maximum daily dose is 2,550 mg. It's contraindicated in patients with eGFR below "
+            "30 mL/min, metabolic acidosis, and diabetic ketoacidosis."
+        ),
+        "context": (
+            "Metformin (Glucophage): Biguanide for type 2 diabetes. Adult dose: 500 mg twice daily, "
+            "titrated to max 2,550 mg/day. Contraindications: eGFR below 30 mL/min, metabolic "
+            "acidosis, diabetic ketoacidosis."
+        ),
+        "input": "What is the recommended starting dose and contraindications for metoprolol?",
+    },
+)
+
+eval_result = result.eval_results[0]
+print(f"Result: {eval_result.output}")
+print(f"Reason: {eval_result.reason}")
+```
+
+This should fail on rule 3 (Medication Identity) — the response applies metformin data to metoprolol. Every individual fact is "correct" for metformin, but it's being presented as information about a completely different drug. This is precisely the kind of error that domain-specific evals catch and generic ones miss.
+
+<Note>
+**Deep dive:** See [Custom Eval Metrics: Write Your Own Evaluation Criteria](/docs/cookbook/quickstart/custom-eval-metrics) for creating custom evals with numerical scoring, function-based evals, and running them on full datasets.
+</Note>
+
+</Step>
+<Step title="Run the full diagnostic">
+
+Now combine the built-in RAG metrics with your custom medication accuracy eval on the entire test dataset. This gives you both general hallucination detection and pharma-specific safety checking in one pass.
+
+```python
+import os
+from fi.evals import evaluate, Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+for i, test in enumerate(test_cases):
+    print(f"\n{'='*60}")
+    print(f"Test case {i+1}: {test['input'][:60]}...")
+    print(f"Expected: {test['label'][:60]}...")
+    print(f"{'='*60}")
+
+    # Built-in RAG metrics
+    groundedness = evaluate(
+        "groundedness",
+        output=test["output"],
+        input=test["input"],
+        context=test["context"],
+        model="turing_small",
+    )
+
+    relevance = evaluate(
+        "context_relevance",
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+
+    accuracy = evaluate(
+        "factual_accuracy",
+        input=test["input"],
+        output=test["output"],
+        context=test["context"],
+        model="turing_small",
+    )
+
+    completeness = evaluate(
+        "completeness",
+        input=test["input"],
+        output=test["output"],
+        model="turing_small",
+    )
+
+    # Custom domain eval
+    domain_check = evaluator.evaluate(
+        eval_templates="medication_accuracy",
+        inputs={
+            "output": test["output"],
+            "context": test["context"],
+            "input": test["input"],
+        },
+    )
+    domain_result = domain_check.eval_results[0]
+
+    # Summary
+    print(f"  groundedness       : {'PASS' if groundedness.passed else 'FAIL'} (score={groundedness.score})")
+    print(f"  context_relevance  : {'PASS' if relevance.passed else 'FAIL'} (score={relevance.score})")
+    print(f"  factual_accuracy   : {'PASS' if accuracy.passed else 'FAIL'} (score={accuracy.score})")
+    print(f"  completeness       : {'PASS' if completeness.passed else 'FAIL'} (score={completeness.score})")
+    print(f"  medication_accuracy: {domain_result.output}")
+
+    if not groundedness.passed or not accuracy.passed:
+        print(f"\n  Groundedness reason: {groundedness.reason}")
+        print(f"  Accuracy reason: {accuracy.reason}")
+        print(f"  Domain reason: {domain_result.reason}")
+```
+
+The combination is what makes this diagnostically powerful. Here's what each layer catches:
+
+| Test Case | Built-in Metrics | Custom Eval | Why Both Matter |
+|---|---|---|---|
+| 1 (correct ibuprofen dose) | All pass | Pass | Baseline — confirms healthy pipeline for grounded responses |
+| 2 (invented acetaminophen dose) | `groundedness`, `factual_accuracy` fail | Fail (rule 1: dosage) | Built-in catches the ungrounded claim; custom eval identifies the specific clinical error |
+| 3 (omitted lisinopril interaction) | `completeness` may flag; `factual_accuracy` should catch the false denial | Fail (rule 2: interaction) | Custom eval is essential here — it catches the *omission* and the false safety claim |
+| 4 (correct metformin side effects) | All pass | Pass | Baseline |
+| 5 (correct warfarin-ibuprofen warning) | All pass | Pass | Baseline |
+| 6 (metformin/metoprolol confusion) | `context_relevance` may fail; `factual_accuracy` should fail | Fail (rule 3: identity) | Custom eval catches the name confusion even when individual facts look "correct" |
+
+The built-in metrics tell you *something* is wrong. The custom eval tells you *exactly what* is wrong in pharmaceutical terms — and that's what a clinical reviewer needs to see in a safety audit.
+
+</Step>
+<Step title="Fix the pipeline">
+
+Based on the diagnostic results, you now know the root causes. For MediSafe's chatbot, the fixes fall into two categories depending on what the evals revealed.
+
+**Path A: Fix retrieval** (when `context_relevance` is low)
+
+Test case 6 — the metformin/metoprolol confusion — likely has a retrieval component. The retriever couldn't distinguish between two similarly-named medications. Fixes include:
+
+- **Chunk by medication** — each drug monograph should be its own chunk, not split across multiple chunks that could get mixed up
+- **Add medication name as metadata** — filter retrieval results by drug name before passing to the LLM
+- **Use exact-match retrieval for drug names** — don't rely solely on semantic similarity for medication lookups, where "metformin" and "metoprolol" might have high embedding similarity
+- **Increase chunk size for drug monographs** — a complete monograph in one chunk prevents cross-medication contamination
+
+**Path B: Fix generation** (when `context_relevance` is high but `groundedness` is low)
+
+Test cases 2 and 3 are generation problems. The retriever found the right formulary content, but the LLM either invented numbers or omitted critical safety information. The fix is in the system prompt:
+
+```python
+IMPROVED_SYSTEM_PROMPT = """You are a drug information assistant for MediSafe Pharma. You help healthcare professionals look up medication details using ONLY the provided formulary context.
+
+PATIENT SAFETY RULES — these are non-negotiable:
+
+1. DOSAGE ACCURACY
+   - Only state dosages that appear verbatim in the provided context
+   - Never round, estimate, or extrapolate dosages
+   - If a dose is not in the context, say: "I don't have that dosage information in the current formulary. Please consult the full prescribing information."
+
+2. DRUG INTERACTION COMPLETENESS
+   - When asked about interactions, list ALL interactions from the context — do not omit any
+   - Never state that no interactions exist unless the context explicitly says so
+   - If the context lists an interaction, it MUST appear in your response
+
+3. MEDICATION IDENTITY
+   - Verify that the medication in your response matches the medication in the question
+   - If the context is about a different medication than what was asked, say: "The available context appears to be about [drug name], not [asked drug name]. Let me clarify."
+   - Never apply one drug's information to another drug
+
+4. CONTRAINDICATION COMPLETENESS
+   - List all contraindications from the context when asked
+   - Never state a medication is safe for a population if the context lists it as contraindicated
+
+5. WHEN IN DOUBT
+   - If the context does not contain sufficient information, say so explicitly
+   - Never fill gaps with general medical knowledge — only use the provided context
+   - Direct the healthcare professional to the full prescribing information or a pharmacist
+
+RESPONSE FORMAT:
+- Lead with the direct answer to the question
+- Include relevant safety information (contraindications, interactions) even if not explicitly asked
+- End with any applicable warnings from the context
+
+Context: {context}
+
+Question: {question}"""
+```
+
+The key changes from the original prompt:
+
+- **Explicit safety-first framing** — "non-negotiable" signals to the model that accuracy outweighs helpfulness
+- **Verbatim dosage rule** — prevents the model from inventing or rounding numbers
+- **Complete interaction listing** — prevents the omission pattern seen in test case 3
+- **Medication identity verification** — directly addresses the name confusion in test case 6
+- **Explicit fallback behavior** — "I don't have that information" is safer than a plausible guess
+- **Unprompted safety information** — includes contraindications and interactions even when the question only asks about dosing
+
+After updating the system prompt, re-run the full diagnostic from Step 6 on the same test cases. The correctly-grounded responses should still pass, and the previously hallucinated scenarios should now produce safe, grounded responses — or explicit "I don't have that information" fallbacks, which in pharma is always the right answer when the ground truth isn't available.
+
+<Tip>
+Run this diagnostic suite whenever you update your drug formulary. When a new drug is added or a dosage recommendation changes, the custom eval's rule prompt may need updating too — otherwise it will flag the new information as a hallucination. Treat your eval rules like your formulary: version them and review them quarterly.
+</Tip>
+
+<Note>
+**Automate the loop:** Once you've versioned your system prompt with [Prompt Versioning](/docs/cookbook/quickstart/prompt-versioning), you can run these evals in CI using the [CI/CD Eval Pipeline](/docs/cookbook/quickstart/cicd-eval-pipeline) to catch regressions automatically on every prompt change. For pharma, this means no prompt update goes live without passing the full medication accuracy diagnostic.
+</Note>
+
+</Step>
+</Steps>
+
+## What you built
+
+<Check>
+You can now detect domain-specific hallucinations in a pharmaceutical drug information chatbot by grounding evaluations against your actual drug formulary, diagnosing whether failures come from retrieval or generation, and applying targeted fixes that prioritize patient safety.
+</Check>
+
+- Uploaded drug formulary documents to a **Knowledge Base** as the single pharmaceutical source of truth
+- Built a test dataset with three categories of dangerous hallucinations — invented dosages, omitted drug interactions, and medication name confusion
+- Ran **six RAG evaluation metrics** (`groundedness`, `context_relevance`, `chunk_attribution`, `chunk_utilization`, `completeness`, `factual_accuracy`) to diagnose each failure and identify whether the root cause is retrieval or generation
+- Created a **custom eval** (`medication_accuracy`) with five pharmaceutical-specific rules — dosage accuracy, drug interaction completeness, medication identity, contraindication accuracy, and side effect accuracy
+- Combined built-in and custom evals in a **full diagnostic sweep** that catches both general hallucination patterns and pharma-specific clinical errors
+- Applied **targeted fixes** to both retrieval (per-medication chunking, metadata filtering) and generation (safety-first system prompt with verbatim dosage rules, complete interaction listing, and medication identity verification)
+
+## Explore the features
+
+<CardGroup cols={4}>
+  <Card title="RAG Evaluation" icon="magnifying-glass" href="/docs/cookbook/quickstart/rag-evaluation">
+    Debug retrieval vs generation with five targeted metrics
+  </Card>
+  <Card title="Hallucination Detection" icon="ghost" href="/docs/cookbook/quickstart/hallucination-detection">
+    Faithfulness, groundedness, and context adherence scoring
+  </Card>
+  <Card title="Custom Eval Metrics" icon="ruler" href="/docs/cookbook/quickstart/custom-eval-metrics">
+    Write domain-specific evaluation criteria in plain English
+  </Card>
+  <Card title="Knowledge Base" icon="database" href="/docs/cookbook/quickstart/knowledge-base">
+    Upload and manage documents for grounded evaluations
+  </Card>
+</CardGroup>

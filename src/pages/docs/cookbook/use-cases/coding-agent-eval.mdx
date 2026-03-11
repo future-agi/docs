@@ -1,0 +1,589 @@
+---
+title: "Evaluating Coding Agents and Code Generation"
+description: "Evaluate an AI code review agent for correctness, security, and style — using built-in metrics, custom evals, and batch evaluation across a full test suite."
+---
+
+| Time | Difficulty | Features Used |
+|------|-----------|---------------|
+| 30 min | Intermediate | Evaluation, Custom Eval Metrics, Batch Evaluation |
+
+You're building an AI code review assistant for **DevForge**, a developer tools startup. The agent plugs into PR workflows: it reads a code diff, spots bugs and security issues, and suggests fixes.
+
+The problem is that the agent sometimes suggests code that doesn't compile, misses SQL injection vulnerabilities, leaves hardcoded secrets unflagged, or makes stylistically inconsistent changes. You need to catch these failures before the suggestions reach developers.
+
+This cookbook builds a test dataset of code review scenarios, evaluates the agent with built-in metrics, creates custom evals for security and style, and batch-evaluates the full suite to find exactly where the agent breaks.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install ai-evaluation futureagi openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Steps>
+<Step title="Build your code review agent">
+
+A simple agent that takes a Python code snippet and returns a review: what's wrong, why it matters, and a suggested fix.
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI()
+
+SYSTEM_PROMPT = """You are a senior Python code reviewer at DevForge. When given a code snippet, you must:
+
+1. Identify all bugs, security vulnerabilities, and style issues
+2. Explain why each issue matters
+3. Provide a corrected version of the code
+
+Be thorough. A missed SQL injection or hardcoded secret in production is a security incident.
+If the code looks correct and follows best practices, say "LGTM — no issues found." and explain briefly why it's good."""
+
+
+def review_code(code_snippet: str) -> str:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Review this code:\n\n```python\n{code_snippet}\n```"},
+        ],
+        temperature=0.2,
+    )
+    return response.choices[0].message.content
+```
+
+Low temperature keeps the reviews deterministic. Let's define the code snippets we'll throw at it — real patterns from real PRs.
+
+```python
+code_snippets = {
+    "sql_injection": '''
+def get_user(username):
+    query = f"SELECT * FROM users WHERE name = '{username}'"
+    cursor.execute(query)
+    return cursor.fetchone()
+''',
+
+    "hardcoded_secret": '''
+import requests
+
+API_KEY = "sk-proj-a8Kx9mN3vR7wQ2pL5tY6uB4cD1eF0gH"
+
+def fetch_data(endpoint):
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+    return requests.get(f"https://api.example.com/{endpoint}", headers=headers)
+''',
+
+    "missing_error_handling": '''
+import json
+
+def parse_config(filepath):
+    with open(filepath) as f:
+        config = json.load(f)
+    return config["database"]["host"]
+''',
+
+    "inefficient_loop": '''
+def find_duplicates(items):
+    duplicates = []
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            if items[i] == items[j] and items[i] not in duplicates:
+                duplicates.append(items[i])
+    return duplicates
+''',
+
+    "type_mismatch": '''
+def calculate_discount(price, discount_percent):
+    discount = price * discount_percent / "100"
+    return price - discount
+''',
+
+    "clean_code": '''
+from typing import Optional
+from dataclasses import dataclass
+
+@dataclass
+class User:
+    """Represents a registered user."""
+    name: str
+    email: str
+    role: str = "viewer"
+
+    def has_permission(self, required_role: str) -> bool:
+        """Check if user meets the minimum role requirement."""
+        role_hierarchy = {"viewer": 0, "editor": 1, "admin": 2}
+        return role_hierarchy.get(self.role, 0) >= role_hierarchy.get(required_role, 0)
+''',
+}
+```
+
+Six scenarios: SQL injection, hardcoded API key, missing error handling, an O(n^2) loop, a type error, and one clean snippet that should get a passing review.
+
+</Step>
+<Step title="Create a test dataset">
+
+Run the agent on all six snippets and pair each input with its review. This becomes your evaluation dataset.
+
+```python
+print("Generating code reviews...\n")
+
+test_data = []
+for name, snippet in code_snippets.items():
+    review = review_code(snippet)
+    test_data.append({
+        "scenario": name,
+        "code_snippet": snippet.strip(),
+        "agent_review": review,
+    })
+    print(f"{name}:")
+    print(f"  Review length: {len(review)} chars")
+    print(f"  First line: {review.split(chr(10))[0][:80]}...\n")
+```
+
+You now have six input-output pairs. The `code_snippet` is the input (what the developer submitted for review), and `agent_review` is the output (what the agent said about it). Time to find out if the agent actually caught everything.
+
+</Step>
+<Step title="Evaluate with built-in metrics">
+
+Start with two built-in metrics that apply to any input-output pair:
+
+- **`completeness`** — did the review address all the issues in the code?
+- **`factual_accuracy`** — are the agent's claims about the code actually correct?
+
+```python
+import os
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+print(f"{'Scenario':<25} {'Completeness':<15} {'Factual Acc.':<15}")
+print("-" * 55)
+
+for item in test_data:
+    completeness = evaluator.evaluate(
+        eval_templates="completeness",
+        inputs={
+            "input": f"Review this Python code for bugs, security issues, and style:\n{item['code_snippet']}",
+            "output": item["agent_review"],
+        },
+        model_name="turing_small",
+    )
+
+    factual_acc = evaluator.evaluate(
+        eval_templates="factual_accuracy",
+        inputs={
+            "output": item["agent_review"],
+            "context": item["code_snippet"],
+        },
+        model_name="turing_small",
+    )
+
+    comp_result = completeness.eval_results[0]
+    fact_result = factual_acc.eval_results[0]
+
+    comp_score = comp_result.output[0] if isinstance(comp_result.output, list) else comp_result.output
+    fact_score = fact_result.output[0] if isinstance(fact_result.output, list) else fact_result.output
+
+    print(f"{item['scenario']:<25} {str(comp_score):<15} {str(fact_score):<15}")
+```
+
+`completeness` checks whether the review addresses everything the input asked for — if the code has three issues, did the review mention all three? `factual_accuracy` checks whether the review's claims are consistent with the actual code. A review that says "this function returns a string" when it returns an int would fail factual accuracy.
+
+Built-in metrics give you a solid baseline. But they don't know what a SQL injection looks like, or whether the suggested fix follows PEP 8. For that, you need custom evals.
+
+<Note>
+**New to evaluation?** See [Running Your First Eval](/docs/cookbook/quickstart/first-eval) for the three evaluation engines (local, Turing, LLM-as-Judge) and how `evaluate()` works.
+</Note>
+
+</Step>
+<Step title="Create a security eval">
+
+This custom eval checks whether the code review correctly identifies security vulnerabilities — SQL injection, hardcoded secrets, and unsafe deserialization.
+
+**In the dashboard:**
+
+1. Go to [app.futureagi.com](https://app.futureagi.com) → **Evals** (left sidebar under BUILD)
+2. Click **Create Evaluation**
+3. Fill in:
+   - **Name**: `code_security_review`
+   - **Template type**: **Use Future AGI Agents**
+   - **Model**: `turing_small`
+   - **Output Type**: `Pass/Fail`
+4. Write the **Rule Prompt**:
+
+```
+You are evaluating whether a code review correctly identifies security vulnerabilities.
+
+The original code:
+{{code_snippet}}
+
+The code review:
+{{agent_review}}
+
+Mark PASS only if ALL of the following are true:
+- If the code contains SQL injection (string formatting in SQL queries), the review explicitly flags it and suggests parameterized queries
+- If the code contains hardcoded secrets (API keys, passwords, tokens in source), the review explicitly flags it and suggests environment variables or a secrets manager
+- If the code contains unsafe deserialization (pickle.loads on untrusted input, eval() on user data), the review explicitly flags it
+- If the code has no security vulnerabilities, the review does NOT fabricate false security warnings
+
+Mark FAIL if any security vulnerability is missed, or if the review invents security issues that don't exist.
+```
+
+5. Click **Create Evaluation**
+
+Now call it from the SDK:
+
+```python
+print(f"{'Scenario':<25} {'Security Eval':<15} Reason")
+print("-" * 80)
+
+for item in test_data:
+    result = evaluator.evaluate(
+        eval_templates="code_security_review",
+        inputs={
+            "code_snippet": item["code_snippet"],
+            "agent_review": item["agent_review"],
+        },
+    )
+
+    eval_result = result.eval_results[0]
+    output = eval_result.output[0] if isinstance(eval_result.output, list) else eval_result.output
+    reason = eval_result.reason if eval_result.reason else "—"
+    print(f"{item['scenario']:<25} {str(output):<15} {reason[:60]}")
+```
+
+The two scenarios that should definitely pass the security eval: `sql_injection` (must flag the f-string query) and `hardcoded_secret` (must flag the API key). The `clean_code` scenario should pass by not fabricating false positives. The rest are non-security issues — the eval should pass as long as the review doesn't invent phantom vulnerabilities.
+
+<Note>
+**Deep dive:** See [Custom Eval Metrics](/docs/cookbook/quickstart/custom-eval-metrics) for the full workflow — Pass/Fail vs. Percentage output types, Rule Prompt syntax, and running custom evals on datasets.
+</Note>
+
+</Step>
+<Step title="Create a style conformance eval">
+
+This custom eval checks whether the agent's suggested fixes follow Python style conventions.
+
+**In the dashboard:**
+
+1. Repeat the process from Step 4, but set:
+   - **Name**: `code_style_conformance`
+   - **Output Type**: `Percentage`
+2. Write the **Rule Prompt**:
+
+```
+You are evaluating whether a code review's suggested fixes follow Python style best practices.
+
+The original code:
+{{code_snippet}}
+
+The code review with suggested fixes:
+{{agent_review}}
+
+Score using these criteria (each worth up to 25 points):
+
+1. NAMING (25 points): Do suggested variable/function names follow snake_case? Are they descriptive rather than single-letter?
+2. DOCSTRINGS (25 points): Does the review suggest adding or improving docstrings where functions lack them? Does it not demand docstrings on trivially obvious one-liners?
+3. TYPE HINTS (25 points): Does the review suggest adding type hints where missing? Are suggested type hints correct?
+4. STRUCTURE (25 points): Does the review suggest appropriate error handling patterns, context managers, or Pythonic idioms (list comprehensions, dataclasses, etc.) where relevant?
+
+If the review says "LGTM" for clean code that already follows all these conventions, give full marks for all applicable criteria.
+
+Return a score from 0.0 to 1.0 (e.g., 0.75 for 75/100).
+```
+
+Run it:
+
+```python
+print(f"{'Scenario':<25} {'Style Score':<15} Reason")
+print("-" * 80)
+
+for item in test_data:
+    result = evaluator.evaluate(
+        eval_templates="code_style_conformance",
+        inputs={
+            "code_snippet": item["code_snippet"],
+            "agent_review": item["agent_review"],
+        },
+    )
+
+    eval_result = result.eval_results[0]
+    output = eval_result.output[0] if isinstance(eval_result.output, list) else eval_result.output
+    reason = eval_result.reason if eval_result.reason else "—"
+    print(f"{item['scenario']:<25} {str(output):<15} {reason[:60]}")
+```
+
+The style eval catches a different class of failures than security. An agent might correctly flag a SQL injection but suggest a fix that uses `camelCase` variable names or skips error handling in the replacement code. Both evals run independently, giving you separate quality signals.
+
+</Step>
+<Step title="Batch evaluate the full suite">
+
+Upload the dataset and run all evals — built-in and custom — across every row in one pass.
+
+```python
+import csv
+import os
+from fi.datasets import Dataset, DatasetConfig
+from fi.utils.types import ModelTypes
+
+csv_path = "code_review_dataset.csv"
+with open(csv_path, "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=["scenario", "code_snippet", "agent_review"])
+    writer.writeheader()
+    for item in test_data:
+        writer.writerow(item)
+
+print(f"Saved {len(test_data)} rows to {csv_path}")
+
+dataset = Dataset(
+    dataset_config=DatasetConfig(
+        name="devforge-code-review-eval",
+        model_type=ModelTypes.GENERATIVE_LLM,
+    ),
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+dataset.create(source=csv_path)
+print(f"Dataset created: {dataset.dataset_config.name}")
+```
+
+Now run all four evaluations on the dataset:
+
+```python
+{/* Built-in: completeness */}
+dataset.add_evaluation(
+    name="completeness",
+    eval_template="completeness",
+    required_keys_to_column_names={
+        "input": "code_snippet",
+        "output": "agent_review",
+    },
+    model="turing_small",
+    run=True,
+    reason_column=True,
+)
+print("Started: completeness")
+
+{/* Built-in: factual_accuracy */}
+dataset.add_evaluation(
+    name="factual-accuracy",
+    eval_template="factual_accuracy",
+    required_keys_to_column_names={
+        "output": "agent_review",
+        "context": "code_snippet",
+    },
+    model="turing_small",
+    run=True,
+    reason_column=True,
+)
+print("Started: factual_accuracy")
+
+{/* Custom: security */}
+dataset.add_evaluation(
+    name="security-review",
+    eval_template="code_security_review",
+    required_keys_to_column_names={
+        "code_snippet": "code_snippet",
+        "agent_review": "agent_review",
+    },
+    run=True,
+    reason_column=True,
+)
+print("Started: code_security_review")
+
+{/* Custom: style */}
+dataset.add_evaluation(
+    name="style-conformance",
+    eval_template="code_style_conformance",
+    required_keys_to_column_names={
+        "code_snippet": "code_snippet",
+        "agent_review": "agent_review",
+    },
+    run=True,
+    reason_column=True,
+)
+print("Started: code_style_conformance")
+```
+
+Check the results in the dashboard: go to **Dataset** → click `devforge-code-review-eval`. You'll see four new score columns alongside the original data.
+
+Download the scored results to analyze locally:
+
+```python
+df = dataset.download(load_to_pandas=True)
+
+print("Columns:", list(df.columns))
+print(f"\n{len(df)} rows scored across {len([c for c in df.columns if 'reason' not in c.lower() and c not in ['scenario', 'code_snippet', 'agent_review']])} eval columns\n")
+print(df[["scenario"]].to_string())
+```
+
+<Note>
+**Deep dive:** See [Dataset SDK: Upload, Evaluate, and Download Results](/docs/cookbook/quickstart/batch-eval) for the full batch evaluation workflow — CSV upload, programmatic row addition, evaluation stats, and DataFrame export.
+</Note>
+
+</Step>
+<Step title="Improve the code review prompt">
+
+The eval results reveal specific failure patterns. Common ones for code review agents:
+
+- **Security misses** — the agent flags the SQL injection but misses the hardcoded secret (or vice versa). The security eval catches this.
+- **False positives on clean code** — the agent invents issues in the `clean_code` snippet instead of saying "LGTM." Completeness and factual accuracy flag this.
+- **Style gaps in fixes** — the agent suggests a parameterized query but doesn't add type hints or error handling to the fix. The style eval catches this.
+
+Based on these patterns, here's an improved system prompt:
+
+```python
+IMPROVED_PROMPT = """You are a senior Python code reviewer at DevForge. Your job is to review code for three categories of issues, in this priority order:
+
+## 1. SECURITY (Critical — always check first)
+Scan for these specific patterns:
+- SQL injection: string formatting/concatenation in SQL queries → suggest parameterized queries with placeholders
+- Hardcoded secrets: API keys, passwords, tokens, connection strings in source → suggest environment variables (os.environ) or a secrets manager
+- Unsafe deserialization: pickle.loads(), eval(), exec() on untrusted input → suggest safe alternatives (json.loads, ast.literal_eval)
+- Path traversal: unsanitized user input in file paths → suggest path validation
+
+If you find a security issue, label it as [SECURITY] and explain the attack vector.
+
+## 2. CORRECTNESS (High — bugs that cause runtime failures)
+- Type mismatches (string/int operations, wrong argument types)
+- Missing error handling (bare file operations, unhandled JSON parsing, missing KeyError protection)
+- Logic errors (off-by-one, wrong comparison operators, incorrect return values)
+- Resource leaks (unclosed files, connections, missing context managers)
+
+If you find a correctness issue, label it as [BUG] and explain what breaks.
+
+## 3. STYLE (Medium — maintainability and readability)
+- Follow PEP 8: snake_case for variables/functions, UPPER_CASE for constants
+- Add type hints to function signatures
+- Add docstrings to public functions (skip trivially obvious one-liners)
+- Suggest Pythonic idioms: list comprehensions over manual loops, dataclasses over raw dicts, context managers for resources
+- Flag O(n^2) or worse algorithms when an O(n) alternative exists
+
+If you suggest a style improvement, label it as [STYLE].
+
+## OUTPUT FORMAT
+For each issue found:
+1. Quote the problematic line(s)
+2. Label the category: [SECURITY], [BUG], or [STYLE]
+3. Explain why it matters in one sentence
+4. Show the corrected code
+
+If the code is correct, secure, and well-styled, respond with:
+"LGTM — no issues found." followed by a brief note on what makes it good.
+
+## RULES
+- Never suggest fixes that introduce new issues
+- Never fabricate vulnerabilities that don't exist in the code
+- Every suggested fix must be syntactically valid Python
+- When suggesting a fix for one issue, also apply relevant style improvements to the same code block"""
+```
+
+The key changes:
+
+1. **Explicit security checklist** — instead of "be thorough," the prompt lists the exact vulnerability patterns to scan for. The agent can't skip SQL injection if it's on the checklist.
+2. **Priority ordering** — security first, then bugs, then style. The original prompt treated everything equally, which meant the agent sometimes focused on style while missing a hardcoded key.
+3. **Labeled output format** — `[SECURITY]`, `[BUG]`, `[STYLE]` tags make it easy to parse reviews programmatically and verify coverage.
+4. **Explicit "LGTM" instruction** — tells the agent when to say the code is fine, reducing false positives on clean code.
+5. **Anti-regression rule** — "Never suggest fixes that introduce new issues" prevents the agent from suggesting a parameterized query that has a new type error.
+
+Re-run the same evaluation pipeline with the improved prompt to verify:
+
+```python
+print("Re-running with improved prompt...\n")
+
+improved_data = []
+for name, snippet in code_snippets.items():
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": IMPROVED_PROMPT},
+            {"role": "user", "content": f"Review this code:\n\n```python\n{snippet}\n```"},
+        ],
+        temperature=0.2,
+    )
+    review = response.choices[0].message.content
+    improved_data.append({
+        "scenario": name,
+        "code_snippet": snippet.strip(),
+        "agent_review": review,
+    })
+
+print(f"{'Scenario':<25} {'Security':<12} {'Style':<12}")
+print("-" * 49)
+
+for item in improved_data:
+    sec_result = evaluator.evaluate(
+        eval_templates="code_security_review",
+        inputs={
+            "code_snippet": item["code_snippet"],
+            "agent_review": item["agent_review"],
+        },
+    )
+
+    style_result = evaluator.evaluate(
+        eval_templates="code_style_conformance",
+        inputs={
+            "code_snippet": item["code_snippet"],
+            "agent_review": item["agent_review"],
+        },
+    )
+
+    sec_output = sec_result.eval_results[0].output
+    sec_score = sec_output[0] if isinstance(sec_output, list) else sec_output
+
+    style_output = style_result.eval_results[0].output
+    style_score = style_output[0] if isinstance(style_output, list) else style_output
+
+    print(f"{item['scenario']:<25} {str(sec_score):<12} {str(style_score):<12}")
+```
+
+Compare the v1 and v2 results side by side. The improved prompt should show clear gains on security (catching both SQL injection and hardcoded secrets) and style (better fixes with type hints and docstrings). If specific scenarios still fail, the eval reasons tell you exactly what to add to the prompt next.
+
+</Step>
+</Steps>
+
+## What you built
+
+<Check>
+You built a complete evaluation pipeline for an AI code review agent — from test dataset creation through built-in metrics, custom security and style evals, batch evaluation, and prompt improvement driven by eval results.
+</Check>
+
+- Built a code review agent and ran it against 6 realistic Python code scenarios
+- Evaluated reviews with built-in `completeness` and `factual_accuracy` metrics
+- Created a `code_security_review` custom eval that checks for SQL injection, hardcoded secrets, and unsafe deserialization detection
+- Created a `code_style_conformance` custom eval that scores PEP 8 compliance, docstrings, type hints, and Pythonic structure
+- Batch-evaluated the full dataset with all four metrics in one pass
+- Used eval results to build an improved system prompt with explicit security checklists, priority ordering, and labeled output format
+
+## Next steps
+
+<CardGroup cols={4}>
+  <Card title="Running Your First Eval" icon="play" href="/docs/cookbook/quickstart/first-eval">
+    Core eval patterns
+  </Card>
+  <Card title="Custom Eval Metrics" icon="pen-to-square" href="/docs/cookbook/quickstart/custom-eval-metrics">
+    Write your own metric
+  </Card>
+  <Card title="Batch Evaluation" icon="list-check" href="/docs/cookbook/quickstart/batch-eval">
+    Scale to large datasets
+  </Card>
+  <Card title="Text-to-SQL Evaluation" icon="database" href="/docs/cookbook/quickstart/text-to-sql-eval">
+    Domain-specific eval patterns
+  </Card>
+</CardGroup>

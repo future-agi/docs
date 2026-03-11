@@ -1,0 +1,641 @@
+---
+title: "Optimize AI Agents with Simulation Feedback Loops"
+description: "Use FutureAGI Simulation to discover agent failures at scale, feed them into the Optimizer to improve your prompt, then re-simulate to confirm the fix — a closed-loop workflow for continuous agent improvement."
+---
+
+| Time | Difficulty | Features Used |
+|------|-----------|---------------|
+| 30 min | Intermediate | Simulation, Optimization, Evaluation |
+
+You're building an IT helpdesk agent for **CloudStack**, a cloud infrastructure platform. The agent helps developers troubleshoot deployment failures, DNS issues, SSL certificate problems, and billing questions.
+
+Right now it has a system prompt that says "Help developers with CloudStack issues." That works when the developer is calm and the question is simple. But production is down, the developer is furious, and the agent just suggested a CLI command that doesn't exist. Let's find out how often that happens — and fix it.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install ai-evaluation agent-simulate agent-opt openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Steps>
+<Step title="Build your agent">
+
+Here's the prototype. An async OpenAI agent with three tools — service status checks, documentation lookup, and engineering escalation. The system prompt is deliberately minimal. We're going to let the platform tell us what's missing.
+
+```python
+import os
+import json
+from openai import AsyncOpenAI
+
+client = AsyncOpenAI()
+
+SYSTEM_PROMPT = """You are a technical support agent for CloudStack, a cloud infrastructure platform. Help developers with their issues."""
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_service_status",
+            "description": "Check the current status of a CloudStack service (compute, networking, storage, dns, ssl, billing)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "Service name to check (compute, networking, storage, dns, ssl, billing)"}
+                },
+                "required": ["service"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_docs",
+            "description": "Search CloudStack documentation for troubleshooting steps, CLI commands, or configuration guides",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The topic or error message to look up"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "escalate_to_engineering",
+            "description": "Escalate a critical issue to the on-call engineering team",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "description": "Issue severity: P0 (production down), P1 (degraded), P2 (non-critical)"},
+                    "summary": {"type": "string", "description": "Brief summary of the issue for the on-call engineer"},
+                    "affected_service": {"type": "string", "description": "Which CloudStack service is affected"}
+                },
+                "required": ["severity", "summary", "affected_service"]
+            }
+        }
+    }
+]
+
+
+# Mock tool implementations
+def check_service_status(service: str) -> dict:
+    statuses = {
+        "compute": {"status": "operational", "uptime": "99.98%", "last_incident": "2025-02-14"},
+        "networking": {"status": "degraded", "issue": "Elevated latency in us-east-1", "since": "2025-03-10T14:30Z"},
+        "storage": {"status": "operational", "uptime": "99.99%", "last_incident": "2025-01-22"},
+        "dns": {"status": "operational", "uptime": "99.97%", "last_incident": "2025-03-01"},
+        "ssl": {"status": "operational", "uptime": "99.99%", "last_incident": "2025-02-28"},
+        "billing": {"status": "operational", "uptime": "100%", "last_incident": "N/A"},
+    }
+    return statuses.get(service.lower(), {"error": f"Unknown service: {service}. Available: compute, networking, storage, dns, ssl, billing"})
+
+def lookup_docs(query: str) -> dict:
+    return {
+        "title": "CloudStack Troubleshooting Guide",
+        "content": "Common deployment issues: 1) Check your Stackfile syntax with `cs validate`. "
+                   "2) Verify environment variables are set in the project settings. "
+                   "3) Review build logs at Dashboard → Deployments → select deployment → Logs tab. "
+                   "4) For DNS propagation, allow up to 48 hours after domain configuration. "
+                   "5) SSL certificates auto-renew 30 days before expiry; manual renewal via "
+                   "Dashboard → Domains → select domain → Renew Certificate. "
+                   "6) For networking issues, check security group rules and VPC configuration.",
+        "cli_commands": {
+            "deploy": "cs deploy --project <name> --env production",
+            "logs": "cs logs <deployment-id> --tail 100",
+            "status": "cs status --project <name>",
+            "rollback": "cs rollback <deployment-id> --to <previous-id>",
+            "validate": "cs validate ./Stackfile",
+        },
+        "source": "docs.cloudstack.dev/troubleshooting"
+    }
+
+def escalate_to_engineering(severity: str, summary: str, affected_service: str) -> dict:
+    return {
+        "status": "escalated",
+        "ticket_id": "INC-2025-0847",
+        "assigned_to": "On-call: Priya Sharma, SRE",
+        "sla": {"P0": "15 minutes", "P1": "1 hour", "P2": "4 hours"}.get(severity, "4 hours"),
+        "bridge_link": "https://cloudstack.zoom.us/j/incident-bridge" if severity == "P0" else None,
+    }
+
+
+async def handle_message(messages: list) -> str:
+    """Send messages to OpenAI and handle tool calls."""
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        tools=TOOLS,
+    )
+
+    msg = response.choices[0].message
+
+    if msg.tool_calls:
+        messages.append(msg)
+        for tool_call in msg.tool_calls:
+            fn_name = tool_call.function.name
+            fn_args = json.loads(tool_call.function.arguments)
+
+            tool_fn = {
+                "check_service_status": check_service_status,
+                "lookup_docs": lookup_docs,
+                "escalate_to_engineering": escalate_to_engineering,
+            }
+            result = tool_fn.get(fn_name, lambda **_: {"error": "Unknown tool"})(**fn_args)
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result),
+            })
+
+        followup = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            tools=TOOLS,
+        )
+        return followup.choices[0].message.content
+
+    return msg.content
+```
+
+That one-line system prompt covers the happy path. But there's nothing about how to classify severity, when to escalate a P0 outage, which CLI commands actually exist, or how to handle a developer whose production site has been down for an hour. The model will improvise, and improvisation during an outage is how you lose customers.
+
+</Step>
+<Step title="Set up the simulation">
+
+Now register your agent in the platform and generate scenarios that cover the range of issues real developers bring to an IT helpdesk — including the stressful ones.
+
+**In the dashboard:**
+
+1. Go to **Simulate** → **Agent Definition** → **Create agent definition**
+2. Fill in the creation wizard:
+
+| Step | Field | Value |
+|---|---|---|
+| Basic Info | **Agent type** | `Chat` |
+| Basic Info | **Agent name** | `cloudstack-helpdesk` |
+| Basic Info | **Select language** | `English` |
+| Configuration | **Model Used** | `gpt-4o-mini` |
+| Behaviour | **Prompt / Chains** | *(paste the system prompt from Step 1)* |
+| Behaviour | **Commit Message** | `v1: bare-bones helpdesk — no severity handling, no escalation rules` |
+
+3. Click **Create** to save the agent definition as v1
+
+**Generate scenarios:**
+
+1. Go to **Simulate** → **Scenarios** → **Create New Scenario**
+2. Select **Workflow builder**
+3. Fill in:
+
+| Field | Value |
+|---|---|
+| **Scenario Name** | `helpdesk-stress-test` |
+| **Description** | Developers troubleshooting deployment failures, DNS propagation delays, SSL certificate errors, networking outages, billing disputes, and production-down emergencies. Mix of routine questions and high-severity incidents. |
+| **Choose source** | `cloudstack-helpdesk` (Agent Definition) |
+| **Choose version** | `v1` |
+| **No. of scenarios** | `20` |
+
+4. Click **Create**
+
+The platform generates 20 realistic developer scenarios based on your agent definition. Each scenario gets a persona automatically assigned from the built-in pool — patient, frustrated, confused, technical, impatient, and others. Twenty scenarios means twenty conversations, each with a different persona driving the interaction.
+
+**Configure the simulation:**
+
+1. Go to **Simulate** → **Run Simulation** → **Create a Simulation**
+2. Fill in:
+
+| Step | Field | Value |
+|---|---|---|
+| Details | **Simulation name** | `helpdesk-v1-baseline` |
+| Details | **Choose Agent definition** | `cloudstack-helpdesk` |
+| Details | **Choose version** | `v1` |
+| Scenarios | **Select scenario** | `helpdesk-stress-test` |
+| Evaluations | **Add Evaluations** | Select **Conversational agent evaluation** group |
+
+3. Click **Run Simulation**
+
+The Conversational agent evaluation group adds all conversation quality metrics in one click — context retention, query handling, loop detection, escalation handling, prompt conformance, and more.
+
+<Tip>
+You don't need to create custom personas for this workflow. The built-in persona pool covers a natural range of communication styles and personalities. The point is to stress-test your agent with diverse developer behavior, not to control the exact personality mix.
+</Tip>
+
+</Step>
+<Step title="Run the first simulation">
+
+The platform shows a code snippet with SDK instructions after you create the simulation. Use the following to connect your agent:
+
+```python
+import asyncio
+import os
+from fi.simulate import TestRunner, AgentInput
+
+runner = TestRunner(
+    api_key=os.environ["FI_API_KEY"],
+    secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+
+async def agent_callback(input: AgentInput) -> str:
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in input.messages:
+        messages.append(msg)
+
+    return await handle_message(messages)
+
+
+async def main():
+    report = await runner.run_test(
+        run_test_name="helpdesk-v1-baseline",
+        agent_callback=agent_callback,
+    )
+    print(f"Simulation complete — {len(report.results)} conversations processed")
+
+
+asyncio.run(main())
+```
+
+The platform runs all 20 conversations. Each simulated developer follows their assigned persona and scenario, asking multi-turn questions and pushing back when the agent's answers are unhelpful. Every conversation is evaluated against all metrics in the Conversational agent evaluation group.
+
+<Warning>
+The `run_test_name` must exactly match the simulation name you entered in the dashboard (e.g., `helpdesk-v1-baseline`). A mismatch returns a 404.
+</Warning>
+
+<Note>
+**Want the full simulation walkthrough?** See [Chat Simulation: Run Multi-Persona Conversations via SDK](/docs/cookbook/quickstart/chat-simulation-personas) for custom persona creation, scenario builders, tool-calling evaluation, and the complete dashboard tour.
+</Note>
+
+</Step>
+<Step title="Analyze the results">
+
+Open **Simulate** → click `helpdesk-v1-baseline` → go to the **Analytics** tab.
+
+You'll see aggregate scores across all 20 conversations for each evaluation metric — conversation quality, context retention, query handling, loop detection, objection handling, escalation handling, prompt conformance, and more. The Conversational agent evaluation group runs all of these automatically.
+
+With a bare-bones system prompt, expect a split. The routine questions — "How do I check my deployment logs?", "Where do I find my API key?" — will score reasonably well. The agent has tools for those. But look at the lower-scoring conversations. Switch to the **Chat Details** tab and click into them. You'll see full transcripts with per-message eval annotations.
+
+Common failure patterns with a minimal prompt:
+
+- **Missed P0 escalations** — A developer says "our production site has been down for 45 minutes, we're losing revenue" and the agent walks them through generic troubleshooting steps instead of immediately escalating to the on-call engineer
+- **Hallucinated CLI commands** — The agent suggests `cs restart --service compute --force` or `cs config set dns.ttl 300` — commands that don't exist in the CloudStack CLI. The actual commands are `cs deploy`, `cs logs`, `cs status`, `cs rollback`, and `cs validate`
+- **Status page blindness** — Networking is degraded in us-east-1, but the agent doesn't check `check_service_status` before telling the developer to debug their own configuration
+- **Tone-deaf responses to frustrated developers** — A developer whose production is down gets the same measured, tutorial-style response as someone asking a casual question about DNS TTL settings
+- **Context drops** — A developer shares their project name, deployment ID, and error message, then the agent asks "Can you share your deployment ID?" two messages later
+
+These aren't edge cases. They're the conversations that determine whether a developer trusts your platform during a crisis.
+
+You can also spot-check specific conversations from the SDK:
+
+```python
+import os
+import json
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+# Paste a conversation from the Chat Details tab
+conversation = [
+    {"role": "user", "content": "Our production app has been returning 502s for 30 minutes. We're losing customers. This is critical."},
+    {"role": "assistant", "content": "I'd be happy to help! Let me walk you through some troubleshooting steps. First, can you check your deployment logs?"},
+    {"role": "user", "content": "I already checked the logs. There's nothing useful. This is a P0 — can you escalate this NOW?"},
+    {"role": "assistant", "content": "I understand your concern. Have you tried redeploying your application? You can use `cs redeploy --force --service production` to force a fresh deployment."},
+]
+
+for metric in ["customer_agent_human_escalation", "customer_agent_query_handling", "customer_agent_context_retention"]:
+    result = evaluator.evaluate(
+        eval_templates=metric,
+        inputs={"conversation": json.dumps(conversation)},
+        model_name="turing_small",
+    )
+    eval_result = result.eval_results[0]
+    score = eval_result.output[0] if isinstance(eval_result.output, list) else eval_result.output
+    print(f"{metric}: {score}")
+    print(f"  Reason: {eval_result.reason}\n")
+```
+
+The eval reasons tell you exactly what went wrong in plain English — which escalation was missed, which CLI command was fabricated, which context was lost. These reasons become the input for optimization.
+
+<Note>
+**Deep dive on conversation metrics:** See [Evaluate Customer Agent Conversations](/docs/cookbook/quickstart/conversation-eval) for all metrics in the Conversational agent evaluation group, individual metric examples, and how to run the full eval group on any dataset.
+</Note>
+
+</Step>
+<Step title="Extract failing patterns with Fix My Agent">
+
+Reading 20 transcripts tells you what's wrong. Fix My Agent tells you what to do about it.
+
+**In the dashboard:**
+
+1. Go to **Simulate** → click `helpdesk-v1-baseline`
+2. Click the **Fix My Agent** button (top-right)
+
+The diagnostic drawer opens with two categories of recommendations:
+
+**Fixable Recommendations** — prompt-level changes you can apply directly:
+
+- **Agent Level**: broad improvements like "add severity classification framework" or "restrict CLI commands to the documented set" or "include urgency-aware tone guidance"
+- **Branch Level**: domain-specific issues grouped by topic — e.g., outage handling gaps, SSL troubleshooting inaccuracies, billing question deflections. Each recommendation links back to the specific conversations where the failure occurred.
+
+**Non-Fixable Recommendations** — infrastructure-level issues that need code changes, like "agent lacks access to real-time incident status beyond the status page" or "no mechanism to pull a developer's deployment history for context."
+
+**Overall Insights** — a synthesis of patterns across all conversations, highlighting the most impactful improvements.
+
+The Fixable recommendations are what matter for the next step. They're the gap between what your prompt says and what your agent needs to do. Instead of manually rewriting the prompt based on these insights, you can let the optimizer do it.
+
+<Tip>
+Fix My Agent works best with at least **15 completed conversations**. If you ran fewer, increase the scenario count and re-run before using this feature.
+</Tip>
+
+</Step>
+<Step title="Optimize the prompt">
+
+You have two paths to optimization: dashboard or SDK.
+
+**Path A: Dashboard (one-click)**
+
+Inside the Fix My Agent drawer:
+
+1. Click **Optimize My Agent**
+2. Enter a name for the optimization run (e.g., `helpdesk-v1-optimization`)
+3. Select **MetaPrompt** as the optimizer
+4. Select a language model (e.g., `gpt-4o`)
+5. Click **Start Optimizing your agent**
+
+Results appear in the **Optimization Runs** tab once complete.
+
+**Path B: SDK (programmatic)**
+
+If you want more control — custom datasets, specific metrics, integration into CI/CD — use the SDK directly.
+
+```python
+import os
+from fi.opt.generators import LiteLLMGenerator
+from fi.opt.optimizers import MetaPromptOptimizer
+from fi.opt.base import Evaluator
+from fi.opt.datamappers import BasicDataMapper
+
+# Build a dataset from the failing conversations you identified
+# Each example: the developer's issue and the ideal response pattern
+dataset = [
+    {
+        "input": "Our production app has been returning 502s for 30 minutes. Losing revenue every minute. Fix this NOW.",
+        "output": "I can see this is critical — let me act immediately. First, let me check the service status. I'm seeing elevated latency in us-east-1 networking, which is likely related. I'm escalating this as a P0 right now to our on-call SRE team. They'll be on the incident bridge within 15 minutes. Ticket INC-2025-0847 has been created. In the meantime, if you have a rollback candidate, you can run `cs rollback <deployment-id> --to <previous-id>` to revert to the last working deployment.",
+    },
+    {
+        "input": "How do I set up a custom domain with SSL? I just deployed my first app.",
+        "output": "Great question! Here's the process: 1) Go to Dashboard → Domains → Add Domain and enter your custom domain. 2) CloudStack will provide DNS records — add these as CNAME or A records with your domain registrar. 3) SSL certificates are provisioned automatically once DNS propagates. Allow up to 48 hours for propagation, though it's usually faster. You can verify with `cs status --project <name>`. If your certificate doesn't appear after 48 hours, check Dashboard → Domains → select your domain → Renew Certificate.",
+    },
+    {
+        "input": "My deployment keeps failing with exit code 137. I've tried `cs restart --force` but nothing works.",
+        "output": "Exit code 137 means the process was killed — usually an out-of-memory (OOM) issue. A few things to check: First, note that `cs restart --force` isn't a valid CloudStack command. The available commands are `cs deploy`, `cs logs`, `cs status`, `cs rollback`, and `cs validate`. To debug this, run `cs logs <deployment-id> --tail 100` to check for memory spikes. Then review your Stackfile memory limits — you can validate the syntax with `cs validate ./Stackfile`. If you're hitting OOM consistently, you may need to increase your plan's memory allocation in Dashboard → Project Settings.",
+    },
+    {
+        "input": "I'm getting charged for resources I deleted two weeks ago. This is unacceptable. I want a refund.",
+        "output": "I completely understand your frustration — billing discrepancies are stressful. Let me check the billing service status first. The billing system is operational, so this sounds like it may be a resource cleanup issue. Some resources like load balancers and reserved IPs persist after project deletion unless explicitly removed. I want to make sure you get proper resolution on this — billing disputes and refund requests are handled by our billing team who have direct access to your account. Let me escalate this to them. What's the best email to reach you for the follow-up?",
+    },
+    {
+        "input": "DNS isn't resolving for my domain. I set it up 3 days ago. What's going on?",
+        "output": "Three days is past the typical propagation window, so something else is likely going on. Let me check the DNS service status — DNS is operational, so the issue is probably in your configuration. A few things to verify: 1) Check that the CNAME or A records you added with your registrar match what's shown in Dashboard → Domains. 2) Make sure there's no conflicting record (like an existing A record) that's overriding the CNAME. 3) Some registrars have their own caching — try checking propagation at a DNS checker tool. Can you share your domain name so I can look at the specific configuration?",
+    },
+]
+
+# Teacher model rewrites the prompt
+teacher = LiteLLMGenerator(model="gpt-4o", prompt_template="{prompt}")
+
+optimizer = MetaPromptOptimizer(teacher_generator=teacher)
+
+evaluator = Evaluator(
+    eval_template="customer_agent_query_handling",
+    eval_model_name="turing_small",
+)
+
+data_mapper = BasicDataMapper(
+    key_map={
+        "input": "input",
+        "output": "generated_output",
+    }
+)
+
+result = optimizer.optimize(
+    evaluator=evaluator,
+    data_mapper=data_mapper,
+    dataset=dataset,
+    initial_prompts=[SYSTEM_PROMPT],
+    task_description="Improve an IT helpdesk agent prompt for CloudStack (a cloud infrastructure platform). The agent should classify incident severity, escalate P0 outages immediately, only suggest documented CLI commands, handle frustrated developers with appropriate urgency, and use the check_service_status tool before troubleshooting. It has three tools: check_service_status, lookup_docs, and escalate_to_engineering.",
+    num_rounds=5,
+    eval_subset_size=5,
+)
+
+print(f"Optimization complete")
+print(f"Best score: {result.final_score:.3f}")
+print(f"\nOptimized prompt:")
+print("-" * 60)
+best_prompt = result.best_generator.get_prompt_template()
+print(best_prompt)
+print("-" * 60)
+
+# Show round-by-round progress
+print("\nOptimization history:")
+for i, iteration in enumerate(result.history):
+    print(f"  Round {i+1}: score={iteration.average_score:.3f}")
+```
+
+The optimizer iterates through multiple rounds. Each round, the teacher model analyzes which examples the current prompt handles poorly, hypothesizes why, and rewrites the entire prompt to address those gaps. After 5 rounds, you get the best-performing variant.
+
+<Note>
+**More on optimization strategies:** See [Prompt Optimization: Improve a Prompt Automatically](/docs/cookbook/quickstart/prompt-optimization) for the full SDK walkthrough. To compare MetaPrompt against ProTeGi, GEPA, and PromptWizard, see [Compare Optimization Strategies](/docs/cookbook/quickstart/compare-optimizers).
+</Note>
+
+</Step>
+<Step title="Re-simulate with the improved prompt">
+
+The optimizer gives you a better prompt. But "better on 5 examples" and "better on 20 diverse conversations" are different claims. Re-simulation is how you verify.
+
+Here's a sample of the kind of optimized prompt the optimizer typically produces. Use the actual output from your optimization run, or use this as a starting point:
+
+```python
+OPTIMIZED_PROMPT = """You are a senior IT helpdesk engineer for CloudStack, a cloud infrastructure platform used by developers to deploy and manage applications. Your role is to troubleshoot issues efficiently, escalate critical incidents immediately, and help developers get back to building.
+
+SEVERITY CLASSIFICATION:
+When a developer reports an issue, classify it immediately:
+- P0 (Production down): Revenue impact, site unreachable, 5xx errors in production, data loss risk. ACT FIRST, then ask questions.
+- P1 (Degraded): Slow performance, intermittent errors, partial feature outage. Troubleshoot actively, escalate if not resolved in the conversation.
+- P2 (Non-critical): Setup questions, configuration help, billing inquiries, feature requests. Help thoroughly at conversation pace.
+
+FIRST RESPONSE PROTOCOL:
+1. For P0/P1 issues: Check the service status IMMEDIATELY using check_service_status before any troubleshooting advice. If there's a known incident, tell the developer — don't make them debug a platform-side issue.
+2. For P2 issues: Acknowledge the question, then use lookup_docs or check_service_status as appropriate.
+3. Always acknowledge the developer's urgency level. If they say "critical" or "production is down," treat it as P0 until proven otherwise.
+
+ESCALATION RULES:
+Escalate to engineering immediately (do not troubleshoot first) when:
+- Production is down or returning 5xx errors for more than 5 minutes
+- Data loss or corruption is reported or suspected
+- A developer explicitly says "escalate this" or "I need an engineer"
+- The issue affects multiple services or multiple customers
+- You've exhausted troubleshooting steps without resolution
+When escalating, use escalate_to_engineering with the correct severity. Share the ticket ID and SLA with the developer.
+
+CLI COMMANDS — NEVER GUESS:
+The only valid CloudStack CLI commands are:
+- cs deploy --project <name> --env <environment>
+- cs logs <deployment-id> --tail <lines>
+- cs status --project <name>
+- cs rollback <deployment-id> --to <previous-id>
+- cs validate ./Stackfile
+NEVER suggest commands that are not in this list. No `cs restart`, no `cs config`, no `cs ssh`, no `cs scale`. If a developer mentions a command that doesn't exist, correct them politely and suggest the right alternative.
+
+TOOL USAGE:
+- check_service_status: ALWAYS check before troubleshooting networking, compute, DNS, SSL, or storage issues. If a service is degraded, lead with that information.
+- lookup_docs: Use for troubleshooting steps, configuration guides, and CLI syntax. Reference the docs, don't paraphrase from memory.
+- escalate_to_engineering: Use for P0 incidents and unresolved P1 issues. Include a clear summary of what the developer reported and what you've already checked.
+
+BILLING AND ACCOUNT ISSUES:
+For refunds, billing disputes, or account-level changes, acknowledge the frustration, explain that these require account-level access you don't have, and escalate to the billing team. Don't try to resolve billing issues with troubleshooting steps.
+
+TONE:
+- Match the developer's urgency. If production is down, be direct and action-oriented — not tutorial-style.
+- For routine questions, be thorough and patient — walk through steps clearly.
+- Never be dismissive. "Have you tried restarting?" is not an acceptable first response to a P0.
+- If you made a mistake or gave wrong information, correct yourself immediately.
+
+CONTEXT:
+- When a developer shares a project name, deployment ID, or error message, reference it in your responses. Never ask for information they already provided.
+- Track the severity throughout the conversation. If new information elevates the severity (e.g., "actually, it's affecting all our customers"), re-classify and escalate."""
+```
+
+**Update and re-run:**
+
+1. Go to **Simulate** → **Agent Definition** → open `cloudstack-helpdesk`
+2. Click **Create new version**
+3. Paste the optimized prompt, set commit message to `v2: optimized — adds severity classification, escalation rules, CLI guardrails, urgency-aware tone`
+4. Create a new simulation:
+
+| Field | Value |
+|---|---|
+| **Simulation name** | `helpdesk-v2-optimized` |
+| **Agent definition** | `cloudstack-helpdesk` |
+| **Version** | `v2` |
+| **Scenario** | Create new with 20 scenarios from v2, or reuse `helpdesk-stress-test` |
+| **Evaluations** | **Conversational agent evaluation** group |
+
+5. Run the simulation and connect your agent with the updated prompt:
+
+```python
+import asyncio
+import os
+from fi.simulate import TestRunner, AgentInput
+
+runner = TestRunner(
+    api_key=os.environ["FI_API_KEY"],
+    secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+
+async def agent_callback(input: AgentInput) -> str:
+    messages = [{"role": "system", "content": OPTIMIZED_PROMPT}]
+    for msg in input.messages:
+        messages.append(msg)
+
+    return await handle_message(messages)
+
+
+async def main():
+    report = await runner.run_test(
+        run_test_name="helpdesk-v2-optimized",
+        agent_callback=agent_callback,
+    )
+    print(f"Simulation complete — {len(report.results)} conversations processed")
+
+
+asyncio.run(main())
+```
+
+Open the Analytics tab and compare the v2 results against v1. The same types of personas — frustrated, impatient, confused — but now the agent has explicit instructions for handling them. Look for improvements in the specific areas that were failing before:
+
+- P0 outage conversations should show immediate escalation, not generic troubleshooting steps
+- CLI command references should only include documented commands — no more `cs restart --force` or `cs config set`
+- Networking issues should show the agent checking service status first and leading with the known incident, not asking the developer to debug their own config
+- Frustrated developers should get urgency-matched responses — direct and action-oriented, not tutorial-style
+- Context should persist — the agent should reference the developer's project name, deployment ID, and error message throughout the conversation
+
+Click into the Chat Details tab and read a few conversations side by side with v1 transcripts. The qualitative difference — how the agent handles a P0, uses its tools proactively, and knows when to stop troubleshooting and escalate — is often more telling than aggregate scores.
+
+</Step>
+<Step title="Close the loop">
+
+Here's what just happened:
+
+```
+Simulate → Analyze failures → Optimize prompt → Re-simulate → Confirm fix
+```
+
+That's not a one-time process. It's a loop, and it works for any iteration of your agent:
+
+- **Week 1:** Your helpdesk agent can't handle P0 outages. Simulation finds it, optimization fixes it, re-simulation confirms it.
+- **Week 3:** You add a new tool for checking deployment history. Simulation reveals the agent doesn't know when to use it. Same loop.
+- **Month 2:** CloudStack adds a new service (serverless functions). Developers start asking about it, and the agent has no instructions. Simulation catches the gap. Same loop.
+
+The pattern generalizes beyond helpdesk agents:
+
+- **Sales agents** — simulate with leads who have different budgets, timelines, and objection styles
+- **Onboarding agents** — simulate with users at different stages of product familiarity
+- **Compliance agents** — simulate with edge cases around regulatory requirements and escalation thresholds
+
+Each iteration tightens the feedback loop. The first simulation shows you everything that's broken. The optimization fixes the worst failures. The re-simulation catches what's left. Over time, you're not just fixing bugs — you're building a prompt that's been pressure-tested against the full range of developer behavior.
+
+<Tip>
+For a more rigorous before/after comparison, use the Experimentation feature to run the same dataset against both prompts with weighted metric scoring. See [Experimentation: Compare Prompts and Models on a Dataset](/docs/cookbook/quickstart/experimentation-compare-prompts).
+</Tip>
+
+</Step>
+</Steps>
+
+## What you built
+
+<Check>
+You built a closed-loop agent improvement workflow: simulation discovers failures at scale, optimization fixes the prompt, and re-simulation confirms the fix — all without manual prompt engineering.
+</Check>
+
+- Defined an IT helpdesk agent with a minimal prompt and three tools (`check_service_status`, `lookup_docs`, `escalate_to_engineering`)
+- Generated 20 diverse scenarios with built-in personas to stress-test the agent
+- Ran a baseline simulation and identified failure patterns — missed P0 escalations, hallucinated CLI commands, status page blindness, tone-deaf responses to frustrated developers
+- Used Fix My Agent to extract actionable recommendations from the failures
+- Optimized the prompt using MetaPrompt (dashboard or SDK), producing a detailed prompt with severity classification, escalation rules, CLI guardrails, urgency-aware tone, and tool usage guidelines
+- Re-simulated with the optimized prompt to verify improvement across the same persona types
+- Established a repeatable loop: simulate, analyze, optimize, re-simulate
+
+## Explore the features
+
+<CardGroup cols={4}>
+  <Card title="Chat Simulation" icon="comments" href="/docs/cookbook/quickstart/chat-simulation-personas">
+    Custom personas, scenario builders, tool-calling evaluation
+  </Card>
+  <Card title="Prompt Optimization" icon="wand-magic-sparkles" href="/docs/cookbook/quickstart/prompt-optimization">
+    MetaPrompt, Bayesian Search, and the full SDK workflow
+  </Card>
+  <Card title="Compare Optimizers" icon="scale-balanced" href="/docs/cookbook/quickstart/compare-optimizers">
+    ProTeGi, GEPA, PromptWizard — pick the right strategy
+  </Card>
+  <Card title="Conversation Eval" icon="chart-bar" href="/docs/cookbook/quickstart/conversation-eval">
+    All 13 metrics in the Conversational agent evaluation group
+  </Card>
+</CardGroup>

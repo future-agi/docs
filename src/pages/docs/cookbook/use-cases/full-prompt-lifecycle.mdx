@@ -1,0 +1,773 @@
+---
+title: "Full Prompt Lifecycle: Create, Optimize, A/B Test, Deploy"
+description: "Take an HR onboarding assistant from a generic one-liner to a production-ready system — version the prompt, evaluate it, optimize automatically, A/B test original vs optimized, promote the winner, and deploy without touching agent code."
+---
+
+| Time | Difficulty | Features Used |
+|------|-----------|---------------|
+| 30 min | Intermediate | Prompt Management, Optimization, Experimentation, Evaluation |
+
+You're building an HR onboarding assistant for **NovaCorp**, a mid-size tech company with 500 employees. The assistant helps new hires navigate company policies, benefits enrollment, IT setup, and first-week logistics.
+
+Right now it has a system prompt that says "You are an HR assistant. Help new employees." That works when the questions are softball. But NovaCorp has specific PTO policies, a benefits enrollment window that closes 30 days after start date, different IT provisioning for remote vs on-site employees, and separate onboarding tracks for international hires and contractors. A generic prompt doesn't know any of that, and guessing gets people enrolled in the wrong health plan.
+
+By the end of this guide, you'll have versioned the prompt, measured its baseline quality, optimized it automatically, A/B tested the original against the optimized version, promoted the winner to production, and confirmed you can roll back in one line — all without changing your agent code.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install futureagi ai-evaluation agent-opt litellm openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Steps>
+<Step title="Create your first prompt">
+
+Move the system prompt out of your codebase and into FutureAGI's Prompt Management. This is the foundation — every subsequent step (optimization, A/B testing, rollback) works because the prompt lives on the platform, not in your code.
+
+```python
+import os
+import json
+from openai import AsyncOpenAI
+from fi.prompt import Prompt
+from fi.prompt.types import PromptTemplate, SystemMessage, UserMessage, ModelConfig
+
+client = AsyncOpenAI()
+
+SYSTEM_PROMPT = "You are an HR assistant for NovaCorp. Help new employees with onboarding questions."
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_employee_info",
+            "description": "Look up employee details by email — start date, role, department, employment type",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "description": "Employee's email address"}
+                },
+                "required": ["email"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_benefits_info",
+            "description": "Look up NovaCorp benefits — health plans, dental, vision, 401k, enrollment deadlines",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "The benefits topic to look up"}
+                },
+                "required": ["topic"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_it_setup_guide",
+            "description": "Get IT provisioning instructions based on employee type and work location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "work_location": {"type": "string", "description": "remote, on-site, or hybrid"},
+                    "department": {"type": "string", "description": "Employee's department"}
+                },
+                "required": ["work_location"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_pto_policy",
+            "description": "Look up PTO policy details — accrual rates, blackout dates, rollover rules",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "employment_type": {"type": "string", "description": "full-time, part-time, or contractor"}
+                },
+                "required": ["employment_type"]
+            }
+        }
+    }
+]
+
+
+# Mock tool implementations
+def check_employee_info(email: str) -> dict:
+    employees = {
+        "maya@novacorp.com": {
+            "name": "Maya Chen",
+            "role": "Senior Frontend Engineer",
+            "department": "Engineering",
+            "start_date": "2026-03-24",
+            "employment_type": "full-time",
+            "work_location": "hybrid",
+            "manager": "David Park",
+        },
+        "lars@novacorp.com": {
+            "name": "Lars Eriksson",
+            "role": "Data Analyst",
+            "department": "Analytics",
+            "start_date": "2026-04-01",
+            "employment_type": "contractor",
+            "work_location": "remote",
+            "manager": "Priya Sharma",
+            "country": "Sweden",
+        },
+    }
+    return employees.get(email, {"error": f"No employee found with email {email}"})
+
+def get_benefits_info(topic: str) -> dict:
+    return {
+        "answer": "NovaCorp offers three health plans: Basic (100% employer-paid, $500 deductible), "
+                  "Plus ($45/mo employee contribution, $250 deductible, includes vision), and "
+                  "Premium ($120/mo, $0 deductible, includes dental + vision + mental health). "
+                  "401k match is 4% with immediate vesting. Enrollment window closes 30 days after start date.",
+        "source": "benefits-handbook-2026"
+    }
+
+def get_it_setup_guide(work_location: str, department: str = "General") -> dict:
+    guides = {
+        "remote": {
+            "laptop": "Ships to home address 5 business days before start date",
+            "vpn": "Cisco AnyConnect — credentials sent via welcome email",
+            "tools": "Slack, Jira, GitHub, Figma (if design/eng), Looker (if analytics)",
+            "support": "IT helpdesk: it-help@novacorp.com or #it-support on Slack",
+        },
+        "on-site": {
+            "laptop": "Pick up from IT desk (Building A, 2nd floor) on Day 1",
+            "badge": "Security desk in lobby — bring government-issued ID",
+            "tools": "Same as remote, plus office Wi-Fi auto-connects after badge activation",
+            "support": "IT helpdesk: Building A Room 201 or #it-support on Slack",
+        },
+        "hybrid": {
+            "laptop": "Ships to home address OR pick up on-site — your choice, coordinate with IT",
+            "vpn": "Cisco AnyConnect for remote days",
+            "badge": "Required for on-site days — Security desk in lobby on Day 1",
+            "tools": "Full remote + on-site toolset",
+            "support": "IT helpdesk: it-help@novacorp.com or Building A Room 201",
+        },
+    }
+    return guides.get(work_location, {"error": f"Unknown work location: {work_location}"})
+
+def check_pto_policy(employment_type: str) -> dict:
+    policies = {
+        "full-time": {
+            "annual_pto": "20 days",
+            "sick_days": "10 days",
+            "accrual": "1.67 days/month, available after 90-day probation",
+            "rollover": "Up to 5 unused days roll over to next year",
+            "blackout_dates": "Last two weeks of December (company shutdown — no PTO needed)",
+        },
+        "contractor": {
+            "annual_pto": "Not applicable — contractors set own schedules per SOW",
+            "sick_days": "Not applicable",
+            "note": "Contractors should coordinate time off with their project manager",
+        },
+    }
+    return policies.get(employment_type, policies.get("full-time"))
+
+
+async def handle_message(messages: list) -> str:
+    """Send messages to OpenAI and handle tool calls."""
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        tools=TOOLS,
+    )
+
+    msg = response.choices[0].message
+
+    if msg.tool_calls:
+        messages.append(msg)
+        for tool_call in msg.tool_calls:
+            fn_name = tool_call.function.name
+            fn_args = json.loads(tool_call.function.arguments)
+
+            tool_fn = {
+                "check_employee_info": check_employee_info,
+                "get_benefits_info": get_benefits_info,
+                "get_it_setup_guide": get_it_setup_guide,
+                "check_pto_policy": check_pto_policy,
+            }
+            result = tool_fn.get(fn_name, lambda **_: {"error": "Unknown tool"})(**fn_args)
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result),
+            })
+
+        followup = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            tools=TOOLS,
+        )
+        return followup.choices[0].message.content
+
+    return msg.content
+```
+
+Now version it:
+
+```python
+prompt_client = Prompt(
+    template=PromptTemplate(
+        name="novacorp-hr-onboarding",
+        messages=[
+            SystemMessage(content=SYSTEM_PROMPT),
+            UserMessage(content="{{employee_message}}"),
+        ],
+        model_configuration=ModelConfig(
+            model_name="gpt-4o-mini",
+            temperature=0.7,
+            max_tokens=500,
+        ),
+    ),
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+prompt_client.create()
+prompt_client.commit_current_version(
+    message="v1: bare-bones HR prompt — no policy details, no escalation, no edge cases",
+    label="production",
+)
+
+print(f"Created: {prompt_client.template.name} ({prompt_client.template.version})")
+```
+
+Expected output:
+```
+Created: novacorp-hr-onboarding (v1)
+```
+
+That's v1 — committed and labeled `production`. One sentence of guidance for an assistant that's supposed to handle benefits enrollment deadlines, international hire paperwork, contractor vs full-time distinctions, and IT setup across three work locations. The model will wing it. Let's measure how that goes.
+
+</Step>
+<Step title="Serve the prompt at runtime">
+
+Your agent fetches the prompt by name and label at runtime. When you promote a new version later, every instance picks it up automatically — no redeploy.
+
+```python
+import os
+from fi.prompt import Prompt
+
+
+def get_system_prompt() -> str:
+    template = Prompt.get_template_by_name(
+        name="novacorp-hr-onboarding",
+        label="production",
+        fi_api_key=os.environ["FI_API_KEY"],
+        fi_secret_key=os.environ["FI_SECRET_KEY"],
+    )
+    return template.messages[0].content
+```
+
+Every instance of your HR assistant now calls `get_system_prompt()` on startup. Promote v2 tomorrow and every instance serves the new prompt. Roll back to v1 — same thing, one line. The agent code never changes.
+
+```python
+import asyncio
+
+async def ask_hr(question: str) -> str:
+    messages = [
+        {"role": "system", "content": get_system_prompt()},
+        {"role": "user", "content": question},
+    ]
+    return await handle_message(messages)
+
+print(asyncio.run(ask_hr("What health plans does NovaCorp offer?")))
+```
+
+<Note>
+**Deep dive:** See [Prompt Versioning: Create, Label, and Serve Prompt Versions](/docs/cookbook/quickstart/prompt-versioning) for the full versioning workflow — `compile()` with variable substitution, staging-to-production label management, and version history.
+</Note>
+
+</Step>
+<Step title="Evaluate the baseline">
+
+Before optimizing anything, measure how v1 actually performs. Build a test dataset with realistic HR onboarding questions and run evals to establish a baseline.
+
+```python
+import os
+import litellm
+from fi.prompt import Prompt
+from fi.evals import evaluate
+
+test_dataset = [
+    {
+        "question": "I start next Monday. Which health plan should I pick if I want dental and vision included?",
+        "context": "NovaCorp offers Basic (100% employer-paid, $500 deductible), Plus ($45/mo, $250 deductible, includes vision), and Premium ($120/mo, $0 deductible, includes dental + vision + mental health). Enrollment window closes 30 days after start date.",
+    },
+    {
+        "question": "I'm a remote employee starting in April. How do I get my laptop and dev tools?",
+        "context": "Remote employees: laptop ships to home address 5 business days before start date. VPN via Cisco AnyConnect, credentials in welcome email. Tools: Slack, Jira, GitHub, Figma (design/eng), Looker (analytics). IT support: it-help@novacorp.com or #it-support on Slack.",
+    },
+    {
+        "question": "I'm joining as a contractor from Sweden. Do I get PTO?",
+        "context": "Contractors do not receive PTO — they set their own schedules per SOW. Contractors should coordinate time off with their project manager. International contractors must comply with local labor laws; NovaCorp does not provide visa sponsorship for contractors.",
+    },
+    {
+        "question": "How much PTO do I get as a full-time employee, and can I use it during my first month?",
+        "context": "Full-time: 20 days PTO, 10 sick days. Accrual: 1.67 days/month, available after 90-day probation period. Up to 5 unused days roll over. Company shutdown last two weeks of December (no PTO needed).",
+    },
+    {
+        "question": "My manager is David Park but I haven't received a welcome email yet. My start date is March 24. What should I do?",
+        "context": "Welcome emails are sent 7 business days before start date by the People Ops team (people-ops@novacorp.com). If not received 3 business days before start, contact People Ops directly. Welcome email contains VPN credentials, Slack invite, benefits enrollment link, and Day 1 schedule.",
+    },
+    {
+        "question": "I'm hybrid — do I need a badge for the office? And where do I pick up my laptop?",
+        "context": "Hybrid employees: laptop ships to home address OR pick up on-site (coordinate with IT). Badge required for on-site days — get it from Security desk in lobby on Day 1 (bring government-issued ID). VPN via Cisco AnyConnect for remote days. IT support: it-help@novacorp.com or Building A Room 201.",
+    },
+]
+
+prompt = Prompt.get_template_by_name(
+    name="novacorp-hr-onboarding",
+    label="production",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+print(f"{'Question':<60} {'Complete':>10} {'Relevant':>10}")
+print("-" * 82)
+
+for item in test_dataset:
+    messages = prompt.compile(employee_message=item["question"])
+
+    response = litellm.completion(
+        model="gpt-4o-mini",
+        messages=messages,
+    )
+    output = response.choices[0].message.content
+
+    completeness_result = evaluate(
+        "completeness",
+        input=item["question"],
+        output=output,
+        model="turing_flash",
+    )
+
+    relevance_result = evaluate(
+        "context_relevance",
+        input=item["question"],
+        context=item["context"],
+        model="turing_flash",
+    )
+
+    print(f"{item['question'][:58]:<60} {str(completeness_result.score):>10} {str(relevance_result.score):>10}")
+```
+
+With that one-liner v1 prompt, expect a mixed bag. The agent will answer straightforward questions passably — "What health plans are available?" gets a generic response. But the moment a question involves NovaCorp-specific details — enrollment deadlines, contractor vs full-time distinctions, the 90-day probation period for PTO — the agent either guesses wrong or gives vague non-answers. The completeness scores reflect that gap: the agent responds, but doesn't actually address the specifics.
+
+The contractor from Sweden? v1 has no idea that contractors don't get PTO, let alone that international contractors have separate labor law considerations. The hybrid employee asking about badge pickup? v1 might tell them to "check with HR" instead of pointing them to the Security desk in the lobby.
+
+These aren't edge cases. They're the questions every new hire asks in their first week.
+
+<Note>
+**Deep dive:** See [Running Your First Eval](/docs/cookbook/quickstart/first-eval) for the full list of 72+ built-in eval metrics and how to interpret scores.
+</Note>
+
+</Step>
+<Step title="Optimize the prompt">
+
+Instead of manually rewriting the prompt based on those mediocre eval scores, let the optimizer do it. `MetaPromptOptimizer` uses a teacher LLM to iteratively analyze what's wrong with the prompt's outputs and rewrite it — guided by eval scores on your dataset.
+
+```python
+import os
+from fi.opt.base import Evaluator
+from fi.opt.generators import LiteLLMGenerator
+from fi.opt.datamappers import BasicDataMapper
+from fi.opt.optimizers import MetaPromptOptimizer
+
+baseline_prompt = (
+    "You are an HR assistant for NovaCorp. Help new employees with onboarding questions.\n\n"
+    "Employee question: {question}"
+)
+
+optimization_dataset = [
+    {
+        "question": "I start next Monday. Which health plan should I pick if I want dental and vision included?",
+        "target_response": "For dental and vision coverage, you'll want either the Plus plan ($45/mo, $250 deductible, includes vision) or the Premium plan ($120/mo, $0 deductible, includes dental + vision + mental health). If you only need vision, Plus is the cost-effective choice. If you want the full package with mental health coverage, go Premium. Important: your enrollment window closes 30 days after your start date, so make sure to enroll through the link in your welcome email before then.",
+    },
+    {
+        "question": "I'm a remote employee starting in April. How do I get my laptop and dev tools?",
+        "target_response": "Your laptop will ship to your home address 5 business days before your start date. You'll get Cisco AnyConnect VPN credentials in your welcome email. For dev tools, you'll have access to Slack, Jira, and GitHub on Day 1. If you're in Engineering or Design, Figma is included too. If you're in Analytics, you'll also get Looker. If anything doesn't arrive on time, reach out to it-help@novacorp.com or post in #it-support on Slack.",
+    },
+    {
+        "question": "I'm joining as a contractor from Sweden. Do I get PTO?",
+        "target_response": "Contractors don't receive PTO through NovaCorp — you set your own schedule per your Statement of Work. For time off, coordinate directly with your project manager. As an international contractor, you'll also want to make sure you're complying with Swedish labor laws on your end, since NovaCorp doesn't manage local compliance for contractors. If you have questions about your SOW terms, reach out to People Ops at people-ops@novacorp.com.",
+    },
+    {
+        "question": "How much PTO do I get as a full-time employee, and can I use it during my first month?",
+        "target_response": "Full-time employees get 20 days of PTO and 10 sick days per year. PTO accrues at 1.67 days per month, but it's only available after your 90-day probation period, so you won't be able to use PTO in your first month. Sick days are available immediately. Also good to know: up to 5 unused PTO days roll over to the next year, and the last two weeks of December are a company-wide shutdown, so you won't need to use PTO for those.",
+    },
+    {
+        "question": "My manager is David Park but I haven't received a welcome email yet. My start date is March 24.",
+        "target_response": "Welcome emails go out 7 business days before your start date, so you should have received it by now. Since your start date is March 24, I'd recommend contacting People Ops directly at people-ops@novacorp.com — they handle the welcome emails and can resend it. The email contains your VPN credentials, Slack invite, benefits enrollment link, and Day 1 schedule, so you'll want it before you start.",
+    },
+    {
+        "question": "I'm hybrid — do I need a badge for the office? And where do I pick up my laptop?",
+        "target_response": "Yes, you'll need a badge for on-site days. Pick it up from the Security desk in the lobby on your first day in the office — bring a government-issued ID. For your laptop, hybrid employees can either have it shipped to their home address or pick it up on-site. Coordinate with IT to choose which works better: it-help@novacorp.com or Building A Room 201. You'll also get Cisco AnyConnect VPN for remote days.",
+    },
+]
+
+evaluator = Evaluator(
+    eval_template="completeness",
+    eval_model_name="turing_flash",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+data_mapper = BasicDataMapper(
+    key_map={
+        "input": "question",
+        "output": "generated_output",
+    }
+)
+
+teacher = LiteLLMGenerator(model="gpt-4o", prompt_template="{prompt}")
+
+optimizer = MetaPromptOptimizer(
+    teacher_generator=teacher,
+)
+
+result = optimizer.optimize(
+    evaluator=evaluator,
+    data_mapper=data_mapper,
+    dataset=optimization_dataset,
+    initial_prompts=[baseline_prompt],
+    task_description="Answer HR onboarding questions for new hires at NovaCorp (a 500-person tech company). "
+                     "Responses should reference specific NovaCorp policies (benefits plans, PTO accrual, "
+                     "IT provisioning), distinguish between full-time employees and contractors, handle "
+                     "international hire edge cases, and maintain a warm but precise tone.",
+    eval_subset_size=6,
+)
+
+print(f"Baseline score:  {result.history[0].average_score:.3f}")
+print(f"Optimized score: {result.final_score:.3f}")
+print(f"\nBest prompt found:")
+print("-" * 60)
+print(result.best_generator.get_prompt_template())
+print("-" * 60)
+
+print("\nOptimization history:")
+for i, iteration in enumerate(result.history):
+    print(f"  Round {i+1}: score={iteration.average_score:.3f}")
+```
+
+Optimization typically takes 2-5 minutes. The optimizer scores each candidate prompt's outputs against your dataset, keeps the best performer, and iterates. You should see clear improvement from round 1 to the final round — the optimized prompt will include specific instructions for benefits enrollment deadlines, contractor handling, IT provisioning by work location, and the kind of policy-aware responses that the vague v1 was incapable of.
+
+<Note>
+**Deep dive:** See [Prompt Optimization: Improve a Prompt Automatically](/docs/cookbook/quickstart/prompt-optimization) for the full optimization workflow, and [Compare Optimization Strategies: ProTeGi, GEPA, and PromptWizard](/docs/cookbook/quickstart/compare-optimizers) to pick the right optimizer for your task.
+</Note>
+
+</Step>
+<Step title="Version the optimized prompt">
+
+Take the optimizer's output and version it as v2. Don't promote it yet — we'll A/B test it first.
+
+Below is a representative optimized prompt that reflects the kind of improvements the optimizer typically generates. Use it to follow along, or replace it with the actual output from your optimization run.
+
+```python
+from fi.prompt.types import PromptTemplate, SystemMessage, UserMessage, ModelConfig
+
+OPTIMIZED_PROMPT = """You are the HR onboarding assistant for NovaCorp, a 500-person technology company. Your job is to help new hires navigate their first weeks — from benefits enrollment to IT setup to company policies. You answer with specific NovaCorp details, not generic HR advice.
+
+EMPLOYEE TYPES:
+NovaCorp has three employment types with different onboarding paths:
+- Full-time employees: full benefits, PTO, 401k, badge access
+- Part-time employees: prorated benefits, prorated PTO
+- Contractors: no NovaCorp benefits or PTO — they operate under their Statement of Work (SOW)
+Always determine employment type before answering benefits or PTO questions. If unknown, ask.
+
+BENEFITS ENROLLMENT:
+- Three health plans: Basic (100% employer-paid, $500 deductible), Plus ($45/mo, $250 deductible, vision included), Premium ($120/mo, $0 deductible, dental + vision + mental health)
+- 401k match: 4% with immediate vesting
+- CRITICAL: Enrollment window closes 30 days after start date. Always mention this deadline.
+- Contractors do NOT receive NovaCorp benefits. If a contractor asks, explain clearly and direct them to their SOW.
+
+PTO POLICY:
+- Full-time: 20 days PTO + 10 sick days per year
+- Accrual: 1.67 days/month, available AFTER 90-day probation period
+- Rollover: up to 5 unused days carry to next year
+- Company shutdown: last two weeks of December (no PTO required)
+- Contractors: no PTO through NovaCorp — they manage their own schedule per SOW
+
+IT SETUP:
+- Remote: laptop ships to home address 5 business days before start date. VPN via Cisco AnyConnect (credentials in welcome email).
+- On-site: pick up laptop from IT desk (Building A, 2nd floor) on Day 1. Badge from Security desk in lobby (bring government-issued ID).
+- Hybrid: choose home shipping or on-site pickup (coordinate with IT). Badge required for on-site days. VPN for remote days.
+- All employees get: Slack, Jira, GitHub. Engineering/Design adds Figma. Analytics adds Looker.
+- IT support: it-help@novacorp.com or #it-support on Slack (remote), Building A Room 201 (on-site)
+
+INTERNATIONAL HIRES:
+- International full-time employees: benefits may vary by country — direct to People Ops (people-ops@novacorp.com) for country-specific details
+- International contractors: must comply with local labor laws independently; NovaCorp does not provide visa sponsorship or local compliance management for contractors
+
+TOOL USAGE:
+- If a new hire shares their email, use check_employee_info first to get their details (start date, role, department, employment type, work location). Reference what you find — it shows you know their situation.
+- Use get_benefits_info for any benefits question. Never guess plan details or pricing.
+- Use get_it_setup_guide with their work_location for IT provisioning questions.
+- Use check_pto_policy with their employment_type for PTO questions.
+
+ESCALATION:
+- Benefits questions you cannot answer from tool results → direct to People Ops (people-ops@novacorp.com)
+- IT issues beyond provisioning (access problems, hardware defects) → direct to it-help@novacorp.com
+- Visa, immigration, or relocation questions → direct to People Ops immediately
+- Payroll or compensation questions → direct to People Ops (you do not have access to payroll data)
+
+TONE:
+- Warm and welcoming — this person is new and possibly nervous
+- Specific — use exact plan names, dollar amounts, dates, and contact info
+- Concise — answer the question directly, then offer one follow-up suggestion if relevant
+- Never say "check with HR" without providing the specific contact (people-ops@novacorp.com)"""
+
+prompt_client.create_new_version(
+    template=PromptTemplate(
+        name="novacorp-hr-onboarding",
+        messages=[
+            SystemMessage(content=OPTIMIZED_PROMPT),
+            UserMessage(content="{{employee_message}}"),
+        ],
+        model_configuration=ModelConfig(
+            model_name="gpt-4o-mini",
+            temperature=0.5,
+            max_tokens=500,
+        ),
+    ),
+    commit_message="v2: optimized — adds policy details, contractor handling, IT setup by location, escalation rules",
+)
+
+prompt_client.save_current_draft()
+prompt_client.commit_current_version(
+    message="v2: optimized via MetaPrompt — adds policy details, contractor handling, escalation rules",
+)
+
+print(f"v2 created: {prompt_client.template.version}")
+print("Not yet promoted to production — will A/B test first.")
+```
+
+Expected output:
+```
+v2 created: v2
+Not yet promoted to production — will A/B test first.
+```
+
+Notice the temperature dropped from 0.7 to 0.5. The optimized prompt has very specific policy details — plan names, dollar amounts, deadlines — and lower temperature helps the model follow those instructions precisely instead of embellishing.
+
+The difference is stark. v1 is one sentence. v2 is a complete onboarding playbook — it knows the three health plans by name and price, it knows contractors don't get PTO, it knows hybrid employees need to coordinate laptop delivery with IT, and it knows to escalate visa questions to People Ops immediately. That's the kind of domain knowledge a generic prompt can never provide.
+
+<Tip>
+The sample prompt above is illustrative. Your actual optimization output will be tailored to the specific failure patterns found in your dataset — it may be shorter, longer, or structured differently. Either way, the versioning flow is the same.
+</Tip>
+
+</Step>
+<Step title="A/B test with Experimentation">
+
+You have v1 and v2. Instead of eyeballing outputs, run a structured comparison using the Experimentation feature — same dataset, two prompt variants, eval scores, and a clear winner.
+
+**Prepare the dataset:**
+
+Save the following as `novacorp-onboarding-test.csv` and upload it to FutureAGI:
+
+Go to [app.futureagi.com](https://app.futureagi.com) → **Dataset** → **Add Dataset** → **Upload a file (JSON, CSV)**.
+
+```csv
+question,context,expected_answer
+"Which health plan includes dental and vision?","NovaCorp offers Basic (100% employer-paid, $500 deductible), Plus ($45/mo, $250 deductible, vision), Premium ($120/mo, $0 deductible, dental + vision + mental health). Enrollment closes 30 days after start date.","Premium includes both dental and vision. Plus includes vision only. Mention the 30-day enrollment deadline."
+"I'm a remote engineer starting April 1. How do I get my laptop?","Remote employees: laptop ships to home address 5 business days before start date. VPN via Cisco AnyConnect. Tools: Slack, Jira, GitHub, Figma (eng/design). IT support: it-help@novacorp.com.","Laptop ships 5 business days before start. VPN credentials in welcome email. Mention Figma access for engineering."
+"I'm a contractor from Sweden. What benefits do I get?","Contractors do not receive NovaCorp benefits or PTO. They operate under their SOW. International contractors must comply with local labor laws. NovaCorp does not provide visa sponsorship for contractors.","Contractors don't get NovaCorp benefits. Refer to SOW. Mention local labor law compliance."
+"Can I use PTO in my first month as a full-time employee?","Full-time: 20 days PTO, 10 sick days. Accrual: 1.67 days/month after 90-day probation. Sick days available immediately. 5 unused days roll over.","No — PTO is available after the 90-day probation period. Sick days are available immediately."
+"I'm hybrid and need to know about badge access and laptop pickup.","Hybrid: laptop ships home or pick up on-site (coordinate with IT). Badge required for on-site days — Security desk in lobby with government ID. VPN for remote days.","Badge from Security desk on Day 1 with ID. Laptop: choose shipping or on-site pickup. Mention VPN for remote days."
+"My start date is March 24 and I haven't gotten my welcome email. What should I do?","Welcome emails sent 7 business days before start date by People Ops (people-ops@novacorp.com). Contains VPN credentials, Slack invite, benefits link, Day 1 schedule.","Contact People Ops at people-ops@novacorp.com. Explain what the welcome email contains."
+```
+
+**Create the experiment:**
+
+1. Open the `novacorp-onboarding-test` dataset → click **Experiment** in the dataset toolbar
+2. Fill in the top-level fields:
+   - **Name**: `v1-vs-v2-onboarding`
+   - **Select Baseline Column**: `expected_answer`
+
+**Configure Prompt Template 1 (v1 — the baseline):**
+
+1. **Prompt Name**: `v1-baseline`
+2. **Choose a model type**: **LLM**
+3. **Models**: `gpt-4o-mini`
+4. **System message**:
+```
+You are an HR assistant for NovaCorp. Help new employees with onboarding questions.
+```
+5. **User message**:
+```
+Context: {{context}}
+Employee question: {{question}}
+```
+
+**Add Prompt Template 2 (v2 — the optimized version):**
+
+1. Click **Add Another Prompt**
+2. **Prompt Name**: `v2-optimized`
+3. **Choose a model type**: **LLM**
+4. **Models**: `gpt-4o-mini`
+5. Paste the optimized prompt from Step 5 as the system message, and use the same user message format:
+```
+Context: {{context}}
+Employee question: {{question}}
+```
+
+**Run and evaluate:**
+
+1. Click **Run** — the platform generates outputs for both prompt variants across all 6 rows
+2. Once complete, go to the **Data** tab → click **Evaluate**
+3. Add `completeness` and `groundedness` as eval metrics
+4. Map keys: `output` → the generated output column, `context` → `context`, `input` → `question`
+5. Run the evaluation
+
+**Compare results:**
+
+Switch to the **Summary** tab. You'll see:
+
+- **Summary table** — aggregate scores per prompt variant, plus average response time and token usage
+- **Spider chart** — visual comparison of completeness and groundedness across v1 and v2
+- **Evaluation charts** — per-metric score distribution
+
+To pick a winner formally: click **Choose Winner** (crown icon) → adjust importance weights for completeness, groundedness, response time, and token usage → click **Save & Run**. The platform ranks the variants and highlights the winner.
+
+Expect v2 to outperform v1 across the board. The contractor question is the most telling — v1 will likely hallucinate some generic benefits package, while v2 correctly states that contractors operate under their SOW. The PTO question is another giveaway: v1 won't mention the 90-day probation period, but v2 will. Those are the details that matter to a new hire who needs to plan their first month.
+
+<Note>
+**Deep dive:** See [Experimentation: Compare Prompts and Models on a Dataset](/docs/cookbook/quickstart/experimentation-compare-prompts) for multi-model comparisons, weighted metric scoring, and the full dashboard walkthrough.
+</Note>
+
+</Step>
+<Step title="Promote the winner">
+
+The A/B test confirmed v2 is better. Promote it to production — every agent instance calling `get_template_by_name(label="production")` picks it up on the next request.
+
+```python
+import os
+from fi.prompt import Prompt
+
+Prompt.assign_label_to_template_version(
+    template_name="novacorp-hr-onboarding",
+    version="v2",
+    label="production",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+print("v2 is now the production prompt.")
+```
+
+Expected output:
+```
+v2 is now the production prompt.
+```
+
+Your `get_system_prompt()` function from Step 2 now serves v2 automatically. No code change, no redeploy. Every new hire asking about benefits gets the answer with plan names, prices, and the 30-day enrollment deadline — not a vague "check your benefits package."
+
+**If something goes wrong — roll back in one line:**
+
+```python
+import os
+from fi.prompt import Prompt
+
+Prompt.assign_label_to_template_version(
+    template_name="novacorp-hr-onboarding",
+    version="v1",
+    label="production",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+print("Rolled back to v1.")
+```
+
+That's the whole point of separating prompt management from application code. Promotion and rollback are label reassignments, not deployments. If v2's detailed instructions cause an unexpected issue — maybe the model starts over-quoting policy numbers in casual conversations — you can revert in seconds and investigate at your own pace.
+
+</Step>
+<Step title="View version history">
+
+Check the full version timeline — every version, its commit message, label, and timestamp.
+
+```python
+versions = prompt_client.list_template_versions()
+
+for v in versions:
+    draft = "draft" if v.get("isDraft") else "committed"
+    print(f"  {v['templateVersion']}  {draft}  {v['createdAt']}")
+```
+
+Expected output:
+```
+  v2  committed  2026-03-11T10:45:00Z
+  v1  committed  2026-03-11T10:30:00Z
+```
+
+Every version is immutable. You can fetch any version by number (`version="v1"`) or by label (`label="production"`). As your prompt evolves — v3 might add parental leave policy, v4 might add a new office location — this history becomes your changelog.
+
+<Tip>
+Each commit message should explain *why* the prompt changed, not just *what* changed. "v2: optimized via MetaPrompt — adds policy details and contractor handling" is more useful than "updated prompt" six months from now when someone asks why the assistant started mentioning the 90-day probation period.
+</Tip>
+
+</Step>
+</Steps>
+
+## What you built
+
+<Check>
+You took an HR onboarding assistant from a one-line generic prompt to a production-ready system — versioned, evaluated, optimized, A/B tested, and deployed — without changing a single line of agent code. And you can roll back in one line if anything goes wrong.
+</Check>
+
+Here's the pipeline:
+
+```
+Create prompt (v1) → Serve via label → Evaluate baseline →
+Optimize automatically → Version as v2 → A/B test v1 vs v2 →
+Promote winner → Roll back if needed → View history
+```
+
+Each step used a different FutureAGI feature, but they connect into a single workflow:
+
+- **Prompt Management** versioned the prompt so optimization, A/B testing, and rollback work without code changes
+- **Evaluation** measured baseline quality with `completeness` and `context_relevance` metrics
+- **Optimization** used `MetaPromptOptimizer` to automatically improve the prompt based on eval scores
+- **Experimentation** ran a structured A/B test with the same dataset, two variants, and weighted metric comparison
+- **Label management** handled promotion and rollback as one-line operations
+
+The key insight: this isn't a one-time setup. When NovaCorp adds a new office, updates its health plans, or introduces a parental leave policy, you run the same loop — optimize, test, promote. The pipeline stays the same; only the prompt changes.
+
+## Explore the features
+
+<CardGroup cols={4}>
+  <Card title="Prompt Versioning" icon="code-branch" href="/docs/cookbook/quickstart/prompt-versioning">
+    Labels, rollback, compile(), and the full SDK reference
+  </Card>
+  <Card title="Prompt Optimization" icon="scale-balanced" href="/docs/cookbook/quickstart/prompt-optimization">
+    MetaPrompt, Bayesian Search, and six optimizer strategies
+  </Card>
+  <Card title="Experimentation" icon="flask" href="/docs/cookbook/quickstart/experimentation-compare-prompts">
+    Multi-model A/B tests with weighted scoring
+  </Card>
+  <Card title="Compare Optimizers" icon="wand-magic-sparkles" href="/docs/cookbook/quickstart/compare-optimizers">
+    ProTeGi, GEPA, PromptWizard — pick the right one
+  </Card>
+</CardGroup>
