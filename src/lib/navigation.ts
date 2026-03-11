@@ -426,8 +426,98 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/cookbook' },
           {
-            title: 'Getting Started',
+            title: 'Quickstart',
             icon: 'rocket',
+            items: [
+              {
+                title: 'Evaluation',
+                items: [
+                  { title: 'Running Your First Eval', href: '/docs/cookbook/quickstart/first-eval' },
+                  { title: 'Custom Eval Metrics: Write Your Own Evaluation Criteria', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
+                  { title: 'Hallucination Detection with Faithfulness & Groundedness', href: '/docs/cookbook/quickstart/hallucination-detection' },
+                  { title: 'RAG Pipeline Evaluation: Debug Retrieval vs Generation', href: '/docs/cookbook/quickstart/rag-evaluation' },
+                  { title: 'Multimodal Evaluation: Images, Audio, and PDF', href: '/docs/cookbook/quickstart/multimodal-eval' },
+                  { title: 'Tone, Toxicity, and Bias Detection Evals', href: '/docs/cookbook/quickstart/tone-toxicity-bias-eval' },
+                  { title: 'Evaluate Customer Agent Conversations', href: '/docs/cookbook/quickstart/conversation-eval' },
+                  { title: 'Dataset SDK: Upload, Evaluate, and Download Results', href: '/docs/cookbook/quickstart/batch-eval' },
+                  { title: 'Async Evaluations for Large-Scale Testing', href: '/docs/cookbook/quickstart/async-batch-eval' },
+                  { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
+                ]
+              },
+              {
+                title: 'Simulation',
+                items: [
+                  { title: 'Chat Simulation: Run Multi-Persona Conversations via SDK', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
+                  { title: 'Voice Simulation: Define Agents, Personas, and Run Call Tests', href: '/docs/cookbook/quickstart/voice-simulation' },
+                  { title: 'Tool-Calling Agent Simulation with Tracing', href: '/docs/cookbook/quickstart/tool-calling-simulation' },
+                  { title: 'Simulate from the Prompt Workbench', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
+                ]
+              },
+              {
+                title: 'Dataset',
+                items: [
+                  { title: 'Create and Manage Datasets from the Dashboard', href: '/docs/cookbook/quickstart/dataset-management' },
+                  { title: 'Synthetic Data Generation: Create Test Datasets from a Schema', href: '/docs/cookbook/quickstart/synthetic-data-generation' },
+                  { title: 'Annotate Datasets with Human-in-the-Loop Workflows', href: '/docs/cookbook/quickstart/dataset-annotation' },
+                  { title: 'Import Datasets from Hugging Face', href: '/docs/cookbook/quickstart/huggingface-dataset-import' },
+                  { title: 'Dynamic Dataset Columns: Enrich Rows with AI-Generated Data', href: '/docs/cookbook/quickstart/dynamic-dataset-columns' },
+                ]
+              },
+              {
+                title: 'Prompt',
+                items: [
+                  { title: 'Prompt Versioning: Create, Label, and Serve Prompt Versions', href: '/docs/cookbook/quickstart/prompt-versioning' },
+                  { title: 'Prototype and Iterate on LLM Applications', href: '/docs/cookbook/quickstart/prototype-llm-app' },
+                ]
+              },
+              {
+                title: 'Observability',
+                items: [
+                  { title: 'Manual Tracing: Add Custom Spans to Any Application', href: '/docs/cookbook/quickstart/manual-tracing' },
+                  { title: 'Session-Based Observability for Multi-Turn Conversations', href: '/docs/cookbook/quickstart/session-observability' },
+                  { title: 'Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds', href: '/docs/cookbook/quickstart/monitoring-alerts' },
+                  { title: 'Inline Evals in Tracing: Score Every Response as It\'s Generated', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
+                ]
+              },
+              {
+                title: 'Optimization',
+                items: [
+                  { title: 'Prompt Optimization: Improve a Prompt Automatically', href: '/docs/cookbook/quickstart/prompt-optimization' },
+                  { title: 'Compare Optimization Strategies: ProTeGi, GEPA, and PromptWizard', href: '/docs/cookbook/quickstart/compare-optimizers' },
+                  { title: 'Dataset Optimization: Improve Prompts Directly in Your Dataset', href: '/docs/cookbook/quickstart/dataset-optimization' },
+                ]
+              },
+              {
+                title: 'Protect',
+                items: [
+                  { title: 'Protect: Add Safety Guardrails to LLM Outputs', href: '/docs/cookbook/quickstart/protect-guardrails' },
+                ]
+              },
+              {
+                title: 'Knowledge Base',
+                items: [
+                  { title: 'Knowledge Base: Upload Documents and Query with the SDK', href: '/docs/cookbook/quickstart/knowledge-base' },
+                ]
+              },
+              {
+                title: 'Experimentation',
+                items: [
+                  { title: 'Experimentation: Compare Prompts and Models on a Dataset', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
+                  { title: 'Evaluation-Driven Development: Score Every Prompt Change Before Shipping', href: '/docs/cookbook/quickstart/eval-driven-dev' },
+                  { title: 'CI/CD Eval Pipeline: Automate Quality Gates in GitHub Actions', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
+                ]
+              },
+              {
+                title: 'Agent Compass',
+                items: [
+                  { title: 'Agent Compass: Surface Agent Failures Automatically', href: '/docs/cookbook/quickstart/agent-compass-debug' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'Getting Started',
+            icon: 'zap',
             items: [
               { title: 'Using FutureAGI Evals', href: '/docs/cookbook/using-futureagi-evals' },
               { title: 'Using FutureAGI Protect', href: '/docs/cookbook/using-futureagi-protect' },

@@ -1,0 +1,334 @@
+---
+title: "Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds"
+description: "Generate rich trace data from a multi-step RAG agent, analyze historical performance trends in the Charts tab, and configure alerts with thresholds and notifications."
+---
+
+<TLDR>
+Instrument a multi-step RAG agent, explore latency/token/cost trends in Charts, and configure alerts with warning and critical thresholds that notify via email or Slack.
+</TLDR>
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/quickstart/monitoring-alerts.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/quickstart/monitoring-alerts.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 15 min | Intermediate | `fi-instrumentation-otel` |
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.9+
+- OpenAI API key (for the agent in Steps 1-2)
+</Prerequisites>
+
+## Install
+
+```bash
+pip install fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+## Tutorial
+
+<Steps>
+<Step title="Build and instrument a multi-step RAG agent">
+
+Set up tracing and build an agent with distinct tool, chain, and agent spans. This creates the nested span trees and varied metrics (latency, tokens, cost) that make Charts and Alerts useful.
+
+```python
+import os
+import time
+import random
+from openai import OpenAI
+from fi_instrumentation import register, FITracer, using_user, using_session, using_metadata, using_tags
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+# 1. Register tracing
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="monitoring-demo",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = OpenAI()
+tracer = FITracer(trace_provider.get_tracer(__name__))
+
+# 2. Define agent components using decorators
+
+@tracer.tool(name="search_knowledge_base", description="Search product docs for relevant passages")
+def search_knowledge_base(query: str) -> list[str]:
+    """Simulates a vector DB search over product documentation."""
+    knowledge = {
+        "return": ["Items can be returned within 30 days.", "Refunds are processed in 5-7 business days."],
+        "shipping": ["Standard shipping takes 5-7 days.", "Express shipping is 1-2 business days.", "Free shipping on orders over $50."],
+        "warranty": ["All electronics have a 1-year warranty.", "Extended warranty available for $29.99."],
+        "pricing": ["Pro plan is $49/month.", "Enterprise plan is $199/month.", "Annual billing saves 20%."],
+        "account": ["Reset password via Settings → Security.", "Two-factor authentication is recommended."],
+    }
+    results = []
+    for key, docs in knowledge.items():
+        if key in query.lower():
+            results.extend(docs)
+    if not results:
+        results = ["Please visit our help center at help.example.com for more information."]
+    return results
+
+
+@tracer.chain(name="generate_response")
+def generate_response(query: str, context_docs: list[str]) -> str:
+    """Uses retrieved context to generate a grounded answer."""
+    context = "\n".join(f"- {doc}" for doc in context_docs)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful support agent. Answer using ONLY the provided context. "
+                    "If the context does not contain the answer, say so.\n\n"
+                    f"Context:\n{context}"
+                ),
+            },
+            {"role": "user", "content": query},
+        ],
+    )
+    return response.choices[0].message.content
+
+
+@tracer.agent(name="support_rag_agent")
+def support_rag_agent(query: str) -> str:
+    """Top-level agent: retrieves docs then generates a grounded response."""
+    docs = search_knowledge_base(query)
+    answer = generate_response(query, docs)
+    return answer
+```
+
+The `@tracer.agent`, `@tracer.tool`, and `@tracer.chain` decorators automatically capture function inputs/outputs and set `fi.span_kind` attributes on each span. This creates a span tree: `support_rag_agent` (AGENT) → `search_knowledge_base` (TOOL) → `generate_response` (CHAIN) → OpenAI LLM span.
+
+</Step>
+<Step title="Generate trace data across multiple queries">
+
+Run the agent in a loop with varied queries, users, and sessions to produce enough data points for meaningful charts and alert thresholds.
+
+```python
+# Diverse queries that exercise different knowledge base paths
+test_queries = [
+    "What is your return policy?",
+    "How long does shipping take?",
+    "Do you offer express shipping?",
+    "What warranty comes with electronics?",
+    "How much is the Pro plan?",
+    "Can I get a discount on annual billing?",
+    "How do I reset my password?",
+    "What is the refund timeline?",
+    "Is there free shipping?",
+    "Tell me about the extended warranty.",
+]
+
+users = ["user-alice", "user-bob", "user-carol", "user-dave", "user-eve"]
+environments = ["production", "staging"]
+
+print("Generating trace data...\n")
+for i, query in enumerate(test_queries):
+    user_id = users[i % len(users)]
+    session_id = f"session-{user_id}-{i // len(users)}"
+    env_tag = environments[i % len(environments)]
+
+    with (
+        using_user(user_id),
+        using_session(session_id),
+        using_metadata({"environment": env_tag, "query_index": str(i)}),
+        using_tags([env_tag, "rag-pipeline", "monitoring-demo"]),
+    ):
+        answer = support_rag_agent(query)
+        print(f"[{user_id}] Q: {query}")
+        print(f"         A: {answer[:80]}...\n")
+
+    # Small delay between queries to spread data points over time
+    time.sleep(0.5)
+
+trace_provider.force_flush()
+print("All traces flushed. Data is now available in Tracing.")
+```
+
+Expected output:
+```
+Generating trace data...
+
+[user-alice] Q: What is your return policy?
+         A: Items can be returned within 30 days of purchase. Refunds are processed in...
+
+[user-bob] Q: How long does shipping take?
+         A: Standard shipping takes 5-7 business days. Express shipping is available fo...
+
+[user-carol] Q: Do you offer express shipping?
+         A: Yes, express shipping is available and takes 1-2 business days...
+
+...
+
+All traces flushed. Data is now available in Tracing.
+```
+
+Wait 1-2 minutes for the traces to appear in the dashboard before proceeding.
+
+<Tip>
+For more realistic alerting scenarios, run this script multiple times across different hours or days. Alerts evaluate metrics over time windows, so more data spread over time produces better threshold previews.
+</Tip>
+
+</Step>
+<Step title="Analyze historical trends in the Charts tab">
+
+Go to [app.futureagi.com](https://app.futureagi.com) → **Tracing** (left sidebar under OBSERVE) → select your project (`monitoring-demo`) → click the **Charts** tab (4th tab, after LLM Tracing, Sessions, and Documents).
+
+The Charts tab shows system-level performance metrics over time:
+
+| Chart | What it shows |
+|---|---|
+| **Latency** | Average response time in milliseconds across all spans |
+| **Tokens** | Total token consumption (input + output) summed across spans |
+| **Traffic** | Total span count — how many operations your agent executed |
+| **Cost** | Average cost per span in dollars |
+
+If you have evaluation metrics configured on this project — via [Inline Evals in Tracing](/docs/cookbook/quickstart/inline-evals-tracing) — additional charts appear below the system metrics, one per evaluation metric.
+
+### Controls
+
+- **Date range** — select from presets (Today, Yesterday, 7D, 30D, 3M, 6M, 12M) or a custom range
+- **Interval** — the dropdown on the right groups data by Hour, Day, Week, or Month. Hour is disabled for ranges longer than 7 days; Month is disabled for ranges shorter than 90 days
+- **Zoom** — click and drag on any chart to zoom in. All four system metric charts sync to the same zoomed range
+- **Refresh** — re-fetch all chart data
+- **View Traces** — jump to the LLM Tracing tab with the same date filter applied
+
+<video autoPlay muted loop playsInline className="w-full rounded-xl" src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/monitoring-alerts/step-3-charts-overview.mp4" />
+
+<Tip>
+Use the Charts tab as a daily health check. A sudden spike in Latency or drop in Traffic often signals an upstream provider issue before your users notice.
+</Tip>
+
+</Step>
+<Step title="Create an alert">
+
+Go to [app.futureagi.com](https://app.futureagi.com) → **Tracing** (left sidebar under OBSERVE) → select your project (`monitoring-demo`) → click the **Alerts** tab (5th tab, after Charts).
+
+Click **Create Alerts** to open the alert creation drawer.
+
+### 4a. Select alert type
+
+The first tab shows two categories:
+
+**Application Performance alerts:**
+| Alert type | What it monitors |
+|---|---|
+| Count of errors | Total error count across spans |
+| Span response time | End-to-end latency of spans |
+| LLM response time | Latency of LLM-specific spans |
+| LLM API failure rates | Percentage of failed LLM API calls |
+| Error rates for function calling | Failure rate of tool/function call spans |
+| Error free session rates | Percentage of sessions with zero errors |
+| Service provider error rates | Errors grouped by LLM provider |
+
+**Metric Alerts:**
+| Alert type | What it monitors |
+|---|---|
+| Evaluation metrics | Scores from inline evals attached to traces |
+| Token usage | Token consumption per span |
+| Daily tokens spent | Aggregate daily token usage |
+| Monthly tokens spent | Aggregate monthly token usage |
+
+Select **LLM response time** under Application Performance, then proceed to the next tab.
+
+### 4b. Set alert configuration
+
+The second tab has five sections. Fill them in order:
+
+**Name** — enter `High LLM Latency`.
+
+**Define Metrics & Interval** — the metric is pre-filled from your selection (LLM response time). Set the **Interval** dropdown to `15 minute interval` — this is how often the alert evaluates the metric.
+
+**Filter Events** — optionally click **Add Filter** to narrow the alert to specific span attributes (e.g., only spans from a certain environment or model). Leave empty for this example.
+
+**Define Alert** — choose **Static Value** (alerts when the metric is above or below a fixed number). Then configure the two threshold levels:
+
+- **Critical** — set Threshold to **Above** and Value to `5000`. This fires when LLM response time exceeds 5000ms
+- **Warning** — set Threshold to **Above** and Value to `2000`. This fires when LLM response time exceeds 2000ms
+
+The warning value must be less severe than critical (for "Above" alerts: warning < critical).
+
+**Define Notification** — choose **Email** or **Slack**:
+- **Email** — enter up to 5 comma-separated email addresses
+- **Slack** — paste a Slack webhook URL and optionally add notes (e.g., the channel name)
+
+<video autoPlay muted loop playsInline className="w-full rounded-xl" src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/monitoring-alerts/step-4-create-alert.mp4" />
+
+<Tip>
+To create a Slack webhook URL, go to your Slack workspace settings → Apps → Incoming Webhooks → Add New Webhook. Copy the URL and paste it into the Slack notification field.
+</Tip>
+
+</Step>
+<Step title="Monitor and manage alerts">
+
+After creating alerts, the **Alerts** tab shows all alerts for this project in a searchable list. Use the search bar to find alerts by name.
+
+### View alert details
+
+Click any alert to see:
+
+- **Configuration** — the alert type, thresholds, check frequency, and notification channels
+- **Trigger history (logs)** — a timeline of every time the alert fired, showing:
+  - Alert level: Warning or Critical
+  - Message describing what triggered it
+  - Timestamp of when it fired
+  - Whether it has been resolved
+- **Current status** — whether the alert is active, in warning state, in critical state, or resolved
+
+### Manage alerts
+
+From the alert detail view or the alerts list, you can:
+
+- **Mute/unmute** — temporarily silence notifications without deleting the alert. Useful during maintenance windows
+- **Edit** — change thresholds, check frequency, or notification channels
+- **Duplicate** — clone an alert to create a similar one with different thresholds (e.g., duplicate the latency alert and change it to monitor token usage)
+- **Delete** — permanently remove the alert
+
+<Tip>
+Start with a few high-signal alerts — LLM response time, error rates, and daily token spend — rather than alerting on everything. Too many alerts cause notification fatigue and get ignored.
+</Tip>
+
+</Step>
+</Steps>
+
+## What you built
+
+<Check>
+You can now generate rich trace data from an instrumented agent, analyze performance trends in Charts, and configure alerts with thresholds and notifications.
+</Check>
+
+- Instrumented a multi-step RAG agent with `@tracer.agent`, `@tracer.tool`, and `@tracer.chain` decorators for rich span trees
+- Generated diverse trace data across multiple users, sessions, and environments using context managers
+- Explored historical performance trends — Latency, Tokens, Traffic, and Cost — in the Charts tab with date range and interval controls
+- Created an LLM response time alert with static warning (2000ms) and critical (5000ms) thresholds
+- Configured email and Slack notifications for threshold breaches
+- Reviewed alert trigger history, mute/unmute controls, and alert management options
+
+<CardGroup cols={4}>
+  <Card title="Manual Tracing" icon="eye" href="/docs/cookbook/quickstart/manual-tracing">
+    Custom spans and metadata
+  </Card>
+  <Card title="Inline Evals in Tracing" icon="chart-line" href="/docs/cookbook/quickstart/inline-evals-tracing">
+    Quality scores on traces
+  </Card>
+  <Card title="Agent Compass" icon="compass" href="/docs/cookbook/quickstart/agent-compass-debug">
+    Surface failure patterns
+  </Card>
+  <Card title="Protect Guardrails" icon="shield" href="/docs/cookbook/quickstart/protect-guardrails">
+    Block unsafe LLM outputs
+  </Card>
+</CardGroup>

@@ -108,7 +108,7 @@ export default function PageFeedback({ pagePath }: { pagePath: string }) {
             </button>
             <button
               onClick={handleSubmitFeedback}
-              className="px-4 py-1.5 text-sm font-medium rounded-lg bg-[var(--color-accent-primary)] text-white hover:opacity-90 transition-opacity cursor-pointer"
+              className="px-4 py-1.5 text-sm font-medium rounded-lg bg-[var(--color-accent-primary)] text-[var(--color-bg-primary)] hover:opacity-90 transition-opacity cursor-pointer"
             >
               Submit
             </button>
