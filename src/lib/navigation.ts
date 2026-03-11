@@ -81,16 +81,21 @@ export const tabNavigation: NavTab[] = [
         icon: 'eye',
         items: [
           { title: 'Overview', href: '/docs/observe' },
-          { title: 'Set Up Observability', href: '/docs/observe/quickstart' },
-          { title: 'Evals', href: '/docs/observe/evals' },
-          { title: 'Sessions', href: '/docs/observe/session' },
-          { title: 'Users', href: '/docs/observe/users' },
-          { title: 'Alerts & Monitors', href: '/docs/observe/alerts' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
+              { title: 'Evals', href: '/docs/observe/features/evals' },
+              { title: 'Sessions', href: '/docs/observe/features/session' },
+              { title: 'Users', href: '/docs/observe/features/users' },
+              { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
+            ]
+          },
           {
             title: 'Voice Observability',
             items: [
               { title: 'Overview', href: '/docs/observe/voice' },
-              { title: 'Quickstart', href: '/docs/observe/voice/quickstart' },
+              { title: 'Set Up Voice Observability', href: '/docs/observe/voice/set-up' },
             ]
           },
           {
@@ -100,12 +105,12 @@ export const tabNavigation: NavTab[] = [
               {
                 title: 'Concept',
                 items: [
-                  { title: 'Overview', href: '/docs/tracing/concepts' },
-                  { title: 'Core Components', href: '/docs/tracing/components' },
-                  { title: 'Spans', href: '/docs/tracing/spans' },
-                  { title: 'Traces', href: '/docs/tracing/traces' },
-                  { title: 'OpenTelemetry', href: '/docs/tracing/otel' },
-                  { title: 'TraceAI', href: '/docs/tracing/traceai' },
+                  { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
+                  { title: 'Components of Observability', href: '/docs/tracing/concepts/components' },
+                  { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
+                  { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
+                  { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
+                  { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
                 ]
               },
               {
@@ -149,18 +154,18 @@ export const tabNavigation: NavTab[] = [
                 title: 'Manual Tracing',
                 items: [
                   { title: 'Set Up Tracing', href: '/docs/tracing/manual/set-up-tracing' },
-                  { title: 'Instrument with TraceAI', href: '/docs/tracing/manual/instrument-with-traceai-helpers' },
-                  { title: 'Get Current Span Context', href: '/docs/tracing/manual/get-current-span-context' },
-                  { title: 'Add Attributes & Metadata', href: '/docs/tracing/manual/add-attributes-metadata-tags' },
-                  { title: 'Log Prompt Templates', href: '/docs/tracing/manual/log-prompt-templates' },
-                  { title: 'Add Events & Exceptions', href: '/docs/tracing/manual/add-events-exceptions-status' },
-                  { title: 'Set Session & User ID', href: '/docs/tracing/manual/set-session-user-id' },
-                  { title: 'Create Tool Spans', href: '/docs/tracing/manual/create-tool-spans' },
+                  { title: 'Instrument with traceAI Helpers', href: '/docs/tracing/manual/instrument-with-traceai-helpers' },
+                  { title: 'Get Current Tracer and Span', href: '/docs/tracing/manual/get-current-span-context' },
+                  { title: 'Enriching Spans with Attributes, Metadata, and Tags', href: '/docs/tracing/manual/add-attributes-metadata-tags' },
+                  { title: 'Logging Prompt Templates & Variables', href: '/docs/tracing/manual/log-prompt-templates' },
+                  { title: 'Integrate Events, Exceptions, and Status into Spans', href: '/docs/tracing/manual/add-events-exceptions-status' },
+                  { title: 'Set Session ID and User ID', href: '/docs/tracing/manual/set-session-user-id' },
+                  { title: 'Tool Spans Creation', href: '/docs/tracing/manual/create-tool-spans' },
                   { title: 'Mask Span Attributes', href: '/docs/tracing/manual/mask-span-attributes' },
-                  { title: 'Advanced Examples', href: '/docs/tracing/manual/advanced-tracing-examples' },
-                  { title: 'Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
-                  { title: 'Inline Evals', href: '/docs/tracing/manual/in-line-evals' },
-                  { title: 'Annotating via API', href: '/docs/tracing/manual/annotating-using-api' },
+                  { title: 'Advanced Tracing (OTEL)', href: '/docs/tracing/manual/advanced-tracing-examples' },
+                  { title: 'FI Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
+                  { title: 'In-line Evaluations', href: '/docs/tracing/manual/in-line-evals' },
+                  { title: 'Adding Annotations to your Spans', href: '/docs/tracing/manual/annotating-using-api' },
                   { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-intergation' },
                 ]
               },
