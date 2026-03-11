@@ -1,0 +1,689 @@
+---
+title: "Build a Self-Improving AI Sales Agent"
+description: "Take an AI SDR agent from a one-line prototype to a self-improving production system — with simulation, automated diagnostics, prompt optimization, safety guardrails, and monitoring. The full Build → Test → Fix → Deploy → Monitor loop using 8 FutureAGI features."
+---
+
+| Time | Difficulty | Features Used |
+|------|-----------|---------------|
+| 45 min | Intermediate | Prompt Management, Observability, Simulation, Evaluation, Agent Compass, Optimization, Protect, Monitoring |
+
+You're building an AI SDR agent for **Acme Inc**, a B2B SaaS company that sells marketing analytics software. The agent qualifies inbound leads, answers product questions, handles objections, and books demo calls.
+
+Right now it has a one-line system prompt that says "help leads learn about our product." That's the kind of prompt that works when you're the one testing it. Let's find out what happens when you're not.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install ai-evaluation futureagi agent-simulate fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Steps>
+<Step title="Build your agent">
+
+Here's the prototype. An async OpenAI agent with four tools — lead lookup, product info, demo booking, and sales escalation. The system prompt is deliberately minimal. We're going to let the platform tell us what's missing.
+
+```python
+import os
+import json
+from openai import AsyncOpenAI
+
+client = AsyncOpenAI()
+
+SYSTEM_PROMPT = "You are a sales assistant for Acme Inc. Help leads learn about our product and book demos."
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_lead_info",
+            "description": "Look up lead details from CRM by email",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "description": "Lead's email address"}
+                },
+                "required": ["email"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_product_info",
+            "description": "Look up Acme Inc product features, pricing tiers, or technical details",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The product question to answer"}
+                },
+                "required": ["question"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_demo",
+            "description": "Schedule a product demo call with the sales team",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "description": "Lead's email for calendar invite"},
+                    "date": {"type": "string", "description": "Preferred date (YYYY-MM-DD)"},
+                    "time": {"type": "string", "description": "Preferred time (HH:MM)"}
+                },
+                "required": ["email", "date", "time"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "escalate_to_sales",
+            "description": "Route the lead to a human sales representative",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "description": "Lead's email"},
+                    "reason": {"type": "string", "description": "Why this lead needs a human rep"}
+                },
+                "required": ["email", "reason"]
+            }
+        }
+    }
+]
+
+
+# Mock tool implementations
+def check_lead_info(email: str) -> dict:
+    leads = {
+        "alex@techcorp.io": {
+            "name": "Alex Rivera",
+            "company": "TechCorp",
+            "size": "200 employees",
+            "industry": "SaaS",
+            "current_plan": None,
+        },
+        "jordan@bigretail.com": {
+            "name": "Jordan Lee",
+            "company": "BigRetail Inc",
+            "size": "5000 employees",
+            "industry": "Retail",
+            "current_plan": "Starter",
+        },
+    }
+    return leads.get(email, {"error": f"No lead found with email {email}"})
+
+def get_product_info(question: str) -> dict:
+    return {
+        "answer": "Acme Inc offers three tiers: Starter ($49/mo, up to 10k events), "
+                  "Professional ($199/mo, up to 500k events, custom dashboards), and "
+                  "Enterprise (custom pricing, unlimited events, dedicated support, SSO, SLA).",
+        "source": "pricing-page-2025"
+    }
+
+def book_demo(email: str, date: str, time: str) -> dict:
+    return {"status": "confirmed", "calendar_link": f"https://cal.acme-inc.io/demo/{date}", "with": "Sarah Chen, Solutions Engineer"}
+
+def escalate_to_sales(email: str, reason: str) -> dict:
+    return {"status": "routed", "assigned_to": "Marcus Johnson, Enterprise AE", "sla": "1 hour"}
+
+
+async def handle_message(messages: list) -> str:
+    """Send messages to OpenAI and handle tool calls."""
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        tools=TOOLS,
+    )
+
+    msg = response.choices[0].message
+
+    if msg.tool_calls:
+        messages.append(msg)
+        for tool_call in msg.tool_calls:
+            fn_name = tool_call.function.name
+            fn_args = json.loads(tool_call.function.arguments)
+
+            tool_fn = {"check_lead_info": check_lead_info, "get_product_info": get_product_info,
+                       "book_demo": book_demo, "escalate_to_sales": escalate_to_sales}
+            result = tool_fn.get(fn_name, lambda **_: {"error": "Unknown tool"})(**fn_args)
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result),
+            })
+
+        followup = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            tools=TOOLS,
+        )
+        return followup.choices[0].message.content
+
+    return msg.content
+```
+
+That one-line system prompt is doing a lot of heavy lifting — or rather, it's not doing much at all. There's no qualification framework, no objection handling, no tone guidance, no escalation criteria. The model will just improvise. Let's see how that goes.
+
+</Step>
+<Step title="Version your prompt">
+
+Before we test anything, let's move the prompt out of your codebase and into FutureAGI's Prompt Management. When we optimize the prompt later, we'll swap it without touching a single line of agent code.
+
+```python
+from fi.prompt import Prompt
+from fi.prompt.types import PromptTemplate, SystemMessage, UserMessage, ModelConfig
+
+prompt = Prompt(
+    template=PromptTemplate(
+        name="acme-sdr",
+        messages=[
+            SystemMessage(content=SYSTEM_PROMPT),
+            UserMessage(content="{{lead_message}}"),
+        ],
+        model_configuration=ModelConfig(
+            model_name="gpt-4o-mini",
+            temperature=0.7,
+            max_tokens=500,
+        ),
+    )
+)
+prompt.create()
+prompt.commit_current_version(
+    message="v1: bare-bones prototype — no qualification, no objection handling",
+    label="production",
+)
+print("v1 committed with 'production' label")
+```
+
+Now update your agent to pull the prompt from the platform:
+
+```python
+def get_system_prompt() -> str:
+    template = Prompt.get_template_by_name(name="acme-sdr", label="production")
+    return template.messages[0].content
+```
+
+Every instance of your agent now fetches the latest `production`-labeled prompt on startup. Promote a new version → every instance picks it up. Roll back → same thing, one line.
+
+<Note>
+**Deep dive:** See [Prompt Versioning: Create, Label, and Serve Prompt Versions](/docs/cookbook/quickstart/prompt-versioning) for the full versioning workflow — rollback, version history, model config per version, and staging-to-production label management.
+</Note>
+
+</Step>
+<Step title="Add tracing">
+
+We need eyes inside the agent before we throw simulated leads at it. Tracing captures every LLM call, every tool invocation, and every decision as nested spans you can inspect in the dashboard.
+
+```python
+from fi_instrumentation import register, FITracer
+from fi_instrumentation.fi_types import ProjectType
+from traceai.openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="acme-sdr",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer("acme-sdr"))
+```
+
+Wrap your agent function so every conversation gets tagged with user and session context:
+
+```python
+from fi_instrumentation import using_user, using_session
+
+@tracer.agent(name="sdr_agent")
+async def traced_agent(user_id: str, session_id: str, messages: list) -> str:
+    with using_user(user_id), using_session(session_id):
+        return await handle_message(messages)
+```
+
+The `@tracer.agent` decorator wraps the function as a parent span. `OpenAIInstrumentor` auto-captures every OpenAI call inside it. The context managers tag everything with the lead's ID and conversation session — so you can filter by lead or conversation in the dashboard later.
+
+Head over to **Tracing** in the dashboard. You'll see your project appear once you run the agent. Each conversation shows up as a trace with nested spans: `sdr_agent` → `openai.chat` → tool execution → `openai.chat` (final response).
+
+<Note>
+**Deep dive:** See [Manual Tracing: Add Custom Spans to Any Application](/docs/cookbook/quickstart/manual-tracing) for decorators (`@tracer.tool`, `@tracer.chain`), custom span attributes, metadata tagging, and prompt template tracking.
+</Note>
+
+</Step>
+<Step title="Stress-test with simulation">
+
+Time to find out what your agent actually does under pressure. You're about to generate 20 sales conversations with diverse simulated leads — some cooperative, some skeptical, some completely off-topic. The platform assigns a persona to each scenario automatically from its built-in persona pool, so you get a natural mix of communication styles and personalities without any manual setup.
+
+**In the dashboard:**
+
+1. Go to **Simulate** → **Create Agent Definition**
+2. Paste your system prompt, select `gpt-4o-mini`, and commit
+3. Go to **Scenarios** → click **Auto-generate** → request **20 scenarios**
+   - The platform generates realistic lead interactions based on your agent definition — pricing questions, objection-heavy conversations, demo booking flows, technical deep-dives, and edge cases
+   - Each scenario is automatically assigned a persona from the built-in pool (friendly, impatient, confused, skeptical, etc.)
+4. Under **Evaluations**, select the **Conversational agent evaluation** group — this adds all 13 conversation quality metrics in one click
+5. Click **Run Simulation**
+
+**Connect your agent:**
+
+```python
+import asyncio
+from fi.simulate import TestRunner, AgentInput
+
+runner = TestRunner()
+
+async def agent_callback(input: AgentInput) -> str:
+    messages = [{"role": "system", "content": get_system_prompt()}]
+    for msg in input.messages:
+        messages.append(msg)
+
+    return await traced_agent(
+        user_id=f"sim-{input.thread_id[:8]}",
+        session_id=input.thread_id,
+        messages=messages,
+    )
+
+async def main():
+    report = await runner.run_test(
+        run_test_name="acme-sdr-v1",
+        agent_callback=agent_callback,
+    )
+    print("Simulation complete — check the dashboard for results")
+
+asyncio.run(main())
+```
+
+The platform runs all 20 conversations, each with its own persona and scenario. Every conversation is traced (Step 3) and evaluated against all 13 metrics from the Conversational agent evaluation group. Results appear in the dashboard once all conversations complete.
+
+<Tip>
+The `run_test_name` must exactly match the simulation name in the dashboard. If you get a 404, double-check the spelling.
+</Tip>
+
+<Note>
+**Deep dive:** See [Chat Simulation: Run Multi-Persona Conversations via SDK](/docs/cookbook/quickstart/chat-simulation-personas) for custom persona creation, scenario workflow builder, tool-calling simulation, and the full dashboard walkthrough. For voice agents, see [Voice Simulation](/docs/cookbook/quickstart/voice-simulation).
+</Note>
+
+</Step>
+<Step title="Review the results">
+
+Open **Simulate** → click your simulation → go to the **Analytics** tab.
+
+You'll see aggregate scores across all 20 conversations for each of the 13 evaluation metrics — things like conversation quality, context retention, query handling, loop detection, escalation handling, and prompt conformance.
+
+With that bare-bones v1 prompt, expect a mixed bag. Some conversations will go fine — the cooperative leads who ask straightforward questions and accept the first answer. But the skeptical leads, the ones who push back on pricing or ask "why should I switch from Competitor X?" — those are where the cracks show.
+
+Switch to the **Chat Details** tab and click into a few of the lower-scoring conversations. You'll see the full transcript with per-message eval annotations. Look for patterns:
+
+- **Context drops** — the lead mentions their company name and team size, then the agent asks "What company are you with?" two messages later
+- **Qualification gaps** — the agent never asks about budget, timeline, or decision-making authority before trying to book a demo
+- **Objection fumbles** — when a lead says "That's too expensive for us," the agent either caves immediately or ignores the objection entirely
+- **Missed escalations** — an enterprise lead with 5,000 employees gets the same treatment as a solo founder
+
+These aren't hypothetical failures. With a one-line system prompt and no explicit instructions, the model defaults to generic helpfulness — which isn't the same as effective sales qualification.
+
+You can also pull a specific conversation and run targeted evals from the SDK:
+
+```python
+import os
+import json
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+# Paste a conversation from the Chat Details tab
+conversation = [
+    {"role": "user", "content": "Hi, I saw your product on LinkedIn. What does Acme Inc do?"},
+    {"role": "assistant", "content": "Acme Inc is a marketing analytics platform! Would you like to book a demo?"},
+    {"role": "user", "content": "Uh, I haven't even heard what it does yet. Can you explain the features?"},
+    {"role": "assistant", "content": "Sure! Would you like to book a demo to learn more?"},
+    {"role": "user", "content": "You already asked that. Just tell me what it does."},
+    {"role": "assistant", "content": "I'd be happy to help! Can I get your email to send you more information?"},
+]
+
+for metric in ["customer_agent_context_retention", "customer_agent_loop_detection", "customer_agent_query_handling"]:
+    result = evaluator.evaluate(
+        eval_templates=metric,
+        inputs={"conversation": json.dumps(conversation)},
+        model_name="turing_small",
+    )
+    eval_result = result.eval_results[0]
+    score = eval_result.output[0] if isinstance(eval_result.output, list) else eval_result.output
+    print(f"{metric}: {score}")
+    print(f"  → {eval_result.reason}\n")
+```
+
+The eval reasons are the real value here. They don't just tell you the score — they tell you *why* the agent failed in plain English. Context retention flags exactly which detail was dropped. Loop detection identifies the repeated pattern. Query handling explains which question was ignored.
+
+<Note>
+**Deep dive:** See [Evaluate Customer Agent Conversations](/docs/cookbook/quickstart/conversation-eval) for all 13 metrics in the Conversational agent evaluation group, individual metric examples, prompt conformance scoring, and how to run the full eval group from the dashboard on any dataset.
+</Note>
+
+</Step>
+<Step title="Diagnose with Agent Compass">
+
+Reading 20 transcripts manually is doable. Reading 200 next month isn't. Agent Compass analyzes your traces and clusters failures into named patterns — so instead of "conversation #14 was bad," you get "Context Loss in Lead Qualification — 7 events, affects 4 leads."
+
+Go to **Tracing** → select `acme-sdr` → click the **Feed** tab.
+
+Agent Compass groups errors across four quality dimensions:
+
+- **Factual Grounding** — is the agent making up product features or pricing?
+- **Privacy & Safety** — is it leaking internal data or generating inappropriate content?
+- **Instruction Adherence** — is it following the system prompt? (With a one-line prompt, there isn't much to follow.)
+- **Optimal Plan Execution** — is it taking the most efficient path to qualify and convert the lead?
+
+Click into any error cluster. You'll see:
+
+- **Recommendation** — a specific strategy to fix the issue
+- **Immediate Fix** — the quick version you can apply right now
+- **Root Cause** — why it's happening (often: "the system prompt lacks explicit instructions for...")
+- **Evidence** — links to the exact spans where the failure occurred
+
+This is the input for the next step. Agent Compass just told you exactly what your prompt is missing. Now let's fix it.
+
+<Note>
+Make sure Agent Compass sampling is enabled. Go to **Tracing** → your project → **Configure** (gear icon) → set sampling to **100%** for testing. You'll lower it for production later.
+</Note>
+
+<Note>
+**Deep dive:** See [Agent Compass: Surface Agent Failures Automatically](/docs/cookbook/quickstart/agent-compass-debug) for the full Feed dashboard walkthrough, per-trace quality scoring, and how to apply recommendations.
+</Note>
+
+</Step>
+<Step title="Optimize the prompt">
+
+You have two paths here. You can manually rewrite the prompt based on Agent Compass recommendations. Or you can let the platform do it.
+
+**The automated route:**
+
+1. Go to **Simulate** → your simulation results
+2. Click **Fix My Agent** (top-right)
+3. Review the recommendations — organized into **Fixable** (prompt-level changes you can apply) and **Non-Fixable** (infrastructure-level issues that need code changes)
+4. Click **Optimize My Agent**
+5. Select an optimizer (MetaPrompt is a good default) and a language model
+6. Run the optimization
+
+The optimizer analyzes your failing conversations, identifies what the prompt is missing, and generates an improved version. Check the **Optimization Runs** tab for results.
+
+The optimized prompt will be significantly more detailed than your one-liner. Expect it to include instructions for:
+- How to qualify leads (company size, use case, timeline, decision authority)
+- When to use each tool (look up CRM before asking questions the system already has answers to)
+- How to handle objections (acknowledge → address → redirect)
+- When to escalate (enterprise leads, custom requirements, competitor comparisons)
+- Tone calibration (professional but not pushy, consultative not transactional)
+
+<Tip>
+Fix My Agent works best with at least **15 completed conversations**. If your simulation had fewer, increase the scenario count and re-run before clicking Fix My Agent.
+</Tip>
+
+<Note>
+**Want a different optimizer?** MetaPrompt uses a teacher LLM to iteratively rewrite your prompt. But there are five other strategies — ProTeGi for targeted edits, GEPA for evolutionary exploration, PromptWizard for multi-stage refinement, Bayesian Search for few-shot optimization, and Random Search as a baseline. See [Compare Optimization Strategies](/docs/cookbook/quickstart/compare-optimizers) to pick the right one for your use case. You can also run optimization programmatically via SDK — see [Prompt Optimization](/docs/cookbook/quickstart/prompt-optimization).
+</Note>
+
+</Step>
+<Step title="Version the fix and verify">
+
+Take the optimized prompt from the Optimization Runs tab and version it as v2. Below is a sample optimized prompt that reflects the kind of improvements the optimizer typically generates — use it as-is to follow along, or replace it with the actual output from your optimization run.
+
+```python
+from fi.prompt import Prompt
+from fi.prompt.types import PromptTemplate, SystemMessage, UserMessage, ModelConfig
+
+OPTIMIZED_PROMPT = """You are a senior sales development representative for Acme Inc, a B2B marketing analytics platform. Your goal is to qualify inbound leads, answer their questions accurately, and book product demos when appropriate.
+
+QUALIFICATION FRAMEWORK:
+Before booking a demo, gather these four signals naturally through conversation:
+1. Company size and industry (use check_lead_info if you have their email)
+2. Current pain point or use case they're trying to solve
+3. Timeline — are they actively evaluating tools or just exploring?
+4. Decision authority — are they the decision-maker, or will someone else need to be involved?
+
+You do NOT need all four before booking. If the lead is eager and asks to book, do it. But for leads who seem early-stage, qualify first.
+
+TOOL USAGE:
+- If a lead shares their email, ALWAYS run check_lead_info first. If they're already in the CRM, reference their company name and any existing plan — it shows you did your homework.
+- Use get_product_info for any product, pricing, or technical question. Never guess product details.
+- Use book_demo only after confirming the lead's email and a preferred date/time.
+- Use escalate_to_sales for: enterprise leads (500+ employees), custom pricing requests, competitor comparison questions, or any request beyond your scope.
+
+OBJECTION HANDLING:
+When a lead pushes back (e.g., "too expensive", "we already use Competitor X", "not sure we need this"):
+1. Acknowledge their concern — never dismiss or ignore it
+2. Ask a clarifying question to understand the specifics
+3. Address with relevant product info if possible, or offer to connect them with a specialist
+
+TONE:
+- Professional but conversational — not robotic, not overly casual
+- Consultative, not transactional — you're helping them evaluate, not pushing a sale
+- Concise — keep responses under 3 sentences unless they ask for detail
+
+ESCALATION:
+- If a lead asks to speak with a human, a manager, or "someone from sales" — escalate immediately using escalate_to_sales. Do not try to handle it yourself.
+- For enterprise leads (500+ employees or mentions of SSO, SLA, custom pricing) — escalate proactively.
+
+RULES:
+- Never share internal pricing margins, cost structures, or inventory data
+- Never make promises about features that aren't confirmed via get_product_info
+- Always greet the lead warmly on first message
+- If you're unsure about something, say so honestly and offer to connect them with the right person"""
+
+prompt = Prompt.get_template_by_name(name="acme-sdr", label="production")
+prompt.create_new_version(
+    template=PromptTemplate(
+        name="acme-sdr",
+        messages=[
+            SystemMessage(content=OPTIMIZED_PROMPT),
+            UserMessage(content="{{lead_message}}"),
+        ],
+        model_configuration=ModelConfig(
+            model_name="gpt-4o-mini",
+            temperature=0.5,
+            max_tokens=500,
+        ),
+    ),
+    commit_message="v2: optimized — adds qualification framework, objection handling, escalation rules",
+)
+print("v2 committed — not yet promoted to production")
+```
+
+Notice the temperature dropped from 0.7 to 0.5. The optimized prompt has more specific instructions, and lower temperature helps the model follow them consistently instead of freelancing.
+
+<Tip>
+The sample prompt above is illustrative. Your actual optimization output will be tailored to the specific failure patterns found in your simulation — it may be shorter, longer, or structured differently. Either way, the versioning flow is the same.
+</Tip>
+
+**Now re-run the same simulation with v2:**
+
+1. Go to **Simulate** → update your Agent Definition with the v2 prompt and commit a new version
+2. Run a new simulation with the same scenario count (20)
+3. The platform generates fresh scenarios and assigns personas from the built-in pool
+
+Open the Analytics tab and compare. The same types of leads — skeptical, impatient, confused — but this time the agent has actual instructions for handling them. You should see clear improvement across the conversation quality, context retention, and query handling metrics. The specific failure patterns that Agent Compass flagged in Step 6 should be resolved or significantly reduced.
+
+Once you're satisfied, promote v2:
+
+```python
+from fi.prompt import Prompt
+
+Prompt.assign_label_to_template_version(
+    template_name="acme-sdr",
+    version="v2",
+    label="production",
+)
+print("v2 is now the production prompt")
+```
+
+Every agent instance calling `get_template_by_name(label="production")` now gets v2 automatically. If something goes wrong in production, roll back to v1 with one line:
+
+```python
+# Emergency rollback
+from fi.prompt import Prompt
+
+Prompt.assign_label_to_template_version(
+    template_name="acme-sdr",
+    version="v1",
+    label="production",
+)
+```
+
+<Note>
+**Want to do a more rigorous comparison?** Instead of eyeballing two simulation runs, you can run a structured A/B test using the Experimentation feature — same dataset, two prompt variants, weighted metric scoring, and a clear winner. See [Experimentation: Compare Prompts and Models on a Dataset](/docs/cookbook/quickstart/experimentation-compare-prompts).
+</Note>
+
+</Step>
+<Step title="Add safety guardrails">
+
+Your agent is smarter now. It qualifies leads, handles objections, and knows when to escalate. But a well-crafted prompt injection could still make it ignore all those instructions. A lead might accidentally paste their SSN in the chat. The agent might hallucinate a pricing tier that doesn't exist.
+
+Protect screens inputs and outputs in real time — before they reach your agent or your lead.
+
+```python
+from fi.evals import Protect
+
+protector = Protect()
+
+INPUT_RULES = [
+    {"metric": "security"},
+    {"metric": "content_moderation"},
+]
+
+OUTPUT_RULES = [
+    {"metric": "data_privacy_compliance"},
+    {"metric": "content_moderation"},
+]
+
+async def safe_agent(user_id: str, session_id: str, messages: list) -> str:
+    user_message = messages[-1]["content"]
+
+    # Screen the input
+    input_check = protector.protect(
+        text=user_message,
+        protect_rules=INPUT_RULES,
+        action="I appreciate your interest in Acme Inc! I can help with product questions, pricing, and booking demos. How can I assist you today?",
+        reason=True,
+    )
+    if input_check["status"] == "failed":
+        return input_check["messages"]
+
+    # Run the agent
+    response = await traced_agent(user_id, session_id, messages)
+
+    # Screen the output
+    output_check = protector.protect(
+        text=response,
+        protect_rules=OUTPUT_RULES,
+        action="I'd be happy to help! Let me connect you with our team for the most accurate information. Could I get your email to have someone reach out?",
+        reason=True,
+    )
+    if output_check["status"] == "failed":
+        return output_check["messages"]
+
+    return response
+```
+
+The `security` rule catches prompt injection attempts on the input side. `data_privacy_compliance` catches PII in the agent's responses — if the agent accidentally echoes back a credit card number or SSN, the lead sees the safe fallback instead.
+
+<Warning>
+Always check `result["status"]` to determine pass or fail. The `"messages"` key contains either the original text (if passed) or the fallback action text (if failed). Don't rely on `"messages"` alone.
+</Warning>
+
+<Note>
+**Deep dive:** See [Protect: Add Safety Guardrails to LLM Outputs](/docs/cookbook/quickstart/protect-guardrails) for all four guardrail types (`content_moderation`, `security`, `data_privacy_compliance`, `bias_detection`), stacking multiple rules, Protect Flash for low-latency screening, and the full return value structure.
+</Note>
+
+</Step>
+<Step title="Set up production monitoring">
+
+Your agent is optimized, guarded, and verified. Time to go live — but "live" without monitoring means you won't know something broke until a lead complains on Twitter.
+
+**Configure Agent Compass for ongoing analysis:**
+
+1. Go to **Tracing** → select `acme-sdr` → click **Configure** (gear icon)
+2. Set Agent Compass sampling to **20%** — enough to catch systemic patterns without analyzing every single trace in production
+
+**Set up alerts:**
+
+Go to **Tracing** → **Alerts** tab → **Create Alert**. Set up three alerts to cover the basics:
+
+| Alert | Metric | Warning Threshold | Critical Threshold |
+|-------|--------|-------------------|-------------------|
+| Slow responses | LLM response time | > 5 seconds | > 10 seconds |
+| High error rate | Error rate | > 5% | > 15% |
+| Token budget | Monthly tokens spent | Your warning budget | Your critical budget |
+
+For each alert, set your preferred notification channel — email (up to 5 addresses) or Slack (via webhook URL). Set the check interval based on urgency: every 5 minutes for latency, daily for token budget.
+
+**Check your baseline:**
+
+Go to **Tracing** → **Charts** tab. You'll see Latency, Tokens, Traffic, and Cost panels showing your simulation data as the initial baseline. Once real traffic flows, these charts become your early warning system.
+
+And here's the thing — this isn't a one-time setup. When Agent Compass flags a new failure pattern next month (and it will — lead behavior changes, your product changes, the world changes), you already know the drill: diagnose → optimize → re-test → promote. The loop runs itself.
+
+<Note>
+**Deep dive:** See [Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds](/docs/cookbook/quickstart/monitoring-alerts) for the full alert configuration walkthrough, notification setup, alert management (mute, duplicate, edit), and chart analysis.
+</Note>
+
+</Step>
+</Steps>
+
+## What you built
+
+<Check>
+You took an AI SDR agent from a one-line prototype to a production-ready system — with version-controlled prompts, full-stack tracing, automated testing, diagnostic analysis, optimized behavior, safety guardrails, and live monitoring.
+</Check>
+
+Here's the pipeline, start to finish:
+
+```
+Build agent → Version prompt → Add tracing → Simulate with personas →
+Review eval scorecard → Diagnose with Compass → Optimize prompt →
+Version and verify → Add guardrails → Monitor in production
+```
+
+Each step used a different FutureAGI feature, but they all connect into a single continuous workflow:
+
+- **Prompt Management** versioned the prompt so optimization and rollback work without code changes
+- **Observability** gave you span-level visibility into every LLM call and tool invocation
+- **Simulation** stress-tested with 20 diverse scenarios and built-in personas
+- **Evaluation** scored every conversation across 13 quality metrics automatically
+- **Agent Compass** clustered failure patterns and recommended specific fixes
+- **Optimization** generated an improved prompt from the failure analysis
+- **Protect** added input and output guardrails for injection, PII, and toxicity
+- **Monitoring** set up alerts and ongoing Compass analysis for production
+
+The key insight: this pipeline isn't linear. It's a loop. Every time Agent Compass spots a new pattern, you feed it back through optimization → testing → promotion. Your agent improves continuously, not just at launch.
+
+## Explore the features
+
+Every step in this guide used a FutureAGI feature at surface level. Each one goes deeper. Here's where to go next depending on what you want to explore:
+
+<CardGroup cols={4}>
+  <Card title="Chat Simulation" icon="comments" href="/docs/cookbook/quickstart/chat-simulation-personas">
+    Custom personas, scenario builders, Fix My Agent, tool-calling simulation
+  </Card>
+  <Card title="Conversation Eval" icon="chart-bar" href="/docs/cookbook/quickstart/conversation-eval">
+    All 13 metrics, prompt conformance, eval groups, diagnostic sweeps
+  </Card>
+  <Card title="Compare Optimizers" icon="wand-magic-sparkles" href="/docs/cookbook/quickstart/compare-optimizers">
+    ProTeGi, GEPA, PromptWizard — pick the right strategy for your task
+  </Card>
+  <Card title="All 34 Quickstarts" icon="rocket" href="/docs/cookbook">
+    Feature-by-feature guides for every capability on the platform
+  </Card>
+</CardGroup>

@@ -552,6 +552,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Use Cases',
+            icon: 'briefcase',
+            items: [
+              { title: 'Build a Self-Improving AI Sales Agent', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
+            ]
+          },
+          {
             title: 'Getting Started',
             icon: 'zap',
             items: [
