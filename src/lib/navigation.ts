@@ -266,6 +266,42 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Annotations',
+        icon: 'pen',
+        items: [
+          { title: 'Overview', href: '/docs/annotations' },
+          { title: 'Quickstart', href: '/docs/annotations/quickstart' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Labels', href: '/docs/annotations/concepts/labels' },
+              { title: 'Queues & Workflow', href: '/docs/annotations/concepts/queues' },
+              { title: 'Scores', href: '/docs/annotations/concepts/scores' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create & Manage Labels', href: '/docs/annotations/features/labels' },
+              { title: 'Create & Manage Queues', href: '/docs/annotations/features/queues' },
+              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
+              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
+              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
+              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
+              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
+              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
+            ]
+          },
+          {
+            title: 'SDK',
+            items: [
+              { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
+              { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
+            ]
+          },
+        ]
+      },
+      {
         group: 'Optimization',
         icon: 'gauge',
         items: [
@@ -577,6 +613,69 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
+            ]
+          },
+          {
+            title: 'Annotation Scores',
+            items: [
+              { title: 'Create Score', href: '/docs/api/annotations/scores/create-score' },
+              { title: 'Bulk Create Scores', href: '/docs/api/annotations/scores/bulk-create-scores' },
+              { title: 'Get Scores for Source', href: '/docs/api/annotations/scores/get-scores-for-source' },
+              { title: 'List Scores', href: '/docs/api/annotations/scores/list-scores' },
+              { title: 'Delete Score', href: '/docs/api/annotations/scores/delete-score' },
+            ]
+          },
+          {
+            title: 'Annotation Labels',
+            items: [
+              { title: 'Create Label', href: '/docs/api/annotations/labels/create-label' },
+              { title: 'List Labels', href: '/docs/api/annotations/labels/list-labels' },
+              { title: 'Get Label', href: '/docs/api/annotations/labels/get-label' },
+              { title: 'Update Label', href: '/docs/api/annotations/labels/update-label' },
+              { title: 'Delete Label', href: '/docs/api/annotations/labels/delete-label' },
+              { title: 'Restore Label', href: '/docs/api/annotations/labels/restore-label' },
+            ]
+          },
+          {
+            title: 'Annotation Queues',
+            items: [
+              { title: 'Create Queue', href: '/docs/api/annotations/queues/create-queue' },
+              { title: 'List Queues', href: '/docs/api/annotations/queues/list-queues' },
+              { title: 'Get Queue', href: '/docs/api/annotations/queues/get-queue' },
+              { title: 'Update Queue', href: '/docs/api/annotations/queues/update-queue' },
+              { title: 'Delete Queue', href: '/docs/api/annotations/queues/delete-queue' },
+              { title: 'Update Status', href: '/docs/api/annotations/queues/update-status' },
+              { title: 'Get Progress', href: '/docs/api/annotations/queues/get-progress' },
+              { title: 'Get Analytics', href: '/docs/api/annotations/queues/get-analytics' },
+              { title: 'Get Agreement', href: '/docs/api/annotations/queues/get-agreement' },
+              { title: 'Export', href: '/docs/api/annotations/queues/export' },
+              { title: 'Export to Dataset', href: '/docs/api/annotations/queues/export-to-dataset' },
+              { title: 'Add Label to Queue', href: '/docs/api/annotations/queues/add-label' },
+              { title: 'Remove Label', href: '/docs/api/annotations/queues/remove-label' },
+              { title: 'Get or Create Default', href: '/docs/api/annotations/queues/get-or-create-default' },
+              { title: 'Find Queues for Source', href: '/docs/api/annotations/queues/find-queues-for-source' },
+            ]
+          },
+          {
+            title: 'Queue Items',
+            items: [
+              { title: 'List Items', href: '/docs/api/annotations/items/list-items' },
+              { title: 'Add Items', href: '/docs/api/annotations/items/add-items' },
+              { title: 'Bulk Remove Items', href: '/docs/api/annotations/items/bulk-remove-items' },
+              { title: 'Get Annotate Detail', href: '/docs/api/annotations/items/get-annotate-detail' },
+              { title: 'Get Next Item', href: '/docs/api/annotations/items/get-next-item' },
+              { title: 'Submit Annotations', href: '/docs/api/annotations/items/submit-annotations' },
+              { title: 'Complete Item', href: '/docs/api/annotations/items/complete-item' },
+              { title: 'Skip Item', href: '/docs/api/annotations/items/skip-item' },
+              { title: 'Get Item Annotations', href: '/docs/api/annotations/items/get-item-annotations' },
+              { title: 'Assign Items', href: '/docs/api/annotations/items/assign-items' },
+              { title: 'Release Item', href: '/docs/api/annotations/items/release-item' },
+            ]
+          },
+          {
+            title: 'Bulk Annotation',
+            items: [
+              { title: 'Bulk Annotate Spans', href: '/docs/api/annotations/bulk/bulk-annotate-spans' },
             ]
           },
         ]

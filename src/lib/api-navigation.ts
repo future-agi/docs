@@ -143,5 +143,68 @@ export const apiNavigation: ApiNavGroup[] = [
         "method": "GET"
       }
     ]
+  },
+  {
+    "title": "Annotation Scores",
+    "items": [
+      { "title": "Create Score", "href": "/docs/api/annotations/scores/create-score", "method": "POST" },
+      { "title": "Bulk Create Scores", "href": "/docs/api/annotations/scores/bulk-create-scores", "method": "POST" },
+      { "title": "Get Scores for Source", "href": "/docs/api/annotations/scores/get-scores-for-source", "method": "GET" },
+      { "title": "List Scores", "href": "/docs/api/annotations/scores/list-scores", "method": "GET" },
+      { "title": "Delete Score", "href": "/docs/api/annotations/scores/delete-score", "method": "DELETE" }
+    ]
+  },
+  {
+    "title": "Annotation Labels",
+    "items": [
+      { "title": "Create Label", "href": "/docs/api/annotations/labels/create-label", "method": "POST" },
+      { "title": "List Labels", "href": "/docs/api/annotations/labels/list-labels", "method": "GET" },
+      { "title": "Get Label", "href": "/docs/api/annotations/labels/get-label", "method": "GET" },
+      { "title": "Update Label", "href": "/docs/api/annotations/labels/update-label", "method": "PUT" },
+      { "title": "Delete Label", "href": "/docs/api/annotations/labels/delete-label", "method": "DELETE" },
+      { "title": "Restore Label", "href": "/docs/api/annotations/labels/restore-label", "method": "POST" }
+    ]
+  },
+  {
+    "title": "Annotation Queues",
+    "items": [
+      { "title": "Create Queue", "href": "/docs/api/annotations/queues/create-queue", "method": "POST" },
+      { "title": "List Queues", "href": "/docs/api/annotations/queues/list-queues", "method": "GET" },
+      { "title": "Get Queue", "href": "/docs/api/annotations/queues/get-queue", "method": "GET" },
+      { "title": "Update Queue", "href": "/docs/api/annotations/queues/update-queue", "method": "PUT" },
+      { "title": "Delete Queue", "href": "/docs/api/annotations/queues/delete-queue", "method": "DELETE" },
+      { "title": "Update Status", "href": "/docs/api/annotations/queues/update-status", "method": "POST" },
+      { "title": "Get Progress", "href": "/docs/api/annotations/queues/get-progress", "method": "GET" },
+      { "title": "Get Analytics", "href": "/docs/api/annotations/queues/get-analytics", "method": "GET" },
+      { "title": "Get Agreement", "href": "/docs/api/annotations/queues/get-agreement", "method": "GET" },
+      { "title": "Export", "href": "/docs/api/annotations/queues/export", "method": "GET" },
+      { "title": "Export to Dataset", "href": "/docs/api/annotations/queues/export-to-dataset", "method": "POST" },
+      { "title": "Add Label to Queue", "href": "/docs/api/annotations/queues/add-label", "method": "POST" },
+      { "title": "Remove Label", "href": "/docs/api/annotations/queues/remove-label", "method": "POST" },
+      { "title": "Get or Create Default", "href": "/docs/api/annotations/queues/get-or-create-default", "method": "POST" },
+      { "title": "Find Queues for Source", "href": "/docs/api/annotations/queues/find-queues-for-source", "method": "GET" }
+    ]
+  },
+  {
+    "title": "Queue Items",
+    "items": [
+      { "title": "List Items", "href": "/docs/api/annotations/items/list-items", "method": "GET" },
+      { "title": "Add Items", "href": "/docs/api/annotations/items/add-items", "method": "POST" },
+      { "title": "Bulk Remove Items", "href": "/docs/api/annotations/items/bulk-remove-items", "method": "POST" },
+      { "title": "Get Annotate Detail", "href": "/docs/api/annotations/items/get-annotate-detail", "method": "GET" },
+      { "title": "Get Next Item", "href": "/docs/api/annotations/items/get-next-item", "method": "GET" },
+      { "title": "Submit Annotations", "href": "/docs/api/annotations/items/submit-annotations", "method": "POST" },
+      { "title": "Complete Item", "href": "/docs/api/annotations/items/complete-item", "method": "POST" },
+      { "title": "Skip Item", "href": "/docs/api/annotations/items/skip-item", "method": "POST" },
+      { "title": "Get Item Annotations", "href": "/docs/api/annotations/items/get-item-annotations", "method": "GET" },
+      { "title": "Assign Items", "href": "/docs/api/annotations/items/assign-items", "method": "POST" },
+      { "title": "Release Item", "href": "/docs/api/annotations/items/release-item", "method": "POST" }
+    ]
+  },
+  {
+    "title": "Bulk Annotation",
+    "items": [
+      { "title": "Bulk Annotate Spans", "href": "/docs/api/annotations/bulk/bulk-annotate-spans", "method": "POST" }
+    ]
   }
 ];
