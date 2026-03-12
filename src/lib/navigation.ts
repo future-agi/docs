@@ -39,22 +39,18 @@ export const tabNavigation: NavTab[] = [
         icon: 'rocket',
         items: [
           { title: 'Introduction', href: '/docs' },
-          { title: 'Installation', href: '/docs/installation' },
           {
             title: 'Quickstart',
             icon: 'rocket',
             href: '/docs/quickstart',
             items: [
-              { title: 'Overview', href: '/docs/quickstart' },
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
               { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
-              { title: 'Prompts', href: '/docs/quickstart/prompts' },
-              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
+              { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
             ]
           },
-          { title: 'Best Practices: Synthetic Data', href: '/docs/best-practices/creating-synthetic-data' },
         ]
       },
       {
@@ -345,15 +341,6 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/error-feed' },
           { title: 'Taxonomy', href: '/docs/error-feed/taxonomy' },
-        ]
-      },
-      {
-        group: 'Experimentation',
-        icon: 'flask',
-        items: [
-          { title: 'Overview', href: '/docs/experimentation' },
-          { title: 'Concept', href: '/docs/experimentation/concept' },
-          { title: 'How To', href: '/docs/experimentation/how-to' },
         ]
       },
       {
