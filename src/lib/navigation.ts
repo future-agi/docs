@@ -363,6 +363,31 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Prism AI Gateway',
+        icon: 'server',
+        items: [
+          { title: 'Overview', href: '/docs/prism' },
+          { title: 'Quickstart', href: '/docs/prism/quickstart' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Core Concepts', href: '/docs/prism/concepts/core' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Manage Providers', href: '/docs/prism/features/providers' },
+              { title: 'Routing & Reliability', href: '/docs/prism/features/routing' },
+              { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
+              { title: 'Caching', href: '/docs/prism/features/caching' },
+              { title: 'Cost Tracking & Budgets', href: '/docs/prism/features/cost-tracking' },
+              { title: 'Streaming', href: '/docs/prism/features/streaming' },
+            ]
+          },
+        ]
+      },
+      {
         group: 'Knowledge Base',
         icon: 'brain',
         items: [
