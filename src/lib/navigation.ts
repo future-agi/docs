@@ -39,22 +39,18 @@ export const tabNavigation: NavTab[] = [
         icon: 'rocket',
         items: [
           { title: 'Introduction', href: '/docs' },
-          { title: 'Installation', href: '/docs/installation' },
           {
             title: 'Quickstart',
             icon: 'rocket',
             href: '/docs/quickstart',
             items: [
-              { title: 'Overview', href: '/docs/quickstart' },
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
               { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
-              { title: 'Prompts', href: '/docs/quickstart/prompts' },
-              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
+              { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
             ]
           },
-          { title: 'Best Practices: Synthetic Data', href: '/docs/best-practices/creating-synthetic-data' },
         ]
       },
       {
@@ -114,43 +110,6 @@ export const tabNavigation: NavTab[] = [
                 ]
               },
               {
-                title: 'Instrumentation (Auto)',
-                items: [
-                  { title: 'Overview', href: '/docs/tracing/auto' },
-                  { title: 'Auto Overview', href: '/docs/tracing/auto-overview' },
-                  { title: 'Anthropic', href: '/docs/tracing/auto/anthropic' },
-                  { title: 'AutoGen', href: '/docs/tracing/auto/autogen' },
-                  { title: 'AWS Bedrock', href: '/docs/tracing/auto/bedrock' },
-                  { title: 'CrewAI', href: '/docs/tracing/auto/crewai' },
-                  { title: 'DSPy', href: '/docs/tracing/auto/dspy' },
-                  { title: 'Experiment', href: '/docs/tracing/auto/experiment' },
-                  { title: 'Google ADK', href: '/docs/tracing/auto/google_adk' },
-                  { title: 'Google GenAI', href: '/docs/tracing/auto/google_genai' },
-                  { title: 'Groq', href: '/docs/tracing/auto/groq' },
-                  { title: 'Guardrails', href: '/docs/tracing/auto/guardrails' },
-                  { title: 'Haystack', href: '/docs/tracing/auto/haystack' },
-                  { title: 'Instructor', href: '/docs/tracing/auto/instructor' },
-                  { title: 'LangChain', href: '/docs/tracing/auto/langchain' },
-                  { title: 'LangGraph', href: '/docs/tracing/auto/langgraph' },
-                  { title: 'LiteLLM', href: '/docs/tracing/auto/litellm' },
-                  { title: 'LlamaIndex', href: '/docs/tracing/auto/llamaindex' },
-                  { title: 'LlamaIndex Workflows', href: '/docs/tracing/auto/llamaindex-workflows' },
-                  { title: 'Mastra', href: '/docs/tracing/auto/mastra' },
-                  { title: 'MCP', href: '/docs/tracing/auto/mcp' },
-                  { title: 'MistralAI', href: '/docs/tracing/auto/mistralai' },
-                  { title: 'Ollama', href: '/docs/tracing/auto/ollama' },
-                  { title: 'OpenAI', href: '/docs/tracing/auto/openai' },
-                  { title: 'OpenAI Agents', href: '/docs/tracing/auto/openai_agents' },
-                  { title: 'Pipecat', href: '/docs/tracing/auto/pipecat' },
-                  { title: 'Portkey', href: '/docs/tracing/auto/portkey' },
-                  { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
-                  { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
-                  { title: 'Together AI', href: '/docs/tracing/auto/togetherai' },
-                  { title: 'Vercel', href: '/docs/tracing/auto/vercel' },
-                  { title: 'Vertex AI', href: '/docs/tracing/auto/vertexai' },
-                ]
-              },
-              {
                 title: 'Manual Tracing',
                 items: [
                   { title: 'Set Up Tracing', href: '/docs/tracing/manual/set-up-tracing' },
@@ -169,6 +128,42 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-intergation' },
                 ]
               },
+            ]
+          },
+          {
+            title: 'Integration',
+            items: [
+              { title: 'Overview', href: '/docs/tracing/auto' },
+              { title: 'Anthropic', href: '/docs/tracing/auto/anthropic' },
+              { title: 'AutoGen', href: '/docs/tracing/auto/autogen' },
+              { title: 'AWS Bedrock', href: '/docs/tracing/auto/bedrock' },
+              { title: 'CrewAI', href: '/docs/tracing/auto/crewai' },
+              { title: 'DSPy', href: '/docs/tracing/auto/dspy' },
+              { title: 'Experiment', href: '/docs/tracing/auto/experiment' },
+              { title: 'Google ADK', href: '/docs/tracing/auto/google_adk' },
+              { title: 'Google GenAI', href: '/docs/tracing/auto/google_genai' },
+              { title: 'Groq', href: '/docs/tracing/auto/groq' },
+              { title: 'Guardrails', href: '/docs/tracing/auto/guardrails' },
+              { title: 'Haystack', href: '/docs/tracing/auto/haystack' },
+              { title: 'Instructor', href: '/docs/tracing/auto/instructor' },
+              { title: 'LangChain', href: '/docs/tracing/auto/langchain' },
+              { title: 'LangGraph', href: '/docs/tracing/auto/langgraph' },
+              { title: 'LiteLLM', href: '/docs/tracing/auto/litellm' },
+              { title: 'LlamaIndex', href: '/docs/tracing/auto/llamaindex' },
+              { title: 'LlamaIndex Workflows', href: '/docs/tracing/auto/llamaindex-workflows' },
+              { title: 'Mastra', href: '/docs/tracing/auto/mastra' },
+              { title: 'MCP', href: '/docs/tracing/auto/mcp' },
+              { title: 'MistralAI', href: '/docs/tracing/auto/mistralai' },
+              { title: 'Ollama', href: '/docs/tracing/auto/ollama' },
+              { title: 'OpenAI', href: '/docs/tracing/auto/openai' },
+              { title: 'OpenAI Agents', href: '/docs/tracing/auto/openai_agents' },
+              { title: 'Pipecat', href: '/docs/tracing/auto/pipecat' },
+              { title: 'Portkey', href: '/docs/tracing/auto/portkey' },
+              { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
+              { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
+              { title: 'Together AI', href: '/docs/tracing/auto/togetherai' },
+              { title: 'Vercel', href: '/docs/tracing/auto/vercel' },
+              { title: 'Vertex AI', href: '/docs/tracing/auto/vertexai' },
             ]
           },
         ]
@@ -346,15 +341,6 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/error-feed' },
           { title: 'Taxonomy', href: '/docs/error-feed/taxonomy' },
-        ]
-      },
-      {
-        group: 'Experimentation',
-        icon: 'flask',
-        items: [
-          { title: 'Overview', href: '/docs/experimentation' },
-          { title: 'Concept', href: '/docs/experimentation/concept' },
-          { title: 'How To', href: '/docs/experimentation/how-to' },
         ]
       },
       {
