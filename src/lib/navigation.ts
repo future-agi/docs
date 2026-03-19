@@ -544,7 +544,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Auto-Improve Your Agent\'s Prompt with Simulation Feedback', href: '/docs/cookbook/use-cases/simulation-optimization-loop' },
               { title: 'Detect Domain-Specific Hallucinations in Your Chatbot', href: '/docs/cookbook/use-cases/domain-hallucination-detection' },
               { title: 'A/B Test Prompt Versions and Ship the Winner', href: '/docs/cookbook/use-cases/full-prompt-lifecycle' },
-              { title: 'Add Guardrails and Quality Scoring to Your Chatbot', href: '/docs/cookbook/use-cases/secure-ai-evals-guardrails' },
+              { title: 'Stop Your Financial Chatbot From Leaking PII', href: '/docs/cookbook/use-cases/secure-ai-evals-guardrails' },
               { title: 'Screen Your AI App for HIPAA and GDPR Violations', href: '/docs/cookbook/use-cases/compliance-hipaa-gdpr' },
               { title: 'Evaluate LLM Translation for Accuracy and Fluency', href: '/docs/cookbook/use-cases/translation-eval' },
               { title: 'Set Up Quality Gates for Your Support Bot in 20 Minutes', href: '/docs/cookbook/use-cases/auto-eval-pipeline' },
