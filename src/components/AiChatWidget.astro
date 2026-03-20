@@ -3,14 +3,18 @@
  * AI Chat Widget — World-class documentation assistant
  * Features: marked.js markdown, highlight.js syntax coloring, agent step-by-step progress,
  * code copy buttons, message actions (copy answer, feedback), stop generating, smart auto-scroll
+ * Security: session tokens, Cloudflare Turnstile, progressive challenge escalation, input limits
  */
 const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:3005';
+const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '';
 ---
 
 <!-- CDN: marked.js + highlight.js -->
 <script is:inline src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script is:inline src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" />
+<!-- Cloudflare Turnstile (loaded on demand) -->
+<script is:inline src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 
 <!-- Chat popup -->
 <div
@@ -18,13 +22,16 @@ const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:30
   class="fixed z-50 rounded-2xl border border-[var(--color-border-default)] shadow-2xl shadow-black/30 flex-col overflow-hidden hidden"
   style="background: #111111; bottom: 24px; right: 24px; width: 420px; height: 560px;"
   data-api-url={apiBaseUrl}
+  data-turnstile-key={turnstileSiteKey}
 >
-  <!-- Resize handle -->
+  <!-- Resize handles: corner + edges -->
   <div id="ai-resize-handle" class="absolute top-0 left-0 w-4 h-4 z-10" style="cursor: nw-resize;">
     <svg class="w-3 h-3 text-[var(--color-text-muted)] opacity-0 hover:opacity-100 transition-opacity m-0.5 rotate-90" viewBox="0 0 24 24" fill="currentColor">
       <circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="4" cy="12" r="2"/>
     </svg>
   </div>
+  <div id="ai-resize-top" class="absolute top-0 left-4 right-0 h-2 z-10" style="cursor: n-resize;"></div>
+  <div id="ai-resize-left" class="absolute top-4 left-0 bottom-0 w-2 z-10" style="cursor: w-resize;"></div>
 
   <!-- Header -->
   <div class="flex items-center gap-2.5 px-4 py-2.5 border-b border-[var(--color-border-subtle)] flex-shrink-0" style="background: #161616;">
@@ -86,6 +93,7 @@ const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:30
         id="ai-widget-input"
         placeholder="Ask a question..."
         rows="1"
+        maxlength="1000"
         class="flex-1 bg-transparent border-none resize-none text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] leading-snug"
         style="min-height: 20px; max-height: 80px; outline: none !important; box-shadow: none !important;"
       ></textarea>
@@ -122,9 +130,95 @@ const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:30
     var quickBtns = document.querySelectorAll('.ai-wq');
 
     var API_URL = popup.getAttribute('data-api-url') || 'http://localhost:3005';
+    var TURNSTILE_SITE_KEY = popup.getAttribute('data-turnstile-key') || '';
     var isFullscreen = false;
     var isSending = false;
     var currentAbortController = null;
+
+    // --- Session & security state ---
+    var sessionToken = null;
+    var sessionExpiresAt = null;
+    var messageCount = 0;
+    var MAX_MSG_LENGTH = 1000;
+
+    // Restore session from sessionStorage
+    try {
+      var storedToken = sessionStorage.getItem('ai-session-token');
+      var storedExpiry = sessionStorage.getItem('ai-session-expires');
+      var storedCount = sessionStorage.getItem('ai-msg-count');
+      if (storedToken && storedExpiry && new Date(storedExpiry) > new Date()) {
+        sessionToken = storedToken;
+        sessionExpiresAt = storedExpiry;
+        messageCount = parseInt(storedCount || '0', 10);
+      }
+    } catch(e) {}
+
+    function ensureSession() {
+      // Return existing valid session
+      if (sessionToken && sessionExpiresAt && new Date(sessionExpiresAt) > new Date()) {
+        return Promise.resolve(sessionToken);
+      }
+      // Request new session
+      return fetch(API_URL + '/session/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('Session init failed: ' + resp.status);
+        return resp.json();
+      })
+      .then(function(data) {
+        sessionToken = data.data.token;
+        sessionExpiresAt = data.data.expiresAt;
+        messageCount = 0;
+        sessionStorage.setItem('ai-session-token', sessionToken);
+        sessionStorage.setItem('ai-session-expires', sessionExpiresAt);
+        sessionStorage.setItem('ai-msg-count', '0');
+        return sessionToken;
+      });
+    }
+
+    // --- Turnstile challenge ---
+    function getTurnstileToken(mode) {
+      return new Promise(function(resolve) {
+        if (!TURNSTILE_SITE_KEY || typeof turnstile === 'undefined') {
+          resolve(null);
+          return;
+        }
+        var container = document.getElementById('ai-turnstile-container');
+        if (!container) {
+          container = document.createElement('div');
+          container.id = 'ai-turnstile-container';
+          var inputArea = popup.querySelector('.px-4.py-3.border-t');
+          if (mode === 'visible' && inputArea) {
+            container.style.cssText = 'padding:8px 16px;text-align:center;';
+            inputArea.parentNode.insertBefore(container, inputArea);
+          } else {
+            container.style.cssText = 'position:absolute;left:-9999px;';
+            popup.appendChild(container);
+          }
+        }
+        container.innerHTML = '';
+        if (mode === 'visible') {
+          container.style.cssText = 'padding:8px 16px;text-align:center;';
+        } else {
+          container.style.cssText = 'position:absolute;left:-9999px;';
+        }
+
+        try {
+          turnstile.render(container, {
+            sitekey: TURNSTILE_SITE_KEY,
+            size: mode === 'invisible' ? 'invisible' : 'normal',
+            theme: 'dark',
+            callback: function(token) { resolve(token); },
+            'error-callback': function() { resolve(null); },
+          });
+        } catch(e) {
+          resolve(null);
+        }
+      });
+    }
 
     // Restore state from sessionStorage (persists across Astro page navigations)
     var isOpen = sessionStorage.getItem('ai-chat-open') === 'true';
@@ -378,6 +472,8 @@ const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:30
 
     function resetChat() {
       conversationHistory = [];
+      messageCount = 0;
+      sessionStorage.setItem('ai-msg-count', '0');
       saveState();
       sessionStorage.removeItem('ai-chat-messages-html');
       if (currentAbortController) { currentAbortController.abort(); currentAbortController = null; }
@@ -414,24 +510,29 @@ const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:30
       if (e.key === 'Escape' && isOpen) { isFullscreen ? exitFullscreen() : close(); }
     });
 
-    // --- Resize ---
-    if (resizeHandle) {
-      var resizing = false, startX, startY, startW, startH;
-      resizeHandle.addEventListener('mousedown', function(e) {
+    // --- Resize (corner + top edge + left edge) ---
+    var resizeTop = document.getElementById('ai-resize-top');
+    var resizeLeft = document.getElementById('ai-resize-left');
+    (function() {
+      var resizing = false, resizeAxis = '', startX, startY, startW, startH;
+      function startResize(e, axis, cursor) {
         if (isFullscreen) return;
-        e.preventDefault(); resizing = true; startX = e.clientX; startY = e.clientY;
+        e.preventDefault(); resizing = true; resizeAxis = axis; startX = e.clientX; startY = e.clientY;
         startW = popup.offsetWidth; startH = popup.offsetHeight;
-        document.body.style.userSelect = 'none'; document.body.style.cursor = 'nw-resize';
-      });
+        document.body.style.userSelect = 'none'; document.body.style.cursor = cursor;
+      }
+      if (resizeHandle) resizeHandle.addEventListener('mousedown', function(e) { startResize(e, 'both', 'nw-resize'); });
+      if (resizeTop) resizeTop.addEventListener('mousedown', function(e) { startResize(e, 'vertical', 'n-resize'); });
+      if (resizeLeft) resizeLeft.addEventListener('mousedown', function(e) { startResize(e, 'horizontal', 'w-resize'); });
       document.addEventListener('mousemove', function(e) {
         if (!resizing) return;
-        popup.style.width = Math.max(MIN_W, startW + (startX - e.clientX)) + 'px';
-        popup.style.height = Math.max(MIN_H, startH + (startY - e.clientY)) + 'px';
+        if (resizeAxis === 'both' || resizeAxis === 'horizontal') popup.style.width = Math.max(MIN_W, startW + (startX - e.clientX)) + 'px';
+        if (resizeAxis === 'both' || resizeAxis === 'vertical') popup.style.height = Math.max(MIN_H, startH + (startY - e.clientY)) + 'px';
       });
       document.addEventListener('mouseup', function() {
         if (resizing) { resizing = false; document.body.style.userSelect = ''; document.body.style.cursor = ''; defaultStyle.width = popup.style.width; defaultStyle.height = popup.style.height; }
       });
-    }
+    })();
 
     // --- Textarea auto-resize ---
     if (input) {
@@ -491,10 +592,25 @@ const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:30
       if (isSending) return;
       var msg = input ? input.value.trim() : '';
       if (!msg) return;
+      if (msg.length > MAX_MSG_LENGTH) {
+        alert('Message too long. Maximum ' + MAX_MSG_LENGTH + ' characters.');
+        return;
+      }
 
       isSending = true;
       setInputEnabled(false);
 
+      // Ensure session token before sending
+      ensureSession().then(function(token) {
+        return doSendMessage(msg, token);
+      }).catch(function(err) {
+        console.error('Session error:', err);
+        isSending = false;
+        setInputEnabled(true);
+      });
+    }
+
+    function doSendMessage(msg, token) {
       // Hide empty state
       var es = messagesEl.querySelector('#ai-empty-state');
       if (es) es.style.display = 'none';
@@ -567,20 +683,76 @@ const apiBaseUrl = import.meta.env.PUBLIC_DOCS_AGENT_URL || 'http://localhost:30
       // Create abort controller
       currentAbortController = new AbortController();
 
-      fetch(API_URL + '/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: msg,
-          conversationHistory: conversationHistory.slice(-10),
-          stream: true,
-          includeSuggestions: true,
-          pageContext: getPageContext(),
-        }),
-        signal: currentAbortController.signal,
+      // Determine if challenge is needed (progressive escalation)
+      var challengeMode = 'none';
+      if (messageCount >= 11) challengeMode = 'visible';
+      else if (messageCount >= 6) challengeMode = 'invisible';
+
+      var turnstilePromise = (challengeMode !== 'none' && TURNSTILE_SITE_KEY)
+        ? getTurnstileToken(challengeMode)
+        : Promise.resolve(null);
+
+      turnstilePromise.then(function(turnstileToken) {
+        var headers = { 'Content-Type': 'application/json' };
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+
+        return fetch(API_URL + '/chat', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            query: msg,
+            conversationHistory: conversationHistory.slice(-20),
+            stream: true,
+            includeSuggestions: true,
+            pageContext: getPageContext(),
+            turnstileToken: turnstileToken || undefined,
+          }),
+          signal: currentAbortController.signal,
+        });
       })
       .then(function(response) {
+        // Handle challenge required
+        if (response.status === 403) {
+          return response.json().then(function(data) {
+            if (data.error && data.error.code === 'CHALLENGE_REQUIRED') {
+              answerDiv.innerHTML = '<span class="ai-error-text">Verification required. Please try again.</span>';
+              finalize();
+              return null;
+            }
+            throw new Error(data.error.message || 'Forbidden');
+          });
+        }
+        // Handle session expired — get new session and retry once
+        if (response.status === 401) {
+          sessionToken = null;
+          sessionStorage.removeItem('ai-session-token');
+          return ensureSession().then(function(newToken) {
+            token = newToken;
+            var retryHeaders = { 'Content-Type': 'application/json' };
+            if (newToken) retryHeaders['Authorization'] = 'Bearer ' + newToken;
+            return fetch(API_URL + '/chat', {
+              method: 'POST',
+              headers: retryHeaders,
+              body: JSON.stringify({
+                query: msg,
+                conversationHistory: conversationHistory.slice(-20),
+                stream: true,
+                includeSuggestions: true,
+                pageContext: getPageContext(),
+              }),
+              signal: currentAbortController.signal,
+            });
+          });
+        }
         if (!response.ok) throw new Error('API returned ' + response.status);
+        return response;
+      })
+      .then(function(response) {
+        if (!response) return; // challenge handled above
+
+        // Track message count
+        messageCount++;
+        sessionStorage.setItem('ai-msg-count', String(messageCount));
 
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
