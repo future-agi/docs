@@ -6,11 +6,31 @@ export const GET: APIRoute = () => {
   const body = `User-agent: *
 Allow: /
 
+# AI crawlers — explicitly allowed for GEO (Generative Engine Optimization)
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: GoogleOther
+Allow: /
+
 # Sitemaps
 Sitemap: ${siteUrl}/sitemap-index.xml
 
-# LLM-friendly documentation
-# See https://llmstxt.org for the specification
+# LLM-friendly documentation (llmstxt.org)
+# ${siteUrl}/llms.txt — index of all docs
+# ${siteUrl}/llms-full.txt — full content for LLM ingestion
 `;
 
   return new Response(body, {
