@@ -14,6 +14,8 @@ export default defineConfig({
     prefetchAll: false,
     defaultStrategy: 'hover',
   },
+  // Optimize build output
+  compressHTML: true,
   vite: {
     plugins: [tailwindcss(), viteDocsTransform(), compression({ algorithm: 'gzip' })]
   },
