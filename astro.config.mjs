@@ -5,12 +5,17 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import react from '@astrojs/react';
 import { viteDocsTransform } from './src/plugins/vite-docs-transform.mjs';
+import compression from 'vite-plugin-compression';
 
 // https://astro.build/config
 export default defineConfig({
   site: 'https://docs.futureagi.com',
+  prefetch: {
+    prefetchAll: false,
+    defaultStrategy: 'hover',
+  },
   vite: {
-    plugins: [tailwindcss(), viteDocsTransform()]
+    plugins: [tailwindcss(), viteDocsTransform(), compression({ algorithm: 'gzip' })]
   },
   integrations: [
     react(),
