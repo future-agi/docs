@@ -626,7 +626,18 @@ export const tabNavigation: NavTab[] = [
         group: 'SDK Reference',
         items: [
           { title: 'SDK Overview', href: '/docs/sdk' },
-          { title: 'Evals', href: '/docs/sdk/evals' },
+          {
+            title: 'Evals',
+            items: [
+              { title: 'Overview', href: '/docs/sdk/evals' },
+              { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
+              { title: 'Metrics Reference', href: '/docs/sdk/evals/metrics' },
+              { title: 'Cloud Evals', href: '/docs/sdk/evals/cloud-evals' },
+              { title: 'LLM-as-Judge', href: '/docs/sdk/evals/llm-judge' },
+              { title: 'Streaming', href: '/docs/sdk/evals/streaming' },
+              { title: 'Feedback Loops', href: '/docs/sdk/evals/feedback' },
+            ]
+          },
           { title: 'Datasets', href: '/docs/sdk/datasets' },
           { title: 'Protect', href: '/docs/sdk/protect' },
           { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
