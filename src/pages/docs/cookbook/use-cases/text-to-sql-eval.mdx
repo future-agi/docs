@@ -122,6 +122,11 @@ test_cases = [
 print(f"{len(test_cases)} test cases loaded, database ready.")
 ```
 
+Sample output (your results may vary):
+```
+5 test cases loaded, database ready.
+```
+
 Here's what makes these cases interesting:
 - **Case 1** is a perfect match
 - **Case 2** has a whitespace difference around `=`: `status = 'completed'` vs `status='completed'`
@@ -150,9 +155,18 @@ for tc in test_cases:
     print(f"{tc['question']:<45} {eval_result.output}")
 ```
 
-The `text_to_sql` metric validates SQL syntax and basic intent alignment. It may not catch subtle logic errors like case 5, where the question asks for "all orders" but the SQL filters to completed only. That is where `ground_truth_match` and execution testing (later steps) come in as additional safety nets.
+Sample output (your results may vary):
+```
+Get all customer names                        Passed
+Find completed orders                         Passed
+Total spend per customer                      Passed
+Customers who placed completed orders         Passed
+Total revenue from all orders                 Passed
+```
 
-This metric is your first line of defense, and importantly, it doesn't need a reference query. You can use it even when you don't have gold-standard SQL to compare against. But intent validation alone can't tell you if the SQL produces the right numbers. For that, you need to compare against a known-good query.
+All five cases pass, including case 5. The `text_to_sql` metric validates SQL syntax and basic intent alignment, but it doesn't catch case 5's subtle logic error: the generated SQL is valid SQL that does return revenue, it just filters to completed orders instead of all orders. The intent ("total revenue") is close enough that the metric doesn't flag it.
+
+This is exactly why you need multiple evaluation layers. Intent validation is your first line of defense, and importantly, it doesn't need a reference query. But it can't tell you if the SQL produces the *right* numbers. For that, you need to compare against a known-good query.
 
 <Note>
 See [Running Your First Eval](/docs/cookbook/quickstart/first-eval) for more on the three evaluation engines (local, Turing, LLM-as-Judge).
@@ -177,7 +191,16 @@ for tc in test_cases:
     print(f"{tc['question']:<45} {eval_result.output}")
 ```
 
-Case 4 (the JOIN vs subquery difference) passes because `ground_truth_match` understands they're semantically equivalent. Only case 5 fails, same as `text_to_sql`. When both metrics agree on a failure, you've got a high-confidence bug.
+Sample output (your results may vary):
+```
+Get all customer names                        Passed
+Find completed orders                         Passed
+Total spend per customer                      Passed
+Customers who placed completed orders         Passed
+Total revenue from all orders                 Failed
+```
+
+Case 4 (the JOIN vs subquery difference) passes because `ground_truth_match` understands they're semantically equivalent. Case 5 fails here even though it passed `text_to_sql`. This is `ground_truth_match` catching what intent validation missed: the generated SQL is not equivalent to the reference.
 
 Semantic comparison is powerful, but it still relies on an AI judge. Sometimes you want a zero-ambiguity sanity check: does the string literally match? And when it doesn't, how close is it?
 
@@ -202,7 +225,18 @@ for tc in test_cases:
     print(f"{tc['question']:<45} exact={exact_str:<5} similarity={sim.score:.2f}")
 ```
 
-Case 2 (whitespace) and case 3 (alias) score high on similarity despite failing exact match. Case 4 scores low (~0.47) because the JOIN structure looks very different from the subquery, even though both are correct. This is exactly why string metrics alone aren't enough for SQL evaluation: they confuse structure with correctness. The ultimate test is whether both queries return the same rows from the same database.
+Sample output (your results may vary):
+```
+Get all customer names                        exact=PASS  similarity=1.00
+Find completed orders                         exact=FAIL  similarity=0.95
+Total spend per customer                      exact=FAIL  similarity=0.87
+Customers who placed completed orders         exact=FAIL  similarity=0.58
+Total revenue from all orders                 exact=FAIL  similarity=0.54
+```
+
+Cases with minor formatting differences (whitespace, alias) score above 0.85, while the structurally different JOIN query in case 4 drops to 0.58 despite being logically correct. Case 5 scores 0.54 because the added `WHERE` clause changes significant portions of the string.
+
+Case 2 (whitespace) and case 3 (alias) score high on similarity despite failing exact match. Case 4 scores low (0.58) because the JOIN structure looks very different from the subquery, even though both are correct. This is exactly why string metrics alone aren't enough for SQL evaluation: they confuse structure with correctness. The ultimate test is whether both queries return the same rows from the same database.
 
 <Tip>
 Normalize before exact comparison: `.strip().rstrip(";").lower()` removes trailing whitespace, semicolons, and casing differences. Use `levenshtein_similarity` to flag minor formatting noise, and Turing metrics (Steps 2-3) to judge actual correctness.
@@ -225,7 +259,18 @@ for tc in test_cases:
         print(f"  Expected result:  {ref_rows}")
 ```
 
-Cases 2-4 all pass execution despite having different formatting, aliases, and structure. Case 5 fails because filtering to completed orders returns 255.75 instead of the full total of 630.75. That's a $375 discrepancy, the kind of silent data error that loses trust.
+Sample output (your results may vary):
+```
+Get all customer names                        PASS
+Find completed orders                         PASS
+Total spend per customer                      PASS
+Customers who placed completed orders         PASS
+Total revenue from all orders                 FAIL
+  Generated result: [(255.75,)]
+  Expected result:  [(630.75,)]
+```
+
+Cases 2-4 all pass execution despite having different formatting, aliases, and structure. Case 5 fails: filtering to completed orders returns 255.75 instead of the full 630.75, a $375 gap. The pending ($200) and cancelled ($175) orders were silently dropped. This is the kind of bug that looks plausible until someone cross-checks the numbers.
 
 <Note>
 Execution-based validation requires a test database with representative data. If your test data doesn't cover the edge case (e.g., no cancelled orders in the test set), the execution check won't catch the logic error. Make sure your test database has data that exercises all the query patterns you care about.
@@ -279,12 +324,25 @@ for tc in test_cases:
     )
 ```
 
-The pattern is clear: cases 2-4 fail exact match and score low on string similarity, but pass every meaningful check (intent validation, reference matching, execution). Case 5 fails across **all** checks, a high-confidence logic error that needs fixing.
+Sample output (your results may vary):
+```
+Question                             Intent  Match  Exact    Sim   Exec
+----------------------------------------------------------------------
+Get all customer names                   OK     OK     OK   1.00     OK
+Find completed orders                    OK     OK   FAIL   0.95     OK
+Total spend per customer                 OK     OK   FAIL   0.87     OK
+Customers who placed completed or..      OK     OK   FAIL   0.58     OK
+Total revenue from all orders            OK   FAIL   FAIL   0.54   FAIL
+```
+
+Case 5 passes intent validation (the SQL is syntactically valid and "close enough" to the question) but fails reference matching, string comparison, and execution. Cases 2 through 4 fail exact match but pass every semantic and execution check, proving those differences are cosmetic.
+
+The pattern is clear: cases 2-4 fail exact match but pass every meaningful check (reference matching, execution). Case 5 passes only the intent check. The fact that `ground_truth_match` and execution testing both catch it while `text_to_sql` alone does not is exactly why you need multiple layers.
 
 This is the decision matrix for your CI/CD pipeline:
-- **Gate on:** `text_to_sql` + execution match (catches real bugs)
+- **Gate on:** `ground_truth_match` + execution match (catches real bugs, including ones intent validation misses)
+- **First pass:** `text_to_sql` when you don't have a reference query
 - **Dashboard metrics:** `levenshtein_similarity` + `equals` (useful for monitoring formatting drift)
-- **Deep investigation:** `ground_truth_match` (when you have gold-standard SQL to compare against)
 
 </Step>
 </Steps>
@@ -307,8 +365,8 @@ Your analytics layer now has quality gates that distinguish a harmless alias dif
 You built a four-layer SQL evaluation pipeline that catches logic errors while ignoring formatting noise, ready to run in CI/CD or as a batch diagnostic on your full query test suite.
 </Check>
 
-- **Intent validation** with `text_to_sql`: catches queries that don't match the user's question, no reference needed
-- **Reference comparison** with `ground_truth_match`: semantic equivalence check against gold-standard SQL
+- **Intent validation** with `text_to_sql`: first-pass check that generated SQL aligns with the question, no reference needed
+- **Reference comparison** with `ground_truth_match`: semantic equivalence check that catches subtle logic errors intent validation misses
 - **String metrics** with `equals` and `levenshtein_similarity`: fast local checks for exact matches and near-misses
 - **Execution testing** against a live SQLite database: the ground truth for functional correctness
 - **Combined diagnostic** that distinguishes real bugs from cosmetic differences in one sweep
