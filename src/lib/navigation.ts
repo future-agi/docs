@@ -625,7 +625,7 @@ export const tabNavigation: NavTab[] = [
       {
         group: 'SDK Reference',
         items: [
-          { title: 'Python SDK Client', href: '/docs/sdk' },
+          { title: 'SDK Overview', href: '/docs/sdk' },
           { title: 'Evals', href: '/docs/sdk/evals' },
           { title: 'Datasets', href: '/docs/sdk/datasets' },
           { title: 'Protect', href: '/docs/sdk/protect' },
