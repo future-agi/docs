@@ -85,6 +85,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
+              { title: 'Agent Compass', href: '/docs/agent-compass' },
             ]
           },
           {
