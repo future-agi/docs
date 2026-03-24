@@ -649,10 +649,15 @@ export const tabNavigation: NavTab[] = [
               { title: 'Feedback Loops', href: '/docs/sdk/evals/feedback' },
             ]
           },
-          { title: 'Datasets', href: '/docs/sdk/datasets' },
-          { title: 'Tracing', href: '/docs/sdk/tracing' },
-          { title: 'Protect', href: '/docs/sdk/protect' },
-          { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
+          {
+            title: 'Core SDK',
+            items: [
+              { title: 'Datasets', href: '/docs/sdk/datasets' },
+              { title: 'Tracing', href: '/docs/sdk/tracing' },
+              { title: 'Protect', href: '/docs/sdk/protect' },
+              { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
+            ]
+          },
         ]
       }
     ]
