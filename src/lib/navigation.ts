@@ -656,6 +656,8 @@ export const tabNavigation: NavTab[] = [
               { title: 'Tracing', href: '/docs/sdk/tracing' },
               { title: 'Protect', href: '/docs/sdk/protect' },
               { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
+              { title: 'Prompt Optimization', href: '/docs/sdk/optimization' },
+              { title: 'Simulation Testing', href: '/docs/sdk/simulate' },
             ]
           },
         ]
