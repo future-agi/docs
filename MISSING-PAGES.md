@@ -20,3 +20,13 @@ Pages that are linked from existing docs but don't have content yet. These show 
 | Eval Playground | `/docs/api/eval-playground` |
 | Eval Configuration | `/docs/api/eval-configuration` |
 | API Keys | `/docs/api/api-keys` |
+
+## Optimize (`/docs/optimize/index.mdx`)
+
+| Card Title | Expected Path |
+|---|---|
+| Prompt Engineering | `/docs/optimize/prompts` |
+| Bayesian Optimization | `/docs/optimize/bayesian` |
+| Meta-Prompting | `/docs/optimize/meta` |
+| Experiments | `/docs/optimize/experiments` |
+
