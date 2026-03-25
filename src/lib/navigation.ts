@@ -42,7 +42,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Quickstart',
             icon: 'rocket',
-            href: '/docs/quickstart',
+            href: '/docs',
             items: [
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
