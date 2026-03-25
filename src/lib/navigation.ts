@@ -86,7 +86,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
               { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
-              { title: 'Agent Compass', href: '/docs/agent-compass' },
             ]
           },
           {
@@ -313,7 +312,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: 'docs/optimization/concepts/concept' },
+              { title: 'Concept', href: '/docs/optimization/concepts/concept' },
             ]
           },
           {
