@@ -375,6 +375,8 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'Core Concepts', href: '/docs/prism/concepts/core' },
+              { title: 'API Reference', href: '/docs/prism/concepts/api-reference' },
+              { title: 'Configuration', href: '/docs/prism/concepts/configuration' },
             ]
           },
           {
