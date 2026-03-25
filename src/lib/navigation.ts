@@ -85,6 +85,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
+              { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
               { title: 'Agent Compass', href: '/docs/agent-compass' },
             ]
           },
@@ -415,6 +416,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'book',
         items: [
           { title: 'Admin & Settings', href: '/docs/admin-settings' },
+          { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
           { title: 'FAQ', href: '/docs/faq' },
           { title: 'Release Notes', href: '/docs/release-notes' },
         ]
@@ -658,6 +660,7 @@ export const tabNavigation: NavTab[] = [
           { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
           { title: 'Tracing', href: '/docs/sdk/tracing' },
           { title: 'Test Case', href: '/docs/sdk/testcase' },
+          { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
         ]
       }
     ]
