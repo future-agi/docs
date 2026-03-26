@@ -682,14 +682,42 @@ export const tabNavigation: NavTab[] = [
       {
         group: 'SDK Reference',
         items: [
-          { title: 'Python SDK Client', href: '/docs/sdk' },
-          { title: 'Evals', href: '/docs/sdk/evals' },
-          { title: 'Datasets', href: '/docs/sdk/datasets' },
-          { title: 'Protect', href: '/docs/sdk/protect' },
-          { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
-          { title: 'Tracing', href: '/docs/sdk/tracing' },
-          { title: 'Test Case', href: '/docs/sdk/testcase' },
-          { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
+          { title: 'SDK Overview', href: '/docs/sdk' },
+          {
+            title: 'Evals',
+            items: [
+              { title: 'Overview', href: '/docs/sdk/evals' },
+              { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
+              {
+                title: 'Metrics Reference',
+                items: [
+                  { title: 'Overview', href: '/docs/sdk/evals/metrics' },
+                  { title: 'String & Similarity', href: '/docs/sdk/evals/metrics/string' },
+                  { title: 'JSON & Structured', href: '/docs/sdk/evals/metrics/json' },
+                  { title: 'Hallucination', href: '/docs/sdk/evals/metrics/hallucination' },
+                  { title: 'RAG', href: '/docs/sdk/evals/metrics/rag' },
+                  { title: 'Agents & Functions', href: '/docs/sdk/evals/metrics/agents' },
+                  { title: 'Guardrails', href: '/docs/sdk/evals/metrics/guardrails' },
+                ]
+              },
+              { title: 'Cloud Evals', href: '/docs/sdk/evals/cloud-evals' },
+              { title: 'LLM-as-Judge', href: '/docs/sdk/evals/llm-judge' },
+              { title: 'Streaming', href: '/docs/sdk/evals/streaming' },
+              { title: 'Feedback Loops', href: '/docs/sdk/evals/feedback' },
+            ]
+          },
+          {
+            title: 'Core SDK',
+            items: [
+              { title: 'Datasets', href: '/docs/sdk/datasets' },
+              { title: 'Tracing', href: '/docs/sdk/tracing' },
+              { title: 'Protect', href: '/docs/sdk/protect' },
+              { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
+              { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
+              { title: 'Prompt Optimization', href: '/docs/sdk/optimization' },
+              { title: 'Simulation Testing', href: '/docs/sdk/simulate' },
+            ]
+          },
         ]
       }
     ]
