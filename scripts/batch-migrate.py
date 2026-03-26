@@ -148,7 +148,7 @@ BUILTIN_EVALS = [
     "numeric-similarity", "pii", "prompt-injection", "recall-score", "rouge",
     "semantic-list-contains", "sexist", "summary-quality",
     "synthetic-image-evaluator", "task-completion", "text-to-sql", "tone",
-    "toxicity", "translation-accuracy", "valid-links"
+    "toxicity", "translation-accuracy", "contains-valid-link", "no-invalid-links"
 ]
 
 def get_layout_depth(dest_path):
