@@ -1,0 +1,176 @@
+---
+title: "Core Concepts"
+description: "Understand the key building blocks of Prism: gateways, virtual API keys, organizations, providers, and configurations."
+---
+
+## Overview
+
+Prism is built on a small set of core building blocks. Understanding these helps you configure and operate the gateway effectively. You do not need to understand all of them to get started. The [Quickstart](/docs/prism/quickstart) covers the minimum, but this page explains how everything fits together.
+
+---
+
+## Gateway
+
+The gateway is Prism's core engine. It is a high-performance proxy that receives every LLM request and passes it through a series of checks before forwarding it to a provider.
+
+Each step in the pipeline runs in a fixed order:
+
+```
+Request → IP ACL → Auth → RBAC → Cache Lookup
+                                     │
+                          [hit] ←────┤────→ [miss]
+                            │                  │
+                      Return cached     Budget → Guardrails (Pre)
+                                        → Rate Limit → Provider Call
+                                                 │
+                                   Guardrails (Post) → Cost → Logging → Response
+```
+
+**What each step does:**
+
+- **IP ACL (IP Access Control List):** Checks whether the request's source IP address is permitted. Blocks requests from IPs not on the allowlist.
+- **Auth:** Validates the virtual API key in the `Authorization` header.
+- **RBAC (Role-Based Access Control):** Checks whether this key has permission to make this type of request (e.g., is it allowed to call this model or endpoint?).
+- **Cache Lookup:** Checks whether an identical or semantically similar request has been answered before. Cache hits skip everything below and return instantly.
+- **Budget:** Verifies the organization's spending limit has not been exceeded.
+- **Guardrails (Pre):** Runs safety checks on the incoming request before it reaches the provider.
+- **Rate Limit:** Enforces per-key or per-org request rate limits.
+- **Provider Call:** Forwards the request to the selected LLM provider.
+- **Guardrails (Post):** Runs safety checks on the provider's response before it reaches your application.
+- **Cost:** Calculates the request cost based on token usage.
+- **Logging:** Records the request, response, and metadata for observability.
+
+<Note>Cache hits skip guardrails, rate limiting, the provider call, and cost calculation entirely, returning the stored response immediately with zero provider cost.</Note>
+
+---
+
+## Virtual API Keys
+
+Prism uses virtual API keys (prefixed `sk-prism-`) to authenticate requests. These are Prism-specific keys, not the keys for OpenAI, Anthropic, or any other provider.
+
+When a request arrives, Prism:
+
+1. Validates the virtual key
+2. Identifies which organization the key belongs to
+3. Loads that organization's provider credentials, guardrails, routing rules, and rate limits
+4. Routes the request to the appropriate LLM provider using the organization's stored provider credentials
+
+<Tip>Virtual keys keep your provider API keys secure. Your application code never sees or stores raw provider credentials, only the Prism virtual key.</Tip>
+
+---
+
+## Organizations and Multi-Tenancy
+
+Multi-tenancy means multiple independent users, teams, or customers share the same gateway infrastructure while remaining completely isolated from one another. Each organization has its own set of providers, guardrails, routing rules, rate limits, and budgets. One organization's configuration cannot affect another's.
+
+This is useful in several scenarios:
+
+- **SaaS products:** Give each of your customers their own isolated gateway environment with separate provider keys and guardrails.
+- **Team separation:** Track spend and enforce policies per team without shared limits affecting each other.
+- **Staging vs. production:** Run production and staging on the same gateway with different configurations.
+- **Resellers:** Provision isolated environments for downstream customers.
+
+Each organization gets its own isolated:
+
+- Providers (and their encrypted API keys)
+- Guardrails and safety policies
+- Routing rules and strategies
+- Rate limits
+- Budgets and spend tracking
+- Cache namespace
+
+**Configuration hierarchy.** When a setting is specified in multiple places, Prism applies the most specific one. Request headers override API key config, which overrides organization config, which overrides global defaults.
+
+```
+Request Headers > API Key Config > Organization Config > Global Config
+```
+
+---
+
+## Providers
+
+A provider is an LLM service that Prism routes requests to, for example, OpenAI, Anthropic, or Google Gemini. Each provider has its own API format, authentication method, and model catalog.
+
+You configure each provider once (supplying its API key and any required settings), and Prism handles all communication with it from that point. When you make a request, you specify which model to use; Prism determines which provider hosts that model and routes the request accordingly.
+
+Prism translates between its unified OpenAI-format API and each provider's native format. Providers like Anthropic and Google Gemini have different native APIs, but Prism handles the translation transparently. Your client code stays the same regardless of which provider handles the request.
+
+Provider configuration includes:
+
+- **Name:** The identifier used when configuring routing, failover order, or routing strategies.
+- **API format:** How the provider's native API works. Prism normalizes all providers to the OpenAI format.
+- **Base URL:** The endpoint Prism calls when routing to this provider.
+- **API key:** Your credential for this provider, stored encrypted. Never exposed in API responses.
+- **Models:** Which models are available through this provider.
+
+---
+
+## Organization Configuration
+
+Organization configuration controls all gateway behavior for a given organization. It is versioned, and changes are applied to the gateway in real time with no restart required.
+
+| Section | What it controls |
+|---------|-----------------|
+| `providers` | Which LLM services are available and their credentials |
+| `guardrails` | Safety checks applied to requests and responses |
+| `routing` | How requests are distributed across providers (strategy, failover, retries) |
+| `cache` | Caching mode, TTL, and namespace settings |
+| `rate_limiting` | Maximum request rate per API key or organization |
+| `budgets` | Spending limits per period and alert thresholds |
+| `cost_tracking` | Cost calculation and attribution settings |
+| `ip_acl` | IP Access Control List: which source IP addresses are permitted |
+| `alerting` | Email or webhook alerts for budget events, errors, and guardrail triggers |
+| `privacy` | Data retention periods and request logging policies |
+| `tool_policy` | Which tool and function calls are permitted |
+| `mcp` | Model Context Protocol integration settings |
+| `model_map` | Custom model name aliases. Map a friendly name like `my-gpt` to an actual model |
+| `audit` | Audit log configuration and retention settings |
+
+<Note>Changes to organization configuration are pushed to the gateway in real time. No restart or redeployment needed.</Note>
+
+---
+
+## Guardrails
+
+Guardrails are safety checks that run on every request and response. Prism includes 18+ built-in types.
+
+Each guardrail operates in one of three enforcement modes:
+
+| Mode | HTTP Status | What happens |
+|------|------------|--------------|
+| Enforce | 403 Forbidden | The request is blocked. Prism returns an error to the client. The LLM is never called and no cost is incurred. |
+| Monitor | 200 OK | The request proceeds normally, but a warning is logged. Use this to observe traffic patterns before enforcing. |
+| Log | 200 OK | The request proceeds. The potential violation is recorded silently for later analysis. |
+
+<Tip>Start with Monitor mode to understand your traffic before switching to Enforce. This prevents unexpected request blocking while you tune thresholds.</Tip>
+
+---
+
+## Sessions
+
+Group related requests together using the `x-prism-session-id` header. Sessions are used for grouping and analytics only. Prism does not maintain conversation state or memory between requests.
+
+---
+
+## Custom Metadata
+
+Attach arbitrary JSON metadata to requests using the `x-prism-metadata` header. Metadata appears in logs and analytics for cost attribution and tracking by team, feature, user, or any custom dimension.
+
+---
+
+## What you can do next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/docs/prism/quickstart">
+    Get up and running with Prism in minutes
+  </Card>
+  <Card title="API Reference" icon="code" href="/docs/prism/concepts/api-reference">
+    Explore supported endpoints, request headers, and response headers
+  </Card>
+  <Card title="Configuration" icon="gear" href="/docs/prism/concepts/configuration">
+    Learn how to configure organizations, routing, and policies
+  </Card>
+  <Card title="Manage Providers" icon="plug" href="/docs/prism/features/providers">
+    Configure LLM providers and credentials
+  </Card>
+</CardGroup>

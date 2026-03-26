@@ -42,7 +42,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Quickstart',
             icon: 'rocket',
-            href: '/docs/quickstart',
+            href: '/docs',
             items: [
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
@@ -85,6 +85,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
+              { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
             ]
           },
           {
@@ -311,7 +312,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: 'docs/optimization/concepts/concept' },
+              { title: 'Concept', href: '/docs/optimization/concepts/concept' },
             ]
           },
           {
@@ -365,6 +366,43 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Prism AI Gateway',
+        icon: 'server',
+        items: [
+          { title: 'Overview', href: '/docs/prism' },
+          { title: 'Quickstart', href: '/docs/prism/quickstart' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Core Concepts', href: '/docs/prism/concepts/core' },
+              { title: 'API Reference', href: '/docs/prism/concepts/api-reference' },
+              { title: 'Configuration', href: '/docs/prism/concepts/configuration' },
+              { title: 'Platform Integration', href: '/docs/prism/concepts/platform-integration' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Manage Providers', href: '/docs/prism/features/providers' },
+              { title: 'Routing & Reliability', href: '/docs/prism/features/routing' },
+              { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
+              { title: 'Caching', href: '/docs/prism/features/caching' },
+              { title: 'Cost Tracking & Budgets', href: '/docs/prism/features/cost-tracking' },
+              { title: 'Streaming', href: '/docs/prism/features/streaming' },
+              { title: 'Shadow Experiments', href: '/docs/prism/features/shadow-experiments' },
+              { title: 'Rate Limiting', href: '/docs/prism/features/rate-limiting' },
+              { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
+            ]
+          },
+          {
+            title: 'Deployment',
+            items: [
+              { title: 'Self-Hosted', href: '/docs/prism/deployment/self-hosted' },
+            ]
+          },
+        ]
+      },
+      {
         group: 'Knowledge Base',
         icon: 'brain',
         items: [
@@ -389,6 +427,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'book',
         items: [
           { title: 'Admin & Settings', href: '/docs/admin-settings' },
+          { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
           { title: 'FAQ', href: '/docs/faq' },
           { title: 'Release Notes', href: '/docs/release-notes' },
         ]
@@ -656,6 +695,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Tracing', href: '/docs/sdk/tracing' },
               { title: 'Protect', href: '/docs/sdk/protect' },
               { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
+              { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
               { title: 'Prompt Optimization', href: '/docs/sdk/optimization' },
               { title: 'Simulation Testing', href: '/docs/sdk/simulate' },
             ]
