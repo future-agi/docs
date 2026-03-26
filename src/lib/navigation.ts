@@ -121,7 +121,18 @@ export const tabNavigation: NavTab[] = [
         icon: 'compass',
         items: [
           { title: 'Overview', href: '/docs/error-feed' },
-          { title: 'Taxonomy', href: '/docs/error-feed/taxonomy' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Error Taxonomy', href: '/docs/error-feed/concepts/taxonomy' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Error Feed', href: '/docs/error-feed/features/using-error-feed' },
+            ]
+          },
         ]
       },
       {
@@ -650,6 +661,13 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Chat Simulation with Fix My Agent', href: '/docs/cookbook/chat-simulation-fix-agent' },
               { title: 'Simulate SDK Demo', href: '/docs/cookbook/simulate-sdk' },
+            ]
+          },
+          {
+            title: 'Error Feed',
+            icon: 'compass',
+            items: [
+              { title: 'Error Feed with Google ADK', href: '/docs/cookbook/error-feed/google-adk-multi-agent' },
             ]
           },
         ]

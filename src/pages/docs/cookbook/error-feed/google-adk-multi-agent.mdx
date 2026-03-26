@@ -1,0 +1,247 @@
+---
+title: "Error Feed with Google ADK"
+description: "Set up a multi-agent system using Google ADK, send traces to Future AGI, and analyze agent errors with Error Feed."
+---
+
+## About
+
+This cookbook walks through a complete example: build a multi-agent system with Google ADK, instrument it with tracing, and use [Error Feed](/docs/error-feed) to automatically analyze agent performance. By the end, you'll have traces flowing into Observe with Error Feed scores and recommendations visible on each trace.
+
+For a framework-agnostic guide on reading Error Feed results, see [Using Error Feed](/docs/error-feed/features/using-error-feed).
+
+---
+
+## Prerequisites
+
+- Future AGI account at [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Admin Settings](/docs/admin-settings))
+- Python 3.12+ and a Google API key
+
+---
+
+## Setup
+
+Create a virtual environment and install the required package:
+
+```bash
+python3.12 -m venv env
+source env/bin/activate
+pip install traceai-google-adk
+```
+
+Create a Python script (e.g. `google_adk_futureagi.py`) and start with the environment variables and imports:
+
+```python
+import asyncio
+import os
+import sys
+from typing import Optional
+
+from google.adk.agents import Agent
+from google.adk.runners import Runner, RunConfig
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from google.genai import types
+
+# Set up environment variables
+os.environ["FI_API_KEY"] = "YOUR_API_KEY"
+os.environ["FI_SECRET_KEY"] = "YOUR_SECRET_KEY"
+os.environ["FI_BASE_URL"] = "https://api.futureagi.com"
+os.environ['GOOGLE_API_KEY'] = 'YOUR_GOOGLE_API_KEY'
+```
+
+Initialize the trace provider and instrument Google ADK:
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_google_adk import GoogleADKInstrumentor
+from fi_instrumentation import Transport
+
+tracer_provider = register(
+    project_name="google-adk-demo",
+    project_type=ProjectType.OBSERVE,
+    transport=Transport.HTTP
+)
+
+GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
+```
+
+---
+
+## Create the Multi-Agent System
+
+Define four specialized agents: planner, researcher, critic, and writer.
+
+```python
+planner_agent = Agent(
+    name="planner_agent",
+    model="gemini-2.5-flash",
+    description="Decomposes requests into a clear plan and collects missing requirements.",
+    instruction="""You are a planning specialist.
+    Responsibilities:
+    - Clarify the user's goal and constraints with 1-3 concise questions if needed.
+    - Produce a short plan with numbered steps and deliverables.
+    - Include explicit assumptions if any details are missing.
+    - End with 'Handoff Summary:' plus a one-paragraph summary of the plan and next agent.
+    - Transfer back to the parent agent without saying anything else."""
+)
+
+researcher_agent = Agent(
+    name="researcher_agent",
+    model="gemini-2.5-flash",
+    description="Expands plan steps into structured notes using internal knowledge (no tools).",
+    instruction="""You are a content researcher.
+    Constraints: do not fetch external data or cite URLs; rely on prior knowledge only.
+    Steps:
+    - Read the plan and assumptions.
+    - For each plan step, create structured notes (bullets) and key talking points.
+    - Flag uncertainties as 'Assumptions' with brief rationale.
+    - End with 'Handoff Summary:' and recommend sending to the critic next.
+    - Transfer back to the parent agent without saying anything else."""
+)
+
+critic_agent = Agent(
+    name="critic_agent",
+    model="gemini-2.5-flash",
+    description="Reviews content for clarity, completeness, and logical flow.",
+    instruction="""You are a critical reviewer.
+    Steps:
+    - Identify issues in clarity, structure, correctness, and style.
+    - Provide a concise list of actionable suggestions grouped by category.
+    - Do not rewrite the full content; focus on improvements.
+    - End with 'Handoff Summary:' suggesting the writer produce the final deliverable.
+    - Transfer back to the parent agent without saying anything else."""
+)
+
+writer_agent = Agent(
+    name="writer_agent",
+    model="gemini-2.5-flash",
+    description="Synthesizes a polished final deliverable from notes and critique.",
+    instruction="""You are the final writer.
+    Steps:
+    - Synthesize the final deliverable in a clean, structured format.
+    - Incorporate the critic's suggestions.
+    - Keep it concise, high-signal, and self-contained.
+    - End with: 'Would you like any changes or a different format?'
+    - Transfer back to the parent agent without saying anything else."""
+)
+```
+
+Create the root orchestrator that coordinates all four agents:
+
+```python
+root_agent = Agent(
+    name="root_agent",
+    model="gemini-2.5-flash",
+    global_instruction="""You are a collaborative multi-agent orchestrator.
+    Coordinate Planner, Researcher, Critic, Writer to fulfill the user's request without using any external tools.
+    Keep interactions polite and focused. Avoid unnecessary fluff.""",
+    instruction="""Process:
+    - If needed, greet the user briefly and confirm their goal.
+    - Transfer to planner_agent to draft a plan.
+    - Then transfer to researcher_agent to expand the plan into notes.
+    - Then transfer to critic_agent to review and propose improvements.
+    - Finally transfer to writer_agent to produce the final deliverable.
+    - After the writer returns, ask the user if they want any changes.
+
+    Notes:
+    - Do NOT call any tools.
+    - At each step, ensure the child agent includes a 'Handoff Summary:' to help routing.
+    - If the user asks for changes at any time, route back to the appropriate sub-agent (planner or writer).
+    """,
+    sub_agents=[planner_agent, researcher_agent, critic_agent, writer_agent]
+)
+```
+
+---
+
+## Run the Agents
+
+```python
+async def run_once(message_text: str, *, app_name: str = "agent-compass-demo", user_id: str = "user-1", session_id: Optional[str] = None) -> None:
+    runner = Runner(
+        app_name=app_name,
+        agent=root_agent,
+        artifact_service=InMemoryArtifactService(),
+        session_service=InMemorySessionService(),
+        memory_service=InMemoryMemoryService(),
+        credential_service=InMemoryCredentialService(),
+    )
+
+    session = await runner.session_service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+    )
+
+    content = types.Content(role="user", parts=[types.Part(text=message_text)])
+
+    async for event in runner.run_async(
+        user_id=session.user_id,
+        session_id=session.id,
+        new_message=content,
+        run_config=RunConfig(),
+    ):
+        if getattr(event, "content", None) and getattr(event.content, "parts", None):
+            text = "".join((part.text or "") for part in event.content.parts)
+            if text:
+                author = getattr(event, "author", "agent")
+                print(f"[{author}]: {text}")
+
+    await runner.close()
+
+
+async def main():
+    prompts = [
+        "Explain the formation and characteristics of aurora borealis (northern lights).",
+        "Describe how hurricanes form and what makes them so powerful.",
+        "Explain the process of photosynthesis in plants and its importance to life on Earth.",
+        "Describe how earthquakes occur and why some regions are more prone to them.",
+        "Explain the water cycle and how it affects weather patterns globally."
+    ]
+
+    for prompt in prompts:
+        await run_once(
+            prompt,
+            app_name="agent-compass-demo",
+            user_id="user-1",
+        )
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Run the script:
+
+```bash
+python3 google_adk_futureagi.py
+```
+
+---
+
+## Viewing Results
+
+After the script runs, your project appears in the **Observe** tab.
+
+![Observe project list](/images/docs/agent-compass-quickstart/observe_list.png)
+
+Click on the project to see the LLM Tracing view with all traces listed.
+
+![LLM Tracing view](/images/docs/agent-compass-quickstart/observe_llm_tracing.png)
+
+Click on a trace to open the trace tree. Error Feed insights appear in a collapsible accordion at the top.
+
+![Error Feed insights expanded](/images/docs/agent-compass-quickstart/agent_compass_expanded.png)
+
+For details on how to read scores, insights, clusters, and recommendations, see [Using Error Feed](/docs/error-feed/features/using-error-feed).
+
+---
+
+## Next Steps
+
+- [Using Error Feed](/docs/error-feed/features/using-error-feed): Understand scores, clusters, and recommendations
+- [Error Taxonomy](/docs/error-feed/concepts/taxonomy): Explore all error categories
+- [Set Up Observability](/docs/quickstart/setup-observability): Send traces from other frameworks
