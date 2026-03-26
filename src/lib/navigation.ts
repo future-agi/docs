@@ -666,7 +666,7 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'SDK Overview', href: '/docs/sdk' },
           {
-            title: 'Evals',
+            title: 'AI Evaluation',
             items: [
               { title: 'Overview', href: '/docs/sdk/evals' },
               { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
