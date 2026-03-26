@@ -671,6 +671,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Overview', href: '/docs/sdk/evals' },
               { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
               { title: 'Distributed Evaluator', href: '/docs/sdk/evals/distributed' },
+              { title: 'AutoEval', href: '/docs/sdk/evals/autoeval' },
               {
                 title: 'Metrics Reference',
                 items: [
