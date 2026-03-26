@@ -54,6 +54,88 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Annotations',
+        icon: 'pen',
+        items: [
+          { title: 'Overview', href: '/docs/annotations' },
+          { title: 'Quickstart', href: '/docs/annotations/quickstart' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Labels', href: '/docs/annotations/concepts/labels' },
+              { title: 'Queues & Workflow', href: '/docs/annotations/concepts/queues' },
+              { title: 'Scores', href: '/docs/annotations/concepts/scores' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create & Manage Labels', href: '/docs/annotations/features/labels' },
+              { title: 'Create & Manage Queues', href: '/docs/annotations/features/queues' },
+              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
+              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
+              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
+              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
+              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
+              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
+            ]
+          },
+          {
+            title: 'SDK',
+            items: [
+              { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
+              { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Dataset',
+        icon: 'table',
+        items: [
+          { title: 'Overview', href: '/docs/dataset' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Datasets', href: '/docs/dataset/concept/understanding-dataset' },
+              { title: 'Static Columns', href: '/docs/dataset/concept/static-column' },
+              { title: 'Dynamic Columns', href: '/docs/dataset/concept/dynamic-column' },
+              { title: 'Synthetic Data', href: '/docs/dataset/concept/synthetic-data' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
+              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
+              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
+              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
+              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
+              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Error Feed',
+        icon: 'compass',
+        items: [
+          { title: 'Overview', href: '/docs/error-feed' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Error Taxonomy', href: '/docs/error-feed/concepts/taxonomy' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Error Feed', href: '/docs/error-feed/features/using-error-feed' },
+            ]
+          },
+        ]
+      },
+      {
         group: 'Evaluation',
         icon: 'chart',
         items: [
@@ -68,6 +150,26 @@ export const tabNavigation: NavTab[] = [
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Knowledge Base',
+        icon: 'brain',
+        items: [
+          { title: 'Overview', href: '/docs/knowledge-base' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Knowledge Base', href: '/docs/knowledge-base/concepts/concept' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
+              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
             ]
           },
         ]
@@ -172,139 +274,6 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Dataset',
-        icon: 'table',
-        items: [
-          { title: 'Overview', href: '/docs/dataset' },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
-              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
-              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
-              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
-              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
-              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
-            ]
-          },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Understanding Datasets', href: '/docs/dataset/concept/understanding-dataset' },
-              { title: 'Static Columns', href: '/docs/dataset/concept/static-column' },
-              { title: 'Dynamic Columns', href: '/docs/dataset/concept/dynamic-column' },
-              { title: 'Synthetic Data', href: '/docs/dataset/concept/synthetic-data' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Simulation',
-        icon: 'play',
-        items: [
-          { title: 'Overview', href: '/docs/simulation' },
-          {
-            title: 'Set Up',
-            items: [
-              { title: 'Agent Definition', href: '/docs/simulation/set-up/agent-definition' },
-              { title: 'Scenarios', href: '/docs/simulation/set-up/scenarios' },
-              { title: 'Personas', href: '/docs/simulation/set-up/personas' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
-              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
-              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
-            ]
-          },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Concepts', href: '/docs/simulation/concepts/concepts' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Prompt',
-        icon: 'zap',
-        items: [
-          { title: 'Overview', href: '/docs/prompt' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Concept', href: '/docs/prompt/concepts/concept' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
-              { title: 'Create from Existing Template', href: '/docs/prompt/features/create-from-template' },
-              { title: 'Create with AI', href: '/docs/prompt/features/create-with-ai' },
-              { title: 'Prompt Workbench Using SDK', href: '/docs/prompt/features/sdk' },
-              { title: 'Linked Traces', href: '/docs/prompt/features/linked-traces' },
-              { title: 'Manage Folders', href: '/docs/prompt/features/folders' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Prototype',
-        icon: 'flask',
-        items: [
-          { title: 'Overview', href: '/docs/prototype' },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
-              { title: 'Evals', href: '/docs/prototype/features/evals' },
-              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Annotations',
-        icon: 'pen',
-        items: [
-          { title: 'Overview', href: '/docs/annotations' },
-          { title: 'Quickstart', href: '/docs/annotations/quickstart' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Labels', href: '/docs/annotations/concepts/labels' },
-              { title: 'Queues & Workflow', href: '/docs/annotations/concepts/queues' },
-              { title: 'Scores', href: '/docs/annotations/concepts/scores' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Create & Manage Labels', href: '/docs/annotations/features/labels' },
-              { title: 'Create & Manage Queues', href: '/docs/annotations/features/queues' },
-              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
-              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
-              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
-              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
-              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
-              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
-            ]
-          },
-          {
-            title: 'SDK',
-            items: [
-              { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
-              { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
-            ]
-          },
-        ]
-      },
-      {
         group: 'Optimization',
         icon: 'gauge',
         items: [
@@ -334,33 +303,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
               { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
               { title: 'Dataset Optimization', href: '/docs/optimization/features/dataset-optimization' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Error Feed',
-        icon: 'compass',
-        items: [
-          { title: 'Overview', href: '/docs/error-feed' },
-          { title: 'Taxonomy', href: '/docs/error-feed/taxonomy' },
-        ]
-      },
-      {
-        group: 'Protect',
-        icon: 'shield',
-        items: [
-          { title: 'Overview', href: '/docs/protect' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Concept', href: '/docs/protect/concepts/concept' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Run Protect via SDK', href: '/docs/protect/features/run-protect' },
             ]
           },
         ]
@@ -403,21 +345,59 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Knowledge Base',
-        icon: 'brain',
+        group: 'Prompt',
+        icon: 'zap',
         items: [
-          { title: 'Overview', href: '/docs/knowledge-base' },
+          { title: 'Overview', href: '/docs/prompt' },
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/knowledge-base/concepts/concept' },
+              { title: 'Concept', href: '/docs/prompt/concepts/concept' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
-              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
+              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
+              { title: 'Create from Existing Template', href: '/docs/prompt/features/create-from-template' },
+              { title: 'Create with AI', href: '/docs/prompt/features/create-with-ai' },
+              { title: 'Prompt Workbench Using SDK', href: '/docs/prompt/features/sdk' },
+              { title: 'Linked Traces', href: '/docs/prompt/features/linked-traces' },
+              { title: 'Manage Folders', href: '/docs/prompt/features/folders' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Protect',
+        icon: 'shield',
+        items: [
+          { title: 'Overview', href: '/docs/protect' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Concept', href: '/docs/protect/concepts/concept' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Run Protect via SDK', href: '/docs/protect/features/run-protect' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Prototype',
+        icon: 'flask',
+        items: [
+          { title: 'Overview', href: '/docs/prototype' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
+              { title: 'Evals', href: '/docs/prototype/features/evals' },
+              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
             ]
           },
         ]
@@ -430,6 +410,37 @@ export const tabNavigation: NavTab[] = [
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
           { title: 'FAQ', href: '/docs/faq' },
           { title: 'Release Notes', href: '/docs/release-notes' },
+        ]
+      },
+      {
+        group: 'Simulation',
+        icon: 'play',
+        items: [
+          { title: 'Overview', href: '/docs/simulation' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Concepts', href: '/docs/simulation/concepts/concepts' },
+            ]
+          },
+          {
+            title: 'Set Up',
+            items: [
+              { title: 'Agent Definition', href: '/docs/simulation/set-up/agent-definition' },
+              { title: 'Scenarios', href: '/docs/simulation/set-up/scenarios' },
+              { title: 'Personas', href: '/docs/simulation/set-up/personas' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
+              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
+              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
+              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
+            ]
+          },
         ]
       },
     ]
@@ -652,6 +663,13 @@ export const tabNavigation: NavTab[] = [
               { title: 'Simulate SDK Demo', href: '/docs/cookbook/simulate-sdk' },
             ]
           },
+          {
+            title: 'Error Feed',
+            icon: 'compass',
+            items: [
+              { title: 'Error Feed with Google ADK', href: '/docs/cookbook/error-feed/google-adk-multi-agent' },
+            ]
+          },
         ]
       }
     ]
@@ -664,14 +682,42 @@ export const tabNavigation: NavTab[] = [
       {
         group: 'SDK Reference',
         items: [
-          { title: 'Python SDK Client', href: '/docs/sdk' },
-          { title: 'Evals', href: '/docs/sdk/evals' },
-          { title: 'Datasets', href: '/docs/sdk/datasets' },
-          { title: 'Protect', href: '/docs/sdk/protect' },
-          { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
-          { title: 'Tracing', href: '/docs/sdk/tracing' },
-          { title: 'Test Case', href: '/docs/sdk/testcase' },
-          { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
+          { title: 'SDK Overview', href: '/docs/sdk' },
+          {
+            title: 'Evals',
+            items: [
+              { title: 'Overview', href: '/docs/sdk/evals' },
+              { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
+              {
+                title: 'Metrics Reference',
+                items: [
+                  { title: 'Overview', href: '/docs/sdk/evals/metrics' },
+                  { title: 'String & Similarity', href: '/docs/sdk/evals/metrics/string' },
+                  { title: 'JSON & Structured', href: '/docs/sdk/evals/metrics/json' },
+                  { title: 'Hallucination', href: '/docs/sdk/evals/metrics/hallucination' },
+                  { title: 'RAG', href: '/docs/sdk/evals/metrics/rag' },
+                  { title: 'Agents & Functions', href: '/docs/sdk/evals/metrics/agents' },
+                  { title: 'Guardrails', href: '/docs/sdk/evals/metrics/guardrails' },
+                ]
+              },
+              { title: 'Cloud Evals', href: '/docs/sdk/evals/cloud-evals' },
+              { title: 'LLM-as-Judge', href: '/docs/sdk/evals/llm-judge' },
+              { title: 'Streaming', href: '/docs/sdk/evals/streaming' },
+              { title: 'Feedback Loops', href: '/docs/sdk/evals/feedback' },
+            ]
+          },
+          {
+            title: 'Core SDK',
+            items: [
+              { title: 'Datasets', href: '/docs/sdk/datasets' },
+              { title: 'Tracing', href: '/docs/sdk/tracing' },
+              { title: 'Protect', href: '/docs/sdk/protect' },
+              { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
+              { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
+              { title: 'Prompt Optimization', href: '/docs/sdk/optimization' },
+              { title: 'Simulation Testing', href: '/docs/sdk/simulate' },
+            ]
+          },
         ]
       }
     ]
