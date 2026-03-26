@@ -142,6 +142,16 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/evaluation' },
           {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Evaluation', href: '/docs/evaluation/concepts/understanding-evaluation' },
+              { title: 'Eval Types', href: '/docs/evaluation/concepts/eval-types' },
+              { title: 'Eval Templates', href: '/docs/evaluation/concepts/eval-templates' },
+              { title: 'Judge Models', href: '/docs/evaluation/concepts/judge-models' },
+              { title: 'Eval Results', href: '/docs/evaluation/concepts/eval-results' },
+            ]
+          },
+          {
             title: 'Features',
             items: [
               { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
