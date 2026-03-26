@@ -151,7 +151,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/knowledge-base/concepts/concept' },
+              { title: 'Understanding Knowledge Base', href: '/docs/knowledge-base/concepts/concept' },
             ]
           },
           {
