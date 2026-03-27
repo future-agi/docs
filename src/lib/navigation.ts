@@ -344,6 +344,12 @@ export const tabNavigation: NavTab[] = [
               { title: 'Shadow Experiments', href: '/docs/prism/features/shadow-experiments' },
               { title: 'Rate Limiting', href: '/docs/prism/features/rate-limiting' },
               { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
+              { title: 'Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
+              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
+              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
+              { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
+              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
             ]
           },
           {
