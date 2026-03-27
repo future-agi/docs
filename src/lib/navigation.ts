@@ -368,7 +368,11 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/prompt/concepts/concept' },
+              { title: 'Prompt Engineering', href: '/docs/prompt/concepts/prompt-engineering' },
+              { title: 'Understanding Prompts', href: '/docs/prompt/concepts/understanding-prompts' },
+              { title: 'Prompt Variables', href: '/docs/prompt/concepts/prompt-variables' },
+              { title: 'Versions and Labels', href: '/docs/prompt/concepts/versions-and-labels' },
+              { title: 'Linked Traces', href: '/docs/prompt/concepts/linked-traces' },
             ]
           },
           {
