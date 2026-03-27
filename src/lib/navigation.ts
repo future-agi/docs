@@ -292,13 +292,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/optimization/concepts/concept' },
-            ]
-          },
-          {
-            title: 'Algorithms',
-            items: [
-              { title: 'Overview', href: '/docs/optimization/optimizers/overview' },
+              { title: 'Understanding Optimization', href: '/docs/optimization/concepts/concept' },
               { title: 'Bayesian Search', href: '/docs/optimization/optimizers/bayesian-search' },
               { title: 'Meta-Prompt', href: '/docs/optimization/optimizers/meta-prompt' },
               { title: 'ProTeGi', href: '/docs/optimization/optimizers/protegi' },
@@ -310,10 +304,8 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Features',
             items: [
-              { title: 'Optimize Your First Prompt', href: '/docs/optimization/features/optimize-your-first-prompt' },
               { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
               { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
-              { title: 'Dataset Optimization', href: '/docs/optimization/features/dataset-optimization' },
             ]
           },
         ]
