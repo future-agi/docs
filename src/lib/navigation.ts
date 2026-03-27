@@ -675,6 +675,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Guardrails', href: '/docs/sdk/evals/guardrails-module' },
               { title: 'Local & Hybrid', href: '/docs/sdk/evals/local' },
               { title: 'OpenTelemetry', href: '/docs/sdk/evals/otel' },
+              { title: 'Code Security', href: '/docs/sdk/evals/code-security' },
               {
                 title: 'Metrics Reference',
                 items: [
