@@ -744,6 +744,14 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Simulation Analytics',
+            items: [
+              { title: 'Get Simulation Metrics', href: '/docs/api/simulation-analytics/metrics' },
+              { title: 'Get Simulation Runs', href: '/docs/api/simulation-analytics/runs' },
+              { title: 'Get Simulation Analytics', href: '/docs/api/simulation-analytics/analytics' },
+            ]
+          },
+          {
             title: 'Annotation Scores',
             items: [
               { title: 'Create Score', href: '/docs/api/annotations/scores/create-score' },
