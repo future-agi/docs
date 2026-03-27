@@ -1,0 +1,461 @@
+---
+title: "OpenTelemetry Integration"
+description: "Built-in OpenTelemetry for the AI evaluation SDK. Auto-instrument LLM calls, track costs, enrich spans with scores, and export to any backend."
+---
+
+<TLDR>
+- `setup_tracing()` configures OTel with sensible defaults for LLM observability
+- Auto-instrument OpenAI and Anthropic with `instrument_all()`
+- Track token costs, enrich spans with scores, export to 13+ backends
+</TLDR>
+
+The OTel module adds OpenTelemetry instrumentation directly into `ai-evaluation`. Trace LLM calls, calculate per-call costs, attach scores to spans, and export to any OTel-compatible backend.
+
+<Note>
+  Requires `pip install ai-evaluation`. This is separate from the `fi-instrumentation-otel` + `traceai-*` packages in [Tracing](/docs/sdk/tracing). Use this when you want observability tightly coupled with your scoring pipeline. Use `fi-instrumentation-otel` for standalone tracing across your whole stack.
+</Note>
+
+## Quick Example
+
+```python
+from fi.evals.otel import setup_tracing, instrument_all, enable_auto_enrichment
+
+# 1. Set up tracing
+setup_tracing(service_name="my-app", otlp_endpoint="http://localhost:4317")
+
+# 2. Auto-instrument all supported LLM libraries
+instrumented = instrument_all()
+print(f"Instrumented: {instrumented}")  # ["openai", "anthropic"]
+
+# 3. Enable auto-enrichment — scores automatically attach to spans
+enable_auto_enrichment()
+
+# Now all OpenAI/Anthropic calls are traced, costs calculated,
+# and scores are attached to the active span
+```
+
+## Setup
+
+### Basic
+
+```python
+from fi.evals.otel import setup_tracing
+
+setup_tracing(service_name="my-app")  # exports to console by default
+```
+
+### With OTLP endpoint
+
+```python
+setup_tracing(
+    service_name="my-app",
+    otlp_endpoint="http://localhost:4317",
+)
+```
+
+### With TraceConfig
+
+```python
+from fi.evals.otel import setup_tracing, TraceConfig
+
+# Development — console output, all content captured
+config = TraceConfig.development("my-app")
+
+# Production — OTLP export, 10% sampling, cost alerts
+config = TraceConfig.production(
+    service_name="my-app",
+    otlp_endpoint="https://otel-collector.internal:4317",
+    service_version="2.1.0",
+    eval_sample_rate=0.1,
+)
+
+# Multi-backend — export to multiple destinations
+config = TraceConfig.multi_backend(
+    service_name="my-app",
+    backends=[
+        {"type": "jaeger", "endpoint": "localhost:6831"},
+        {"type": "datadog"},
+    ],
+)
+
+setup_tracing(config=config)
+```
+
+### Tracer utilities
+
+```python
+from fi.evals.otel import get_tracer, get_current_span, is_tracing_enabled, shutdown_tracing
+
+tracer = get_tracer("my-module")
+span = get_current_span()
+enabled = is_tracing_enabled()
+shutdown_tracing()  # flush and shutdown
+```
+
+## Auto-Instrumentation
+
+Instrument LLM libraries with one call. Currently supports OpenAI and Anthropic.
+
+```python
+from fi.evals.otel import instrument_all, uninstrument_all, instrument, uninstrument
+
+# Instrument everything available
+libraries = instrument_all()  # ["openai", "anthropic"]
+
+# Or instrument individually
+instrument("openai", capture_prompts=True, capture_completions=True, capture_streaming=True)
+instrument("anthropic")
+
+# Check status
+from fi.evals.otel import is_instrumented, get_instrumented_libraries
+print(is_instrumented("openai"))       # True
+print(get_instrumented_libraries())    # ["openai", "anthropic"]
+
+# Remove instrumentation
+uninstrument("openai")
+uninstrument_all()
+```
+
+### Tracing LLM calls manually
+
+```python
+from fi.evals.otel import trace_llm_call
+
+with trace_llm_call("chat", model="gpt-4o", system="openai") as span:
+    response = client.chat.completions.create(...)
+    span.set_attribute("gen_ai.usage.input_tokens", response.usage.prompt_tokens)
+    span.set_attribute("gen_ai.usage.output_tokens", response.usage.completion_tokens)
+```
+
+## Auto-Enrichment
+
+When enabled, scoring calls automatically attach their results to the current active span.
+
+```python
+from fi.evals.otel import enable_auto_enrichment, disable_auto_enrichment, is_auto_enrichment_enabled
+from fi.evals import evaluate as run_eval
+
+enable_auto_enrichment()
+
+# This call automatically enriches the current span
+result = run_eval("toxicity", output="Hello world", model="turing_flash")
+# The span now has: eval.toxicity = 1.0
+
+disable_auto_enrichment()
+```
+
+### Manual enrichment
+
+```python
+from fi.evals.otel import enrich_span_with_evaluation, enrich_span_with_eval_result, enrich_span_with_batch_result
+
+# By metric name + score
+enrich_span_with_evaluation("toxicity", score=0.95, reason="Safe content")
+
+# From a result object
+enrich_span_with_eval_result(result)
+
+# From a batch result
+count = enrich_span_with_batch_result(results)  # returns number attached
+```
+
+### Span context for scoring
+
+Create a child span specifically for scoring:
+
+```python
+from fi.evals.otel import EvaluationSpanContext
+
+with EvaluationSpanContext("my_check") as ctx:
+    score = run_my_custom_check(...)
+    ctx.record_result(score=score, reason="explanation")
+```
+
+## Cost Tracking
+
+Automatically calculate token costs for every LLM call.
+
+```python
+from fi.evals.otel import CostSpanProcessor, calculate_cost, DEFAULT_PRICING, TokenPricing
+
+# Add cost tracking to your pipeline
+processor = CostSpanProcessor(
+    alert_threshold_usd=10.0,
+    on_cost_alert=lambda total_cost, span_id: print(f"ALERT: cost ${total_cost:.2f} on span {span_id}"),
+)
+
+# Or calculate costs manually
+costs = calculate_cost("gpt-4o", input_tokens=1000, output_tokens=500)
+print(costs)  # {"input_cost": 0.005, "output_cost": 0.0075, "total_cost": 0.0125}
+
+# Get running totals
+print(processor.total_cost_usd)
+print(processor.get_summary())
+
+# Add custom pricing
+processor.add_custom_pricing("my-model", TokenPricing(
+    model="my-model",
+    input_per_1k=0.001,
+    output_per_1k=0.002,
+))
+```
+
+### Built-in pricing
+
+`DEFAULT_PRICING` includes 30+ models: OpenAI (gpt-4o, gpt-4o-mini, o1), Anthropic (claude-3.5-sonnet, claude-3-opus), Google (gemini-1.5-pro, gemini-2.0-flash), Mistral, Cohere, Meta, and embeddings.
+
+## Span Processors
+
+Custom processors that run on every span.
+
+### LLMSpanProcessor
+
+Extracts and normalizes LLM attributes from spans.
+
+```python
+from fi.evals.otel import LLMSpanProcessor
+
+processor = LLMSpanProcessor(
+    capture_prompts=True,
+    capture_completions=True,
+    max_content_length=10000,
+    redact_patterns=[r"\b\d{3}-\d{2}-\d{4}\b"],  # redact SSNs
+)
+```
+
+### EvaluationSpanProcessor
+
+Runs scoring on LLM spans automatically.
+
+```python
+from fi.evals.otel import EvaluationSpanProcessor
+
+processor = EvaluationSpanProcessor(
+    metrics=["relevance", "coherence"],
+    sample_rate=0.1,          # score 10% of spans
+    async_evaluation=True,    # don't block the span
+    cache_enabled=True,
+    evaluator_model="turing_flash",
+)
+```
+
+### BatchEvaluationProcessor
+
+Batches spans for scoring efficiency.
+
+```python
+from fi.evals.otel import BatchEvaluationProcessor
+
+processor = BatchEvaluationProcessor(
+    metrics=["toxicity"],
+    batch_size=10,
+    batch_timeout_ms=1000,
+)
+```
+
+### FilteringSpanProcessor
+
+Only process spans matching a filter.
+
+```python
+from fi.evals.otel import FilteringSpanProcessor, CostSpanProcessor
+
+cost_processor = CostSpanProcessor()
+filtered = FilteringSpanProcessor(
+    filter_fn=lambda span: "gpt-4" in str(span.attributes.get("gen_ai.request.model", "")),
+    delegate=cost_processor,
+)
+```
+
+### CompositeSpanProcessor
+
+Chain multiple processors together.
+
+```python
+from fi.evals.otel import CompositeSpanProcessor, LLMSpanProcessor, CostSpanProcessor
+
+composite = CompositeSpanProcessor(
+    processors=[LLMSpanProcessor(), CostSpanProcessor()],
+    parallel=True,
+)
+```
+
+## Exporter Backends
+
+Export traces to any OTel-compatible backend.
+
+| Backend | ExporterType | Default Endpoint |
+|---------|-------------|-----------------|
+| OTLP (gRPC) | `OTLP_GRPC` | `localhost:4317` |
+| OTLP (HTTP) | `OTLP_HTTP` | `localhost:4318` |
+| Jaeger | `JAEGER` | `localhost:14268` |
+| Zipkin | `ZIPKIN` | `localhost:9411` |
+| Console | `CONSOLE` | stdout |
+| Datadog | `DATADOG` | Datadog agent |
+| Honeycomb | `HONEYCOMB` | Honeycomb API |
+| New Relic | `NEWRELIC` | New Relic API |
+| Arize | `ARIZE` | Arize Phoenix |
+| Langfuse | `LANGFUSE` | Langfuse API |
+| Phoenix | `PHOENIX` | Arize Phoenix |
+| Future AGI | `FUTUREAGI` | Future AGI API |
+| Custom | `CUSTOM` | Your endpoint |
+
+```python
+from fi.evals.otel import TraceConfig, ExporterConfig, ExporterType, get_exporter_preset
+
+# Use a preset
+config = TraceConfig(exporters=[get_exporter_preset("jaeger")])
+
+# Or configure manually
+config = TraceConfig(exporters=[
+    ExporterConfig(type=ExporterType.OTLP_GRPC, endpoint="http://localhost:4317"),
+    ExporterConfig(type=ExporterType.CONSOLE),  # also log to console
+])
+```
+
+## Configuration Reference
+
+### TraceConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `service_name` | str | `"llm-service"` | Service name in traces |
+| `exporters` | list | `[CONSOLE]` | Where to send traces |
+| `processors` | list | `[]` | Span processors to run |
+| `sampling_strategy` | SamplingStrategy | `ALWAYS_ON` | `ALWAYS_ON`, `ALWAYS_OFF`, `RATIO`, `PARENT_BASED` |
+| `evaluation` | EvaluationConfig or None | None | Auto-scoring settings |
+| `cost` | CostConfig or None | None | Cost tracking settings |
+| `content` | ContentConfig or None | None | Content capture/redaction |
+| `resource` | ResourceConfig or None | None | Service metadata |
+| `enabled` | bool | True | Master switch |
+| `debug` | bool | False | Debug logging |
+
+### ContentConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `capture_prompts` | bool | True | Capture input messages |
+| `capture_completions` | bool | True | Capture output messages |
+| `max_content_length` | int | 10000 | Truncate content beyond this |
+| `redact_patterns` | list | `[]` | Regex patterns to redact |
+| `redact_pii` | bool | False | Auto-redact PII |
+| `pii_types` | list | `["email", "phone", "ssn"]` | PII types to redact |
+
+### CostConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | True | Enable cost tracking |
+| `pricing_source` | str | `"litellm"` | Where to get pricing |
+| `custom_pricing` | dict | `{}` | Custom model pricing |
+| `currency` | str | `"USD"` | Currency for costs |
+| `alert_threshold_usd` | float or None | None | Alert when cost exceeds |
+| `alert_callback` | callable or None | None | Called on threshold |
+
+### EvaluationConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | True | Enable auto-scoring on spans |
+| `metrics` | list | `["relevance", "coherence"]` | Metrics to run |
+| `sample_rate` | float | 1.0 | Fraction of spans to score |
+| `async_evaluation` | bool | True | Non-blocking scoring |
+| `timeout_ms` | int | 5000 | Timeout per scoring call |
+| `cache_enabled` | bool | True | Cache results |
+| `cache_ttl_seconds` | int | 3600 | Cache TTL |
+| `evaluator_model` | str or None | None | Model for cloud scoring |
+
+## Exporting to Future AGI
+
+```python
+from fi.evals.otel import setup_tracing, TraceConfig, ExporterConfig, ExporterType
+
+config = TraceConfig(
+    service_name="my-app",
+    exporters=[ExporterConfig(type=ExporterType.FUTUREAGI)],
+)
+
+# Reads FI_API_KEY, FI_SECRET_KEY, FI_PROJECT_NAME from environment
+setup_tracing(config=config)
+```
+
+## Environment Variables
+
+| Variable | Purpose | Used by |
+|----------|---------|---------|
+| `OTEL_SERVICE_NAME` | Service name in traces | `setup_tracing()` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP exporter endpoint | OTLP exporters |
+| `OTEL_EXPORTER_OTLP_HEADERS` | OTLP exporter headers | OTLP exporters |
+| `OTEL_DEPLOYMENT_ENVIRONMENT` | Deployment environment label | ResourceConfig |
+| `FI_API_KEY` | Future AGI API key | FutureAGI exporter |
+| `FI_SECRET_KEY` | Future AGI secret key | FutureAGI exporter |
+| `FI_BASE_URL` | Future AGI API endpoint | FutureAGI exporter |
+| `FI_PROJECT_NAME` | Project name | FutureAGI exporter |
+
+<Tip>
+  If OpenTelemetry packages are not installed, the module degrades gracefully — all functions become no-ops. Your code won't crash, tracing just silently disables itself.
+</Tip>
+
+## Semantic Conventions
+
+Standard attribute names for LLM traces.
+
+```python
+from fi.evals.otel import GenAIAttributes, CostAttributes, EvaluationAttributes, RAGAttributes
+
+# LLM attributes
+GenAIAttributes.PROVIDER_NAME       # "gen_ai.provider.name" (preferred)
+GenAIAttributes.SYSTEM              # "gen_ai.system" (deprecated, use PROVIDER_NAME)
+GenAIAttributes.REQUEST_MODEL       # "gen_ai.request.model"
+GenAIAttributes.USAGE_INPUT_TOKENS  # "gen_ai.usage.input_tokens"
+GenAIAttributes.USAGE_OUTPUT_TOKENS # "gen_ai.usage.output_tokens"
+
+# Cost attributes
+CostAttributes.TOTAL     # "gen_ai.cost.total"
+CostAttributes.INPUT     # "gen_ai.cost.input"
+
+# Scoring attributes
+EvaluationAttributes.NAME           # "gen_ai.evaluation.name"
+EvaluationAttributes.SCORE_VALUE    # "gen_ai.evaluation.score.value"
+EvaluationAttributes.EXPLANATION    # "gen_ai.evaluation.explanation"
+# Legacy (still works): EvaluationAttributes.score("toxicity") → "eval.toxicity"
+
+# RAG attributes (indexed)
+RAGAttributes.NUM_DOCUMENTS          # "rag.num_documents"
+RAGAttributes.document_content(0)    # "rag.document.0.content"
+RAGAttributes.document_score(0)      # "rag.document.0.score"
+```
+
+### Helper functions
+
+```python
+from fi.evals.otel import normalize_system_name, create_llm_span_attributes, create_evaluation_attributes
+
+system = normalize_system_name("OpenAI")  # "openai"
+
+attrs = create_llm_span_attributes(
+    system="openai", model="gpt-4o",
+    input_tokens=100, output_tokens=50,
+)
+
+eval_attrs = create_evaluation_attributes(
+    metric="toxicity", score=0.95, reason="Safe",
+)
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tracing SDK" icon="eye" href="/docs/sdk/tracing">
+    Standalone tracing with fi-instrumentation-otel + traceai-* packages.
+  </Card>
+  <Card title="Running Evaluations" icon="play" href="/docs/sdk/evals/evaluate">
+    The core function whose results get attached to spans.
+  </Card>
+  <Card title="Streaming" icon="bolt" href="/docs/sdk/evals/streaming">
+    Real-time scoring that can enrich spans as tokens arrive.
+  </Card>
+  <Card title="Distributed" icon="bolt" href="/docs/sdk/evals/distributed">
+    Run scoring at scale with span context propagation.
+  </Card>
+</CardGroup>

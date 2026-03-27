@@ -673,6 +673,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Distributed Evaluator', href: '/docs/sdk/evals/distributed' },
               { title: 'AutoEval', href: '/docs/sdk/evals/autoeval' },
               { title: 'Guardrails', href: '/docs/sdk/evals/guardrails-module' },
+              { title: 'OpenTelemetry', href: '/docs/sdk/evals/otel' },
               {
                 title: 'Metrics Reference',
                 items: [
