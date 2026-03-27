@@ -1,0 +1,413 @@
+---
+title: "Local & Hybrid Evaluation"
+description: "Run evaluations locally with zero API calls. Auto-route between local and cloud metrics. Use Ollama for offline LLM-based scoring."
+---
+
+<TLDR>
+- `LocalEvaluator` runs 26+ metrics locally — zero latency, zero cost, no API key needed
+- `HybridEvaluator` auto-routes: local metrics stay local, cloud metrics go to Turing
+- `OllamaLLM` runs LLM-based metrics (coherence, relevance, etc.) entirely offline
+</TLDR>
+
+Not every evaluation needs a round-trip to the cloud. String checks, JSON validation, BLEU scores, embedding similarity — these run locally in under 1ms. The `local` module gives you a `LocalEvaluator` for pure-local execution, and a `HybridEvaluator` that automatically routes each metric to the right engine.
+
+<Note>
+  Requires `pip install ai-evaluation`. For offline LLM-based metrics, you also need [Ollama](https://ollama.com) running locally.
+</Note>
+
+## Quick Example
+
+```python
+from fi.evals.local import LocalEvaluator
+
+evaluator = LocalEvaluator()
+
+# Zero API calls, sub-millisecond
+result = evaluator.evaluate("is_json", [{"response": '{"status": "ok"}'}])
+print(result.results.eval_results[0].output)  # 1.0
+print(result.executed_locally)                 # {"is_json"}
+```
+
+## LocalEvaluator
+
+Runs metrics that don't need any external service.
+
+```python
+from fi.evals.local import LocalEvaluator, LocalEvaluatorConfig, RoutingMode
+
+evaluator = LocalEvaluator(
+    config=LocalEvaluatorConfig(
+        execution_mode=RoutingMode.LOCAL,  # LOCAL, CLOUD, or HYBRID
+        fail_on_unsupported=False,         # skip unsupported metrics instead of erroring
+        parallel_workers=4,                # concurrent evaluations
+        timeout=60,                        # seconds per evaluation
+    )
+)
+```
+
+### Single metric
+
+```python
+result = evaluator.evaluate(
+    "bleu_score",
+    [{"response": "the cat sat", "expected_response": "the cat sat on the mat"}],
+)
+
+for r in result.results.eval_results:
+    print(f"{r.name}: {r.output:.3f}")  # bleu_score: 0.207
+print(f"Ran locally: {result.executed_locally}")  # {"bleu_score"}
+```
+
+### With config
+
+Some metrics need configuration:
+
+```python
+result = evaluator.evaluate(
+    "contains",
+    [{"response": "The API returned a 200 OK status"}],
+    config={"keyword": "200 OK"},
+)
+# contains: 1.0
+```
+
+### Batch evaluation
+
+Run multiple metrics in one call:
+
+```python
+result = evaluator.evaluate_batch([
+    {"metric_name": "is_json", "inputs": [{"response": '{"valid": true}'}]},
+    {"metric_name": "one_line", "inputs": [{"response": "single line output"}]},
+    {"metric_name": "contains", "inputs": [{"response": "hello world"}], "config": {"keyword": "hello"}},
+    {"metric_name": "bleu_score", "inputs": [{"response": "the cat", "expected_response": "the cat sat"}]},
+])
+
+for r in result.results.eval_results:
+    print(f"{r.name}: {r.output}")
+print(f"All local: {result.executed_locally}")  # {"is_json", "one_line", "contains", "bleu_score"}
+```
+
+### Check what runs locally
+
+```python
+from fi.evals.local import can_run_locally, LOCAL_CAPABLE_METRICS
+
+# Check a specific metric
+print(can_run_locally("bleu_score"))   # True
+print(can_run_locally("toxicity"))     # False — needs cloud
+
+# See all local-capable metrics
+print(LOCAL_CAPABLE_METRICS)
+# {"bleu_score", "contains", "contains_all", "contains_any", "contains_email",
+#  "contains_json", "contains_link", "contains_none", "contains_valid_link",
+#  "embedding_similarity", "ends_with", "equals", "is_email", "is_json",
+#  "json_schema", "length_between", "length_greater_than", "length_less_than",
+#  "levenshtein_similarity", "numeric_similarity", "one_line", "recall_score",
+#  "regex", "rouge_score", "semantic_list_contains", "starts_with"}
+
+# List all available metrics (includes registry-registered beyond LOCAL_CAPABLE_METRICS)
+evaluator = LocalEvaluator()
+print(len(evaluator.list_available_metrics()))  # 72
+```
+
+<Note>
+  `LOCAL_CAPABLE_METRICS` is the guaranteed-local set (26 string/JSON/similarity metrics). The registry has 72+ metrics total — including RAG, agents, structured output, and hallucination metrics that also run locally through the registry but aren't in the `LOCAL_CAPABLE_METRICS` heuristic set. Use `list_available_metrics()` to see everything the `LocalEvaluator` can run.
+</Note>
+
+## HybridEvaluator
+
+Auto-routes metrics to the best execution engine. Local metrics run locally, cloud metrics go to Turing, and LLM-based metrics can optionally run through Ollama.
+
+```python
+from fi.evals.local import HybridEvaluator
+
+evaluator = HybridEvaluator(
+    prefer_local=True,         # prefer local execution when possible
+    fallback_to_cloud=True,    # fall back to cloud if local fails
+    offline_mode=False,        # True = block all cloud calls
+)
+```
+
+### Auto-routing
+
+```python
+from fi.evals.local import HybridEvaluator, RoutingMode
+
+evaluator = HybridEvaluator()
+
+# Check where a metric will run
+print(evaluator.route_evaluation("is_json"))       # RoutingMode.LOCAL
+print(evaluator.route_evaluation("toxicity"))       # RoutingMode.CLOUD
+print(evaluator.route_evaluation("faithfulness"))   # RoutingMode.CLOUD
+
+# Force routing
+print(evaluator.route_evaluation("is_json", force_cloud=True))  # RoutingMode.CLOUD
+```
+
+### Partition evaluations
+
+Split a batch into local vs cloud groups:
+
+```python
+evaluator = HybridEvaluator()
+
+evaluations = [
+    {"metric_name": "is_json", "inputs": [{"response": "{}"}]},
+    {"metric_name": "toxicity", "inputs": [{"response": "hello"}]},
+    {"metric_name": "bleu_score", "inputs": [{"response": "test", "expected_response": "test"}]},
+]
+
+partitioned = evaluator.partition_evaluations(evaluations)
+for mode, evals in partitioned.items():
+    print(f"{mode.value}: {[e['metric_name'] for e in evals]}")
+# local: ["is_json", "bleu_score"]
+# cloud: ["toxicity"]
+```
+
+### Evaluate
+
+```python
+# Runs locally if possible, falls back to cloud
+result = evaluator.evaluate("is_json", [{"response": '{"key": "value"}'}])
+print(result.results.eval_results[0].output)  # 1.0
+```
+
+<Note>
+  `HybridEvaluator.evaluate()` takes the metric name as its first positional argument (parameter is named `template` internally). Always pass it positionally — `evaluate("is_json", ...)` — not as a keyword argument.
+</Note>
+
+### Offline mode
+
+Block all cloud calls — useful for air-gapped environments or CI pipelines without API keys:
+
+```python
+evaluator = HybridEvaluator(offline_mode=True)
+
+# Local metrics work fine
+result = evaluator.evaluate("is_json", [{"response": "{}"}])  # works
+
+# Cloud metrics raise ValueError
+try:
+    evaluator.route_evaluation("toxicity")
+except ValueError as e:
+    print(e)  # "Metric 'toxicity' requires cloud execution but offline_mode is enabled"
+```
+
+## Ollama Integration
+
+Run LLM-based metrics locally using Ollama. No API keys, no cloud calls — everything stays on your machine.
+
+### Setup
+
+```python
+from fi.evals.local import OllamaLLM, LocalLLMConfig
+
+# Default config — connects to localhost:11434, uses llama3.2
+llm = OllamaLLM()
+
+# Custom config
+llm = OllamaLLM(config=LocalLLMConfig(
+    model="llama3.2:3b",
+    base_url="http://localhost:11434",
+    temperature=0.0,
+    max_tokens=1024,
+    timeout=120,
+))
+
+# Check availability
+print(llm.is_available())   # True if Ollama is running
+print(llm.list_models())    # ["llama3.2:3b", "llama-guard3:1b", ...]
+```
+
+### Using with HybridEvaluator
+
+```python
+from fi.evals.local import HybridEvaluator, OllamaLLM
+
+llm = OllamaLLM()
+evaluator = HybridEvaluator(local_llm=llm, offline_mode=True)
+
+# These LLM-based metrics now run locally via Ollama
+# instead of being routed to cloud
+print(evaluator.can_use_local_llm("coherence"))     # True
+print(evaluator.can_use_local_llm("relevance"))     # True
+print(evaluator.can_use_local_llm("groundedness"))   # True
+print(evaluator.can_use_local_llm("hallucination"))  # True
+print(evaluator.can_use_local_llm("safety"))         # True
+print(evaluator.can_use_local_llm("tone"))           # True
+print(evaluator.can_use_local_llm("bias"))           # True
+```
+
+<Tip>
+  LLM-based metrics that can run through Ollama: `coherence`, `relevance`, `answer_relevance`, `context_relevance`, `groundedness`, `hallucination`, `safety`, `tone`, `bias`, `pii`, `custom_llm_judge`.
+</Tip>
+
+### Direct LLM usage
+
+Use the Ollama wrapper directly for custom scoring logic:
+
+```python
+from fi.evals.local import OllamaLLM
+
+llm = OllamaLLM()
+
+# Judge a response
+result = llm.judge(
+    query="What is 2+2?",
+    response="4",
+    criteria="Is the answer mathematically correct?",
+    output_format="json",
+)
+print(result)  # {"score": 1.0, "reason": "The answer is correct"}
+
+# Batch judge
+results = llm.batch_judge([
+    {"query": "Capital of France?", "response": "Paris", "criteria": "Is this correct?"},
+    {"query": "2+2?", "response": "5", "criteria": "Is this correct?"},
+])
+
+# General generation
+response = llm.generate("Explain SQL injection in one sentence")
+print(response)
+
+# Chat
+response = llm.chat([
+    {"role": "system", "content": "You are a security expert."},
+    {"role": "user", "content": "Is using unvalidated input in queries safe?"},
+])
+```
+
+### Factory
+
+Create LLM instances programmatically:
+
+```python
+from fi.evals.local import LocalLLMFactory, LocalLLMConfig
+
+# By backend name
+llm = LocalLLMFactory.create(backend="ollama", config=LocalLLMConfig(model="llama3.2:3b"))
+
+# From a spec string (format: "backend/model")
+llm = LocalLLMFactory.from_string("ollama/llama3.2")
+```
+
+## Metric Registry
+
+The registry manages all locally-available metrics. Use it to discover metrics or register custom ones.
+
+```python
+from fi.evals.local import get_registry
+
+registry = get_registry()
+
+# List all registered metrics
+metrics = registry.list_metrics()
+print(len(metrics))  # 72
+
+# Check if a metric is registered
+print(registry.is_registered("bleu_score"))  # True
+
+# Get a metric class (use registry.create() for an instance)
+metric_cls = registry.get("bleu_score")
+```
+
+### Registering custom metrics
+
+```python
+from fi.evals.local import get_registry
+from fi.evals.metrics.base_metric import BaseMetric
+
+class MyCustomMetric(BaseMetric):
+    def compute(self, inputs):
+        response = inputs.get("response", "")
+        score = 1.0 if len(response) > 50 else 0.0
+        return {"score": score, "reason": f"Length: {len(response)}"}
+
+registry = get_registry()
+registry.register("my_custom", MyCustomMetric)
+
+# Now use it with LocalEvaluator
+from fi.evals.local import LocalEvaluator
+evaluator = LocalEvaluator()
+result = evaluator.evaluate("my_custom", [{"response": "A sufficiently long response for testing purposes here"}])
+```
+
+### Lazy registration
+
+For metrics with heavy imports:
+
+```python
+registry.register_lazy("heavy_metric", lambda: HeavyMetricClass)
+```
+
+## Routing Logic
+
+```python
+from fi.evals.local import select_routing_mode, RoutingMode
+
+# Auto-select based on capability
+mode = select_routing_mode("is_json", RoutingMode.HYBRID)       # LOCAL
+mode = select_routing_mode("toxicity", RoutingMode.HYBRID)      # CLOUD
+mode = select_routing_mode("is_json", RoutingMode.CLOUD)        # CLOUD — preferred_mode overrides
+
+# Force overrides
+mode = select_routing_mode("is_json", RoutingMode.HYBRID, force_local=True)   # LOCAL
+mode = select_routing_mode("toxicity", RoutingMode.HYBRID, force_cloud=True)  # CLOUD
+```
+
+<Warning>
+  `force_local=True` raises `ValueError` if the metric isn't in `LOCAL_CAPABLE_METRICS`. Only use it with metrics you know can run locally.
+</Warning>
+
+## Result Types
+
+### LocalEvaluationResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `results` | `BatchRunResult` | Evaluation results (same format as cloud) |
+| `executed_locally` | `set[str]` | Metric names that ran locally |
+| `skipped` | `set[str]` | Metrics that were skipped |
+| `errors` | `dict[str, str]` | Metric name to error message |
+
+```python
+result = evaluator.evaluate_batch([...])
+
+# Check what ran where
+print(result.executed_locally)  # {"is_json", "bleu_score"}
+print(result.skipped)           # {"toxicity"}  (if fail_on_unsupported=False)
+print(result.errors)            # {"contains": "requires 'keyword' config"}
+
+# Access individual results
+for r in result.results.eval_results:
+    print(f"{r.name}: score={r.output}, reason={r.reason}")
+```
+
+## When to Use What
+
+| Scenario | Use |
+|----------|-----|
+| CI pipeline, no API keys | `LocalEvaluator` or `HybridEvaluator(offline_mode=True)` |
+| Air-gapped environment | `HybridEvaluator` + `OllamaLLM` |
+| Development/testing | `LocalEvaluator` for fast iteration |
+| Production with cost control | `HybridEvaluator(prefer_local=True)` |
+| Need toxicity/faithfulness | `HybridEvaluator` (routes to cloud automatically) |
+| Need LLM scoring offline | `HybridEvaluator` + `OllamaLLM` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Running Evaluations" icon="play" href="/docs/sdk/evals/evaluate">
+    The core `evaluate()` function that cloud metrics route through.
+  </Card>
+  <Card title="Metrics Reference" icon="list-check" href="/docs/sdk/evals/metrics">
+    Browse all 76+ metrics — see which ones run locally.
+  </Card>
+  <Card title="Distributed Evaluator" icon="bolt" href="/docs/sdk/evals/distributed">
+    Scale evaluations across workers with ThreadPool, Celery, or Ray.
+  </Card>
+  <Card title="OpenTelemetry" icon="eye" href="/docs/sdk/evals/otel">
+    Trace local evaluations with OTel spans.
+  </Card>
+</CardGroup>
