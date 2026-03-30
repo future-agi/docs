@@ -63,16 +63,14 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Labels', href: '/docs/annotations/concepts/labels' },
-              { title: 'Queues & Workflow', href: '/docs/annotations/concepts/queues' },
               { title: 'Scores', href: '/docs/annotations/concepts/scores' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Create & Manage Labels', href: '/docs/annotations/features/labels' },
-              { title: 'Create & Manage Queues', href: '/docs/annotations/features/queues' },
+              { title: 'Labels', href: '/docs/annotations/features/labels' },
+              { title: 'Queues', href: '/docs/annotations/features/queues' },
               { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
               { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
               { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
