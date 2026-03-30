@@ -164,6 +164,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Portkey', href: '/docs/tracing/auto/portkey' },
               { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
               { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
+              { title: 'Spring Boot', href: '/docs/tracing/auto/spring-boot' },
               { title: 'Together AI', href: '/docs/tracing/auto/togetherai' },
               { title: 'Vercel', href: '/docs/tracing/auto/vercel' },
               { title: 'Vertex AI', href: '/docs/tracing/auto/vertexai' },
