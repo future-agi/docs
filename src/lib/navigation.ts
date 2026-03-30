@@ -192,7 +192,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Features',
             items: [
               { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
-              { title: 'Evals', href: '/docs/observe/features/evals' },
+              { title: 'Run Evals on Traces', href: '/docs/observe/features/evals' },
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
