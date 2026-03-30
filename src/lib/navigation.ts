@@ -431,25 +431,21 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concepts', href: '/docs/simulation/concepts/concepts' },
-            ]
-          },
-          {
-            title: 'Set Up',
-            items: [
-              { title: 'Agent Definition', href: '/docs/simulation/set-up/agent-definition' },
-              { title: 'Scenarios', href: '/docs/simulation/set-up/scenarios' },
-              { title: 'Personas', href: '/docs/simulation/set-up/personas' },
+              { title: 'Agent Definition', href: '/docs/simulation/concepts/agent-definition' },
+              { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
+              { title: 'Personas', href: '/docs/simulation/concepts/personas' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
+              { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
               { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
               { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
+              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
+              { title: 'View Results', href: '/docs/simulation/features/view-results' },
+              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
             ]
           },
         ]
