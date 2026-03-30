@@ -401,7 +401,6 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Understanding Prototype', href: '/docs/prototype/concepts/understanding-prototype' },
               { title: 'Versions and Runs', href: '/docs/prototype/concepts/versions-and-runs' },
-              { title: 'EvalTags and Mapping', href: '/docs/prototype/concepts/evaltags-and-mapping' },
             ]
           },
           {
