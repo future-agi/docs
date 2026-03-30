@@ -275,6 +275,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Portkey', href: '/docs/tracing/auto/portkey' },
               { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
               { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
+              { title: 'Spring Boot', href: '/docs/tracing/auto/spring-boot' },
               { title: 'Together AI', href: '/docs/tracing/auto/togetherai' },
               { title: 'Vercel', href: '/docs/tracing/auto/vercel' },
               { title: 'Vertex AI', href: '/docs/tracing/auto/vertexai' },
@@ -576,6 +577,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Session-Based Observability for Multi-Turn Conversations', href: '/docs/cookbook/quickstart/session-observability' },
                   { title: 'Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds', href: '/docs/cookbook/quickstart/monitoring-alerts' },
                   { title: 'Inline Evals in Tracing: Score Every Response as It\'s Generated', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
+                  { title: 'Distributed Tracing: Connect Spans Across Services', href: '/docs/cookbook/quickstart/distributed-tracing' },
                 ]
               },
               {
