@@ -698,10 +698,16 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'SDK Overview', href: '/docs/sdk' },
           {
-            title: 'Evals',
+            title: 'AI Evaluation',
             items: [
               { title: 'Overview', href: '/docs/sdk/evals' },
               { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
+              { title: 'Distributed Evaluator', href: '/docs/sdk/evals/distributed' },
+              { title: 'AutoEval', href: '/docs/sdk/evals/autoeval' },
+              { title: 'Guardrails', href: '/docs/sdk/evals/guardrails-module' },
+              { title: 'Local & Hybrid', href: '/docs/sdk/evals/local' },
+              { title: 'OpenTelemetry', href: '/docs/sdk/evals/otel' },
+              { title: 'Code Security', href: '/docs/sdk/evals/code-security' },
               {
                 title: 'Metrics Reference',
                 items: [
