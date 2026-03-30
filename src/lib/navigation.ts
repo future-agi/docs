@@ -418,7 +418,22 @@ export const tabNavigation: NavTab[] = [
         icon: 'book',
         items: [
           { title: 'Admin & Settings', href: '/docs/admin-settings' },
+          {
+            title: 'Settings Pages',
+            items: [
+              { title: 'API Keys', href: '/docs/admin-settings/api-keys' },
+              { title: 'Profile & Security', href: '/docs/admin-settings/profile-security' },
+              { title: 'Organization Settings', href: '/docs/admin-settings/organization-settings' },
+              { title: 'User Management', href: '/docs/admin-settings/user-management' },
+              { title: 'Workspace Management', href: '/docs/admin-settings/workspace-management' },
+              { title: 'AI Providers', href: '/docs/admin-settings/ai-providers' },
+              { title: 'Integrations', href: '/docs/admin-settings/integrations' },
+              { title: 'Usage Summary', href: '/docs/admin-settings/usage-summary' },
+              { title: 'Billing & Pricing', href: '/docs/admin-settings/billing-pricing' },
+            ]
+          },
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
+          { title: 'Installation', href: '/docs/installation' },
           { title: 'FAQ', href: '/docs/faq' },
           { title: 'Release Notes', href: '/docs/release-notes' },
         ]
