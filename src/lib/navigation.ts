@@ -380,7 +380,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/protect/concepts/concept' },
+              { title: 'Use Cases', href: '/docs/protect/concepts/concept' },
             ]
           },
           {
