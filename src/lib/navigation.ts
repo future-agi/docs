@@ -547,8 +547,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Import Traces',
             items: [
               { title: 'Langfuse', href: '/docs/integrations/import/langfuse' },
-              { title: 'LangSmith', href: '/docs/integrations/import/langsmith', badge: 'Coming Soon' },
-              { title: 'Arize', href: '/docs/integrations/import/arize', badge: 'Coming Soon' },
             ]
           },
           {
