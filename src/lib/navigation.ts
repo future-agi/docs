@@ -424,6 +424,28 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Agent Playground',
+        icon: 'play-circle',
+        items: [
+          { title: 'Overview', href: '/docs/agent-playground' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Agent Playground', href: '/docs/agent-playground/concepts/understanding-agent-playground' },
+              { title: 'Versions & Execution', href: '/docs/agent-playground/concepts/versions-and-execution' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create a Graph', href: '/docs/agent-playground/features/create-graph' },
+              { title: 'Build a Workflow', href: '/docs/agent-playground/features/build-workflow' },
+              { title: 'Run & Monitor', href: '/docs/agent-playground/features/run-and-monitor' },
+            ]
+          },
+        ]
+      },
+      {
         group: 'Prototype',
         icon: 'flask',
         items: [
