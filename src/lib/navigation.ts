@@ -39,6 +39,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'rocket',
         items: [
           { title: 'Introduction', href: '/docs' },
+          { title: 'Self-Hosting', href: '/docs/self-hosting', badge: 'Soon' },
           {
             title: 'Quickstart',
             icon: 'rocket',
