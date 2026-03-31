@@ -821,6 +821,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Datasets',
             items: [
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
+              { title: 'Upload Dataset from File', href: '/docs/api/datasets/upload-dataset' },
             ]
           },
           {

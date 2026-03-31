@@ -147,7 +147,8 @@ export const apiNavigation: ApiNavGroup[] = [
   {
     "title": "Datasets",
     "items": [
-      { "title": "Create Dataset", "href": "/docs/api/datasets/create-dataset", "method": "POST" }
+      { "title": "Create Dataset", "href": "/docs/api/datasets/create-dataset", "method": "POST" },
+      { "title": "Upload Dataset from File", "href": "/docs/api/datasets/upload-dataset", "method": "POST" }
     ]
   },
   {
