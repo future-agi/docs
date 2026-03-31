@@ -479,40 +479,70 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/integrations' },
           {
-            title: 'TraceAI',
+            title: 'LLM Providers',
             items: [
+              { title: 'OpenAI', href: '/docs/integrations/traceai/openai' },
               { title: 'Anthropic', href: '/docs/integrations/traceai/anthropic' },
-              { title: 'AutoGen', href: '/docs/integrations/traceai/autogen' },
               { title: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock' },
-              { title: 'CrewAI', href: '/docs/integrations/traceai/crewai' },
-              { title: 'DSPy', href: '/docs/integrations/traceai/dspy' },
-              { title: 'Experiment', href: '/docs/integrations/traceai/experiment' },
-              { title: 'Google ADK', href: '/docs/integrations/traceai/google_adk' },
+              { title: 'Vertex AI', href: '/docs/integrations/traceai/vertexai' },
               { title: 'Google GenAI', href: '/docs/integrations/traceai/google_genai' },
+              { title: 'Google ADK', href: '/docs/integrations/traceai/google_adk' },
               { title: 'Groq', href: '/docs/integrations/traceai/groq' },
-              { title: 'Guardrails', href: '/docs/integrations/traceai/guardrails' },
-              { title: 'Haystack', href: '/docs/integrations/traceai/haystack' },
-              { title: 'Instructor', href: '/docs/integrations/traceai/instructor' },
+              { title: 'MistralAI', href: '/docs/integrations/traceai/mistralai' },
+              { title: 'Together AI', href: '/docs/integrations/traceai/togetherai' },
+              { title: 'Ollama', href: '/docs/integrations/traceai/ollama' },
+              { title: 'Portkey', href: '/docs/integrations/traceai/portkey' },
+            ]
+          },
+          {
+            title: 'Frameworks & Agents',
+            items: [
               { title: 'LangChain', href: '/docs/integrations/traceai/langchain' },
               { title: 'LangGraph', href: '/docs/integrations/traceai/langgraph' },
-              { title: 'LiteLLM', href: '/docs/integrations/traceai/litellm' },
-              { title: 'LiveKit', href: '/docs/integrations/traceai/livekit' },
               { title: 'LlamaIndex', href: '/docs/integrations/traceai/llamaindex' },
               { title: 'LlamaIndex Workflows', href: '/docs/integrations/traceai/llamaindex-workflows' },
-              { title: 'Mastra', href: '/docs/integrations/traceai/mastra' },
-              { title: 'MCP', href: '/docs/integrations/traceai/mcp' },
-              { title: 'MistralAI', href: '/docs/integrations/traceai/mistralai' },
-              { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
-              { title: 'Ollama', href: '/docs/integrations/traceai/ollama' },
-              { title: 'OpenAI', href: '/docs/integrations/traceai/openai' },
+              { title: 'LiteLLM', href: '/docs/integrations/traceai/litellm' },
+              { title: 'CrewAI', href: '/docs/integrations/traceai/crewai' },
+              { title: 'AutoGen', href: '/docs/integrations/traceai/autogen' },
+              { title: 'Haystack', href: '/docs/integrations/traceai/haystack' },
+              { title: 'DSPy', href: '/docs/integrations/traceai/dspy' },
               { title: 'OpenAI Agents', href: '/docs/integrations/traceai/openai_agents' },
-              { title: 'Pipecat', href: '/docs/integrations/traceai/pipecat' },
-              { title: 'Portkey', href: '/docs/integrations/traceai/portkey' },
-              { title: 'PromptFlow', href: '/docs/integrations/traceai/promptflow' },
               { title: 'Smol Agents', href: '/docs/integrations/traceai/smol_agents' },
-              { title: 'Together AI', href: '/docs/integrations/traceai/togetherai' },
-              { title: 'Vercel', href: '/docs/integrations/traceai/vercel' },
-              { title: 'Vertex AI', href: '/docs/integrations/traceai/vertexai' },
+              { title: 'Instructor', href: '/docs/integrations/traceai/instructor' },
+              { title: 'PromptFlow', href: '/docs/integrations/traceai/promptflow' },
+              { title: 'Guardrails', href: '/docs/integrations/traceai/guardrails' },
+              { title: 'MCP', href: '/docs/integrations/traceai/mcp' },
+              { title: 'Mastra', href: '/docs/integrations/traceai/mastra' },
+              { title: 'Vercel AI SDK', href: '/docs/integrations/traceai/vercel' },
+            ]
+          },
+          {
+            title: 'Voice & Realtime',
+            items: [
+              { title: 'LiveKit', href: '/docs/integrations/traceai/livekit' },
+              { title: 'Pipecat', href: '/docs/integrations/traceai/pipecat' },
+            ]
+          },
+          {
+            title: 'Java',
+            items: [
+              { title: 'Overview', href: '/docs/tracing/auto/java' },
+              { title: 'Spring Boot', href: '/docs/tracing/auto/spring-boot' },
+              { title: 'OpenAI', href: '/docs/tracing/auto/java/openai' },
+              { title: 'Anthropic', href: '/docs/tracing/auto/java/anthropic' },
+              { title: 'AWS Bedrock', href: '/docs/tracing/auto/java/bedrock' },
+              { title: 'Cohere', href: '/docs/tracing/auto/java/cohere' },
+              { title: 'Pinecone', href: '/docs/tracing/auto/java/pinecone' },
+              { title: 'LLM Providers', href: '/docs/tracing/auto/java/llm-providers' },
+              { title: 'Vector Databases', href: '/docs/tracing/auto/java/vector-databases' },
+              { title: 'Frameworks', href: '/docs/tracing/auto/java/frameworks' },
+            ]
+          },
+          {
+            title: 'Other',
+            items: [
+              { title: 'Experiment', href: '/docs/integrations/traceai/experiment' },
+              { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
             ]
           },
         ]
