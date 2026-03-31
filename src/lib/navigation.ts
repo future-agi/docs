@@ -818,6 +818,12 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Datasets',
+            items: [
+              { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
+            ]
+          },
+          {
             title: 'Annotation Scores',
             items: [
               { title: 'Create Score', href: '/docs/api/annotations/scores/create-score' },
