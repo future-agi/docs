@@ -526,16 +526,16 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Java',
             items: [
-              { title: 'Overview', href: '/docs/tracing/auto/java' },
-              { title: 'Spring Boot', href: '/docs/tracing/auto/spring-boot' },
-              { title: 'OpenAI', href: '/docs/tracing/auto/java/openai' },
-              { title: 'Anthropic', href: '/docs/tracing/auto/java/anthropic' },
-              { title: 'AWS Bedrock', href: '/docs/tracing/auto/java/bedrock' },
-              { title: 'Cohere', href: '/docs/tracing/auto/java/cohere' },
-              { title: 'Pinecone', href: '/docs/tracing/auto/java/pinecone' },
-              { title: 'LLM Providers', href: '/docs/tracing/auto/java/llm-providers' },
-              { title: 'Vector Databases', href: '/docs/tracing/auto/java/vector-databases' },
-              { title: 'Frameworks', href: '/docs/tracing/auto/java/frameworks' },
+              { title: 'Overview', href: '/docs/integrations/traceai/java' },
+              { title: 'Spring Boot', href: '/docs/integrations/traceai/spring-boot' },
+              { title: 'OpenAI', href: '/docs/integrations/traceai/java/openai' },
+              { title: 'Anthropic', href: '/docs/integrations/traceai/java/anthropic' },
+              { title: 'AWS Bedrock', href: '/docs/integrations/traceai/java/bedrock' },
+              { title: 'Cohere', href: '/docs/integrations/traceai/java/cohere' },
+              { title: 'Pinecone', href: '/docs/integrations/traceai/java/pinecone' },
+              { title: 'LLM Providers', href: '/docs/integrations/traceai/java/llm-providers' },
+              { title: 'Vector Databases', href: '/docs/integrations/traceai/java/vector-databases' },
+              { title: 'Frameworks', href: '/docs/integrations/traceai/java/frameworks' },
             ]
           },
           {
