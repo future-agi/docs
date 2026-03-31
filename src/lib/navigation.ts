@@ -198,7 +198,6 @@ export const tabNavigation: NavTab[] = [
               {
                 title: 'Other',
                 items: [
-                  { title: 'Experiment', href: '/docs/tracing/auto/experiment' },
                   { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
                 ]
               },
@@ -541,7 +540,6 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Other',
             items: [
-              { title: 'Experiment', href: '/docs/integrations/traceai/experiment' },
               { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
             ]
           },
