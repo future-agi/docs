@@ -543,6 +543,25 @@ export const tabNavigation: NavTab[] = [
               { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
             ]
           },
+          {
+            title: 'Import Traces',
+            items: [
+              { title: 'Langfuse', href: '/docs/integrations/import/langfuse' },
+              { title: 'LangSmith', href: '/docs/integrations/import/langsmith', badge: 'Coming Soon' },
+              { title: 'Arize', href: '/docs/integrations/import/arize', badge: 'Coming Soon' },
+            ]
+          },
+          {
+            title: 'Export & Alerts',
+            items: [
+              { title: 'Datadog', href: '/docs/integrations/export/datadog' },
+              { title: 'PostHog', href: '/docs/integrations/export/posthog' },
+              { title: 'Mixpanel', href: '/docs/integrations/export/mixpanel' },
+              { title: 'PagerDuty', href: '/docs/integrations/export/pagerduty' },
+              { title: 'Cloud Storage', href: '/docs/integrations/export/cloud-storage' },
+              { title: 'Message Queues', href: '/docs/integrations/export/message-queues' },
+            ]
+          },
         ]
       }
     ]
