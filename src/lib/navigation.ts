@@ -194,7 +194,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
               { title: 'Evals', href: '/docs/observe/features/evals' },
-              { title: 'Sessions', href: '/docs/observe/features/session' },
+              { title: 'Group Traces by Session', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
               { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
