@@ -238,7 +238,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'FI Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
                   { title: 'In-line Evaluations', href: '/docs/tracing/manual/in-line-evals' },
                   { title: 'Adding Annotations to your Spans', href: '/docs/tracing/manual/annotating-using-api' },
-                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-intergation' },
+                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-integration' },
                 ]
               },
             ]
@@ -595,6 +595,23 @@ export const tabNavigation: NavTab[] = [
             title: 'Other',
             items: [
               { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
+            ]
+          },
+          {
+            title: 'Import Traces',
+            items: [
+              { title: 'Langfuse', href: '/docs/integrations/import/langfuse' },
+            ]
+          },
+          {
+            title: 'Export & Alerts',
+            items: [
+              { title: 'Datadog', href: '/docs/integrations/export/datadog' },
+              { title: 'PostHog', href: '/docs/integrations/export/posthog' },
+              { title: 'Mixpanel', href: '/docs/integrations/export/mixpanel' },
+              { title: 'PagerDuty', href: '/docs/integrations/export/pagerduty' },
+              { title: 'Cloud Storage', href: '/docs/integrations/export/cloud-storage' },
+              { title: 'Message Queues', href: '/docs/integrations/export/message-queues' },
             ]
           },
         ]
