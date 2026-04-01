@@ -126,7 +126,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'FI Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
                   { title: 'In-line Evaluations', href: '/docs/tracing/manual/in-line-evals' },
                   { title: 'Adding Annotations to your Spans', href: '/docs/tracing/manual/annotating-using-api' },
-                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-intergation' },
+                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-integration' },
                 ]
               },
             ]
