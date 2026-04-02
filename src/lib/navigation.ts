@@ -541,7 +541,6 @@ export const tabNavigation: NavTab[] = [
             icon: 'briefcase',
             items: [
               { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
-              { title: 'Auto-Improve Your Agent\'s Prompt with Simulation Feedback', href: '/docs/cookbook/use-cases/simulation-optimization-loop' },
               { title: 'Detect Domain-Specific Hallucinations in Your Chatbot', href: '/docs/cookbook/use-cases/domain-hallucination-detection' },
               { title: 'A/B Test Prompt Versions and Ship the Winner', href: '/docs/cookbook/use-cases/full-prompt-lifecycle' },
               { title: 'Stop Your Financial Chatbot From Leaking PII', href: '/docs/cookbook/use-cases/secure-ai-evals-guardrails' },
