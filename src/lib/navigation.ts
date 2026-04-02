@@ -367,6 +367,7 @@ export const tabNavigation: NavTab[] = [
             title: 'API Reference',
             items: [
               { title: 'Endpoints overview', href: '/docs/prism/api/endpoints' },
+              { title: 'Chat completions', href: '/docs/prism/api/chat' },
             ]
           },
           {
