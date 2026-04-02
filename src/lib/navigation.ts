@@ -353,6 +353,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'How it works', href: '/docs/prism/concepts/core' },
+              { title: 'Virtual keys & access control', href: '/docs/prism/concepts/virtual-keys' },
               { title: 'Configuration', href: '/docs/prism/concepts/configuration' },
               { title: 'Platform integration', href: '/docs/prism/concepts/platform-integration' },
             ]

@@ -1,0 +1,292 @@
+---
+title: "Virtual keys & access control"
+description: "Manage API keys, control model access with RBAC, restrict IPs, and enforce per-key policies."
+---
+
+<TLDR>
+Virtual keys (`sk-prism-...`) authenticate requests and control what each caller can do. Restrict models, providers, IPs, tools, and rate limits per key. Layer RBAC roles on top for team-level governance. Three levels of IP control: global, per-org, and per-key.
+</TLDR>
+
+## Virtual API keys
+
+Every request to Prism uses a virtual key (`sk-prism-...`). These are not provider keys - they're Prism-specific credentials that map to an organization and its policies.
+
+When a request arrives, Prism validates the key and loads the caller's permissions, restrictions, and configuration. The actual provider API key is stored separately in the org config and never exposed.
+
+### Key properties
+
+Each virtual key can have the following restrictions:
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | string | Display name for the key |
+| `owner` | string | User ID or email of the key owner |
+| `key_type` | string | `byok` (default) or `managed` (credit-based billing) |
+| `models` | string[] | Models this key can call. Empty = all models. |
+| `providers` | string[] | Providers this key can use. Empty = all providers. |
+| `allowed_ips` | string[] | IPs or CIDRs allowed to use this key. Empty = no restriction. |
+| `allowed_tools` | string[] | Function/tool names this key can invoke. Empty = all tools. |
+| `denied_tools` | string[] | Tools blocked for this key, regardless of allow list. |
+| `rate_limit_rpm` | int | Requests per minute limit for this key. 0 = no limit. |
+| `rate_limit_tpm` | int | Tokens per minute limit for this key. 0 = no limit. |
+| `expires_at` | datetime | When the key expires. Null = no expiry. |
+| `metadata` | object | Arbitrary key-value pairs for tracking (team, env, feature, etc.) |
+| `credit_balance` | float | USD balance for managed keys. Auto-deducted per request. |
+| `guardrails` | object | Per-key guardrail overrides (disable, change action or threshold). |
+
+### Key types
+
+**BYOK (Bring Your Own Key)** - the default. The virtual key controls access and policies. Provider billing flows through the org's own provider account. The provider API key is stored in the org config, not on the virtual key.
+
+**Managed** - same access control as BYOK, plus a USD credit balance. Each request deducts the actual cost from the balance. When credits run out, requests are blocked. Use this for reseller scenarios or per-team budget enforcement.
+
+---
+
+## Creating and managing keys
+
+<Tabs items={["Dashboard", "Admin API"]}>
+
+<Tab title="Dashboard">
+
+Go to **Settings > API Keys** in the Future AGI dashboard to create, view, and revoke keys.
+
+</Tab>
+
+<Tab title="Admin API">
+
+All key operations require the admin token in the `Authorization` header.
+
+**Create a key:**
+
+```bash
+curl -X POST https://gateway.futureagi.com/-/keys \
+  -H "Authorization: Bearer your-admin-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "production-backend",
+    "owner": "alice@example.com",
+    "models": ["gpt-4o", "claude-sonnet-4-6"],
+    "providers": ["openai", "anthropic"],
+    "rate_limit_rpm": 100,
+    "rate_limit_tpm": 50000,
+    "allowed_ips": ["10.0.0.0/8"],
+    "metadata": {"team": "ml", "env": "production"},
+    "expires_at": "2026-12-31T23:59:59Z"
+  }'
+```
+
+The response includes the raw key value. This is the only time it's shown - store it securely.
+
+**List keys:**
+
+```bash
+curl https://gateway.futureagi.com/-/keys \
+  -H "Authorization: Bearer your-admin-token"
+```
+
+**Revoke a key:**
+
+```bash
+curl -X DELETE "https://gateway.futureagi.com/-/keys/key_123" \
+  -H "Authorization: Bearer your-admin-token"
+```
+
+Revocations are broadcast to all gateway replicas via Redis pub/sub immediately.
+
+**Add credits (managed keys):**
+
+```bash
+curl -X POST "https://gateway.futureagi.com/-/keys/key_123/credits" \
+  -H "Authorization: Bearer your-admin-token" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 50.00}'
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Per-key guardrail overrides
+
+Each key can override the org's guardrail settings. Useful when certain keys need different safety policies - for example, an internal testing key that logs PII detections instead of blocking them.
+
+```yaml
+# In config.yaml
+auth:
+  keys:
+    - name: "internal-testing"
+      key: "sk-prism-test-key-value"
+      guardrails:
+        overrides:
+          - name: "pii-detection"
+            action: "log"          # override org's "block" to "log"
+          - name: "prompt-injection"
+            disabled: true         # disable entirely for this key
+          - name: "content-moderation"
+            threshold: 0.9         # raise threshold (less sensitive)
+```
+
+---
+
+## RBAC (Role-Based Access Control)
+
+Layer team-level permissions on top of individual key restrictions. RBAC runs at pipeline priority 30, after authentication.
+
+### Roles and permissions
+
+Define roles with permission patterns:
+
+```yaml
+rbac:
+  enabled: true
+  default_role: member
+  roles:
+    admin:
+      permissions: ["*"]                              # full access
+    member:
+      permissions: ["models:gpt-4o", "models:claude-*", "providers:openai"]
+    readonly:
+      permissions: ["models:gpt-4o-mini"]             # cheapest model only
+```
+
+Permission patterns support wildcards:
+- `*` - all permissions
+- `models:*` - all models
+- `models:gpt-*` - all models starting with "gpt-"
+- `providers:openai` - exact provider match
+- `guardrails:override` - allows per-request guardrail policy header
+
+### Teams
+
+Group users into teams with shared permissions:
+
+```yaml
+rbac:
+  teams:
+    ml-team:
+      role: member
+      models: ["gpt-4o", "claude-sonnet-4-6", "gemini-2.0-flash"]
+      members:
+        alice@example.com:
+          role: admin          # Alice has admin role within this team
+        bob@example.com: {}    # Bob inherits the team's "member" role
+```
+
+### Role resolution order
+
+When determining a user's role, Prism checks in this order (first match wins):
+
+1. **User-level** - role set on the user within their team
+2. **Key-level** - `role` in the key's metadata
+3. **Team-level** - the team's default role
+4. **Global default** - `default_role` in RBAC config
+
+The team is determined from `team` in the key's metadata. Set it when creating the key:
+
+```json
+{
+  "name": "alice-key",
+  "owner": "alice@example.com",
+  "metadata": {"team": "ml-team", "role": "admin"}
+}
+```
+
+If no team is set in metadata, only the global default role applies.
+
+---
+
+## IP access control
+
+Three layers of IP control, checked in order. Any deny at any layer blocks the request.
+
+### Layer 1: Global ACL (pipeline priority 10)
+
+Runs before authentication. Blocks IPs at the network level.
+
+```yaml
+ip_acl:
+  enabled: true
+  allow:
+    - "10.0.0.0/8"
+    - "192.168.1.100"
+  deny:
+    - "203.0.113.0/24"
+```
+
+Deny list is checked first. If the IP matches a deny rule, it's blocked regardless of the allow list. If an allow list is configured, only IPs matching it are permitted.
+
+### Layer 2: Per-org ACL
+
+Set via the org config admin API. Runs even if global ACL is disabled.
+
+```bash
+curl -X PUT "https://gateway.futureagi.com/-/orgs/org_123/config" \
+  -H "Authorization: Bearer your-admin-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip_acl": {
+      "enabled": true,
+      "allow": ["10.0.0.0/8"],
+      "deny": ["1.2.3.4"]
+    }
+  }'
+```
+
+### Layer 3: Per-key IP restriction
+
+Set on the virtual key's `allowed_ips` field. This is checked inside the auth plugin (priority 20), not as a separate pipeline stage.
+
+```bash
+curl -X POST https://gateway.futureagi.com/-/keys \
+  -H "Authorization: Bearer your-admin-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "restricted-key",
+    "allowed_ips": ["10.0.1.0/24", "192.168.1.50"]
+  }'
+```
+
+All three layers accept both bare IPs (`192.168.1.1`) and CIDR notation (`10.0.0.0/8`).
+
+---
+
+## Access groups
+
+Group models under a logical name for easier policy management:
+
+```yaml
+routing:
+  access_groups:
+    fast-models:
+      description: "Low-latency models for real-time use"
+      models: ["gpt-4o-mini", "claude-haiku-4-5", "gemini-2.0-flash"]
+    premium-models:
+      description: "High-quality models for complex tasks"
+      models: ["gpt-4o", "claude-sonnet-4-6", "gemini-2.0-pro"]
+      aliases:
+        best: "gpt-4o"
+        cheap: "gpt-4o-mini"
+```
+
+Instead of listing individual models on each key, assign access group names. Aliases let users request `model: "best"` and Prism resolves it to the actual model name.
+
+---
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="How it works" href="/docs/prism/concepts/core">
+    See where keys and RBAC fit in the request pipeline
+  </Card>
+  <Card title="Guardrails" href="/docs/prism/features/guardrails">
+    Configure the safety checks that keys can override
+  </Card>
+  <Card title="Rate limiting & budgets" href="/docs/prism/features/rate-limiting">
+    Set per-key and per-org rate limits and spend caps
+  </Card>
+  <Card title="Routing" href="/docs/prism/features/routing">
+    Configure how requests are distributed across providers
+  </Card>
+</CardGroup>
