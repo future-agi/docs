@@ -39,16 +39,98 @@ export const tabNavigation: NavTab[] = [
         icon: 'rocket',
         items: [
           { title: 'Introduction', href: '/docs' },
+          { title: 'Self-Hosting', href: '/docs/self-hosting', badge: 'Soon' },
           {
             title: 'Quickstart',
             icon: 'rocket',
-            href: '/docs/quickstart',
+            href: '/docs',
             items: [
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
               { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
               { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
+              { title: 'Annotations Quickstart', href: '/docs/annotations/quickstart' },
+              { title: 'Prism AI Gateway Quickstart', href: '/docs/prism/quickstart' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Annotations',
+        icon: 'pen',
+        items: [
+          { title: 'Overview', href: '/docs/annotations' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Scores', href: '/docs/annotations/concepts/scores' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Labels', href: '/docs/annotations/features/labels' },
+              { title: 'Queues', href: '/docs/annotations/features/queues' },
+              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
+              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
+              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
+              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
+              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
+              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
+            ]
+          },
+          {
+            title: 'SDK',
+            items: [
+              { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
+              { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Dataset',
+        icon: 'table',
+        items: [
+          { title: 'Overview', href: '/docs/dataset' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Datasets', href: '/docs/dataset/concept/understanding-dataset' },
+              { title: 'Static Columns', href: '/docs/dataset/concept/static-column' },
+              { title: 'Dynamic Columns', href: '/docs/dataset/concept/dynamic-column' },
+              { title: 'Synthetic Data', href: '/docs/dataset/concept/synthetic-data' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
+              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
+              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
+              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
+              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
+              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Error Feed',
+        icon: 'compass',
+        items: [
+          { title: 'Overview', href: '/docs/error-feed' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Error Taxonomy', href: '/docs/error-feed/concepts/taxonomy' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Error Feed', href: '/docs/error-feed/features/using-error-feed' },
             ]
           },
         ]
@@ -59,6 +141,16 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/evaluation' },
           {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Evaluation', href: '/docs/evaluation/concepts/understanding-evaluation' },
+              { title: 'Eval Types', href: '/docs/evaluation/concepts/eval-types' },
+              { title: 'Eval Templates', href: '/docs/evaluation/concepts/eval-templates' },
+              { title: 'Judge Models', href: '/docs/evaluation/concepts/judge-models' },
+              { title: 'Eval Results', href: '/docs/evaluation/concepts/eval-results' },
+            ]
+          },
+          {
             title: 'Features',
             items: [
               { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
@@ -68,6 +160,26 @@ export const tabNavigation: NavTab[] = [
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Knowledge Base',
+        icon: 'brain',
+        items: [
+          { title: 'Overview', href: '/docs/knowledge-base' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Knowledge Base', href: '/docs/knowledge-base/concepts/concept' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
+              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
             ]
           },
         ]
@@ -85,6 +197,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
+              { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
             ]
           },
           {
@@ -125,7 +238,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'FI Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
                   { title: 'In-line Evaluations', href: '/docs/tracing/manual/in-line-evals' },
                   { title: 'Adding Annotations to your Spans', href: '/docs/tracing/manual/annotating-using-api' },
-                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-intergation' },
+                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-integration' },
                 ]
               },
             ]
@@ -134,94 +247,134 @@ export const tabNavigation: NavTab[] = [
             title: 'Integration',
             items: [
               { title: 'Overview', href: '/docs/tracing/auto' },
-              { title: 'Anthropic', href: '/docs/tracing/auto/anthropic' },
-              { title: 'AutoGen', href: '/docs/tracing/auto/autogen' },
-              { title: 'AWS Bedrock', href: '/docs/tracing/auto/bedrock' },
-              { title: 'CrewAI', href: '/docs/tracing/auto/crewai' },
-              { title: 'DSPy', href: '/docs/tracing/auto/dspy' },
-              { title: 'Experiment', href: '/docs/tracing/auto/experiment' },
-              { title: 'Google ADK', href: '/docs/tracing/auto/google_adk' },
-              { title: 'Google GenAI', href: '/docs/tracing/auto/google_genai' },
-              { title: 'Groq', href: '/docs/tracing/auto/groq' },
-              { title: 'Guardrails', href: '/docs/tracing/auto/guardrails' },
-              { title: 'Haystack', href: '/docs/tracing/auto/haystack' },
-              { title: 'Instructor', href: '/docs/tracing/auto/instructor' },
-              { title: 'LangChain', href: '/docs/tracing/auto/langchain' },
-              { title: 'LangGraph', href: '/docs/tracing/auto/langgraph' },
-              { title: 'LiteLLM', href: '/docs/tracing/auto/litellm' },
-              { title: 'LlamaIndex', href: '/docs/tracing/auto/llamaindex' },
-              { title: 'LlamaIndex Workflows', href: '/docs/tracing/auto/llamaindex-workflows' },
-              { title: 'Mastra', href: '/docs/tracing/auto/mastra' },
-              { title: 'MCP', href: '/docs/tracing/auto/mcp' },
-              { title: 'MistralAI', href: '/docs/tracing/auto/mistralai' },
-              { title: 'Ollama', href: '/docs/tracing/auto/ollama' },
-              { title: 'OpenAI', href: '/docs/tracing/auto/openai' },
-              { title: 'OpenAI Agents', href: '/docs/tracing/auto/openai_agents' },
-              { title: 'Pipecat', href: '/docs/tracing/auto/pipecat' },
-              { title: 'Portkey', href: '/docs/tracing/auto/portkey' },
-              { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
-              { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
-              { title: 'Together AI', href: '/docs/tracing/auto/togetherai' },
-              { title: 'Vercel', href: '/docs/tracing/auto/vercel' },
-              { title: 'Vertex AI', href: '/docs/tracing/auto/vertexai' },
+              {
+                title: 'LLM Providers',
+                items: [
+                  { title: 'OpenAI', href: '/docs/tracing/auto/openai' },
+                  { title: 'Anthropic', href: '/docs/tracing/auto/anthropic' },
+                  { title: 'AWS Bedrock', href: '/docs/tracing/auto/bedrock' },
+                  { title: 'Vertex AI', href: '/docs/tracing/auto/vertexai' },
+                  { title: 'Google GenAI', href: '/docs/tracing/auto/google_genai' },
+                  { title: 'Google ADK', href: '/docs/tracing/auto/google_adk' },
+                  { title: 'Groq', href: '/docs/tracing/auto/groq' },
+                  { title: 'MistralAI', href: '/docs/tracing/auto/mistralai' },
+                  { title: 'Together AI', href: '/docs/tracing/auto/togetherai' },
+                  { title: 'Ollama', href: '/docs/tracing/auto/ollama' },
+                  { title: 'Portkey', href: '/docs/tracing/auto/portkey' },
+                ]
+              },
+              {
+                title: 'Frameworks & Agents',
+                items: [
+                  { title: 'LangChain', href: '/docs/tracing/auto/langchain' },
+                  { title: 'LangGraph', href: '/docs/tracing/auto/langgraph' },
+                  { title: 'LlamaIndex', href: '/docs/tracing/auto/llamaindex' },
+                  { title: 'LlamaIndex Workflows', href: '/docs/tracing/auto/llamaindex-workflows' },
+                  { title: 'LiteLLM', href: '/docs/tracing/auto/litellm' },
+                  { title: 'CrewAI', href: '/docs/tracing/auto/crewai' },
+                  { title: 'AutoGen', href: '/docs/tracing/auto/autogen' },
+                  { title: 'Haystack', href: '/docs/tracing/auto/haystack' },
+                  { title: 'DSPy', href: '/docs/tracing/auto/dspy' },
+                  { title: 'OpenAI Agents', href: '/docs/tracing/auto/openai_agents' },
+                  { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
+                  { title: 'Instructor', href: '/docs/tracing/auto/instructor' },
+                  { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
+                  { title: 'Guardrails', href: '/docs/tracing/auto/guardrails' },
+                  { title: 'MCP', href: '/docs/tracing/auto/mcp' },
+                  { title: 'Mastra', href: '/docs/tracing/auto/mastra' },
+                  { title: 'Vercel AI SDK', href: '/docs/tracing/auto/vercel' },
+                ]
+              },
+              {
+                title: 'Voice & Realtime',
+                items: [
+                  { title: 'LiveKit', href: '/docs/tracing/auto/livekit' },
+                  { title: 'Pipecat', href: '/docs/tracing/auto/pipecat' },
+                ]
+              },
+              {
+                title: 'Java',
+                items: [
+                  { title: 'Overview', href: '/docs/tracing/auto/java' },
+                  { title: 'Spring Boot', href: '/docs/tracing/auto/spring-boot' },
+                  { title: 'OpenAI', href: '/docs/tracing/auto/java/openai' },
+                  { title: 'Anthropic', href: '/docs/tracing/auto/java/anthropic' },
+                  { title: 'AWS Bedrock', href: '/docs/tracing/auto/java/bedrock' },
+                  { title: 'Cohere', href: '/docs/tracing/auto/java/cohere' },
+                  { title: 'Pinecone', href: '/docs/tracing/auto/java/pinecone' },
+                  { title: 'LLM Providers', href: '/docs/tracing/auto/java/llm-providers' },
+                  { title: 'Vector Databases', href: '/docs/tracing/auto/java/vector-databases' },
+                  { title: 'Frameworks', href: '/docs/tracing/auto/java/frameworks' },
+                ]
+              },
+              {
+                title: 'Other',
+                items: [
+                  { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
+                ]
+              },
             ]
           },
         ]
       },
       {
-        group: 'Dataset',
-        icon: 'table',
+        group: 'Optimization',
+        icon: 'gauge',
         items: [
-          { title: 'Overview', href: '/docs/dataset' },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
-              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
-              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
-              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
-              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
-              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
-            ]
-          },
+          { title: 'Overview', href: '/docs/optimization' },
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Datasets', href: '/docs/dataset/concept/understanding-dataset' },
-              { title: 'Static Columns', href: '/docs/dataset/concept/static-column' },
-              { title: 'Dynamic Columns', href: '/docs/dataset/concept/dynamic-column' },
-              { title: 'Synthetic Data', href: '/docs/dataset/concept/synthetic-data' },
+              { title: 'Understanding Optimization', href: '/docs/optimization/concepts/concept' },
+              { title: 'Bayesian Search', href: '/docs/optimization/optimizers/bayesian-search' },
+              { title: 'Meta-Prompt', href: '/docs/optimization/optimizers/meta-prompt' },
+              { title: 'ProTeGi', href: '/docs/optimization/optimizers/protegi' },
+              { title: 'PromptWizard', href: '/docs/optimization/optimizers/promptwizard' },
+              { title: 'GEPA', href: '/docs/optimization/optimizers/gepa' },
+              { title: 'Random Search', href: '/docs/optimization/optimizers/random-search' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
+              { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
             ]
           },
         ]
       },
       {
-        group: 'Simulation',
-        icon: 'play',
+        group: 'Prism AI Gateway',
+        icon: 'server',
         items: [
-          { title: 'Overview', href: '/docs/simulation' },
+          { title: 'Overview', href: '/docs/prism' },
           {
-            title: 'Set Up',
+            title: 'Concepts',
             items: [
-              { title: 'Agent Definition', href: '/docs/simulation/set-up/agent-definition' },
-              { title: 'Scenarios', href: '/docs/simulation/set-up/scenarios' },
-              { title: 'Personas', href: '/docs/simulation/set-up/personas' },
+              { title: 'Core Concepts', href: '/docs/prism/concepts/core' },
+              { title: 'API Reference', href: '/docs/prism/concepts/api-reference' },
+              { title: 'Configuration', href: '/docs/prism/concepts/configuration' },
+              { title: 'Platform Integration', href: '/docs/prism/concepts/platform-integration' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
-              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
-              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
+              { title: 'Manage Providers', href: '/docs/prism/features/providers' },
+              { title: 'Routing & Reliability', href: '/docs/prism/features/routing' },
+              { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
+              { title: 'Caching', href: '/docs/prism/features/caching' },
+              { title: 'Cost Tracking & Budgets', href: '/docs/prism/features/cost-tracking' },
+              { title: 'Streaming', href: '/docs/prism/features/streaming' },
+              { title: 'Shadow Experiments', href: '/docs/prism/features/shadow-experiments' },
+              { title: 'Rate Limiting', href: '/docs/prism/features/rate-limiting' },
+              { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
             ]
           },
           {
-            title: 'Concepts',
+            title: 'Deployment',
             items: [
-              { title: 'Concepts', href: '/docs/simulation/concepts/concepts' },
+              { title: 'Self-Hosted', href: '/docs/prism/deployment/self-hosted' },
             ]
           },
         ]
@@ -234,7 +387,9 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/prompt/concepts/concept' },
+              { title: 'Prompt Engineering', href: '/docs/prompt/concepts/prompt-engineering' },
+              { title: 'Understanding Prompts', href: '/docs/prompt/concepts/understanding-prompts' },
+              { title: 'Versions and Labels', href: '/docs/prompt/concepts/versions-and-labels' },
             ]
           },
           {
@@ -251,99 +406,6 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Prototype',
-        icon: 'flask',
-        items: [
-          { title: 'Overview', href: '/docs/prototype' },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
-              { title: 'Evals', href: '/docs/prototype/features/evals' },
-              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Annotations',
-        icon: 'pen',
-        items: [
-          { title: 'Overview', href: '/docs/annotations' },
-          { title: 'Quickstart', href: '/docs/annotations/quickstart' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Labels', href: '/docs/annotations/concepts/labels' },
-              { title: 'Queues & Workflow', href: '/docs/annotations/concepts/queues' },
-              { title: 'Scores', href: '/docs/annotations/concepts/scores' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Create & Manage Labels', href: '/docs/annotations/features/labels' },
-              { title: 'Create & Manage Queues', href: '/docs/annotations/features/queues' },
-              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
-              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
-              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
-              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
-              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
-              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
-            ]
-          },
-          {
-            title: 'SDK',
-            items: [
-              { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
-              { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Optimization',
-        icon: 'gauge',
-        items: [
-          { title: 'Overview', href: '/docs/optimization' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Concept', href: 'docs/optimization/concepts/concept' },
-            ]
-          },
-          {
-            title: 'Algorithms',
-            items: [
-              { title: 'Overview', href: '/docs/optimization/optimizers/overview' },
-              { title: 'Bayesian Search', href: '/docs/optimization/optimizers/bayesian-search' },
-              { title: 'Meta-Prompt', href: '/docs/optimization/optimizers/meta-prompt' },
-              { title: 'ProTeGi', href: '/docs/optimization/optimizers/protegi' },
-              { title: 'PromptWizard', href: '/docs/optimization/optimizers/promptwizard' },
-              { title: 'GEPA', href: '/docs/optimization/optimizers/gepa' },
-              { title: 'Random Search', href: '/docs/optimization/optimizers/random-search' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Optimize Your First Prompt', href: '/docs/optimization/features/optimize-your-first-prompt' },
-              { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
-              { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
-              { title: 'Dataset Optimization', href: '/docs/optimization/features/dataset-optimization' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Error Feed',
-        icon: 'compass',
-        items: [
-          { title: 'Overview', href: '/docs/error-feed' },
-          { title: 'Taxonomy', href: '/docs/error-feed/taxonomy' },
-        ]
-      },
-      {
         group: 'Protect',
         icon: 'shield',
         items: [
@@ -351,7 +413,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/protect/concepts/concept' },
+              { title: 'Use Cases', href: '/docs/protect/concepts/concept' },
             ]
           },
           {
@@ -363,21 +425,45 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Knowledge Base',
-        icon: 'brain',
+        group: 'Agent Playground',
+        icon: 'play-circle',
         items: [
-          { title: 'Overview', href: '/docs/knowledge-base' },
+          { title: 'Overview', href: '/docs/agent-playground' },
           {
             title: 'Concepts',
             items: [
-              { title: 'Concept', href: '/docs/knowledge-base/concepts/concept' },
+              { title: 'Understanding Agent Playground', href: '/docs/agent-playground/concepts/understanding-agent-playground' },
+              { title: 'Versions & Execution', href: '/docs/agent-playground/concepts/versions-and-execution' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
-              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
+              { title: 'Create a Graph', href: '/docs/agent-playground/features/create-graph' },
+              { title: 'Build a Workflow', href: '/docs/agent-playground/features/build-workflow' },
+              { title: 'Run & Monitor', href: '/docs/agent-playground/features/run-and-monitor' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Prototype',
+        icon: 'flask',
+        items: [
+          { title: 'Overview', href: '/docs/prototype' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Prototype', href: '/docs/prototype/concepts/understanding-prototype' },
+              { title: 'Versions and Runs', href: '/docs/prototype/concepts/versions-and-runs' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
+              { title: 'Evals', href: '/docs/prototype/features/evals' },
+              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
             ]
           },
         ]
@@ -387,8 +473,51 @@ export const tabNavigation: NavTab[] = [
         icon: 'book',
         items: [
           { title: 'Admin & Settings', href: '/docs/admin-settings' },
+          {
+            title: 'Settings Pages',
+            items: [
+              { title: 'API Keys', href: '/docs/admin-settings/api-keys' },
+              { title: 'Profile & Security', href: '/docs/admin-settings/profile-security' },
+              { title: 'Organization Settings', href: '/docs/admin-settings/organization-settings' },
+              { title: 'User Management', href: '/docs/admin-settings/user-management' },
+              { title: 'Workspace Management', href: '/docs/admin-settings/workspace-management' },
+              { title: 'AI Providers', href: '/docs/admin-settings/ai-providers' },
+              { title: 'Integrations', href: '/docs/admin-settings/integrations' },
+              { title: 'Usage Summary', href: '/docs/admin-settings/usage-summary' },
+              { title: 'Billing & Pricing', href: '/docs/admin-settings/billing-pricing' },
+            ]
+          },
+          { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
+          { title: 'Installation', href: '/docs/installation' },
           { title: 'FAQ', href: '/docs/faq' },
           { title: 'Release Notes', href: '/docs/release-notes' },
+        ]
+      },
+      {
+        group: 'Simulation',
+        icon: 'play',
+        items: [
+          { title: 'Overview', href: '/docs/simulation' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Agent Definition', href: '/docs/simulation/concepts/agent-definition' },
+              { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
+              { title: 'Personas', href: '/docs/simulation/concepts/personas' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
+              { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
+              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
+              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
+              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
+              { title: 'View Results', href: '/docs/simulation/features/view-results' },
+              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+            ]
+          },
         ]
       },
     ]
@@ -402,38 +531,89 @@ export const tabNavigation: NavTab[] = [
         group: 'Integrations',
         items: [
           { title: 'Overview', href: '/docs/integrations' },
-          { title: 'Anthropic', href: '/docs/integrations/anthropic' },
-          { title: 'AutoGen', href: '/docs/integrations/autogen' },
-          { title: 'AWS Bedrock', href: '/docs/integrations/bedrock' },
-          { title: 'CrewAI', href: '/docs/integrations/crewai' },
-          { title: 'DSPy', href: '/docs/integrations/dspy' },
-          { title: 'Google ADK', href: '/docs/integrations/google_adk' },
-          { title: 'Google GenAI', href: '/docs/integrations/google_genai' },
-          { title: 'Groq', href: '/docs/integrations/groq' },
-          { title: 'Guardrails', href: '/docs/integrations/guardrails' },
-          { title: 'Haystack', href: '/docs/integrations/haystack' },
-          { title: 'Instructor', href: '/docs/integrations/instructor' },
-          { title: 'LangChain', href: '/docs/integrations/langchain' },
-          { title: 'LangGraph', href: '/docs/integrations/langgraph' },
-          { title: 'LiteLLM', href: '/docs/integrations/litellm' },
-          { title: 'LiveKit', href: '/docs/integrations/livekit' },
-          { title: 'LlamaIndex', href: '/docs/integrations/llamaindex' },
-          { title: 'Mastra', href: '/docs/integrations/mastra' },
-          { title: 'MCP', href: '/docs/integrations/mcp' },
-          { title: 'LlamaIndex Workflows', href: '/docs/integrations/llamaindex-workflows' },
-          { title: 'MistralAI', href: '/docs/integrations/mistralai' },
-          { title: 'n8n', href: '/docs/integrations/n8n' },
-          { title: 'Ollama', href: '/docs/integrations/ollama' },
-          { title: 'OpenAI', href: '/docs/integrations/openai' },
-          { title: 'OpenAI Agents', href: '/docs/integrations/openai_agents' },
-          { title: 'Pipecat', href: '/docs/integrations/pipecat' },
-          { title: 'Portkey', href: '/docs/integrations/portkey' },
-          { title: 'PromptFlow', href: '/docs/integrations/promptflow' },
-          { title: 'Smol Agents', href: '/docs/integrations/smol_agents' },
-          { title: 'Together AI', href: '/docs/integrations/togetherai' },
-          { title: 'Vercel', href: '/docs/integrations/vercel' },
-          { title: 'Vertex AI', href: '/docs/integrations/vertexai' },
-          { title: 'Experiment', href: '/docs/integrations/experiment' },
+          {
+            title: 'LLM Providers',
+            items: [
+              { title: 'OpenAI', href: '/docs/integrations/traceai/openai' },
+              { title: 'Anthropic', href: '/docs/integrations/traceai/anthropic' },
+              { title: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock' },
+              { title: 'Vertex AI', href: '/docs/integrations/traceai/vertexai' },
+              { title: 'Google GenAI', href: '/docs/integrations/traceai/google_genai' },
+              { title: 'Google ADK', href: '/docs/integrations/traceai/google_adk' },
+              { title: 'Groq', href: '/docs/integrations/traceai/groq' },
+              { title: 'MistralAI', href: '/docs/integrations/traceai/mistralai' },
+              { title: 'Together AI', href: '/docs/integrations/traceai/togetherai' },
+              { title: 'Ollama', href: '/docs/integrations/traceai/ollama' },
+              { title: 'Portkey', href: '/docs/integrations/traceai/portkey' },
+            ]
+          },
+          {
+            title: 'Frameworks & Agents',
+            items: [
+              { title: 'LangChain', href: '/docs/integrations/traceai/langchain' },
+              { title: 'LangGraph', href: '/docs/integrations/traceai/langgraph' },
+              { title: 'LlamaIndex', href: '/docs/integrations/traceai/llamaindex' },
+              { title: 'LlamaIndex Workflows', href: '/docs/integrations/traceai/llamaindex-workflows' },
+              { title: 'LiteLLM', href: '/docs/integrations/traceai/litellm' },
+              { title: 'CrewAI', href: '/docs/integrations/traceai/crewai' },
+              { title: 'AutoGen', href: '/docs/integrations/traceai/autogen' },
+              { title: 'Haystack', href: '/docs/integrations/traceai/haystack' },
+              { title: 'DSPy', href: '/docs/integrations/traceai/dspy' },
+              { title: 'OpenAI Agents', href: '/docs/integrations/traceai/openai_agents' },
+              { title: 'Smol Agents', href: '/docs/integrations/traceai/smol_agents' },
+              { title: 'Instructor', href: '/docs/integrations/traceai/instructor' },
+              { title: 'PromptFlow', href: '/docs/integrations/traceai/promptflow' },
+              { title: 'Guardrails', href: '/docs/integrations/traceai/guardrails' },
+              { title: 'MCP', href: '/docs/integrations/traceai/mcp' },
+              { title: 'Mastra', href: '/docs/integrations/traceai/mastra' },
+              { title: 'Vercel AI SDK', href: '/docs/integrations/traceai/vercel' },
+            ]
+          },
+          {
+            title: 'Voice & Realtime',
+            items: [
+              { title: 'LiveKit', href: '/docs/integrations/traceai/livekit' },
+              { title: 'Pipecat', href: '/docs/integrations/traceai/pipecat' },
+            ]
+          },
+          {
+            title: 'Java',
+            items: [
+              { title: 'Overview', href: '/docs/integrations/traceai/java' },
+              { title: 'Spring Boot', href: '/docs/integrations/traceai/spring-boot' },
+              { title: 'OpenAI', href: '/docs/integrations/traceai/java/openai' },
+              { title: 'Anthropic', href: '/docs/integrations/traceai/java/anthropic' },
+              { title: 'AWS Bedrock', href: '/docs/integrations/traceai/java/bedrock' },
+              { title: 'Cohere', href: '/docs/integrations/traceai/java/cohere' },
+              { title: 'Pinecone', href: '/docs/integrations/traceai/java/pinecone' },
+              { title: 'LLM Providers', href: '/docs/integrations/traceai/java/llm-providers' },
+              { title: 'Vector Databases', href: '/docs/integrations/traceai/java/vector-databases' },
+              { title: 'Frameworks', href: '/docs/integrations/traceai/java/frameworks' },
+            ]
+          },
+          {
+            title: 'Other',
+            items: [
+              { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
+            ]
+          },
+          {
+            title: 'Import Traces',
+            items: [
+              { title: 'Langfuse', href: '/docs/integrations/import/langfuse' },
+            ]
+          },
+          {
+            title: 'Export & Alerts',
+            items: [
+              { title: 'Datadog', href: '/docs/integrations/export/datadog' },
+              { title: 'PostHog', href: '/docs/integrations/export/posthog' },
+              { title: 'Mixpanel', href: '/docs/integrations/export/mixpanel' },
+              { title: 'PagerDuty', href: '/docs/integrations/export/pagerduty' },
+              { title: 'Cloud Storage', href: '/docs/integrations/export/cloud-storage' },
+              { title: 'Message Queues', href: '/docs/integrations/export/message-queues' },
+            ]
+          },
         ]
       }
     ]
@@ -498,6 +678,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Session-Based Observability for Multi-Turn Conversations', href: '/docs/cookbook/quickstart/session-observability' },
                   { title: 'Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds', href: '/docs/cookbook/quickstart/monitoring-alerts' },
                   { title: 'Inline Evals in Tracing: Score Every Response as It\'s Generated', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
+                  { title: 'Distributed Tracing: Connect Spans Across Services', href: '/docs/cookbook/quickstart/distributed-tracing' },
                 ]
               },
               {
@@ -623,6 +804,13 @@ export const tabNavigation: NavTab[] = [
               { title: 'Simulate SDK Demo', href: '/docs/cookbook/simulate-sdk' },
             ]
           },
+          {
+            title: 'Error Feed',
+            icon: 'compass',
+            items: [
+              { title: 'Error Feed with Google ADK', href: '/docs/cookbook/error-feed/google-adk-multi-agent' },
+            ]
+          },
         ]
       }
     ]
@@ -635,13 +823,48 @@ export const tabNavigation: NavTab[] = [
       {
         group: 'SDK Reference',
         items: [
-          { title: 'Python SDK Client', href: '/docs/sdk' },
-          { title: 'Evals', href: '/docs/sdk/evals' },
-          { title: 'Datasets', href: '/docs/sdk/datasets' },
-          { title: 'Protect', href: '/docs/sdk/protect' },
-          { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
-          { title: 'Tracing', href: '/docs/sdk/tracing' },
-          { title: 'Test Case', href: '/docs/sdk/testcase' },
+          { title: 'SDK Overview', href: '/docs/sdk' },
+          {
+            title: 'AI Evaluation',
+            items: [
+              { title: 'Overview', href: '/docs/sdk/evals' },
+              { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
+              { title: 'Distributed Evaluator', href: '/docs/sdk/evals/distributed' },
+              { title: 'AutoEval', href: '/docs/sdk/evals/autoeval' },
+              { title: 'Guardrails', href: '/docs/sdk/evals/guardrails-module' },
+              { title: 'Local & Hybrid', href: '/docs/sdk/evals/local' },
+              { title: 'OpenTelemetry', href: '/docs/sdk/evals/otel' },
+              { title: 'Code Security', href: '/docs/sdk/evals/code-security' },
+              {
+                title: 'Metrics Reference',
+                items: [
+                  { title: 'Overview', href: '/docs/sdk/evals/metrics' },
+                  { title: 'String & Similarity', href: '/docs/sdk/evals/metrics/string' },
+                  { title: 'JSON & Structured', href: '/docs/sdk/evals/metrics/json' },
+                  { title: 'Hallucination', href: '/docs/sdk/evals/metrics/hallucination' },
+                  { title: 'RAG', href: '/docs/sdk/evals/metrics/rag' },
+                  { title: 'Agents & Functions', href: '/docs/sdk/evals/metrics/agents' },
+                  { title: 'Guardrails', href: '/docs/sdk/evals/metrics/guardrails' },
+                ]
+              },
+              { title: 'Cloud Evals', href: '/docs/sdk/evals/cloud-evals' },
+              { title: 'LLM-as-Judge', href: '/docs/sdk/evals/llm-judge' },
+              { title: 'Streaming', href: '/docs/sdk/evals/streaming' },
+              { title: 'Feedback Loops', href: '/docs/sdk/evals/feedback' },
+            ]
+          },
+          {
+            title: 'Core SDK',
+            items: [
+              { title: 'Datasets', href: '/docs/sdk/datasets' },
+              { title: 'Tracing', href: '/docs/sdk/tracing' },
+              { title: 'Protect', href: '/docs/sdk/protect' },
+              { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
+              { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
+              { title: 'Prompt Optimization', href: '/docs/sdk/optimization' },
+              { title: 'Simulation Testing', href: '/docs/sdk/simulate' },
+            ]
+          },
         ]
       }
     ]
@@ -711,6 +934,13 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
+            ]
+          },
+          {
+            title: 'Datasets',
+            items: [
+              { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
+              { title: 'Upload Dataset from File', href: '/docs/api/datasets/upload-dataset' },
             ]
           },
           {
