@@ -28,9 +28,29 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Scenarios",
     "items": [
       {
+        "title": "List scenarios",
+        "href": "/docs/api/scenarios/listscenarios",
+        "method": "GET"
+      },
+      {
+        "title": "Get scenario details",
+        "href": "/docs/api/scenarios/getscenario",
+        "method": "GET"
+      },
+      {
         "title": "Generate or create a scenario",
         "href": "/docs/api/scenarios/createscenario",
         "method": "POST"
+      },
+      {
+        "title": "Edit a scenario",
+        "href": "/docs/api/scenarios/editscenario",
+        "method": "PUT"
+      },
+      {
+        "title": "Delete a scenario",
+        "href": "/docs/api/scenarios/deletescenario",
+        "method": "DELETE"
       },
       {
         "title": "Add rows to a scenario using AI",
@@ -38,9 +58,9 @@ export const apiNavigation: ApiNavGroup[] = [
         "method": "POST"
       },
       {
-        "title": "Edit a scenario",
-        "href": "/docs/api/scenarios/editscenario",
-        "method": "PUT"
+        "title": "Add columns to a scenario",
+        "href": "/docs/api/scenarios/addcolumns",
+        "method": "POST"
       },
       {
         "title": "Add empty rows to a scenario",

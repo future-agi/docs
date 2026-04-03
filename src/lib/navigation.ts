@@ -918,10 +918,14 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Scenarios',
             items: [
+              { title: 'List Scenarios', href: '/docs/api/scenarios/listscenarios' },
+              { title: 'Get Scenario Details', href: '/docs/api/scenarios/getscenario' },
               { title: 'Create Scenario', href: '/docs/api/scenarios/createscenario' },
               { title: 'Edit Scenario', href: '/docs/api/scenarios/editscenario' },
-              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
+              { title: 'Delete Scenario', href: '/docs/api/scenarios/deletescenario' },
               { title: 'Add Rows with AI', href: '/docs/api/scenarios/addscenariorowswithai' },
+              { title: 'Add Columns', href: '/docs/api/scenarios/addcolumns' },
+              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
             ]
           },
           {
