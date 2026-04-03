@@ -964,6 +964,17 @@ export const tabNavigation: NavTab[] = [
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
           {
+            title: 'Test Executions',
+            items: [
+              { title: 'Get Execution Details', href: '/docs/api/test-executions/gettestexecutiondetails' },
+              { title: 'Get Execution KPIs', href: '/docs/api/test-executions/getkpis' },
+              { title: 'Get Performance Summary', href: '/docs/api/test-executions/getperformancesummary' },
+              { title: 'Get Eval Explanation', href: '/docs/api/test-executions/getevalexplanationsummary' },
+              { title: 'Cancel Execution', href: '/docs/api/test-executions/cancelexecution' },
+              { title: 'Rerun Calls', href: '/docs/api/test-executions/reruncalls' },
+            ]
+          },
+          {
             title: 'Call Executions',
             items: [
               { title: 'Get Call Details', href: '/docs/api/call-executions/getcallexecutiondetails' },

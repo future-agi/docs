@@ -172,6 +172,41 @@ export const apiNavigation: ApiNavGroup[] = [
         "href": "/docs/api/run-tests/executeruntest",
         "method": "POST"
   {
+    "title": "Test Executions",
+    "items": [
+      {
+        "title": "Get test execution details",
+        "href": "/docs/api/test-executions/gettestexecutiondetails",
+        "method": "GET"
+      },
+      {
+        "title": "Get execution KPIs",
+        "href": "/docs/api/test-executions/getkpis",
+        "method": "GET"
+      },
+      {
+        "title": "Get performance summary",
+        "href": "/docs/api/test-executions/getperformancesummary",
+        "method": "GET"
+      },
+      {
+        "title": "Get eval explanation summary",
+        "href": "/docs/api/test-executions/getevalexplanationsummary",
+        "method": "GET"
+      },
+      {
+        "title": "Cancel test execution",
+        "href": "/docs/api/test-executions/cancelexecution",
+        "method": "POST"
+      },
+      {
+        "title": "Rerun call executions",
+        "href": "/docs/api/test-executions/reruncalls",
+        "method": "POST"
+      }
+    ]
+  },
+  {
     "title": "Call Executions",
     "items": [
       {
