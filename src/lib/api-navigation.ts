@@ -172,6 +172,21 @@ export const apiNavigation: ApiNavGroup[] = [
         "href": "/docs/api/run-tests/executeruntest",
         "method": "POST"
   {
+    "title": "Call Executions",
+    "items": [
+      {
+        "title": "Get call execution details",
+        "href": "/docs/api/call-executions/getcallexecutiondetails",
+        "method": "GET"
+      },
+      {
+        "title": "Compare execution sessions",
+        "href": "/docs/api/call-executions/getsessioncomparison",
+        "method": "GET"
+      }
+    ]
+  },
+  {
     "title": "Prompt Simulations",
     "items": [
       {
