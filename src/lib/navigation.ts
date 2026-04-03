@@ -927,7 +927,11 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Agent Definitions',
             items: [
+              { title: 'List Agent Definitions', href: '/docs/api/agent-definitions/listagentdefinitions' },
               { title: 'Create Agent Definition', href: '/docs/api/agent-definitions/createagentdefinition' },
+              { title: 'Get Agent Definition', href: '/docs/api/agent-definitions/getagentdefinition' },
+              { title: 'Delete Agent Definitions', href: '/docs/api/agent-definitions/deleteagentdefinitions' },
+              { title: 'Fetch from Provider', href: '/docs/api/agent-definitions/fetchassistantfromprovider' },
             ]
           },
           {

@@ -53,8 +53,28 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Agent Definitions",
     "items": [
       {
+        "title": "List agent definitions",
+        "href": "/docs/api/agent-definitions/listagentdefinitions",
+        "method": "GET"
+      },
+      {
         "title": "Create agent definition",
         "href": "/docs/api/agent-definitions/createagentdefinition",
+        "method": "POST"
+      },
+      {
+        "title": "Get agent definition details",
+        "href": "/docs/api/agent-definitions/getagentdefinition",
+        "method": "GET"
+      },
+      {
+        "title": "Delete agent definitions",
+        "href": "/docs/api/agent-definitions/deleteagentdefinitions",
+        "method": "DELETE"
+      },
+      {
+        "title": "Fetch assistant from provider",
+        "href": "/docs/api/agent-definitions/fetchassistantfromprovider",
         "method": "POST"
       }
     ]
