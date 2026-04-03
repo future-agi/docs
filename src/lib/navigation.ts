@@ -929,6 +929,16 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Personas',
+            items: [
+              { title: 'List Personas', href: '/docs/api/personas/listpersonas' },
+              { title: 'Create Persona', href: '/docs/api/personas/createpersona' },
+              { title: 'Update Persona', href: '/docs/api/personas/updatepersona' },
+              { title: 'Delete Persona', href: '/docs/api/personas/deletepersona' },
+              { title: 'Duplicate Persona', href: '/docs/api/personas/duplicatepersona' },
+            ]
+          },
+          {
             title: 'Agent Definitions',
             items: [
               { title: 'List Agent Definitions', href: '/docs/api/agent-definitions/listagentdefinitions' },

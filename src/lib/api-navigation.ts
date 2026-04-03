@@ -70,6 +70,36 @@ export const apiNavigation: ApiNavGroup[] = [
     ]
   },
   {
+    "title": "Personas",
+    "items": [
+      {
+        "title": "List personas",
+        "href": "/docs/api/personas/listpersonas",
+        "method": "GET"
+      },
+      {
+        "title": "Create persona",
+        "href": "/docs/api/personas/createpersona",
+        "method": "POST"
+      },
+      {
+        "title": "Update persona",
+        "href": "/docs/api/personas/updatepersona",
+        "method": "PATCH"
+      },
+      {
+        "title": "Delete persona",
+        "href": "/docs/api/personas/deletepersona",
+        "method": "DELETE"
+      },
+      {
+        "title": "Duplicate persona",
+        "href": "/docs/api/personas/duplicatepersona",
+        "method": "POST"
+      }
+    ]
+  },
+  {
     "title": "Agent Definitions",
     "items": [
       {
