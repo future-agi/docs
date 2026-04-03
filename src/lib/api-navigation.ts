@@ -83,9 +83,29 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Agent Versions",
     "items": [
       {
+        "title": "List agent versions",
+        "href": "/docs/api/agent-versions/listagentversions",
+        "method": "GET"
+      },
+      {
         "title": "Create new version of agent",
         "href": "/docs/api/agent-versions/createagentversion",
         "method": "POST"
+      },
+      {
+        "title": "Get agent version details",
+        "href": "/docs/api/agent-versions/getagentversion",
+        "method": "GET"
+      },
+      {
+        "title": "Get call executions for version",
+        "href": "/docs/api/agent-versions/getversioncallexecutions",
+        "method": "GET"
+      },
+      {
+        "title": "Get eval summary for version",
+        "href": "/docs/api/agent-versions/getversionevalsummary",
+        "method": "GET"
       }
     ]
   },

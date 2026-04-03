@@ -937,7 +937,11 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Agent Versions',
             items: [
+              { title: 'List Agent Versions', href: '/docs/api/agent-versions/listagentversions' },
               { title: 'Create Agent Version', href: '/docs/api/agent-versions/createagentversion' },
+              { title: 'Get Agent Version', href: '/docs/api/agent-versions/getagentversion' },
+              { title: 'Get Version Call Executions', href: '/docs/api/agent-versions/getversioncallexecutions' },
+              { title: 'Get Version Eval Summary', href: '/docs/api/agent-versions/getversionevalsummary' },
             ]
           },
           {
