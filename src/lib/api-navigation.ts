@@ -163,14 +163,92 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Run Tests",
     "items": [
       {
+        "title": "List test runs",
+        "href": "/docs/api/run-tests/listruntests",
+        "method": "GET"
+      },
+      {
         "title": "Create a New Test Run",
         "href": "/docs/api/run-tests/createruntest",
         "method": "POST"
       },
       {
+        "title": "Get test run details",
+        "href": "/docs/api/run-tests/getruntestdetails",
+        "method": "GET"
+      },
+      {
+        "title": "Delete a test run",
+        "href": "/docs/api/run-tests/deleteruntest",
+        "method": "DELETE"
+      },
+      {
         "title": "Execute a test run",
         "href": "/docs/api/run-tests/executeruntest",
         "method": "POST"
+      },
+      {
+        "title": "Update test run components",
+        "href": "/docs/api/run-tests/updatetestcomponents",
+        "method": "PATCH"
+      },
+      {
+        "title": "Get test executions",
+        "href": "/docs/api/run-tests/gettestexecutions",
+        "method": "GET"
+      },
+      {
+        "title": "Get scenarios for a test run",
+        "href": "/docs/api/run-tests/gettestscenarios",
+        "method": "GET"
+      },
+      {
+        "title": "Get call executions for a test run",
+        "href": "/docs/api/run-tests/getcallexecutions",
+        "method": "GET"
+      },
+      {
+        "title": "Get evaluation summary",
+        "href": "/docs/api/run-tests/getevalsummary",
+        "method": "GET"
+      },
+      {
+        "title": "Compare evaluation summaries",
+        "href": "/docs/api/run-tests/compareevalsummaries",
+        "method": "GET"
+      },
+      {
+        "title": "Add evaluation configurations",
+        "href": "/docs/api/run-tests/addevalconfigs",
+        "method": "POST"
+      },
+      {
+        "title": "Update evaluation configuration",
+        "href": "/docs/api/run-tests/updateevalconfig",
+        "method": "PATCH"
+      },
+      {
+        "title": "Delete evaluation configuration",
+        "href": "/docs/api/run-tests/deleteevalconfig",
+        "method": "DELETE"
+      },
+      {
+        "title": "Run new evaluations on test executions",
+        "href": "/docs/api/run-tests/runnewevalsontestexecution",
+        "method": "POST"
+      },
+      {
+        "title": "Rerun test executions",
+        "href": "/docs/api/run-tests/reruntestexecutions",
+        "method": "POST"
+      },
+      {
+        "title": "Delete test executions",
+        "href": "/docs/api/run-tests/deletetestexecutions",
+        "method": "POST"
+      }
+    ]
+  },
   {
     "title": "Test Executions",
     "items": [

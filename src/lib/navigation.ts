@@ -961,8 +961,25 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Run Tests',
             items: [
+              { title: 'List Test Runs', href: '/docs/api/run-tests/listruntests' },
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
+              { title: 'Get Test Run Details', href: '/docs/api/run-tests/getruntestdetails' },
+              { title: 'Delete Test Run', href: '/docs/api/run-tests/deleteruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
+              { title: 'Update Components', href: '/docs/api/run-tests/updatetestcomponents' },
+              { title: 'Get Test Executions', href: '/docs/api/run-tests/gettestexecutions' },
+              { title: 'Get Test Scenarios', href: '/docs/api/run-tests/gettestscenarios' },
+              { title: 'Get Call Executions', href: '/docs/api/run-tests/getcallexecutions' },
+              { title: 'Get Eval Summary', href: '/docs/api/run-tests/getevalsummary' },
+              { title: 'Compare Eval Summaries', href: '/docs/api/run-tests/compareevalsummaries' },
+              { title: 'Add Eval Configs', href: '/docs/api/run-tests/addevalconfigs' },
+              { title: 'Update Eval Config', href: '/docs/api/run-tests/updateevalconfig' },
+              { title: 'Delete Eval Config', href: '/docs/api/run-tests/deleteevalconfig' },
+              { title: 'Run New Evals', href: '/docs/api/run-tests/runnewevalsontestexecution' },
+              { title: 'Rerun Test Executions', href: '/docs/api/run-tests/reruntestexecutions' },
+              { title: 'Delete Test Executions', href: '/docs/api/run-tests/deletetestexecutions' },
+            ]
+          },
           {
             title: 'Test Executions',
             items: [
