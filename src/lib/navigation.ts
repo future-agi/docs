@@ -888,29 +888,25 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Eval Tasks',
             items: [
-              { title: 'List Eval Tasks', href: '/docs/api/eval-tasks/list-eval-tasks' },
+              { title: 'List Eval Tasks', href: '/docs/api/eval-tasks/list-eval-tasks-filtered' },
               { title: 'Create Eval Task', href: '/docs/api/eval-tasks/create-eval-task' },
               { title: 'Get Eval Task', href: '/docs/api/eval-tasks/get-eval-task' },
               { title: 'Update Eval Task', href: '/docs/api/eval-tasks/update-eval-task' },
               { title: 'Delete Eval Task', href: '/docs/api/eval-tasks/delete-eval-task' },
-              { title: 'List Eval Tasks with Filtering', href: '/docs/api/eval-tasks/list-eval-tasks-filtered' },
               { title: 'Bulk Delete Eval Tasks', href: '/docs/api/eval-tasks/bulk-delete-eval-tasks' },
               { title: 'Pause Eval Task', href: '/docs/api/eval-tasks/pause-eval-task' },
               { title: 'Unpause Eval Task', href: '/docs/api/eval-tasks/unpause-eval-task' },
-              { title: 'List Eval Tasks with Project Name', href: '/docs/api/eval-tasks/list-eval-tasks-with-project' },
             ]
           },
           {
             title: 'Custom Eval Configs',
             items: [
-              { title: 'List Custom Eval Configs', href: '/docs/api/custom-eval-configs/list-custom-eval-configs' },
+              { title: 'List Custom Eval Configs', href: '/docs/api/custom-eval-configs/list-configs-filtered' },
               { title: 'Create Custom Eval Config', href: '/docs/api/custom-eval-configs/create-custom-eval-config' },
               { title: 'Get Custom Eval Config', href: '/docs/api/custom-eval-configs/get-custom-eval-config' },
               { title: 'Update Custom Eval Config', href: '/docs/api/custom-eval-configs/update-custom-eval-config' },
               { title: 'Delete Custom Eval Config', href: '/docs/api/custom-eval-configs/delete-custom-eval-config' },
               { title: 'Check Config Exists', href: '/docs/api/custom-eval-configs/check-config-exists' },
-              { title: 'List Configs with Filtering', href: '/docs/api/custom-eval-configs/list-configs-filtered' },
-              { title: 'Get Eval Template by Name', href: '/docs/api/custom-eval-configs/get-eval-by-name' },
             ]
           },
           {
@@ -922,29 +918,94 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Scenarios',
             items: [
+              { title: 'List Scenarios', href: '/docs/api/scenarios/listscenarios' },
+              { title: 'Get Scenario Details', href: '/docs/api/scenarios/getscenario' },
               { title: 'Create Scenario', href: '/docs/api/scenarios/createscenario' },
               { title: 'Edit Scenario', href: '/docs/api/scenarios/editscenario' },
-              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
+              { title: 'Delete Scenario', href: '/docs/api/scenarios/deletescenario' },
               { title: 'Add Rows with AI', href: '/docs/api/scenarios/addscenariorowswithai' },
+              { title: 'Add Columns', href: '/docs/api/scenarios/addcolumns' },
+              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
+            ]
+          },
+          {
+            title: 'Personas',
+            items: [
+              { title: 'List Personas', href: '/docs/api/personas/listpersonas' },
+              { title: 'Create Persona', href: '/docs/api/personas/createpersona' },
+              { title: 'Update Persona', href: '/docs/api/personas/updatepersona' },
+              { title: 'Delete Persona', href: '/docs/api/personas/deletepersona' },
+              { title: 'Duplicate Persona', href: '/docs/api/personas/duplicatepersona' },
             ]
           },
           {
             title: 'Agent Definitions',
             items: [
+              { title: 'List Agent Definitions', href: '/docs/api/agent-definitions/listagentdefinitions' },
               { title: 'Create Agent Definition', href: '/docs/api/agent-definitions/createagentdefinition' },
+              { title: 'Get Agent Definition', href: '/docs/api/agent-definitions/getagentdefinition' },
+              { title: 'Delete Agent Definitions', href: '/docs/api/agent-definitions/deleteagentdefinitions' },
+              { title: 'Fetch from Provider', href: '/docs/api/agent-definitions/fetchassistantfromprovider' },
             ]
           },
           {
             title: 'Agent Versions',
             items: [
+              { title: 'List Agent Versions', href: '/docs/api/agent-versions/listagentversions' },
               { title: 'Create Agent Version', href: '/docs/api/agent-versions/createagentversion' },
+              { title: 'Get Agent Version', href: '/docs/api/agent-versions/getagentversion' },
+              { title: 'Get Version Call Executions', href: '/docs/api/agent-versions/getversioncallexecutions' },
+              { title: 'Get Version Eval Summary', href: '/docs/api/agent-versions/getversionevalsummary' },
             ]
           },
           {
             title: 'Run Tests',
             items: [
+              { title: 'List Test Runs', href: '/docs/api/run-tests/listruntests' },
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
+              { title: 'Get Test Run Details', href: '/docs/api/run-tests/getruntestdetails' },
+              { title: 'Delete Test Run', href: '/docs/api/run-tests/deleteruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
+              { title: 'Update Components', href: '/docs/api/run-tests/updatetestcomponents' },
+              { title: 'Get Test Executions', href: '/docs/api/run-tests/gettestexecutions' },
+              { title: 'Get Test Scenarios', href: '/docs/api/run-tests/gettestscenarios' },
+              { title: 'Get Call Executions', href: '/docs/api/run-tests/getcallexecutions' },
+              { title: 'Get Eval Summary', href: '/docs/api/run-tests/getevalsummary' },
+              { title: 'Compare Eval Summaries', href: '/docs/api/run-tests/compareevalsummaries' },
+              { title: 'Add Eval Configs', href: '/docs/api/run-tests/addevalconfigs' },
+              { title: 'Update Eval Config', href: '/docs/api/run-tests/updateevalconfig' },
+              { title: 'Delete Eval Config', href: '/docs/api/run-tests/deleteevalconfig' },
+              { title: 'Run New Evals', href: '/docs/api/run-tests/runnewevalsontestexecution' },
+              { title: 'Rerun Test Executions', href: '/docs/api/run-tests/reruntestexecutions' },
+              { title: 'Delete Test Executions', href: '/docs/api/run-tests/deletetestexecutions' },
+            ]
+          },
+          {
+            title: 'Test Executions',
+            items: [
+              { title: 'Get Execution Details', href: '/docs/api/test-executions/gettestexecutiondetails' },
+              { title: 'Get Execution KPIs', href: '/docs/api/test-executions/getkpis' },
+              { title: 'Get Performance Summary', href: '/docs/api/test-executions/getperformancesummary' },
+              { title: 'Get Eval Explanation', href: '/docs/api/test-executions/getevalexplanationsummary' },
+              { title: 'Cancel Execution', href: '/docs/api/test-executions/cancelexecution' },
+              { title: 'Rerun Calls', href: '/docs/api/test-executions/reruncalls' },
+            ]
+          },
+          {
+            title: 'Call Executions',
+            items: [
+              { title: 'Get Call Details', href: '/docs/api/call-executions/getcallexecutiondetails' },
+              { title: 'Get Call Logs', href: '/docs/api/call-executions/getlogs' },
+              { title: 'Compare Sessions', href: '/docs/api/call-executions/getsessioncomparison' },
+            ]
+          },
+          {
+            title: 'Prompt Simulations',
+            items: [
+              { title: 'List Scenarios', href: '/docs/api/prompt-simulations/listscenarios' },
+              { title: 'List Simulations', href: '/docs/api/prompt-simulations/listsimulations' },
+              { title: 'Get Simulation Details', href: '/docs/api/prompt-simulations/getsimulationdetails' },
+              { title: 'Execute Simulation', href: '/docs/api/prompt-simulations/executesimulation' },
             ]
           },
           {
