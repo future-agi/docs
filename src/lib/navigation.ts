@@ -359,48 +359,53 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Providers',
+            title: 'Features',
             items: [
-              { title: 'Supported providers', href: '/docs/prism/features/providers' },
-            ]
-          },
-          {
-            title: 'API Reference',
-            items: [
-              { title: 'Endpoints overview', href: '/docs/prism/api/endpoints' },
-              { title: 'Chat completions', href: '/docs/prism/api/chat' },
-            ]
-          },
-          {
-            title: 'Routing',
-            items: [
-              { title: 'Routing & reliability', href: '/docs/prism/features/routing' },
-            ]
-          },
-          {
-            title: 'Safety & Policy',
-            items: [
-              { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
-            ]
-          },
-          {
-            title: 'Performance',
-            items: [
-              { title: 'Caching', href: '/docs/prism/features/caching' },
-              { title: 'Rate limiting', href: '/docs/prism/features/rate-limiting' },
-            ]
-          },
-          {
-            title: 'Cost & Observability',
-            items: [
-              { title: 'Cost tracking', href: '/docs/prism/features/cost-tracking' },
-              { title: 'Shadow experiments', href: '/docs/prism/features/shadow-experiments' },
-            ]
-          },
-          {
-            title: 'Agentic',
-            items: [
-              { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
+              {
+                title: 'Providers',
+                items: [
+                  { title: 'Supported providers', href: '/docs/prism/features/providers' },
+                ]
+              },
+              {
+                title: 'API Reference',
+                items: [
+                  { title: 'Endpoints overview', href: '/docs/prism/api/endpoints' },
+                  { title: 'Chat completions', href: '/docs/prism/api/chat' },
+                ]
+              },
+              {
+                title: 'Routing',
+                items: [
+                  { title: 'Routing & reliability', href: '/docs/prism/features/routing' },
+                ]
+              },
+              {
+                title: 'Safety & Policy',
+                items: [
+                  { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
+                ]
+              },
+              {
+                title: 'Performance',
+                items: [
+                  { title: 'Caching', href: '/docs/prism/features/caching' },
+                  { title: 'Rate limiting', href: '/docs/prism/features/rate-limiting' },
+                ]
+              },
+              {
+                title: 'Cost & Observability',
+                items: [
+                  { title: 'Cost tracking', href: '/docs/prism/features/cost-tracking' },
+                  { title: 'Shadow experiments', href: '/docs/prism/features/shadow-experiments' },
+                ]
+              },
+              {
+                title: 'Agentic',
+                items: [
+                  { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
+                ]
+              },
             ]
           },
           {
