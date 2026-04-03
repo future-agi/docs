@@ -190,6 +190,15 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/observe' },
           {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Observability', href: '/docs/observe/concepts/understanding-observability' },
+              { title: 'Components of Observability', href: '/docs/observe/concepts/components' },
+              { title: 'Understanding Tracing', href: '/docs/observe/concepts/understanding-tracing' },
+              { title: 'What is traceAI?', href: '/docs/observe/concepts/traceai' },
+            ]
+          },
+          {
             title: 'Features',
             items: [
               { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
@@ -210,18 +219,6 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Tracing',
             items: [
-              { title: 'Overview', href: '/docs/tracing' },
-              {
-                title: 'Concept',
-                items: [
-                  { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
-                  { title: 'Components of Observability', href: '/docs/tracing/concepts/components' },
-                  { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
-                  { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
-                  { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
-                  { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
-                ]
-              },
               {
                 title: 'Manual Tracing',
                 items: [
