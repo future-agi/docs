@@ -963,6 +963,13 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
+          {
+            title: 'Prompt Simulations',
+            items: [
+              { title: 'List Scenarios', href: '/docs/api/prompt-simulations/listscenarios' },
+              { title: 'List Simulations', href: '/docs/api/prompt-simulations/listsimulations' },
+              { title: 'Get Simulation Details', href: '/docs/api/prompt-simulations/getsimulationdetails' },
+              { title: 'Execute Simulation', href: '/docs/api/prompt-simulations/executesimulation' },
             ]
           },
           {

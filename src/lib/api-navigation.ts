@@ -171,6 +171,28 @@ export const apiNavigation: ApiNavGroup[] = [
         "title": "Execute a test run",
         "href": "/docs/api/run-tests/executeruntest",
         "method": "POST"
+  {
+    "title": "Prompt Simulations",
+    "items": [
+      {
+        "title": "List prompt simulation scenarios",
+        "href": "/docs/api/prompt-simulations/listscenarios",
+        "method": "GET"
+      },
+      {
+        "title": "List simulations for prompt template",
+        "href": "/docs/api/prompt-simulations/listsimulations",
+        "method": "GET"
+      },
+      {
+        "title": "Get prompt simulation details",
+        "href": "/docs/api/prompt-simulations/getsimulationdetails",
+        "method": "GET"
+      },
+      {
+        "title": "Execute prompt simulation",
+        "href": "/docs/api/prompt-simulations/executesimulation",
+        "method": "POST"
       }
     ]
   },
