@@ -85,6 +85,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
               { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
+              { title: 'Annotation Queue Using SDK', href: '/docs/annotations/sdk/annotation-queue-using-sdk' },
             ]
           },
         ]
@@ -197,7 +198,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Group Traces by Session', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
-              { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
             ]
           },
           {
