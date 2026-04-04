@@ -198,14 +198,8 @@ export const tabNavigation: NavTab[] = [
               { title: 'Group Traces by Session', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
-              { title: 'Dashboards', href: '/docs/observe/features/dashboard' },
-            ]
-          },
-          {
-            title: 'Voice Observability',
-            items: [
-              { title: 'Overview', href: '/docs/observe/voice' },
-              { title: 'Set Up Voice Observability', href: '/docs/observe/voice/set-up' },
+              { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
+              { title: 'Voice Observability', href: '/docs/observe/features/voice' },
             ]
           },
           {
