@@ -199,7 +199,32 @@ export const tabNavigation: NavTab[] = [
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
               { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
-              { title: 'Voice Observability', href: '/docs/observe/features/voice' },
+              {
+                title: 'Manual Tracing',
+                items: [
+                  { title: 'Set Up Tracing', href: '/docs/observe/features/manual-tracing/set-up-tracing' },
+                  { title: 'Instrument with traceAI Helpers', href: '/docs/observe/features/manual-tracing/instrument-with-traceai-helpers' },
+                  { title: 'Get Current Tracer and Span', href: '/docs/observe/features/manual-tracing/get-current-span-context' },
+                  { title: 'Enriching Spans with Attributes, Metadata, and Tags', href: '/docs/observe/features/manual-tracing/add-attributes-metadata-tags' },
+                  { title: 'Logging Prompt Templates & Variables', href: '/docs/observe/features/manual-tracing/log-prompt-templates' },
+                  { title: 'Events, Exceptions, and Status', href: '/docs/observe/features/manual-tracing/add-events-exceptions-status' },
+                  { title: 'Set Session ID and User ID', href: '/docs/observe/features/manual-tracing/set-session-user-id' },
+                  { title: 'Tool Spans Creation', href: '/docs/observe/features/manual-tracing/create-tool-spans' },
+                  { title: 'Mask Span Attributes', href: '/docs/observe/features/manual-tracing/mask-span-attributes' },
+                  { title: 'Advanced Tracing (OTEL)', href: '/docs/observe/features/manual-tracing/advanced-tracing-examples' },
+                  { title: 'FI Semantic Conventions', href: '/docs/observe/features/manual-tracing/semantic-conventions' },
+                  { title: 'In-line Evaluations', href: '/docs/observe/features/manual-tracing/in-line-evals' },
+                  { title: 'Adding Annotations to your Spans', href: '/docs/observe/features/manual-tracing/annotating-using-api' },
+                  { title: 'Langfuse Integration', href: '/docs/observe/features/manual-tracing/langfuse-integration' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'Voice Observability',
+            items: [
+              { title: 'Overview', href: '/docs/observe/voice' },
+              { title: 'Set Up Voice Observability', href: '/docs/observe/voice/set-up' },
             ]
           },
           {
@@ -215,25 +240,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
                   { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
                   { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
-                ]
-              },
-              {
-                title: 'Manual Tracing',
-                items: [
-                  { title: 'Set Up Tracing', href: '/docs/tracing/manual/set-up-tracing' },
-                  { title: 'Instrument with traceAI Helpers', href: '/docs/tracing/manual/instrument-with-traceai-helpers' },
-                  { title: 'Get Current Tracer and Span', href: '/docs/tracing/manual/get-current-span-context' },
-                  { title: 'Enriching Spans with Attributes, Metadata, and Tags', href: '/docs/tracing/manual/add-attributes-metadata-tags' },
-                  { title: 'Logging Prompt Templates & Variables', href: '/docs/tracing/manual/log-prompt-templates' },
-                  { title: 'Integrate Events, Exceptions, and Status into Spans', href: '/docs/tracing/manual/add-events-exceptions-status' },
-                  { title: 'Set Session ID and User ID', href: '/docs/tracing/manual/set-session-user-id' },
-                  { title: 'Tool Spans Creation', href: '/docs/tracing/manual/create-tool-spans' },
-                  { title: 'Mask Span Attributes', href: '/docs/tracing/manual/mask-span-attributes' },
-                  { title: 'Advanced Tracing (OTEL)', href: '/docs/tracing/manual/advanced-tracing-examples' },
-                  { title: 'FI Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
-                  { title: 'In-line Evaluations', href: '/docs/tracing/manual/in-line-evals' },
-                  { title: 'Adding Annotations to your Spans', href: '/docs/tracing/manual/annotating-using-api' },
-                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-integration' },
                 ]
               },
             ]
