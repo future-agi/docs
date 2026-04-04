@@ -25,8 +25,11 @@ Allow: /
 User-agent: GoogleOther
 Allow: /
 
-# Sitemaps
+# Sitemaps & Feeds
 Sitemap: ${siteUrl}/sitemap-index.xml
+
+# RSS Feed (for Perplexity, AI crawlers, aggregators)
+# ${siteUrl}/feed.xml
 
 # LLM-friendly documentation (llmstxt.org)
 # ${siteUrl}/llms.txt — index of all docs
