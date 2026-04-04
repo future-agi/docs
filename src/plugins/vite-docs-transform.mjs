@@ -7,8 +7,10 @@ import path from 'node:path';
 const COMPONENT_MAP = {
   Accordion: '@docs/Accordion.astro',
   AccordionGroup: '@docs/AccordionGroup.astro',
+  ApiCollapsible: '@docs/ApiCollapsible.astro',
   ApiEndpoint: '@docs/ApiEndpoint.astro',
   ApiPlayground: '@docs/ApiPlayground.astro',
+  ApiSection: '@docs/ApiSection.astro',
   Callout: '@docs/Callout.astro',
   Card: '@docs/Card.astro',
   CardGrid: '@docs/CardGrid.astro',
@@ -75,7 +77,10 @@ export function viteDocsTransform() {
 
 /**
  * If the frontmatter doesn't have a `layout:` field, inject one
- * with the correct relative path to DocsLayout.astro.
+ * with the correct relative path to DocsLayout.astro or ApiLayout.astro.
+ *
+ * API pages (under src/pages/docs/api/ that use <ApiPlayground>) get ApiLayout.
+ * All other docs pages get DocsLayout.
  */
 function injectLayout(code, filePath) {
   const frontmatterMatch = code.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -89,7 +94,13 @@ function injectLayout(code, filePath) {
   const srcRoot = filePath.split('/src/pages/docs/')[0] + '/src';
   const layoutsDir = path.join(srcRoot, 'layouts');
   const relativePath = path.relative(fileDir, layoutsDir).replace(/\\/g, '/');
-  const layoutLine = `layout: ${relativePath}/DocsLayout.astro`;
+
+  // Determine which layout to use:
+  // API pages that contain <ApiPlayground get ApiLayout; others get DocsLayout.
+  const isApiPage = filePath.includes('/src/pages/docs/api/') &&
+    /<ApiPlayground[\s/>]/.test(code);
+  const layoutFile = isApiPage ? 'ApiLayout.astro' : 'DocsLayout.astro';
+  const layoutLine = `layout: ${relativePath}/${layoutFile}`;
 
   // Insert layout as first line of frontmatter
   return code.replace(/^---\r?\n/, `---\n${layoutLine}\n`);
