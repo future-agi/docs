@@ -1,0 +1,190 @@
+---
+title: "Troubleshooting"
+description: "Step-by-step solutions for common Prism Gateway issues."
+---
+
+## Debug checklist
+
+When something isn't working, start here:
+
+1. Check the `x-prism-request-id` response header and search for it in your logs
+2. Check `x-prism-provider` to confirm which provider handled the request
+3. Check `x-prism-model-used` to confirm the actual model (may differ from requested if routing changed it)
+4. Compare `x-prism-latency-ms` against your expected latency
+5. Check `x-prism-cost` to verify pricing is as expected
+
+Use `curl -i` to see all response headers:
+
+```bash
+curl -i https://gateway.futureagi.com/v1/chat/completions \
+  -H "Authorization: Bearer sk-prism-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+---
+
+## Common issues
+
+### "model not found" but the model exists
+
+**Symptom:** 404 with `model_not_found` even though the model appears in `GET /v1/models`.
+
+**Quick fix:** Try the `provider/model` format to bypass model resolution:
+
+```bash
+# Check available models
+curl https://gateway.futureagi.com/v1/models \
+  -H "Authorization: Bearer sk-prism-your-key" | jq '.data[].id'
+
+# Use explicit provider prefix
+curl https://gateway.futureagi.com/v1/chat/completions \
+  -H "Authorization: Bearer sk-prism-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+If that works, set up a [model map](/docs/prism/concepts/configuration#model-mapping). See [Error handling](/docs/prism/guides/errors#model-not-found-404) for all causes.
+
+### Provider returns 404 upstream
+
+**Symptom:** 502 with `provider_404`.
+
+The gateway reached the provider, but the provider rejected the request. Most common cause: the provider API key is invalid or doesn't have access to the model. For OpenAI project-scoped keys (`sk-proj-...`), enable models in Project Settings > Model access.
+
+See [Error handling](/docs/prism/guides/errors#provider-error-502) for details.
+
+### Responses are slow
+
+**Symptom:** High `x-prism-latency-ms` values.
+
+**Possible causes:**
+1. **Provider latency**: Check if the provider itself is slow. Compare `x-prism-latency-ms` with direct provider calls.
+2. **No caching**: Repeated identical requests hit the provider every time. Enable [caching](/docs/prism/features/caching).
+3. **Wrong routing strategy**: `least-latency` routing picks the fastest provider automatically. See [routing](/docs/prism/features/routing).
+4. **Large prompts**: Token count affects latency. Check `usage.prompt_tokens` in the response.
+5. **Guardrail overhead**: Pre-request guardrails add latency. Check if guardrails are processing-heavy.
+
+### Cache isn't working
+
+**Symptom:** `x-prism-cache` always shows `miss` or doesn't appear.
+
+**Checklist:**
+- Is caching enabled? Check your org config or `GatewayConfig`.
+- Are you sending streaming requests? Streaming bypasses cache entirely.
+- Are the requests identical? Exact-match cache requires identical model, messages, temperature, and all parameters.
+- Is the TTL too short? Requests may expire before the next identical request arrives.
+- Are you using different cache namespaces? Each namespace is isolated.
+
+```python
+# Force a cache test: send the same non-streaming request twice
+from prism import Prism, GatewayConfig, CacheConfig
+
+client = Prism(
+    api_key="sk-prism-your-key",
+    base_url="https://gateway.futureagi.com",
+    config=GatewayConfig(cache=CacheConfig(enabled=True, strategy="exact", ttl=300)),
+)
+
+# First call
+r1 = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+)
+print(f"Call 1 cache: {r1.prism.cache_status}")  # miss or None
+
+# Second call (same input)
+r2 = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+)
+print(f"Call 2 cache: {r2.prism.cache_status}")  # hit_exact
+```
+
+### Guardrails blocking legitimate requests
+
+**Symptom:** 403 with `content_blocked` on requests that should be allowed.
+
+**Diagnosis:**
+- Check which guardrail fired: the error message includes the guardrail name
+- Check `x-prism-guardrail-triggered: true` in the response headers
+- Switch the guardrail from `enforce` to `log` mode temporarily to see what's being flagged without blocking
+
+See [Guardrails](/docs/prism/features/guardrails) for configuration options including fail-open behavior.
+
+### Rate limits hit unexpectedly
+
+**Symptom:** 429 errors before you expect to hit limits.
+
+**Check the response headers:**
+```
+x-ratelimit-limit-requests: 100
+x-ratelimit-remaining-requests: 0
+x-ratelimit-reset-requests: 1714000000
+```
+
+**Common causes:**
+- Per-key limits are lower than per-org limits. The most restrictive limit applies.
+- Multiple services share the same API key
+- Burst traffic from retries (each retry counts against the limit)
+
+**Fix:** Increase limits in [Rate limiting](/docs/prism/features/rate-limiting), use separate keys per service, or add backoff to retry logic.
+
+### Cost is higher than expected
+
+**Diagnosis:**
+1. Check `x-prism-cost` on individual requests to find expensive calls
+2. Use metadata tagging to identify which team/feature is driving costs:
+   ```python
+   response = client.chat.completions.create(
+       model="gpt-4o",
+       messages=[{"role": "user", "content": "Hello"}],
+       request_metadata={"team": "search", "feature": "autocomplete"},
+   )
+   ```
+3. Check the analytics dashboard for cost-by-model breakdown
+4. Look for missing cache hits on repeated queries
+5. Check if the `race` routing strategy is enabled (bills all providers, not just the winner)
+
+See [Cost tracking](/docs/prism/features/cost-tracking) for attribution and budgets.
+
+### Failover isn't working
+
+**Symptom:** Requests fail with provider errors but don't route to backup providers.
+
+**Checklist:**
+- Is failover enabled in your routing config?
+- Does `failover_on` include the status code you're seeing? (Default: `[429, 500, 502, 503, 504]`)
+- Are backup providers configured with valid credentials?
+- Check `x-prism-fallback-used: true` to confirm failover happened (or didn't)
+- Check `x-prism-provider` to see which provider ultimately handled the request
+
+---
+
+## Getting help
+
+If you can't resolve the issue:
+
+1. Collect the `x-prism-request-id` from the failing request
+2. Note the timestamp and error message
+3. Check the [Error handling](/docs/prism/guides/errors) guide for the specific error code
+4. Contact support with the request ID - it links to the full request/response log on our end
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Error handling" href="/docs/prism/guides/errors">
+    Error codes, retry strategies, and SDK exceptions
+  </Card>
+  <Card title="Request & response headers" href="/docs/prism/api/headers">
+    All debug headers for request correlation
+  </Card>
+  <Card title="Routing & failover" href="/docs/prism/features/routing">
+    Configure automatic failover
+  </Card>
+  <Card title="Configuration" href="/docs/prism/concepts/configuration">
+    Configuration hierarchy and overrides
+  </Card>
+</CardGroup>

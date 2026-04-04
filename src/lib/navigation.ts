@@ -420,6 +420,13 @@ export const tabNavigation: NavTab[] = [
               { title: 'Self-hosted', href: '/docs/prism/deployment/self-hosted' },
             ]
           },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Error handling', href: '/docs/prism/guides/errors' },
+              { title: 'Troubleshooting', href: '/docs/prism/guides/troubleshooting' },
+            ]
+          },
         ]
       },
       {
