@@ -411,8 +411,25 @@ export const apiNavigation: ApiNavGroup[] = [
   {
     "title": "Datasets",
     "items": [
+      { "title": "Get Dataset", "href": "/docs/api/datasets/get-dataset", "method": "GET" },
+      { "title": "List Datasets", "href": "/docs/api/datasets/list-datasets", "method": "GET" },
       { "title": "Create Dataset", "href": "/docs/api/datasets/create-dataset", "method": "POST" },
-      { "title": "Upload Dataset from File", "href": "/docs/api/datasets/upload-dataset", "method": "POST" }
+      { "title": "Create Empty Dataset", "href": "/docs/api/datasets/create-empty-dataset", "method": "POST" },
+      { "title": "Upload Dataset from File", "href": "/docs/api/datasets/upload-dataset", "method": "POST" },
+      { "title": "Create from HuggingFace", "href": "/docs/api/datasets/create-dataset-from-huggingface", "method": "POST" },
+      { "title": "Clone Dataset", "href": "/docs/api/datasets/clone-dataset", "method": "POST" },
+      { "title": "Duplicate Dataset", "href": "/docs/api/datasets/duplicate-dataset", "method": "POST" },
+      { "title": "Add as New Dataset", "href": "/docs/api/datasets/add-as-new", "method": "POST" },
+      { "title": "Update Dataset", "href": "/docs/api/datasets/update-dataset", "method": "POST" },
+      { "title": "Merge Dataset", "href": "/docs/api/datasets/merge-dataset", "method": "POST" },
+      { "title": "Delete Dataset", "href": "/docs/api/datasets/delete-dataset", "method": "DELETE" },
+      { "title": "Add Rows from File", "href": "/docs/api/datasets/add-rows-from-file", "method": "POST" },
+      { "title": "Add Empty Rows", "href": "/docs/api/datasets/add-empty-rows", "method": "POST" },
+      { "title": "Add Rows from Existing", "href": "/docs/api/datasets/add-rows-from-existing", "method": "POST" },
+      { "title": "Add Rows from HuggingFace", "href": "/docs/api/datasets/add-rows-from-huggingface", "method": "POST" },
+      { "title": "Duplicate Rows", "href": "/docs/api/datasets/duplicate-rows", "method": "POST" },
+      { "title": "Delete Rows", "href": "/docs/api/datasets/delete-rows", "method": "DELETE" },
+      { "title": "Update Cell Value", "href": "/docs/api/datasets/update-cell-value", "method": "PUT" }
     ]
   },
   {
