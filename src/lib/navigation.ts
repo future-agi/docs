@@ -375,6 +375,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Embeddings & reranking', href: '/docs/prism/api/embeddings' },
                   { title: 'Media endpoints', href: '/docs/prism/api/media' },
                   { title: 'Assistants API', href: '/docs/prism/api/assistants' },
+                  { title: 'Files & vector stores', href: '/docs/prism/api/files' },
                   { title: 'Request & response headers', href: '/docs/prism/api/headers' },
                 ]
               },
