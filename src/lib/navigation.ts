@@ -365,6 +365,7 @@ export const tabNavigation: NavTab[] = [
                 title: 'Providers',
                 items: [
                   { title: 'Supported providers', href: '/docs/prism/features/providers' },
+                  { title: 'Self-hosted models', href: '/docs/prism/features/self-hosted-models' },
                 ]
               },
               {
@@ -403,6 +404,7 @@ export const tabNavigation: NavTab[] = [
                 title: 'Cost & Observability',
                 items: [
                   { title: 'Cost tracking', href: '/docs/prism/features/cost-tracking' },
+                  { title: 'Observability', href: '/docs/prism/features/observability' },
                   { title: 'Shadow experiments', href: '/docs/prism/features/shadow-experiments' },
                 ]
               },
@@ -412,6 +414,12 @@ export const tabNavigation: NavTab[] = [
                   { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
                 ]
               },
+            ]
+          },
+          {
+            title: 'Admin',
+            items: [
+              { title: 'Organization management', href: '/docs/prism/admin/organizations' },
             ]
           },
           {
