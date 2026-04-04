@@ -191,6 +191,16 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/observe' },
           {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
+              { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
+              { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
+              { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
+              { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
+            ]
+          },
+          {
             title: 'Features',
             items: [
               { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
@@ -198,7 +208,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Group Traces by Session', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
-              { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
+              { title: 'Voice Observability', href: '/docs/observe/features/voice' },
               {
                 title: 'Manual Tracing',
                 items: [
@@ -216,30 +226,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'In-line Evaluations', href: '/docs/observe/features/manual-tracing/in-line-evals' },
                   { title: 'Adding Annotations to your Spans', href: '/docs/observe/features/manual-tracing/annotating-using-api' },
                   { title: 'Langfuse Integration', href: '/docs/observe/features/manual-tracing/langfuse-integration' },
-                ]
-              },
-            ]
-          },
-          {
-            title: 'Voice Observability',
-            items: [
-              { title: 'Overview', href: '/docs/observe/voice' },
-              { title: 'Set Up Voice Observability', href: '/docs/observe/voice/set-up' },
-            ]
-          },
-          {
-            title: 'Tracing',
-            items: [
-              { title: 'Overview', href: '/docs/tracing' },
-              {
-                title: 'Concept',
-                items: [
-                  { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
-                  { title: 'Components of Observability', href: '/docs/tracing/concepts/components' },
-                  { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
-                  { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
-                  { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
-                  { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
                 ]
               },
             ]
