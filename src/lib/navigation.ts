@@ -141,6 +141,12 @@ export const tabNavigation: NavTab[] = [
         icon: 'rocket',
         items: [
           { title: 'Overview', href: '/docs/falcon-ai' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
+            ]
+          },
         ]
       },
       {
