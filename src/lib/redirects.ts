@@ -167,7 +167,7 @@ export const redirectMap: Record<string, string> = {
   '/future-agi/get-started/prototype/quickstart': '/docs/observe/features/quickstart',
   '/future-agi/get-started/prototype/winner': '/docs/prototype/features/choose-winner',
   '/future-agi/products/observability/auto-instrumentation/overview': '/docs/tracing/auto',
-  '/future-agi/products/observability/concept/core-components': '/docs/tracing/concepts/components',
+  '/future-agi/products/observability/concept/core-components': '/docs/tracing/concepts',
   '/future-agi/products/observability/concept/otel': '/docs/tracing/concepts/otel',
   '/future-agi/products/observability/concept/overview': '/docs/tracing/concepts',
   '/future-agi/products/observability/concept/spans': '/docs/tracing/concepts/spans',
