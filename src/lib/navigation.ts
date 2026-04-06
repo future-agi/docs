@@ -145,6 +145,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Features',
             items: [
               { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
+              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
             ]
           },
         ]
