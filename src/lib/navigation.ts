@@ -137,6 +137,13 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Falcon AI',
+        icon: 'rocket',
+        items: [
+          { title: 'Overview', href: '/docs/falcon-ai' },
+        ]
+      },
+      {
         group: 'Evaluation',
         icon: 'chart',
         items: [
