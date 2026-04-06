@@ -142,6 +142,13 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/falcon-ai' },
           {
+            title: 'Concepts',
+            items: [
+              { title: 'Mode System', href: '/docs/falcon-ai/concepts/mode-system' },
+              { title: 'Context Detection', href: '/docs/falcon-ai/concepts/context-detection' },
+            ]
+          },
+          {
             title: 'Features',
             items: [
               { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
