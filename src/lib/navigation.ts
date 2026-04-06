@@ -873,6 +873,30 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Eval Tasks',
+            items: [
+              { title: 'List Eval Tasks', href: '/docs/api/eval-tasks/list-eval-tasks-filtered' },
+              { title: 'Create Eval Task', href: '/docs/api/eval-tasks/create-eval-task' },
+              { title: 'Get Eval Task', href: '/docs/api/eval-tasks/get-eval-task' },
+              { title: 'Update Eval Task', href: '/docs/api/eval-tasks/update-eval-task' },
+              { title: 'Delete Eval Task', href: '/docs/api/eval-tasks/delete-eval-task' },
+              { title: 'Bulk Delete Eval Tasks', href: '/docs/api/eval-tasks/bulk-delete-eval-tasks' },
+              { title: 'Pause Eval Task', href: '/docs/api/eval-tasks/pause-eval-task' },
+              { title: 'Unpause Eval Task', href: '/docs/api/eval-tasks/unpause-eval-task' },
+            ]
+          },
+          {
+            title: 'Custom Eval Configs',
+            items: [
+              { title: 'List Custom Eval Configs', href: '/docs/api/custom-eval-configs/list-configs-filtered' },
+              { title: 'Create Custom Eval Config', href: '/docs/api/custom-eval-configs/create-custom-eval-config' },
+              { title: 'Get Custom Eval Config', href: '/docs/api/custom-eval-configs/get-custom-eval-config' },
+              { title: 'Update Custom Eval Config', href: '/docs/api/custom-eval-configs/update-custom-eval-config' },
+              { title: 'Delete Custom Eval Config', href: '/docs/api/custom-eval-configs/delete-custom-eval-config' },
+              { title: 'Check Config Exists', href: '/docs/api/custom-eval-configs/check-config-exists' },
+            ]
+          },
+          {
             title: 'Eval Logs & Metrics',
             items: [
               { title: 'Get Eval Log Details', href: '/docs/api/eval-logs-metrics/getevallogdetails' },
