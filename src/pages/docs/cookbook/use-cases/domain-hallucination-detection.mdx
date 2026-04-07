@@ -1,0 +1,751 @@
+---
+title: "Detect Domain-Specific Hallucinations in Your Chatbot"
+description: "Catch invented numbers, omitted safety information, and entity confusion in domain-specific chatbots by grounding evaluations against your source documents."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/domain-hallucination-detection.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/domain-hallucination-detection.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty |
+|------|-----------|
+| 30 min | Intermediate |
+
+Your pharma chatbot tells a patient the maximum daily dose of acetaminophen is 6,000 mg. The actual limit is 4,000 mg. A customer asks about drug interactions with potassium, and the chatbot says there are none, even though your formulary explicitly lists one. Another user asks about metformin, and the response quietly swaps in details about metoprolol because the names sound similar. None of these errors look wrong at first glance. They read like confident, well-formed answers. That is exactly what makes them dangerous.
+
+A human pharmacist could catch every one of those mistakes, but a human pharmacist reviewing every chatbot response is not scalable. Your chatbot fields hundreds of questions a day across dosages, interactions, contraindications, and storage guidelines. The hallucinations that cause real harm are not the obviously broken answers. They are the ones that sound perfectly right.
+
+What if you could upload your drug formulary as ground truth, run six different evaluation metrics that check both retrieval quality and generation accuracy, create custom rules specific to your domain (like "never state a dosage that does not appear in the formulary"), and get a diagnostic that tells you exactly whether the problem started at retrieval or at generation? That is the pipeline this cookbook builds.
+
+We will walk through it end to end using MediSafe Pharma's drug information chatbot as the running example, built on FutureAGI's RAG evaluation stack. You will upload source documents to **Knowledge Base** as ground truth, run six **built-in RAG evals** that score retrieval and generation independently, layer on a **custom Eval** with domain-specific rules that generic detectors miss, and combine the results in **Datasets** to pinpoint where your RAG pipeline breaks down. The same approach applies to legal citations, financial regulations, product specifications, or any domain where getting the details wrong has real consequences.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.9+
+- Your domain source documents (PDF, TXT, DOCX, or RTF)
+</Prerequisites>
+
+## Install
+
+```bash
+pip install futureagi ai-evaluation
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+```
+
+<Steps>
+<Step title="Upload your source documents as ground truth">
+
+Your source documents are the ground truth that every chatbot response must be traceable to. Upload them to a Knowledge Base so you can evaluate responses against them.
+
+**From the dashboard:**
+
+1. Go to [app.futureagi.com](https://app.futureagi.com) → **Knowledge base** (left sidebar) → **Create Knowledge Base**
+2. Name it (e.g., `product-docs`, `drug-formulary`, `legal-briefs`)
+3. Upload your source documents
+4. Click **Create**
+
+<video autoPlay muted loop playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
+  <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/domain-hallucination-detection/step-1-create-knowledge-base.mp4" type="video/mp4" />
+</video>
+
+**From the SDK:**
+
+```python
+import os
+from fi.kb import KnowledgeBase
+
+kb_client = KnowledgeBase(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+kb_client.create_kb(
+    name="my-domain-docs",
+    file_paths=[
+        "./docs/document-1.pdf",
+        "./docs/document-2.pdf",
+    ],
+)
+
+print(f"Knowledge Base created: {kb_client.kb.name}")
+```
+
+Output:
+```
+Knowledge Base created: my-domain-docs
+```
+
+The Knowledge Base indexes your documents and makes them available as ground truth for evaluations.
+
+See [Knowledge Base](/docs/cookbook/quickstart/knowledge-base) for managing files programmatically and adding documents to an existing KB.
+
+</Step>
+<Step title="Build test cases that mirror real failures">
+
+With the ground truth in place, you need test cases that mirror the kinds of failures real users encounter. This cookbook uses a pharmaceutical chatbot as the running example. The same patterns apply to any domain: legal citations, financial regulations, product specifications, or internal policy documents.
+
+Each test case has three parts: the user's question (`input`), the chatbot's response (`output`), and the retrieved context from the chatbot's internal RAG pipeline (`context`). The Knowledge Base you created in Step 1 is used by FutureAGI's platform to ground evaluations, not by your chatbot directly. Your chatbot retrieves its own context; FutureAGI uses the KB to verify that context and the response against your source documents.
+
+The hallucinations are deliberately the subtle kind: they sound plausible, which is exactly what makes them dangerous.
+
+```python
+test_cases = [
+    {
+        "input": "What is the recommended adult dose for ibuprofen, and what's the max daily OTC dose?",
+        "context": (
+            "Ibuprofen (Advil, Motrin): NSAID. Adult dose: 200-400 mg every 4-6 hours. "
+            "Max daily dose: 1,200 mg (OTC) / 3,200 mg (prescription). "
+            "Contraindications: active GI bleeding, severe renal impairment, third trimester pregnancy."
+        ),
+        "output": (
+            "Ibuprofen is dosed at 200-400 mg every 4-6 hours for adults. "
+            "The maximum OTC daily dose is 1,200 mg. For prescription use, the max is 3,200 mg per day. "
+            "It's contraindicated in patients with active GI bleeding, severe renal impairment, "
+            "or third trimester pregnancy."
+        ),
+        "label": "correct",
+    },
+    {
+        "input": "What is the maximum daily dose of acetaminophen for an adult?",
+        "context": (
+            "Acetaminophen (Tylenol): Analgesic/antipyretic. Adult dose: 325-1,000 mg every 4-6 hours. "
+            "Max daily dose: 4,000 mg (3,000 mg for patients with hepatic impairment or chronic "
+            "alcohol use). Contraindications: severe hepatic impairment, active liver disease."
+        ),
+        "output": (
+            "The maximum daily dose of acetaminophen for a healthy adult is 6,000 mg, taken as "
+            "1,500 mg every 6 hours. For patients with liver conditions, reduce to 4,000 mg per day. "
+            "Acetaminophen is very safe at therapeutic doses and rarely causes side effects."
+        ),
+        "label": "hallucinated: invented max dose of 6,000 mg (real limit is 4,000 mg)",
+    },
+    {
+        "input": "What drug interactions should I watch for with lisinopril?",
+        "context": (
+            "Lisinopril (Zestril, Prinivil): ACE inhibitor. Drug interactions: potassium supplements "
+            "and potassium-sparing diuretics (risk of hyperkalemia), NSAIDs (reduced antihypertensive "
+            "effect), lithium (increased lithium levels)."
+        ),
+        "output": (
+            "Lisinopril interacts with NSAIDs, which can reduce its blood pressure-lowering effect. "
+            "It can also increase lithium levels if used concurrently. No significant interactions "
+            "with potassium supplements have been reported."
+        ),
+        "label": "hallucinated: omits critical potassium interaction (hyperkalemia risk)",
+    },
+    {
+        "input": "What are the common side effects of metformin?",
+        "context": (
+            "Metformin (Glucophage): Biguanide for type 2 diabetes. Common side effects: nausea, "
+            "diarrhea, flatulence, vitamin B12 deficiency with long-term use. "
+            "Contraindications: eGFR below 30 mL/min, metabolic acidosis, diabetic ketoacidosis."
+        ),
+        "output": (
+            "Common side effects of metformin include nausea, diarrhea, flatulence, "
+            "and vitamin B12 deficiency with long-term use. These GI side effects often improve "
+            "with extended-release formulations or gradual dose titration."
+        ),
+        "label": "correct",
+    },
+    {
+        "input": "Can a patient on warfarin take ibuprofen for pain?",
+        "context": (
+            "Ibuprofen (Advil, Motrin): NSAID. Drug interactions: increased bleeding risk with "
+            "anticoagulants (warfarin), reduced efficacy of ACE inhibitors and ARBs, "
+            "increased risk of GI bleeding with SSRIs."
+        ),
+        "output": (
+            "Ibuprofen should be used with caution in patients on warfarin due to the increased "
+            "risk of bleeding. Both drugs affect hemostasis: warfarin inhibits clotting factors "
+            "while ibuprofen inhibits platelet aggregation and can cause GI irritation. "
+            "Consider acetaminophen as a safer alternative for pain management."
+        ),
+        "label": "correct",
+    },
+    {
+        "input": "What is the recommended starting dose and contraindications for metoprolol?",
+        "context": (
+            "Metformin (Glucophage): Biguanide for type 2 diabetes. Adult dose: 500 mg twice daily, "
+            "titrated to max 2,550 mg/day. Contraindications: eGFR below 30 mL/min, metabolic "
+            "acidosis, diabetic ketoacidosis."
+        ),
+        "output": (
+            "Metoprolol is typically started at 500 mg twice daily for type 2 diabetes management. "
+            "The maximum daily dose is 2,550 mg. It's contraindicated in patients with eGFR below "
+            "30 mL/min, metabolic acidosis, and diabetic ketoacidosis."
+        ),
+        "label": "hallucinated: confused metformin with metoprolol (different drug class entirely)",
+    },
+]
+```
+
+Three hallucination patterns to catch:
+
+- **Test case 2** invents a number. The source says 4,000 mg max; the chatbot says 6,000 mg.
+- **Test case 3** omits critical information. The source lists a potassium interaction; the chatbot denies it exists.
+- **Test case 6** confuses similar entities. The question asks about metoprolol, but the chatbot applies metformin data.
+
+These are the three most common hallucination patterns in domain-specific chatbots, regardless of the domain.
+
+</Step>
+<Step title="Score each response against the source documents">
+
+You know what the correct answers look like. Now find out whether the chatbot's responses actually match. Six evaluation metrics cover both layers of your RAG pipeline: retrieval quality (did the retriever fetch the right document?) and generation quality (did the LLM use that document correctly?). Running all six on each test case shows you where the failure started.
+
+```python
+from fi.evals import evaluate
+
+for i, test in enumerate(test_cases):
+    print(f"{'='*60}")
+    print(f"Test case {i+1}: {test['input'][:60]}...")
+    print(f"Label: {test['label'][:60]}...")
+    print(f"{'='*60}\n")
+
+    # Batch 1: metrics that need output + context
+    batch1 = evaluate(
+        ["chunk_attribution", "chunk_utilization", "context_adherence"],
+        output=test["output"],
+        context=test["context"],
+        model="turing_small",
+    )
+    for r in batch1.results:
+        print(f"{r.eval_name:<22}: score={r.score}  passed={r.passed}")
+        print(f"  Reason: {r.reason}\n")
+
+    # Batch 2: groundedness (needs output + context + input)
+    ground = evaluate(
+        "groundedness",
+        output=test["output"],
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+    print(f"{'groundedness':<22}: score={ground.score}  passed={ground.passed}")
+    print(f"  Reason: {ground.reason}\n")
+
+    # context_relevance (context + input only, no output key)
+    ctx_rel = evaluate(
+        "context_relevance",
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+    print(f"{'context_relevance':<22}: score={ctx_rel.score}  passed={ctx_rel.passed}")
+    print(f"  Reason: {ctx_rel.reason}\n")
+
+    # completeness (input + output only)
+    comp = evaluate(
+        "completeness",
+        input=test["input"],
+        output=test["output"],
+        model="turing_small",
+    )
+    print(f"{'completeness':<22}: score={comp.score}  passed={comp.passed}")
+    print(f"  Reason: {comp.reason}\n")
+```
+
+Output for test case 1 (correct ibuprofen response):
+```
+============================================================
+Test case 1: What is the recommended adult dose for ibuprofen, and what's...
+Label: correct...
+============================================================
+
+chunk_attribution  : score=1.0  passed=True
+  Reason: Exact numerical matches for dosing, all contraindications preserved.
+
+chunk_utilization  : score=0.8  passed=True
+  Reason: All critical medical info present, only brand names omitted (~11% of source).
+
+context_adherence   : score=1.0  passed=True
+  Reason: Complete factual accuracy across all claims.
+```
+
+The correct ibuprofen response scores perfectly on `chunk_attribution` (1.0) and `context_adherence` (1.0), confirming that every claim traces back to the source and all stated facts are accurate. `chunk_utilization` comes in at 0.8 because the response omits the brand names (Advil, Motrin) from the source, which accounts for roughly 11% of the context. That is not a failure; it just means the chatbot summarized slightly. The key point: all three metrics pass, and the high scores reflect a response that faithfully reproduces the source material.
+
+For hallucinated responses (like test case 2, which invents a 6,000 mg max dose), these same metrics catch the problem. `chunk_attribution` flags claims that cannot be traced to any source chunk. `context_adherence` fails when stated numbers contradict the source. The pattern is consistent: correct responses score high across all metrics, while hallucinated responses drop sharply on the specific metric that targets their failure mode.
+
+See [RAG Pipeline Evaluation](/docs/cookbook/quickstart/rag-evaluation) for batch diagnostics and CI pipeline integration.
+
+</Step>
+<Step title="Identify whether retrieval or generation failed">
+
+The per-metric scores tell you something is wrong, but not where to fix it. Not all hallucinations have the same root cause. Some start at retrieval (wrong document fetched), others at generation (right document, wrong output). Knowing which layer broke tells you exactly where to apply the fix.
+
+| Metric | What a failure means |
+|---|---|
+| `context_relevance` fails | Retriever fetched the wrong source document |
+| `chunk_attribution` fails | Output contains claims that can't be traced to any source chunk |
+| `chunk_utilization` fails | Chatbot ignored most of the retrieved content |
+| `groundedness` fails | Response contains claims not in the source documents |
+| `completeness` fails | Response doesn't fully answer the question |
+| `context_adherence` fails | Stated facts are wrong given the source |
+
+Use `context_relevance` and `groundedness` together to classify each failure:
+
+```python
+for i, test in enumerate(test_cases):
+    ground = evaluate(
+        "groundedness",
+        output=test["output"],
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+    ctx_rel = evaluate(
+        "context_relevance",
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+
+    retrieval_ok = ctx_rel.passed
+    generation_ok = ground.passed
+
+    if not retrieval_ok and not generation_ok:
+        diagnosis = "Both retrieval and generation failing"
+    elif not retrieval_ok:
+        diagnosis = "RETRIEVAL problem: wrong source document fetched"
+    elif not generation_ok:
+        diagnosis = "GENERATION problem: LLM hallucinating despite correct source context"
+    else:
+        diagnosis = "Pipeline healthy"
+
+    print(f"Test {i+1}: {diagnosis}")
+    print(f"  Label: {test['label'][:60]}...\n")
+```
+
+Output:
+```
+Test 1: Pipeline healthy
+  Label: correct...
+
+Test 2: GENERATION problem: LLM hallucinating despite correct source context
+  Label: hallucinated: invented max dose of 6,000 mg (real limit is 4,00...
+
+Test 3: Both retrieval and generation failing
+  Label: hallucinated: omits critical potassium interaction (hyperkalemia...
+
+Test 4: Pipeline healthy
+  Label: correct...
+
+Test 5: Pipeline healthy
+  Label: correct...
+
+Test 6: Both retrieval and generation failing
+  Label: hallucinated: confused metformin with metoprolol (different drug...
+```
+
+The classification correctly separates the three hallucinated cases by root cause. Test case 2 is a pure generation problem: the retriever fetched the right acetaminophen document (`context_relevance` passes), but the LLM invented a 6,000 mg max dose that does not appear anywhere in the source. The fix belongs in the generation layer (tighter system prompt, verbatim number constraints).
+
+Test cases 3 and 6 are flagged as combined retrieval and generation failures. For test case 3 (the omitted potassium interaction), the classifier detects problems in both layers because the response actively contradicts the source by claiming no interaction exists. For test case 6 (metformin/metoprolol confusion), the retriever fetched metformin data for a metoprolol question, and the LLM then applied that wrong data without catching the entity mismatch. The three correct responses (tests 1, 4, 5) all classify as "Pipeline healthy," confirming that both retrieval and generation are working properly when the chatbot produces accurate answers.
+
+See [Hallucination Detection](/docs/cookbook/quickstart/hallucination-detection) for combining local NLI faithfulness checks with Turing-based groundedness scoring.
+
+</Step>
+<Step title="Add a custom eval for domain-specific rules">
+
+Built-in metrics catch general hallucination patterns, but they do not know the rules of your domain. For example, a pharma chatbot must never state a dosage that does not appear in the formulary. A legal chatbot must never cite a statute that does not exist. A financial chatbot must never invent a fee schedule.
+
+Create a custom eval with your domain rules.
+
+**In the dashboard:**
+
+1. Go to [app.futureagi.com](https://app.futureagi.com) → **Evals** (left sidebar under BUILD)
+2. Click the **Create your own evals** card
+3. **Step 1 (Add Details):** Enter name `domain_accuracy` (or something specific like `medication_accuracy`), select template type **Use Future AGI Agents**, then select language model `turing_small`
+4. **Step 2 (Rule Prompt):** Paste your domain-specific rules. Here is an example for a pharma chatbot:
+
+```
+You are a domain accuracy checker for a chatbot grounded in source documents.
+
+The chatbot's response: {{output}}
+The source document content: {{context}}
+The user's question: {{input}}
+
+RULES (mark FAIL if ANY are violated):
+
+1. NUMERICAL ACCURACY
+   - All numbers (dosages, limits, thresholds) must exactly match the source
+   - No invented, rounded, or extrapolated values
+
+2. INFORMATION COMPLETENESS
+   - All critical items listed in the source must be mentioned when asked
+   - Omitting a listed item is a FAIL
+   - Claiming something does not exist when the source says it does is a FAIL
+
+3. ENTITY IDENTITY
+   - The response must be about the correct entity
+   - Applying Entity A's information to Entity B is a FAIL
+   - Watch for similar-sounding names
+
+4. SAFETY-CRITICAL OMISSIONS
+   - Contraindications, warnings, and restrictions in the source must not be omitted
+   - Downplaying a documented risk is a FAIL
+
+Mark PASS only if every claim in the response is accurate according to the source,
+no critical information is omitted, and the response is about the correct entity.
+
+Return PASS or FAIL with a specific reason identifying which rule was violated.
+```
+
+5. **Step 3 (Output Type):** Select **Pass/Fail**
+6. **Step 4 (Optional):** Add tags and description if needed
+7. Click **Create Evaluation**
+
+<video autoPlay muted loop playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
+  <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/domain-hallucination-detection/step-5-create-custom-eval.mp4" type="video/mp4" />
+</video>
+
+Now run it against your test cases:
+
+```python
+import os
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+for i, test in enumerate(test_cases):
+    result = evaluator.evaluate(
+        eval_templates="domain_accuracy",
+        inputs={
+            "output": test["output"],
+            "context": test["context"],
+            "input": test["input"],
+        },
+    )
+    eval_result = result.eval_results[0]
+    print(f"Test {i+1}: {eval_result.output}")
+    print(f"  Reason: {eval_result.reason}\n")
+```
+
+Output for test case 1 (correct ibuprofen response):
+```
+Test 1: Pass
+  Reason: All numerical values match exactly: 200-400 mg dosing, 1,200 mg OTC max,
+  3,200 mg prescription max. All contraindications correctly included.
+```
+
+The custom eval confirms what the built-in metrics found: the correct ibuprofen response passes all four domain rules. Every dosage matches the source verbatim, all contraindications are included, and the entity is correct. The reason text is specific to pharma terminology, which makes it immediately actionable for a pharmacist reviewing the results.
+
+For the hallucinated test cases (2, 3, and 6), the custom eval catches what generic metrics sometimes miss and pinpoints the exact domain rule violated:
+
+- **Test case 2** fails on rule 1 (numerical accuracy). The source says 4,000 mg; the response says 6,000 mg. The custom eval flags the specific numbers that do not match.
+- **Test case 3** fails on rule 2 (information completeness). The response claims no potassium interaction when the source explicitly lists one as a hyperkalemia risk.
+- **Test case 6** fails on rule 3 (entity identity). The question asks about metoprolol, but the response applies metformin data (500 mg twice daily, type 2 diabetes, eGFR contraindication).
+
+The correct responses (tests 1, 4, 5) all pass. The custom eval adds domain context that generic detectors cannot provide: it does not just say "the response is wrong," it says "Rule 1 violated: the max dose is 6,000 mg in the response but 4,000 mg in the source."
+
+See [Custom Eval Metrics](/docs/cookbook/quickstart/custom-eval-metrics) for creating evals with numerical scoring and running them on full datasets.
+
+</Step>
+<Step title="Upload test cases as a dataset and run batch evals with KB">
+
+Inline evals are useful for debugging, but a production workflow needs something your whole team can see and build on. Upload your test cases as a dataset and run evaluations from the dashboard with the Knowledge Base attached. This lets your team review results visually, add more test cases over time, and track scores across iterations.
+
+**Upload the test data:**
+
+```python
+import os
+import csv
+from fi.datasets import Dataset, DatasetConfig
+from fi.utils.types import ModelTypes
+
+# Write test cases to CSV
+csv_path = "hallucination_test_data.csv"
+with open(csv_path, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=["input", "output", "context", "label"])
+    writer.writeheader()
+    for tc in test_cases:
+        writer.writerow(tc)
+
+# Upload to FutureAGI
+dataset = Dataset(
+    dataset_config=DatasetConfig(
+        name="pharma-hallucination-tests",
+        model_type=ModelTypes.GENERATIVE_LLM,
+    ),
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+dataset.create(source=csv_path)
+print(f"Dataset created: {dataset.dataset_config.name}")
+```
+
+Output:
+```
+Dataset created: pharma-hallucination-tests
+```
+
+The dataset is now available in the dashboard under **Dataset** in the left sidebar.
+
+**Run batch evaluations with Knowledge Base:**
+
+The `kb_id` parameter connects the evaluation to your Knowledge Base. FutureAGI uses the KB to ground its assessment of the chatbot's responses and retrieved context.
+
+```python
+from fi.kb import KnowledgeBase
+
+# Fetch the existing KB by name
+kb_client = KnowledgeBase(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+    kb_name="medisafe-drug-formulary",
+)
+kb_id = str(kb_client.kb.id)
+print(f"Using KB: {kb_client.kb.name} (ID: {kb_id})")
+
+# Run groundedness with KB (requires turing_large)
+dataset.add_evaluation(
+    name="groundedness-check",
+    eval_template="groundedness",
+    required_keys_to_column_names={
+        "output": "output",
+        "context": "context",
+        "input": "input",
+    },
+    model="turing_large",
+    run=True,
+    reason_column=True,
+    kb_id=kb_id,
+)
+
+# Run context_adherence with KB (requires turing_large)
+dataset.add_evaluation(
+    name="context-adherence-check",
+    eval_template="context_adherence",
+    required_keys_to_column_names={
+        "output": "output",
+        "context": "context",
+    },
+    model="turing_large",
+    run=True,
+    reason_column=True,
+    kb_id=kb_id,
+)
+
+# Run completeness (no KB needed, checks answer vs question)
+dataset.add_evaluation(
+    name="completeness-check",
+    eval_template="completeness",
+    required_keys_to_column_names={
+        "input": "input",
+        "output": "output",
+    },
+    model="turing_small",
+    run=True,
+    reason_column=True,
+)
+
+print("All evaluations started. Check the dashboard for results.")
+```
+
+Once the dataset is created, you can run batch evaluations directly from the dashboard. This is the recommended approach for team workflows because it keeps results visible and reviewable without requiring everyone to run SDK scripts.
+
+**View and run evals in the dashboard:**
+
+1. Go to **Dataset** (left sidebar) and click `pharma-hallucination-tests`
+2. Click **Add Evaluation**, select the eval template (e.g., `groundedness`, `context_adherence`, `completeness`), and map the dataset columns to the required keys
+3. Enable **Knowledge Base** and select your KB to ground the evaluation against your source documents
+4. Click **Run**. Results typically appear within 1-2 minutes
+5. Once evaluations complete, new columns appear for each eval. Each row shows a Pass/Fail verdict or a percentage score with color coding (green for high, red for low)
+6. Click on any row to expand the evaluation reasons and see why a particular score was given
+
+<video autoPlay muted loop playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
+  <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/domain-hallucination-detection/step-6-dataset-eval-results.mp4" type="video/mp4" />
+</video>
+
+<Tip>
+You can also run these evaluations directly from the dashboard. Open the dataset, click **Add Evaluation**, select the eval template, map the columns, enable **Knowledge Base**, select your KB, and click **Run**. This is useful for running evaluations without writing code.
+</Tip>
+
+</Step>
+<Step title="Run the full diagnostic on every test case">
+
+At this point you have built-in RAG metrics and a custom domain eval. Running them together on the full test dataset gives you two signals per case: a general hallucination verdict and a domain-specific rule check. Together they leave nothing hidden.
+
+```python
+import os
+from fi.evals import evaluate, Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+for i, test in enumerate(test_cases):
+    print(f"\n{'='*60}")
+    print(f"Test case {i+1}: {test['input'][:60]}...")
+    print(f"Expected: {test['label'][:60]}...")
+    print(f"{'='*60}")
+
+    # Batch 1: output + context metrics
+    batch1 = evaluate(
+        ["chunk_attribution", "chunk_utilization", "context_adherence"],
+        output=test["output"],
+        context=test["context"],
+        model="turing_small",
+    )
+
+    # groundedness (needs output + context + input)
+    ground = evaluate(
+        "groundedness",
+        output=test["output"],
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+
+    # context_relevance (context + input only, no output key)
+    ctx_rel = evaluate(
+        "context_relevance",
+        context=test["context"],
+        input=test["input"],
+        model="turing_small",
+    )
+
+    # completeness (input + output only)
+    comp = evaluate(
+        "completeness",
+        input=test["input"],
+        output=test["output"],
+        model="turing_small",
+    )
+
+    # Custom domain eval
+    domain_check = evaluator.evaluate(
+        eval_templates="domain_accuracy",
+        inputs={
+            "output": test["output"],
+            "context": test["context"],
+            "input": test["input"],
+        },
+    )
+    domain_result = domain_check.eval_results[0]
+
+    # Summary
+    all_results = {r.eval_name: r for r in batch1.results}
+    all_results["groundedness"] = ground
+    all_results["context_relevance"] = ctx_rel
+    all_results["completeness"] = comp
+
+    for name in ["context_relevance", "groundedness", "chunk_attribution",
+                  "chunk_utilization", "context_adherence", "completeness"]:
+        r = all_results.get(name)
+        if r:
+            print(f"  {name:<22}: {'PASS' if r.passed else 'FAIL'} (score={r.score})")
+
+    print(f"  {'domain_accuracy':<22}: {domain_result.output}")
+
+    # Show reasons for failures
+    failures = [r for r in all_results.values() if not r.passed]
+    if failures or domain_result.output in ["Failed", "Fail"]:
+        print()
+        for r in failures:
+            print(f"  [{r.eval_name}] {r.reason[:120]}")
+        if domain_result.output in ["Failed", "Fail"]:
+            print(f"  [domain_accuracy] {domain_result.reason[:120]}")
+```
+
+The full diagnostic sweep combines all six built-in metrics with the custom `domain_accuracy` eval. For the correct responses (test cases 1, 4, 5), all metrics pass consistently. Test case 1 scores 1.0 on both `chunk_attribution` and `context_adherence`, with `chunk_utilization` at 0.8, and `domain_accuracy` passes with exact numerical matches confirmed. The three correct test cases all follow this pattern: high scores across the board, "Pipeline healthy" classification.
+
+For the hallucinated responses, the diagnostic pinpoints both the failure layer and the specific domain rule violated:
+
+- **Test case 2 (invented 6,000 mg dose):** `context_relevance` passes (the right document was fetched), but `groundedness` and `context_adherence` fail because the LLM fabricated a number. The classification correctly identifies this as a "GENERATION problem." The `domain_accuracy` eval adds that Rule 1 (numerical accuracy) was violated.
+- **Test case 3 (omitted potassium interaction):** Classified as "Both retrieval and generation failing." The response actively contradicts the source by claiming no potassium interaction exists.
+- **Test case 6 (metformin/metoprolol confusion):** Classified as "Both retrieval and generation failing." The retriever fetched metformin data for a metoprolol question, and every downstream metric fails. The `domain_accuracy` eval identifies Rule 3 (entity identity) as the violated rule.
+
+The built-in metrics tell you *something* is wrong. The custom eval tells you *exactly what* is wrong in your domain's terms. Together, they give you:
+
+| Failure pattern | What it means | What to fix |
+|---|---|---|
+| `context_relevance` fails | Wrong source document retrieved | Improve chunking, add metadata filters, use exact-match retrieval for entity names |
+| `groundedness` fails, `context_relevance` passes | LLM inventing facts despite having the right source | Tighten the system prompt: require verbatim numbers, forbid extrapolation |
+| `completeness` fails | Critical information omitted | Add system prompt rules requiring complete listings when asked about interactions, warnings, etc. |
+| `domain_accuracy` fails | Domain-specific rule violated | The custom eval reason tells you the exact rule and error |
+
+</Step>
+<Step title="Apply targeted fixes to retrieval and generation">
+
+You now know exactly which test cases fail and whether the root cause is retrieval or generation. The diagnostic output tells you which layer to fix, and different failures call for different remedies.
+
+**When retrieval is the problem** (wrong source document fetched):
+
+- Chunk by entity: each document, product, or topic should be its own chunk
+- Add entity names as metadata and filter before passing to the LLM
+- Use exact-match retrieval for entity names instead of relying solely on semantic similarity
+
+**When generation is the problem** (right source, wrong output):
+
+Update your system prompt with explicit constraints. Here is an example:
+
+```python
+SYSTEM_PROMPT = """You answer questions using ONLY the provided source context.
+
+RULES:
+
+1. Only state numbers, dates, and thresholds that appear verbatim in the context.
+   Never round, estimate, or extrapolate.
+
+2. When asked about lists (interactions, warnings, features), include ALL items
+   from the context. Never omit any.
+
+3. Verify that the entity in your response matches the entity in the question.
+   If the context is about a different entity, say:
+   "The available context is about [X], not [Y]. Let me clarify."
+
+4. If the context does not contain sufficient information, say so explicitly.
+   Never fill gaps with general knowledge.
+
+Context: {context}
+
+Question: {question}"""
+```
+
+After updating your pipeline, re-run the full diagnostic from Step 6 on the same test cases. The previously hallucinated scenarios should now produce grounded responses, or explicit "I don't have that information" fallbacks.
+
+<Tip>
+Run this diagnostic suite whenever you update your source documents. When content changes, your custom eval rules may need updating too. Treat your eval rules like your source documents: version them and review them regularly.
+</Tip>
+
+</Step>
+</Steps>
+
+## What you solved
+
+The pharma chatbot's hallucinations (invented dosages, omitted drug interactions, entity confusion between metformin and metoprolol) are now caught automatically before any answer reaches a patient. The next time the formulary is updated, you re-run the same diagnostic suite to verify nothing new slipped through.
+
+<Check>
+You can now detect domain-specific hallucinations in your chatbot by grounding evaluations against your source documents, diagnosing whether failures come from retrieval or generation, and applying targeted fixes.
+</Check>
+
+- Uploaded source documents to a **Knowledge Base** as ground truth for evaluation
+- Built test cases covering the three most common hallucination patterns: invented numbers, omitted information, and entity confusion
+- Ran **six RAG evaluation metrics** to diagnose each failure and classify it as a retrieval or generation problem
+- Created a **custom eval** with domain-specific rules that generic detectors miss
+- Uploaded test data as a **dataset** and ran batch evaluations with **KB grounding** from both the SDK and the dashboard
+- Combined built-in and custom evals in a **full diagnostic sweep**
+- Applied **targeted fixes** to retrieval (entity-based chunking, metadata filters) and generation (constrained system prompt)
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Production Quality Monitoring" icon="chart-line" href="/docs/cookbook/use-cases/production-quality-monitoring">
+    Score every response and catch regressions in production
+  </Card>
+  <Card title="HIPAA and GDPR Compliance" icon="shield" href="/docs/cookbook/use-cases/compliance-hipaa-gdpr">
+    Screen your AI app for regulatory violations
+  </Card>
+  <Card title="Code Generation Eval" icon="code-branch" href="/docs/cookbook/use-cases/coding-agent-eval">
+    Evaluate code review agents with custom security evals
+  </Card>
+</CardGroup>

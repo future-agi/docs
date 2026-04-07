@@ -630,7 +630,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Evaluate Customer Agent Conversations', href: '/docs/cookbook/quickstart/conversation-eval' },
                   { title: 'Dataset SDK: Upload, Evaluate, and Download Results', href: '/docs/cookbook/quickstart/batch-eval' },
                   { title: 'Async Evaluations for Large-Scale Testing', href: '/docs/cookbook/quickstart/async-batch-eval' },
-                  { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
                 ]
               },
               {
@@ -703,6 +702,24 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Agent Compass: Surface Agent Failures Automatically', href: '/docs/cookbook/quickstart/agent-compass-debug' },
                 ]
               },
+            ]
+          },
+          {
+            title: 'Use Cases',
+            icon: 'briefcase',
+            items: [
+              { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
+              { title: 'Detect Domain-Specific Hallucinations in Your Chatbot', href: '/docs/cookbook/use-cases/domain-hallucination-detection' },
+              { title: 'A/B Test Prompt Versions and Ship the Winner', href: '/docs/cookbook/use-cases/full-prompt-lifecycle' },
+              { title: 'Stop Your Financial Chatbot From Leaking PII', href: '/docs/cookbook/use-cases/secure-ai-evals-guardrails' },
+              { title: 'Screen Your AI App for HIPAA and GDPR Violations', href: '/docs/cookbook/use-cases/compliance-hipaa-gdpr' },
+              { title: 'Evaluate LLM Translation for Accuracy and Fluency', href: '/docs/cookbook/use-cases/translation-eval' },
+              { title: 'Set Up Quality Gates for Your Support Bot in 20 Minutes', href: '/docs/cookbook/use-cases/auto-eval-pipeline' },
+              { title: 'Monitor LLM Quality in Production and Catch Regressions', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
+              { title: 'Evaluate Your Code Generation Agent\'s Output Quality', href: '/docs/cookbook/use-cases/coding-agent-eval' },
+              { title: 'Red-Team Your LLM Application Before Attackers Do', href: '/docs/cookbook/use-cases/red-teaming-llm' },
+              { title: 'Improve Your LLM Judge with Human Feedback', href: '/docs/cookbook/use-cases/feedback-loop-eval' },
+              { title: 'Text-to-SQL Eval: Catch Logic Errors Before Production', href: '/docs/cookbook/use-cases/text-to-sql-eval' },
             ]
           },
           {

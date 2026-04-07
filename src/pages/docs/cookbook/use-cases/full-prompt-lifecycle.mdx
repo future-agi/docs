@@ -1,0 +1,467 @@
+---
+title: "A/B Test Prompt Versions and Ship the Winner"
+description: "Version a prompt, optimize it automatically, run a structured comparison, and promote the winner to production, all without changing application code."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/full-prompt-lifecycle.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/full-prompt-lifecycle.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty |
+|------|-----------|
+| 30 min | Intermediate |
+
+Your HR onboarding assistant's prompt has been through 15 iterations. Nobody remembers which version is in production. Last week someone "improved" it and broke the policy lookup, so contractors were told they get PTO and new hires received the wrong benefits deadline. Rolling back meant digging through Slack messages for the old version, then copy-pasting it into the config and hoping nothing else changed in between. Every wrong answer creates a support ticket that a human has to fix.
+
+As your team grows, the problem gets worse. Multiple people edit prompts. Someone tweaks the tone, someone else adds a policy section, and a third person reverts it because it "felt off." Without version control, you are one bad edit away from shipping a broken prompt to production with no way to undo it. The prompt is the most important piece of your LLM application, but you are managing it like a shared Google Doc.
+
+What if you could version your prompts like code, with commit messages and rollback? What if an AI optimizer could rewrite your prompt based on eval scores instead of guesswork? What if you could A/B test two versions on the same dataset, compare them with real metrics, promote the winner to production with one command, and roll back instantly if something breaks?
+
+This cookbook builds that workflow for NovaCorp's HR onboarding assistant using FutureAGI's prompt lifecycle stack. You will store the current prompt in **Prompt Management** as v1, measure its baseline with **Evals**, run **Optimize** (`MetaPromptOptimizer`) to generate v2, A/B test both versions in **Experimentation**, promote the winner with a single label change, and roll back in one line if anything goes wrong. By the end, you will have a repeatable, evidence-based process for iterating on any prompt in production.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install futureagi ai-evaluation agent-opt litellm openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Steps>
+<Step title="Store your current prompt as v1">
+
+Move your system prompt into FutureAGI Prompt Management so you can version, optimize, and swap it without redeploying. For this walkthrough, the starting prompt is a one-line system message for an HR onboarding assistant.
+
+```python
+import os
+from fi.prompt import Prompt
+from fi.prompt.types import PromptTemplate, SystemMessage, UserMessage, ModelConfig
+
+SYSTEM_PROMPT = "You are an HR assistant. Help new employees with onboarding questions."
+
+prompt_client = Prompt(
+    template=PromptTemplate(
+        name="hr-onboarding",
+        messages=[
+            SystemMessage(content=SYSTEM_PROMPT),
+            UserMessage(content="{{employee_message}}"),
+        ],
+        model_configuration=ModelConfig(
+            model_name="gpt-4o-mini",
+            temperature=0.7,
+            max_tokens=500,
+        ),
+    ),
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+prompt_client.create()
+prompt_client.commit_current_version(
+    message="v1: bare-bones HR prompt, no policy details",
+    label="production",
+)
+
+print(f"Created: {prompt_client.template.name} ({prompt_client.template.version})")
+```
+
+Sample output:
+```
+Created: hr-onboarding (v1)
+```
+
+Your application fetches this prompt at runtime by label. When you promote a new version later, every instance picks it up automatically.
+
+```python
+import os
+from fi.prompt import Prompt
+
+
+def get_system_prompt() -> str:
+    prompt = Prompt.get_template_by_name(
+        name="hr-onboarding",
+        label="production",
+        fi_api_key=os.environ["FI_API_KEY"],
+        fi_secret_key=os.environ["FI_SECRET_KEY"],
+    )
+    return prompt.template.messages[0].content
+```
+
+See [Prompt Versioning](/docs/cookbook/quickstart/prompt-versioning) for `compile()`, rollback, and label management.
+
+</Step>
+<Step title="Measure the baseline so you know what to beat">
+
+You cannot improve what you have not measured. Before optimizing, build a test dataset with realistic questions and run evals to establish how v1 actually performs.
+
+```python
+import os
+import litellm
+from fi.prompt import Prompt
+from fi.evals import evaluate
+
+test_dataset = [
+    {
+        "question": "I start next Monday. Which health plan should I pick if I want dental and vision included?",
+        "context": "The company offers Basic (100% employer-paid, $500 deductible), Plus ($45/mo, $250 deductible, includes vision), and Premium ($120/mo, $0 deductible, includes dental + vision + mental health). Enrollment window closes 30 days after start date.",
+    },
+    {
+        "question": "I'm a remote employee starting in April. How do I get my laptop and dev tools?",
+        "context": "Remote employees: laptop ships to home address 5 business days before start date. VPN via Cisco AnyConnect, credentials in welcome email. Tools: Slack, Jira, GitHub, Figma (eng/design). IT support: it-help@company.com.",
+    },
+    {
+        "question": "I'm joining as a contractor from Sweden. Do I get PTO?",
+        "context": "Contractors do not receive PTO. They set their own schedules per SOW. International contractors must comply with local labor laws. No visa sponsorship for contractors.",
+    },
+    {
+        "question": "How much PTO do I get as a full-time employee, and can I use it during my first month?",
+        "context": "Full-time: 20 days PTO, 10 sick days. Accrual: 1.67 days/month after 90-day probation. Sick days available immediately. 5 unused days roll over.",
+    },
+    {
+        "question": "My start date is March 24 and I haven't gotten my welcome email. What should I do?",
+        "context": "Welcome emails sent 7 business days before start date by People Ops (people-ops@company.com). Contains VPN credentials, Slack invite, benefits link, Day 1 schedule.",
+    },
+    {
+        "question": "I'm hybrid. Do I need a badge for the office? And where do I pick up my laptop?",
+        "context": "Hybrid employees: laptop ships home or pick up on-site (coordinate with IT). Badge required for on-site days from Security desk in lobby with government ID. VPN for remote days.",
+    },
+]
+
+prompt = Prompt.get_template_by_name(
+    name="hr-onboarding",
+    label="production",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+print(f"{'Question':<60} {'Complete':>10} {'Relevant':>10}")
+print("-" * 82)
+
+for item in test_dataset:
+    messages = prompt.compile(employee_message=item["question"])
+
+    response = litellm.completion(
+        model="gpt-4o-mini",
+        messages=messages,
+    )
+    output = response.choices[0].message.content
+
+    completeness_result = evaluate(
+        "completeness",
+        input=item["question"],
+        output=output,
+        model="turing_flash",
+    )
+
+    relevance_result = evaluate(
+        "context_relevance",
+        input=item["question"],
+        context=item["context"],
+        model="turing_flash",
+    )
+
+    print(f"{item['question'][:58]:<60} {str(completeness_result.score):>10} {str(relevance_result.score):>10}")
+```
+
+Sample output (your results may vary):
+```
+Question                                                       Complete   Relevant
+----------------------------------------------------------------------------------
+I start next Monday. Which health plan should I pick if I           0.4        1.0
+I'm a remote employee starting in April. How do I get my l          1.0        0.8
+I'm joining as a contractor from Sweden. Do I get PTO?              0.6        0.8
+How much PTO do I get as a full-time employee, and can I            0.4        0.8
+My start date is March 24 and I haven't gotten my welcome           0.6        0.8
+I'm hybrid. Do I need a badge for the office? And where d           0.8        0.6
+```
+
+The first thing that jumps out: completeness is inconsistent. The laptop question scored 1.0 (the model happened to give a detailed answer), but the health plan question scored 0.4 because the one-line system prompt gives the model no policy details to work with. It had to guess, and it guessed vaguely. The contractor PTO question scored 0.6, which means the model got the gist right but missed the SOW detail and local labor law compliance.
+
+Context relevance is solid across the board (0.6-1.0) because the questions are on-topic. The problem isn't that the model is off-topic; it's that it lacks the specifics to give a complete answer. That's exactly what the optimizer will fix: adding policy details to the prompt so the model doesn't have to improvise.
+
+</Step>
+<Step title="Generate an improved prompt automatically">
+
+The baseline numbers tell you v1 is weak on policy-specific questions, but rewriting the prompt by hand is slow and subjective. Instead, let the optimizer do it. `MetaPromptOptimizer` uses a teacher LLM to iteratively analyze what is wrong with the current prompt's outputs and rewrites it based on eval scores.
+
+```python
+import os
+from fi.opt.base import Evaluator
+from fi.opt.generators import LiteLLMGenerator
+from fi.opt.datamappers import BasicDataMapper
+from fi.opt.optimizers import MetaPromptOptimizer
+
+baseline_prompt = (
+    "You are an HR assistant. Help new employees with onboarding questions.\n\n"
+    "Employee question: {question}"
+)
+
+optimization_dataset = [
+    {
+        "question": "I start next Monday. Which health plan should I pick if I want dental and vision included?",
+        "target_response": "For dental and vision coverage, you'll want either the Plus plan ($45/mo, $250 deductible, includes vision) or the Premium plan ($120/mo, $0 deductible, includes dental + vision + mental health). If you only need vision, Plus is the cost-effective choice. If you want the full package with mental health coverage, go Premium. Important: your enrollment window closes 30 days after your start date.",
+    },
+    {
+        "question": "I'm a remote employee starting in April. How do I get my laptop and dev tools?",
+        "target_response": "Your laptop will ship to your home address 5 business days before your start date. You'll get Cisco AnyConnect VPN credentials in your welcome email. For dev tools, you'll have access to Slack, Jira, and GitHub on Day 1. If you're in Engineering or Design, Figma is included too. If anything doesn't arrive on time, reach out to it-help@company.com.",
+    },
+    {
+        "question": "I'm joining as a contractor from Sweden. Do I get PTO?",
+        "target_response": "Contractors don't receive PTO. You set your own schedule per your Statement of Work. As an international contractor, you'll also want to make sure you're complying with Swedish labor laws on your end. If you have questions about your SOW terms, reach out to People Ops at people-ops@company.com.",
+    },
+    {
+        "question": "How much PTO do I get as a full-time employee, and can I use it during my first month?",
+        "target_response": "Full-time employees get 20 days of PTO and 10 sick days per year. PTO accrues at 1.67 days per month, but it's only available after your 90-day probation period, so you won't be able to use PTO in your first month. Sick days are available immediately.",
+    },
+    {
+        "question": "My start date is March 24 and I haven't received a welcome email yet.",
+        "target_response": "Welcome emails go out 7 business days before your start date, so you should have received it by now. Contact People Ops directly at people-ops@company.com. The email contains your VPN credentials, Slack invite, benefits enrollment link, and Day 1 schedule.",
+    },
+    {
+        "question": "I'm hybrid. Do I need a badge for the office? And where do I pick up my laptop?",
+        "target_response": "Yes, you'll need a badge for on-site days. Pick it up from the Security desk in the lobby on your first day in the office (bring a government-issued ID). For your laptop, hybrid employees can either have it shipped home or pick it up on-site. Coordinate with IT at it-help@company.com.",
+    },
+]
+
+evaluator = Evaluator(
+    eval_template="completeness",
+    eval_model_name="turing_flash",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+data_mapper = BasicDataMapper(
+    key_map={
+        "input": "question",
+        "output": "generated_output",
+    }
+)
+
+teacher = LiteLLMGenerator(model="gpt-4o", prompt_template="{prompt}")
+
+optimizer = MetaPromptOptimizer(
+    teacher_generator=teacher,
+)
+
+result = optimizer.optimize(
+    evaluator=evaluator,
+    data_mapper=data_mapper,
+    dataset=optimization_dataset,
+    initial_prompts=[baseline_prompt],
+    task_description="Answer HR onboarding questions for new hires. "
+                     "Responses should reference specific company policies (benefits plans, PTO accrual, "
+                     "IT provisioning), distinguish between full-time employees and contractors, handle "
+                     "international hire edge cases, and maintain a warm but precise tone.",
+    eval_subset_size=6,
+)
+
+print(f"Baseline score:  {result.history[0].average_score:.3f}")
+print(f"Optimized score: {result.final_score:.3f}")
+print(f"\nBest prompt found:")
+print("-" * 60)
+print(result.best_generator.get_prompt_template())
+print("-" * 60)
+
+print("\nOptimization history:")
+for i, iteration in enumerate(result.history):
+    print(f"  Round {i+1}: score={iteration.average_score:.3f}")
+```
+
+Sample output (your results may vary):
+```
+Baseline score:  0.700
+Optimized score: 1.000
+
+Best prompt found:
+------------------------------------------------------------
+You are an HR assistant specializing in onboarding new employees. Your goal
+is to address any onboarding questions with comprehensive, precise, and
+customized responses. Follow these guidelines when crafting your answers:
+
+1. **Comprehensive and Specific Responses**: Provide detailed answers that
+   address every part of the question. Reference specific company policies,
+   deadlines, and procedures...
+------------------------------------------------------------
+```
+
+The optimizer took the baseline score from 0.700 to a perfect 1.000. The original one-line prompt left the model guessing on policy details. The optimized version explicitly instructs the model to give comprehensive, specific responses and reference company policies. That single structural change (telling the model how to answer, not just what role it plays) closed every completeness gap from Step 2.
+
+Optimization typically takes 2-5 minutes. Your exact scores and prompt wording will vary, but the pattern is consistent: the optimizer identifies what the current prompt is missing and adds it.
+
+See [Prompt Optimization](/docs/cookbook/quickstart/prompt-optimization) for alternative optimizers like Bayesian Search and ProTeGi.
+
+</Step>
+<Step title="Save the optimized prompt as v2 (without promoting it yet)">
+
+The optimizer produced a better prompt, but "better in a local test" is not the same as "safe for production." Save it as v2 without promoting it. You will A/B test it first.
+
+The optimizer outputs a prompt tailored to the failure patterns it found in your dataset. Use `result.best_generator.get_prompt_template()` from the previous step as `OPTIMIZED_PROMPT` below.
+
+```python
+from fi.prompt.types import PromptTemplate, SystemMessage, UserMessage, ModelConfig
+
+# Use your optimizer output here:
+OPTIMIZED_PROMPT = result.best_generator.get_prompt_template()
+
+prompt_client.create_new_version(
+    template=PromptTemplate(
+        name="hr-onboarding",
+        messages=[
+            SystemMessage(content=OPTIMIZED_PROMPT),
+            UserMessage(content="{{employee_message}}"),
+        ],
+        model_configuration=ModelConfig(
+            model_name="gpt-4o-mini",
+            temperature=0.5,
+            max_tokens=500,
+        ),
+    ),
+)
+
+prompt_client.save_current_draft()
+prompt_client.commit_current_version(
+    message="v2: optimized via MetaPrompt, adds policy details and contractor handling",
+)
+
+print(f"v2 created: {prompt_client.template.version}")
+print("Not yet promoted to production.")
+```
+
+Sample output:
+```
+v2 created: v2
+Not yet promoted to production.
+```
+
+</Step>
+<Step title="Run a structured A/B test between v1 and v2">
+
+You have two prompt versions and a gut feeling that v2 is better. Gut feelings do not survive production incidents. Run a structured comparison in the FutureAGI UI: same dataset, two prompt variants, eval scores, and a clear winner.
+
+**Prepare the dataset:**
+
+Save the following as `onboarding-test.csv`.
+
+```csv
+question,context,expected_answer
+"Which health plan includes dental and vision?","Three plans: Basic (100% employer-paid, $500 deductible), Plus ($45/mo, $250 deductible, vision), Premium ($120/mo, $0 deductible, dental + vision + mental health). Enrollment closes 30 days after start date.","Premium includes both dental and vision. Plus includes vision only. Mention the 30-day enrollment deadline."
+"I'm a remote engineer starting April 1. How do I get my laptop?","Remote employees: laptop ships to home address 5 business days before start date. VPN via Cisco AnyConnect. Tools: Slack, Jira, GitHub, Figma (eng/design). IT support: it-help@company.com.","Laptop ships 5 business days before start. VPN credentials in welcome email. Mention Figma access for engineering."
+"I'm a contractor from Sweden. What benefits do I get?","Contractors do not receive company benefits or PTO. They operate under their SOW. International contractors must comply with local labor laws. No visa sponsorship for contractors.","Contractors don't get company benefits. Refer to SOW. Mention local labor law compliance."
+"Can I use PTO in my first month as a full-time employee?","Full-time: 20 days PTO, 10 sick days. Accrual: 1.67 days/month after 90-day probation. Sick days available immediately. 5 unused days roll over.","No. PTO is available after the 90-day probation period. Sick days are available immediately."
+"I'm hybrid and need to know about badge access and laptop pickup.","Hybrid: laptop ships home or pick up on-site (coordinate with IT). Badge required for on-site days from Security desk in lobby with government ID. VPN for remote days.","Badge from Security desk on Day 1 with ID. Laptop: choose shipping or on-site pickup. Mention VPN for remote days."
+"My start date is March 24 and I haven't gotten my welcome email. What should I do?","Welcome emails sent 7 business days before start date by People Ops (people-ops@company.com). Contains VPN credentials, Slack invite, benefits link, Day 1 schedule.","Contact People Ops at people-ops@company.com. Explain what the welcome email contains."
+```
+
+**Set up the experiment:**
+
+Go to [app.futureagi.com](https://app.futureagi.com) → **Dataset** → **Add Dataset** → upload `onboarding-test.csv`. Open the dataset, click **Experiment**, name it `v1-vs-v2-onboarding`, and set the baseline column to `expected_answer`. Configure two prompt templates: one with the v1 system message and one with the v2 optimized message (same user message format: `Context: {{context}}\nEmployee question: {{question}}`). Click **Run**, then evaluate with `completeness` and `groundedness`.
+
+See [Experimentation](/docs/cookbook/quickstart/experimentation-compare-prompts) for the full experiment setup walkthrough with screenshots.
+
+In our run, v2 outperformed v1 across the board. The health plan question was the most telling: v1 scored 0.4 on completeness because it gave a vague "check with HR" answer, while v2 listed all three plans with prices and the 30-day enrollment deadline. The contractor question was another clear gap: v1 said "contractors may have different benefits," while v2 explicitly stated that contractors don't receive PTO and operate under their SOW. Once you confirm v2 wins, move to the next step.
+
+</Step>
+<Step title="Promote the winner to production">
+
+The A/B test gave you evidence, not opinion. v2 wins. Promote it to production so every agent instance calling `get_template_by_name(label="production")` picks it up on the next request.
+
+```python
+import os
+from fi.prompt import Prompt
+
+Prompt.assign_label_to_template_version(
+    template_name="hr-onboarding",
+    version="v2",
+    label="production",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+print("v2 is now the production prompt.")
+```
+
+Sample output:
+```
+v2 is now the production prompt.
+```
+
+Your `get_system_prompt()` function from Step 1 now serves v2 automatically. No code change, no redeploy.
+
+</Step>
+<Step title="Roll back if something goes wrong">
+
+If v2 causes unexpected issues, revert in one line:
+
+```python
+import os
+from fi.prompt import Prompt
+
+Prompt.assign_label_to_template_version(
+    template_name="hr-onboarding",
+    version="v1",
+    label="production",
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+print("Rolled back to v1.")
+```
+
+Promotion and rollback are label reassignments, not deployments. If v2 causes an issue, you can revert in seconds and investigate at your own pace.
+
+You can also check the full version timeline:
+
+```python
+versions = prompt_client.list_template_versions()
+
+for v in versions:
+    draft = "draft" if v.get("isDraft") else "committed"
+    print(f"  {v['templateVersion']}  {draft}  {v['createdAt']}")
+```
+
+Sample output:
+```
+  v2  committed  2026-04-01T05:14:34Z
+  v1  committed  2026-04-01T03:42:37Z
+```
+
+Every version is immutable. As your prompt evolves (v3 adds parental leave policy, v4 adds a new office location), this history becomes your changelog. Run the same cycle each time: optimize, test, promote.
+
+</Step>
+</Steps>
+
+## What you solved
+
+The HR onboarding assistant now cites specific policy details (the 90-day probation period, the 30-day enrollment window, contractor SOW terms) instead of giving generic answers. The next time someone asks about parental leave or a new office location, you run the same cycle: optimize, test, promote. No redeploy required.
+
+<Check>
+You improved a production prompt through a structured cycle (version, optimize, A/B test, promote) without changing any application code. And you can roll back in one line if anything goes wrong.
+</Check>
+
+- **"How bad is my current prompt?"** Baseline evaluation showed completeness scores as low as 0.4 on policy-specific questions. The one-line prompt left the model guessing.
+- **"How do I improve it without guessing?"** `MetaPromptOptimizer` took the score from 0.700 to 1.000 by adding structured instructions the original prompt was missing.
+- **"Which version is actually better?"** A structured experiment confirmed v2 outperformed v1 on every question, especially contractor and health plan queries.
+- **"How do I ship the winner safely?"** A single label change promoted v2 to production. Another label change rolls it back in seconds.
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="End-to-End Agent Testing" icon="flask" href="/docs/cookbook/use-cases/end-to-end-agent-testing">
+    Simulate, evaluate, diagnose, and optimize your chat agent
+  </Card>
+  <Card title="Human Feedback Loop" icon="pen-to-square" href="/docs/cookbook/use-cases/feedback-loop-eval">
+    Improve your LLM judge with human annotations
+  </Card>
+</CardGroup>
