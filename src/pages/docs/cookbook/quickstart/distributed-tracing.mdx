@@ -1,0 +1,1037 @@
+---
+title: "Distributed Tracing: Connect Spans Across Services into One Trace"
+description: "Propagate OpenTelemetry trace context across microservices so every span - from your API gateway to your LLM backend - shows up in a single trace."
+---
+
+<TLDR>
+Use W3C TraceContext headers to propagate trace IDs across HTTP boundaries. The gateway injects the `traceparent` header into outgoing requests, the backend extracts it and attaches the context - and all spans land in one unified trace on your dashboard.
+</TLDR>
+
+| Time | Difficulty | Languages |
+|------|-----------|-----------|
+| 20 min | Intermediate | Python, TypeScript, Java, C# |
+
+<Prerequisites>
+- FutureAGI account - [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Google Gemini API key (`GOOGLE_API_KEY`) for the LLM calls
+</Prerequisites>
+
+## The Problem
+
+You have two services - an API gateway and an LLM backend. Both produce OpenTelemetry spans, but they show up as **separate traces** on the dashboard. You can't see the full picture: which gateway request triggered which LLM call, how long the end-to-end flow took, or where the bottleneck is.
+
+You want one trace ID that links everything: which gateway request triggered which LLM call, how long the round trip took, where time was spent.
+
+## The Solution: W3C TraceContext Propagation
+
+OpenTelemetry uses the [W3C TraceContext](https://www.w3.org/TR/trace-context/) standard to pass trace IDs across HTTP boundaries. The flow:
+
+1. Gateway creates a span, injects `traceparent` header into the outgoing HTTP request
+2. Backend extracts the `traceparent` header, attaches the context so new spans become children
+3. Both services export to the same FutureAGI project - the dashboard stitches them into one trace
+
+The `traceparent` header looks like: `00-<traceId>-<spanId>-01` (`00` = version, `01` = sampled flag)
+
+Both services must use the same `project_name` when registering. That's how FutureAGI groups spans from different processes into one trace view.
+
+## Architecture
+
+```
+┌─────────────────────────┐     HTTP + traceparent header     ┌─────────────────────────┐
+│      API Gateway        │ ────────────────────────────────> │    LLM Backend          │
+│      (port 5100)        │                                   │    (port 5101)          │
+│                         │ <──────────────────────────────── │                         │
+│  GET /ask               │         JSON response             │  POST /generate         │
+│                         │                                   │                         │
+│  Spans:                 │                                   │  Spans:                 │
+│  - Gateway.ProcessReq   │                                   │  - (auto) LLM call      │
+│  - Gateway.CallBackend  │                                   │    model, tokens, I/O   │
+│  - Gateway.PostProcess  │                                   │                         │
+└─────────────────────────┘                                   └─────────────────────────┘
+         │                                                              │
+         └──────────────────── Same TraceId ────────────────────────────┘
+                              │
+                    FutureAGI Dashboard
+                    (single unified trace)
+```
+
+## Pick Your Language
+
+<Tabs>
+  <Tab title="Python">
+
+### Install
+
+```bash
+pip install fi-instrumentation-otel traceAI-google-genai flask requests python-dotenv google-genai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export GOOGLE_API_KEY="your-google-api-key"
+```
+
+### Gateway (gateway.py)
+
+```python
+"""
+Gateway Service (port 5100)
+- Receives user requests at GET /ask
+- Calls the Backend Service with trace context propagation
+- Post-processes and returns the response
+"""
+import json
+import requests as http_requests
+from flask import Flask, jsonify
+
+from opentelemetry import trace
+from opentelemetry.propagate import set_global_textmap, inject
+from opentelemetry.propagators.composite import CompositePropagator
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+
+# Step 1: Set up W3C TraceContext propagator
+# This tells OTel how to encode/decode trace context into HTTP headers.
+# You need this on BOTH services.
+set_global_textmap(CompositePropagator([
+    TraceContextTextMapPropagator(),  # W3C traceparent header
+    W3CBaggagePropagator(),           # W3C baggage header
+]))
+
+# Step 2: Register with FutureAGI
+# Handles all exporter setup - reads API keys from env, configures
+# the OTLP exporter, creates the TracerProvider. One line instead
+# of ~15 lines of manual OTel config.
+provider = register(
+    project_name="distributed_tracing_demo",
+    project_type=ProjectType.OBSERVE,
+    set_global_tracer_provider=True,
+)
+
+tracer = trace.get_tracer("ApiGateway")
+app = Flask(__name__)
+
+
+@app.route("/ask")
+def ask():
+    with tracer.start_as_current_span(
+        "Gateway.ProcessRequest", kind=trace.SpanKind.SERVER
+    ) as span:
+        question = "What is OpenTelemetry context propagation in 2 sentences?"
+        span.set_attribute("input.value", question)
+        trace_id = format(span.get_span_context().trace_id, "032x")
+
+        # Step 3: Call the backend - INJECT trace context into headers
+        # This is the key part. inject() takes the current active span's
+        # context and writes the traceparent header into the dict.
+        with tracer.start_as_current_span(
+            "Gateway.CallBackend", kind=trace.SpanKind.CLIENT
+        ) as call_span:
+            call_span.set_attribute("input.value", question)
+
+            headers = {}
+            inject(headers)  # writes: traceparent: 00-<traceId>-<spanId>-01
+
+            response = http_requests.post(
+                "http://localhost:5101/generate",
+                json={"question": question},
+                headers=headers,
+            )
+            answer = response.json().get("answer", "")
+            call_span.set_attribute("output.value", answer)
+
+        # Post-process the response
+        with tracer.start_as_current_span(
+            "Gateway.PostProcess", kind=trace.SpanKind.INTERNAL
+        ) as post_span:
+            post_span.set_attribute("input.value", answer)
+            post_span.set_attribute("output.value", answer)
+
+        span.set_attribute("output.value", answer)
+        return jsonify({"traceId": trace_id, "answer": answer})
+
+
+if __name__ == "__main__":
+    print("ApiGateway is ready at http://localhost:5100")
+    app.run(host="localhost", port=5100)
+```
+
+### Backend (backend.py)
+
+```python
+"""
+Backend Service (port 5101)
+- Receives requests from the Gateway at POST /generate
+- Extracts propagated trace context (traceparent header)
+- Calls Google Gemini API (auto-instrumented by traceai)
+"""
+import os
+from flask import Flask, jsonify, request
+from google import genai
+
+from opentelemetry import trace, context
+from opentelemetry.propagate import set_global_textmap, extract
+from opentelemetry.propagators.composite import CompositePropagator
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_google_genai import GoogleGenAIInstrumentor
+
+# Same propagator setup as the gateway
+set_global_textmap(CompositePropagator([
+    TraceContextTextMapPropagator(),
+    W3CBaggagePropagator(),
+]))
+
+# Same project name - both services must export to the same project
+provider = register(
+    project_name="distributed_tracing_demo",
+    project_type=ProjectType.OBSERVE,
+    set_global_tracer_provider=True,
+)
+
+# Auto-instrument Google GenAI - creates spans with model name,
+# token counts, input/output automatically. No manual code needed.
+GoogleGenAIInstrumentor().instrument(tracer_provider=provider)
+
+client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+app = Flask(__name__)
+
+
+@app.route("/generate", methods=["POST"])
+def generate():
+    # Step 4: EXTRACT trace context from the gateway's request
+    # extract() parses the traceparent header back into a span context.
+    ctx = extract(request.headers)
+
+    body = request.get_json()
+    question = body.get("question", "Hello")
+
+    # context.attach() makes the extracted context active so all new
+    # spans become CHILDREN of the gateway's span - same TraceId.
+    # The returned token is needed for detach(). Always detach in a
+    # finally block - Flask reuses threads, so leaking context means
+    # the next request on this thread inherits the wrong parent.
+    token = context.attach(ctx)
+    try:
+        # traceai auto-instruments this call - creates a span with
+        # model name, token counts, input/output automatically
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=question,
+        )
+        answer = response.text or "No response"
+    finally:
+        context.detach(token)
+
+    return jsonify({"answer": answer})
+
+
+if __name__ == "__main__":
+    print("BackendService is ready at http://localhost:5101")
+    app.run(host="localhost", port=5101)
+```
+
+### Run it
+
+Start the backend first (so the gateway doesn't get connection errors):
+
+```bash
+# Terminal 1 - start backend first
+python backend.py
+
+# Terminal 2 - then start gateway
+python gateway.py
+```
+
+```bash
+curl http://localhost:5100/ask
+```
+
+Both services log the same TraceId. Open your [FutureAGI dashboard](https://app.futureagi.com) - you'll see one trace with all spans nested correctly.
+
+  </Tab>
+  <Tab title="TypeScript">
+
+### Install
+
+```bash
+npm install @traceai/fi-core @traceai/google-genai @google/genai \
+  @opentelemetry/api @opentelemetry/core @opentelemetry/instrumentation express
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export GOOGLE_API_KEY="your-google-api-key"
+```
+
+### Gateway (gateway.ts)
+
+```typescript
+/**
+ * Gateway Service (port 5100)
+ * - Receives user requests at GET /ask
+ * - Calls the Backend Service with trace context propagation
+ */
+import express from "express";
+import { register, ProjectType } from "@traceai/fi-core";
+import { trace, context, propagation, SpanKind } from "@opentelemetry/api";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+
+// Step 1: Set up W3C propagator
+propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+
+// Step 2: Register with FutureAGI
+const tracerProvider = register({
+  projectName: "distributed_tracing_demo",
+  projectType: ProjectType.OBSERVE,
+  setGlobalTracerProvider: true,
+});
+
+const tracer = trace.getTracer("ApiGateway");
+const app = express();
+
+app.get("/ask", async (req, res) => {
+  const span = tracer.startSpan("Gateway.ProcessRequest", {
+    kind: SpanKind.SERVER,
+  });
+
+  const ctx = trace.setSpan(context.active(), span);
+
+  await context.with(ctx, async () => {
+    const question =
+      "What is OpenTelemetry context propagation in 2 sentences?";
+    span.setAttribute("input.value", question);
+
+    // Step 3: INJECT trace context into outgoing request headers
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    propagation.inject(context.active(), headers, {
+      set: (carrier, key, value) => {
+        carrier[key] = String(value);
+      },
+    });
+    // headers now contains: traceparent: 00-<traceId>-<spanId>-01
+
+    const callSpan = tracer.startSpan("Gateway.CallBackend", {
+      kind: SpanKind.CLIENT,
+    });
+    callSpan.setAttribute("input.value", question);
+
+    const response = await fetch("http://localhost:5101/generate", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ question }),
+    });
+    const body = await response.json();
+    const answer = (body as any).answer || "";
+
+    callSpan.setAttribute("output.value", answer);
+    callSpan.end();
+
+    const traceId = span.spanContext().traceId;
+    span.setAttribute("output.value", answer);
+    span.end();
+
+    res.json({ traceId, answer });
+  });
+});
+
+app.listen(5100, () => {
+  console.log("ApiGateway is ready at http://localhost:5100");
+});
+```
+
+### Backend (backend.ts)
+
+```typescript
+/**
+ * Backend Service (port 5101)
+ * - Receives requests from the Gateway at POST /generate
+ * - Extracts propagated trace context
+ * - Calls Google Gemini (auto-instrumented by traceai)
+ */
+import express from "express";
+import { register, ProjectType } from "@traceai/fi-core";
+import { GoogleGenAIInstrumentation } from "@traceai/google-genai";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { trace, context, propagation } from "@opentelemetry/api";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+
+// Same propagator setup as the gateway
+propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+
+// Same project name - both services must use the same project
+const tracerProvider = register({
+  projectName: "distributed_tracing_demo",
+  projectType: ProjectType.OBSERVE,
+  setGlobalTracerProvider: true,
+});
+
+// Auto-instrument Google GenAI
+registerInstrumentations({
+  tracerProvider,
+  instrumentations: [new GoogleGenAIInstrumentation()],
+});
+
+const { GoogleGenAI } = require("@google/genai");
+const genai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+
+const app = express();
+app.use(express.json());
+
+app.post("/generate", async (req, res) => {
+  // Step 4: EXTRACT trace context from the gateway's request
+  const extractedCtx = propagation.extract(
+    context.active(),
+    req.headers,
+    {
+      get: (carrier, key) => {
+        const val = carrier[key.toLowerCase()];
+        return Array.isArray(val) ? val[0] : val;
+      },
+    }
+  );
+
+  // Run within the extracted context so new spans become
+  // children of the gateway's span - same TraceId
+  await context.with(extractedCtx, async () => {
+    const question = req.body.question || "Hello";
+
+    // traceai auto-instruments this - creates a span with
+    // model name, token counts, input/output
+    const response = await genai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: question,
+    });
+
+    const answer = response.text || "No response";
+    res.json({ answer });
+  });
+});
+
+app.listen(5101, () => {
+  console.log("BackendService is ready at http://localhost:5101");
+});
+```
+
+### Run it
+
+```bash
+# Terminal 1 - start backend first
+npx tsx backend.ts
+
+# Terminal 2 - then start gateway
+npx tsx gateway.ts
+```
+
+```bash
+curl http://localhost:5100/ask
+```
+
+  </Tab>
+  <Tab title="Java">
+
+### Dependencies
+
+```xml
+<!-- In both gateway and backend pom.xml -->
+<dependencies>
+    <dependency>
+        <groupId>com.github.future-agi.traceAI</groupId>
+        <artifactId>traceai-java-core</artifactId>
+        <version>v1.0.0</version>
+    </dependency>
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-sdk</artifactId>
+    </dependency>
+</dependencies>
+```
+
+For Spring Boot apps, add the starter instead:
+
+```xml
+<dependency>
+    <groupId>com.github.future-agi.traceAI</groupId>
+    <artifactId>traceai-spring-boot-starter</artifactId>
+    <version>v1.0.0</version>
+</dependency>
+<!-- Spring Boot's OTel auto-config handles propagation -->
+<dependency>
+    <groupId>io.opentelemetry.instrumentation</groupId>
+    <artifactId>opentelemetry-spring-boot-starter</artifactId>
+</dependency>
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export GOOGLE_API_KEY="your-google-api-key"
+```
+
+### Gateway (GatewayService.java)
+
+```java
+import ai.traceai.TraceAI;
+import ai.traceai.FITracer;
+import ai.traceai.FISpanKind;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.context.propagation.TextMapSetter;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.HashMap;
+import java.util.Map;
+
+public class GatewayService {
+
+    public static void main(String[] args) throws Exception {
+        // Step 1: Initialize TraceAI (sets up OTel with W3C propagation)
+        TraceAI.initFromEnvironment();
+        FITracer tracer = TraceAI.getTracer();
+        HttpClient httpClient = HttpClient.newHttpClient();
+
+        // In your HTTP handler (e.g., Spring @GetMapping, Spark, Javalin):
+        String question = "What is OpenTelemetry context propagation?";
+
+        // Create the parent span
+        Span span = tracer.startSpan("Gateway.ProcessRequest", FISpanKind.CHAIN);
+        try (Scope scope = span.makeCurrent()) {
+            tracer.setInputValue(span, question);
+
+            // Step 2: INJECT trace context into outgoing HTTP headers
+            Map<String, String> headers = new HashMap<>();
+            GlobalOpenTelemetry.getPropagators()
+                .getTextMapPropagator()
+                .inject(Context.current(), headers, (carrier, key, value) -> {
+                    carrier.put(key, value);
+                });
+            // headers now contains: traceparent: 00-<traceId>-<spanId>-01
+
+            Span callSpan = tracer.startSpan("Gateway.CallBackend", FISpanKind.CHAIN);
+            try (Scope callScope = callSpan.makeCurrent()) {
+                HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:5101/generate"))
+                    .POST(HttpRequest.BodyPublishers.ofString(
+                        "{\"question\": \"" + question + "\"}"))
+                    .header("Content-Type", "application/json");
+
+                // Add the propagated headers
+                headers.forEach(requestBuilder::header);
+
+                HttpResponse<String> response = httpClient.send(
+                    requestBuilder.build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+                tracer.setOutputValue(callSpan, response.body());
+            } finally {
+                callSpan.end();
+            }
+
+            tracer.setOutputValue(span, "done");
+        } finally {
+            span.end();
+        }
+
+        // For a long-running server, call shutdown() on JVM shutdown hook instead:
+        // Runtime.getRuntime().addShutdownHook(new Thread(TraceAI::shutdown));
+        TraceAI.shutdown();
+    }
+}
+```
+
+### Backend (BackendService.java)
+
+The extract logic is framework-specific. Here's the pattern using Javalin (same idea applies to Spring, Spark, or any Java HTTP framework):
+
+```java
+import ai.traceai.TraceAI;
+import ai.traceai.FITracer;
+import ai.traceai.FISpanKind;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+import io.javalin.Javalin;
+import io.javalin.http.Context as JContext;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class BackendService {
+
+    public static void main(String[] args) {
+        TraceAI.initFromEnvironment();
+        FITracer tracer = TraceAI.getTracer();
+
+        Javalin app = Javalin.create().start(5101);
+
+        app.post("/generate", ctx -> {
+            // Step 3: EXTRACT trace context from incoming request headers
+            // Build a header map from the HTTP request
+            Map<String, String> incomingHeaders = new HashMap<>();
+            ctx.headerMap().forEach(incomingHeaders::put);
+
+            Context extractedCtx = GlobalOpenTelemetry.getPropagators()
+                .getTextMapPropagator()
+                .extract(Context.current(), incomingHeaders, (carrier, key) -> {
+                    return carrier.get(key);
+                });
+
+            String question = ctx.bodyAsClass(Map.class)
+                .getOrDefault("question", "Hello").toString();
+
+            // All spans created within this scope are children of the
+            // gateway's span - same TraceId
+            try (Scope scope = extractedCtx.makeCurrent()) {
+                Span span = tracer.startSpan("Backend.GeminiCall", FISpanKind.LLM);
+                try (Scope spanScope = span.makeCurrent()) {
+                    tracer.setInputValue(span, question);
+
+                    // Call your LLM here
+                    String answer = callGemini(question);
+
+                    tracer.setOutputValue(span, answer);
+                    tracer.setTokenCounts(span, 50, 200, 250);
+                    ctx.json(Map.of("answer", answer));
+                } finally {
+                    span.end();
+                }
+            }
+        });
+    }
+}
+```
+
+<Note>
+  If you're using **Spring Boot** with the OTel Spring Boot starter, inject/extract is handled automatically by Spring's HTTP client and server instrumentation - just like the C# example. You don't need to manually call `inject()` or `extract()`.
+</Note>
+
+### Run it
+
+```bash
+# Terminal 1 - start backend first
+java -jar backend.jar
+
+# Terminal 2 - then start gateway
+java -jar gateway.jar
+```
+
+```bash
+curl http://localhost:5100/ask
+```
+
+  </Tab>
+  <Tab title="C#">
+
+### Install
+
+```bash
+dotnet add package OpenTelemetry
+dotnet add package OpenTelemetry.Exporter.OpenTelemetryProtocol
+dotnet add package OpenTelemetry.Instrumentation.AspNetCore
+dotnet add package OpenTelemetry.Instrumentation.Http
+dotnet add package DotNetEnv
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export GOOGLE_API_KEY="your-google-api-key"
+```
+
+### Single-project setup
+
+The C# example runs both gateway and backend from one project - pass `gateway` or `backend` as a CLI arg to pick the role. In production, these would be separate deployments.
+
+`AddAspNetCoreInstrumentation()` and `AddHttpClientInstrumentation()` handle inject/extract automatically, so there are no manual `inject()` or `extract()` calls in the C# version.
+
+### Program.cs
+
+```csharp
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using OpenTelemetry;
+using OpenTelemetry.Context.Propagation;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+
+DotNetEnv.Env.Load("../.env");
+
+var fiApiKey = Environment.GetEnvironmentVariable("FI_API_KEY")
+    ?? throw new Exception("FI_API_KEY not set");
+var fiSecretKey = Environment.GetEnvironmentVariable("FI_SECRET_KEY")
+    ?? throw new Exception("FI_SECRET_KEY not set");
+var googleApiKey = Environment.GetEnvironmentVariable("GOOGLE_API_KEY")
+    ?? throw new Exception("GOOGLE_API_KEY not set");
+
+// Run as gateway or backend based on CLI arg
+var serviceRole = args.Length > 0 ? args[0] : "gateway";
+var servicePort = serviceRole == "gateway" ? 5100 : 5101;
+var serviceName = serviceRole == "gateway" ? "ApiGateway" : "BackendService";
+
+var activitySource = new ActivitySource(serviceName);
+
+// Step 1: Set up W3C TraceContext propagator
+Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(
+    new TextMapPropagator[]
+    {
+        new TraceContextPropagator(),
+        new BaggagePropagator()
+    }));
+
+var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls($"http://localhost:{servicePort}");
+
+// Step 2: Configure OpenTelemetry with OTLP exporter
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracerBuilder =>
+    {
+        tracerBuilder
+            .SetResourceBuilder(
+                ResourceBuilder.CreateDefault()
+                    .AddService(serviceName: serviceName, serviceVersion: "1.0.0")
+                    .AddAttributes(new Dictionary<string, object>
+                    {
+                        ["project_name"] = "distributed_tracing_demo",
+                        ["project_type"] = "observe"
+                    }))
+            .AddSource(serviceName)
+            // Auto-EXTRACTS traceparent from incoming requests
+            .AddAspNetCoreInstrumentation(opts => opts.RecordException = true)
+            // Auto-INJECTS traceparent into outgoing requests
+            .AddHttpClientInstrumentation(opts => opts.RecordException = true)
+            .AddOtlpExporter(opts =>
+            {
+                opts.Endpoint = new Uri(
+                    "https://api.futureagi.com/tracer/v1/traces");
+                opts.Protocol = OtlpExportProtocol.HttpProtobuf;
+                opts.Headers = $"X-Api-Key={fiApiKey},X-Secret-Key={fiSecretKey}";
+            });
+    });
+
+builder.Services.AddHttpClient();
+var app = builder.Build();
+
+if (serviceRole == "gateway")
+{
+    // GATEWAY - receives user request, calls backend
+    app.MapGet("/ask", async (IHttpClientFactory httpClientFactory) =>
+    {
+        using var activity = activitySource.StartActivity(
+            "Gateway.ProcessRequest", ActivityKind.Server);
+
+        var question = "What is OpenTelemetry context propagation in 2 sentences?";
+        activity?.SetTag("input.value", question);
+
+        // Step 3: Call backend - traceparent is AUTOMATICALLY injected
+        // by AddHttpClientInstrumentation(). Just make the HTTP call.
+        using var callActivity = activitySource.StartActivity(
+            "Gateway.CallBackend", ActivityKind.Client);
+
+        var client = httpClientFactory.CreateClient();
+        var backendRequest = new HttpRequestMessage(
+            HttpMethod.Post, "http://localhost:5101/generate");
+        backendRequest.Content = new StringContent(
+            JsonSerializer.Serialize(new { question }),
+            Encoding.UTF8, "application/json");
+
+        var response = await client.SendAsync(backendRequest);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        using var postActivity = activitySource.StartActivity(
+            "Gateway.PostProcess", ActivityKind.Internal);
+
+        using var doc = JsonDocument.Parse(responseBody);
+        var answer = doc.RootElement.TryGetProperty("answer", out var ans)
+            ? ans.GetString() : responseBody;
+
+        activity?.SetTag("output.value", answer);
+        return Results.Ok(new
+        {
+            traceId = Activity.Current?.TraceId.ToString(),
+            answer
+        });
+    });
+}
+else
+{
+    // BACKEND - receives request from gateway, calls Gemini
+    app.MapPost("/generate", async (
+        HttpRequest httpRequest, IHttpClientFactory httpClientFactory) =>
+    {
+        // Step 4: traceparent is AUTOMATICALLY extracted by
+        // AddAspNetCoreInstrumentation(). Activity.Current already
+        // has the gateway's TraceId - any spans you create are
+        // automatically children. The middleware runs before your
+        // handler code, so the context is ready when you get here.
+
+        var body = await JsonSerializer.DeserializeAsync<JsonElement>(
+            httpRequest.Body);
+        var question = body.GetProperty("question").GetString() ?? "Hello";
+
+        using var activity = activitySource.StartActivity(
+            "Backend.GeminiCall", ActivityKind.Client);
+        activity?.SetTag("gen_ai.span.kind", "llm");
+        activity?.SetTag("gen_ai.request.model", "gemini-2.0-flash");
+        activity?.SetTag("input.value", question);
+
+        // Call Gemini API directly
+        var model = "gemini-2.0-flash";
+        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={googleApiKey}";
+
+        var requestBody = new
+        {
+            contents = new[]
+            {
+                new { parts = new[] { new { text = question } } }
+            }
+        };
+
+        var client = httpClientFactory.CreateClient();
+        var geminiRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
+        geminiRequest.Content = new StringContent(
+            JsonSerializer.Serialize(requestBody),
+            Encoding.UTF8, "application/json");
+
+        var response = await client.SendAsync(geminiRequest);
+        var outputJson = await response.Content.ReadAsStringAsync();
+
+        string answer = "No response";
+        if (response.IsSuccessStatusCode)
+        {
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            using var doc = JsonDocument.Parse(outputJson);
+
+            if (doc.RootElement.TryGetProperty("usageMetadata", out var usage))
+            {
+                if (usage.TryGetProperty("promptTokenCount", out var pt))
+                    activity?.SetTag("gen_ai.usage.input_tokens", pt.GetInt32());
+                if (usage.TryGetProperty("candidatesTokenCount", out var ct))
+                    activity?.SetTag("gen_ai.usage.output_tokens", ct.GetInt32());
+                if (usage.TryGetProperty("totalTokenCount", out var tt))
+                    activity?.SetTag("gen_ai.usage.total_tokens", tt.GetInt32());
+            }
+
+            if (doc.RootElement.TryGetProperty("candidates", out var candidates))
+            {
+                var first = candidates[0];
+                if (first.TryGetProperty("content", out var content) &&
+                    content.TryGetProperty("parts", out var parts))
+                {
+                    answer = parts[0].GetProperty("text").GetString()
+                        ?? "No response";
+                }
+            }
+        }
+        else
+        {
+            activity?.SetStatus(ActivityStatusCode.Error,
+                $"HTTP {response.StatusCode}");
+            answer = $"Error: {response.StatusCode}";
+        }
+
+        activity?.SetTag("output.value", answer);
+        return Results.Ok(new { answer });
+    });
+}
+
+Console.WriteLine($"{serviceName} is ready at http://localhost:{servicePort}");
+app.Run();
+```
+
+### Run it
+
+```bash
+# Terminal 1 - start backend first
+dotnet run -- backend
+
+# Terminal 2 - then start gateway
+dotnet run -- gateway
+```
+
+```bash
+curl http://localhost:5100/ask
+```
+
+  </Tab>
+</Tabs>
+
+## How It Works
+
+Three moving parts:
+
+### 1. Propagator setup (both services)
+
+Both services must agree on the same propagation format. W3C TraceContext is the standard:
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    set_global_textmap(CompositePropagator([
+        TraceContextTextMapPropagator(),
+        W3CBaggagePropagator(),
+    ]))
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    ```
+  </Tab>
+  <Tab title="Java">
+    ```java
+    // OTel SDK uses W3C TraceContext by default when registered globally
+    // via TraceAI.initFromEnvironment() or OpenTelemetrySdk.buildAndRegisterGlobal()
+    ```
+  </Tab>
+  <Tab title="C#">
+    ```csharp
+    Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(
+        new TextMapPropagator[] {
+            new TraceContextPropagator(),
+            new BaggagePropagator()
+        }));
+    ```
+  </Tab>
+</Tabs>
+
+### 2. Gateway injects context (outgoing call)
+
+<Tabs>
+  <Tab title="Python (manual)">
+    ```python
+    headers = {}
+    inject(headers)  # writes traceparent: 00-<traceId>-<spanId>-01
+    response = requests.post(url, headers=headers)
+    ```
+  </Tab>
+  <Tab title="TypeScript (manual)">
+    ```typescript
+    const headers: Record<string, string> = {};
+    propagation.inject(context.active(), headers, {
+      set: (carrier, key, value) => { carrier[key] = String(value); }
+    });
+    const response = await fetch(url, { headers });
+    ```
+  </Tab>
+  <Tab title="Java (manual)">
+    ```java
+    Map<String, String> headers = new HashMap<>();
+    GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
+        .inject(Context.current(), headers, Map::put);
+    // Add headers to your HTTP request
+    ```
+  </Tab>
+  <Tab title="C# (automatic)">
+    ```csharp
+    // AddHttpClientInstrumentation() does this automatically.
+    // Just make the HTTP call:
+    var response = await client.SendAsync(request);
+    ```
+  </Tab>
+</Tabs>
+
+### 3. Backend extracts context (incoming call)
+
+<Tabs>
+  <Tab title="Python (manual)">
+    ```python
+    ctx = extract(request.headers)
+    token = context.attach(ctx)
+    try:
+        response = llm.generate(...)  # child of gateway's span
+    finally:
+        context.detach(token)  # always detach - Flask reuses threads
+    ```
+  </Tab>
+  <Tab title="TypeScript (manual)">
+    ```typescript
+    const extractedCtx = propagation.extract(context.active(), req.headers, {
+      get: (carrier, key) => carrier[key.toLowerCase()]
+    });
+    await context.with(extractedCtx, async () => {
+      // spans here are children of gateway's span
+    });
+    ```
+  </Tab>
+  <Tab title="Java (manual)">
+    ```java
+    Context extractedCtx = GlobalOpenTelemetry.getPropagators()
+        .getTextMapPropagator()
+        .extract(Context.current(), headers, Map::get);
+    try (Scope scope = extractedCtx.makeCurrent()) {
+        // spans here are children of gateway's span
+    }
+    ```
+  </Tab>
+  <Tab title="C# (automatic)">
+    ```csharp
+    // AddAspNetCoreInstrumentation() extracts automatically.
+    // The middleware runs before your handler, so Activity.Current
+    // already has the gateway's TraceId when your code executes.
+    using var activity = activitySource.StartActivity("Backend.Work");
+    // This span is automatically a child of the gateway's span
+    ```
+  </Tab>
+</Tabs>
+
+## Cross-Language Propagation
+
+The W3C `traceparent` header is language-agnostic. You can mix languages freely:
+
+- Python gateway -> C# backend
+- TypeScript gateway -> Java backend
+- Any combination works
+
+As long as both services use W3C TraceContext propagation and export to the same FutureAGI project, spans are stitched into one trace.
+
+## Checklist
+
+Before you ship:
+
+- [ ] Both services set the same W3C propagator
+- [ ] Both services use the same `project_name`
+- [ ] Gateway injects `traceparent` header (manually or via HTTP instrumentation)
+- [ ] Backend extracts `traceparent` header (manually or via framework instrumentation)
+- [ ] Both services have `FI_API_KEY` and `FI_SECRET_KEY` set
+- [ ] Backend is started before gateway (or gateway handles connection errors gracefully)
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tracing SDK Reference" icon="code" href="/docs/sdk/tracing">
+    Full API reference for register(), FITracer, context helpers, and TraceConfig.
+  </Card>
+  <Card title="Manual Tracing Cookbook" icon="book" href="/docs/cookbook/quickstart/manual-tracing">
+    Add custom spans to any application without auto-instrumentation.
+  </Card>
+  <Card title="Auto-Instrumentation" icon="plug" href="/docs/tracing/auto">
+    Setup guides for 45+ supported frameworks.
+  </Card>
+  <Card title="Session Observability" icon="eye" href="/docs/cookbook/quickstart/session-observability">
+    Track multi-turn conversations with session IDs.
+  </Card>
+</CardGroup>

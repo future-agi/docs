@@ -11,8 +11,8 @@ import compression from 'vite-plugin-compression';
 export default defineConfig({
   site: 'https://docs.futureagi.com',
   prefetch: {
-    prefetchAll: false,
-    defaultStrategy: 'hover',
+    prefetchAll: true,
+    defaultStrategy: 'viewport',
   },
   // Optimize build output
   compressHTML: true,
