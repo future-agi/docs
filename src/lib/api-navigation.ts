@@ -28,9 +28,29 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Scenarios",
     "items": [
       {
+        "title": "List scenarios",
+        "href": "/docs/api/scenarios/listscenarios",
+        "method": "GET"
+      },
+      {
+        "title": "Get scenario details",
+        "href": "/docs/api/scenarios/getscenario",
+        "method": "GET"
+      },
+      {
         "title": "Generate or create a scenario",
         "href": "/docs/api/scenarios/createscenario",
         "method": "POST"
+      },
+      {
+        "title": "Edit a scenario",
+        "href": "/docs/api/scenarios/editscenario",
+        "method": "PUT"
+      },
+      {
+        "title": "Delete a scenario",
+        "href": "/docs/api/scenarios/deletescenario",
+        "method": "DELETE"
       },
       {
         "title": "Add rows to a scenario using AI",
@@ -38,9 +58,9 @@ export const apiNavigation: ApiNavGroup[] = [
         "method": "POST"
       },
       {
-        "title": "Edit a scenario",
-        "href": "/docs/api/scenarios/editscenario",
-        "method": "PUT"
+        "title": "Add columns to a scenario",
+        "href": "/docs/api/scenarios/addcolumns",
+        "method": "POST"
       },
       {
         "title": "Add empty rows to a scenario",
@@ -53,8 +73,28 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Agent Definitions",
     "items": [
       {
+        "title": "List agent definitions",
+        "href": "/docs/api/agent-definitions/listagentdefinitions",
+        "method": "GET"
+      },
+      {
         "title": "Create agent definition",
         "href": "/docs/api/agent-definitions/createagentdefinition",
+        "method": "POST"
+      },
+      {
+        "title": "Get agent definition details",
+        "href": "/docs/api/agent-definitions/getagentdefinition",
+        "method": "GET"
+      },
+      {
+        "title": "Delete agent definitions",
+        "href": "/docs/api/agent-definitions/deleteagentdefinitions",
+        "method": "DELETE"
+      },
+      {
+        "title": "Fetch assistant from provider",
+        "href": "/docs/api/agent-definitions/fetchassistantfromprovider",
         "method": "POST"
       }
     ]
@@ -63,9 +103,29 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Agent Versions",
     "items": [
       {
+        "title": "List agent versions",
+        "href": "/docs/api/agent-versions/listagentversions",
+        "method": "GET"
+      },
+      {
         "title": "Create new version of agent",
         "href": "/docs/api/agent-versions/createagentversion",
         "method": "POST"
+      },
+      {
+        "title": "Get agent version details",
+        "href": "/docs/api/agent-versions/getagentversion",
+        "method": "GET"
+      },
+      {
+        "title": "Get call executions for version",
+        "href": "/docs/api/agent-versions/getversioncallexecutions",
+        "method": "GET"
+      },
+      {
+        "title": "Get eval summary for version",
+        "href": "/docs/api/agent-versions/getversionevalsummary",
+        "method": "GET"
       }
     ]
   },

@@ -905,22 +905,34 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Scenarios',
             items: [
+              { title: 'List Scenarios', href: '/docs/api/scenarios/listscenarios' },
+              { title: 'Get Scenario Details', href: '/docs/api/scenarios/getscenario' },
               { title: 'Create Scenario', href: '/docs/api/scenarios/createscenario' },
               { title: 'Edit Scenario', href: '/docs/api/scenarios/editscenario' },
-              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
+              { title: 'Delete Scenario', href: '/docs/api/scenarios/deletescenario' },
               { title: 'Add Rows with AI', href: '/docs/api/scenarios/addscenariorowswithai' },
+              { title: 'Add Columns', href: '/docs/api/scenarios/addcolumns' },
+              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
             ]
           },
           {
             title: 'Agent Definitions',
             items: [
+              { title: 'List Agent Definitions', href: '/docs/api/agent-definitions/listagentdefinitions' },
               { title: 'Create Agent Definition', href: '/docs/api/agent-definitions/createagentdefinition' },
+              { title: 'Get Agent Definition', href: '/docs/api/agent-definitions/getagentdefinition' },
+              { title: 'Delete Agent Definitions', href: '/docs/api/agent-definitions/deleteagentdefinitions' },
+              { title: 'Fetch from Provider', href: '/docs/api/agent-definitions/fetchassistantfromprovider' },
             ]
           },
           {
             title: 'Agent Versions',
             items: [
+              { title: 'List Agent Versions', href: '/docs/api/agent-versions/listagentversions' },
               { title: 'Create Agent Version', href: '/docs/api/agent-versions/createagentversion' },
+              { title: 'Get Agent Version', href: '/docs/api/agent-versions/getagentversion' },
+              { title: 'Get Version Call Executions', href: '/docs/api/agent-versions/getversioncallexecutions' },
+              { title: 'Get Version Eval Summary', href: '/docs/api/agent-versions/getversionevalsummary' },
             ]
           },
           {
