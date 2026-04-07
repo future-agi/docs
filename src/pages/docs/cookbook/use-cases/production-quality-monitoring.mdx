@@ -18,7 +18,7 @@ The core problem is scale. Your assistant handles hundreds of property queries d
 
 What if every response was automatically scored for completeness and accuracy the moment it was generated? What if quality drops triggered alerts before users noticed, so you could act in minutes instead of weeks? What if an AI-powered feed grouped errors by pattern ("hallucinated listing prices" vs. "missing school data") and suggested specific fixes? And what if you could trace any bad response back to the exact span that failed, whether it was a broken tool call, a model hallucination, or a prompt gap?
 
-This cookbook sets up that monitoring pipeline for HomeKey's production assistant. You will trace every LLM call and tool invocation, attach inline quality evals to score each response automatically, configure alerts for latency spikes and error rates, use Agent Compass to cluster failures into actionable patterns, and add Protect guardrails to block unsafe outputs before they reach users.
+This cookbook sets up that monitoring pipeline for HomeKey's production assistant using FutureAGI's full observability stack. You will trace every LLM call and tool invocation with **Observe**, attach **inline Evals** to score each response as it flows through, configure **Alerts** for latency spikes and error rates, use **Agent Compass** to cluster failures into actionable patterns, and add **Protect** guardrails to block unsafe outputs before they reach users.
 
 <Prerequisites>
 - FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
@@ -40,34 +40,37 @@ export OPENAI_API_KEY="your-openai-key"
 ```
 
 <Steps>
-<Step title="Trace your app so every call is visible">
+<Step title="Define the agent you want to monitor">
 
-Before you can score anything, you need to capture what your app is doing. Tracing records every LLM call, tool invocation, and response as structured spans that you can inspect, filter, and evaluate.
+Before adding any monitoring, you need an agent to monitor. The example used throughout this cookbook is a small e-commerce support assistant. It is intentionally compact so that the monitoring patterns stay in focus, but every step that follows applies just as well to HomeKey's property listing assistant from the intro, a RAG-backed chatbot, or any LLM-powered application that calls a model and optionally invokes tools.
 
-Here's a simple support agent with a few tools. The tracing setup is three lines: `register()`, `OpenAIInstrumentor().instrument()`, and `FITracer`.
+**What the agent does**
+
+The assistant handles two kinds of user questions:
+
+- **Product searches** like *"What wireless headphones do you have in stock?"* → routed to the `search_products` tool
+- **Order tracking** like *"Where is my order ORD-12345?"* → routed to the `get_order_status` tool
+
+Anything outside those two tools (refunds, return policies, sizing charts) has no grounded source to back it up, so the assistant should fall back to *"I don't have that information"* instead of inventing one. That fallback rule is written directly into the system prompt and matters later, when evals catch responses that ignore it.
+
+**The system prompt**
+
+Two sentences. The first tells the model to lean on tools. The second forbids fabrication. Short prompts are easy to test, easy to optimize later, and intentionally leave room for the failures we want monitoring to catch:
 
 ```python
-import os
-import json
-from openai import OpenAI
-from fi_instrumentation import register, FITracer, using_user, using_session
-from fi_instrumentation.fi_types import ProjectType
-from traceai_openai import OpenAIInstrumentor
-
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="my-production-app",
-)
-OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
-
-from opentelemetry import trace as otel_trace
-otel_trace.set_tracer_provider(trace_provider)
-
-client = OpenAI()
-tracer = FITracer(trace_provider.get_tracer("my-production-app"))
-
 SYSTEM_PROMPT = """You are a helpful assistant. Answer questions using the tools available to you.
 If you don't have the information, say so. Never guess or fabricate details."""
+```
+
+**Tools**
+
+Two function tools, mocked here so the cookbook is self-contained. In a real deployment these would call your product catalog and shipping API:
+
+```python
+import json
+from openai import OpenAI
+
+client = OpenAI()
 
 TOOLS = [
     {
@@ -125,8 +128,83 @@ TOOL_MAP = {
     "search_products": search_products,
     "get_order_status": get_order_status,
 }
+```
 
+**The agent function**
 
+`handle_message` is the entry point for every user request. It sends the system prompt and tools to the model, executes any tool calls the model makes, then asks the model to produce a final answer using the tool output. It returns both the answer and the raw tool output. The second value becomes the `context` that evals score against in Step 3, which is why the function is structured this way:
+
+```python
+def handle_message(user_id: str, session_id: str, messages: list) -> tuple[str, str]:
+    """Process a user message. Returns (answer, context_from_tools)."""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        tools=TOOLS,
+    )
+
+    msg = response.choices[0].message
+    context = ""
+
+    if msg.tool_calls:
+        tool_messages = [msg]
+        tool_results = []
+        for tool_call in msg.tool_calls:
+            fn_name = tool_call.function.name
+            fn_args = json.loads(tool_call.function.arguments)
+            result = TOOL_MAP.get(fn_name, lambda **_: {"error": "Unknown tool"})(**fn_args)
+            result_str = json.dumps(result)
+            tool_results.append(result_str)
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": result_str,
+            })
+
+        context = "\n".join(tool_results)
+        followup = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages + tool_messages,
+            tools=TOOLS,
+        )
+        return followup.choices[0].message.content, context
+
+    return msg.content, context
+```
+
+That is the entire agent. No tracing, no evals, nothing fancy. Each of the next steps adds one piece of the monitoring stack on top of this exact function, so you can see what each piece contributes.
+
+</Step>
+<Step title="Trace every call so you can see what the agent did">
+
+You cannot score what you cannot see. **Tracing** captures every LLM call, tool invocation, and response as structured spans (a parent agent span, child OpenAI requests, child tool executions) that you can inspect in the FutureAGI dashboard, filter by user or session, and attach evaluations to. Without traces, every quality drop is a guessing game. With traces, you can replay any single request end to end and see exactly which step went wrong.
+
+Three additions turn the agent from Step 1 into a fully traced agent:
+
+1. `register()` creates (or reuses) a project on FutureAGI and wires up an OpenTelemetry trace provider
+2. `OpenAIInstrumentor().instrument()` auto-traces every OpenAI call so you don't have to log inputs or outputs by hand
+3. `@tracer.agent(...)` wraps `handle_message` so the entire request shows up as one parent span with all the OpenAI and tool calls nested underneath
+
+```python
+import os
+from fi_instrumentation import register, FITracer, using_user, using_session
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+from opentelemetry import trace as otel_trace
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-production-app",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+otel_trace.set_tracer_provider(trace_provider)
+
+tracer = FITracer(trace_provider.get_tracer("my-production-app"))
+```
+
+Now decorate `handle_message` from Step 1 with `@tracer.agent` and wrap the body in `using_user` / `using_session` so each trace is tagged with who called it. Everything else stays identical:
+
+```python
 @tracer.agent(name="support_assistant")
 def handle_message(user_id: str, session_id: str, messages: list) -> tuple[str, str]:
     """Process a user message. Returns (answer, context_from_tools)."""
@@ -187,22 +265,11 @@ for i, query in enumerate(test_queries):
 trace_provider.force_flush()
 ```
 
-Sample output (your results may vary):
-
-```
-Q: Show me wireless headphones under $100
-A: Here are some wireless headphones under $100: 1) Wireless Headphones - $79.99 (in stock). 2) We also have a USB-C Hub at $45...
-
-Q: Where is my order ORD-12345?
-A: Your order ORD-12345 has been shipped! The tracking number is 1Z999AA10123456784, and the estimated delivery date is March 18,...
-
-Q: What's your return policy?
-A: I don't have access to return policy information through my available tools. I'd recommend checking the website or contacting...
-```
-
 The first two queries trigger tool calls (`search_products` and `get_order_status`) and return grounded answers. The third query has no matching tool, so the model either answers from its training data or admits it doesn't know. That gap is exactly what evals will catch in the next step.
 
-Go to **Tracing** in the dashboard and select `my-production-app`. You should see a trace for each query with nested spans showing the agent call, OpenAI requests, and tool executions.
+Go to **Tracing** in the dashboard and select `my-production-app`. You should see a trace for each query with nested spans showing the agent call, OpenAI requests, and tool executions. Click any trace to expand the span tree and inspect the inputs, outputs, latency, and tool arguments at every step:
+
+![Trace detail showing the support_assistant span with system prompt, user message, and tool result for one ChatCompletion call](https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-2-trace-detail.png)
 
 See [Manual Tracing](/docs/cookbook/quickstart/manual-tracing) for custom span decorators, metadata tagging, and prompt template tracking.
 
@@ -335,11 +402,13 @@ A: Based on my search, the most affordable item I found is the USB-C Hub at $45.
 
 Each response is now scored inline. In the next step, you will see those scores attached directly to the trace spans in the dashboard.
 
-In **Tracing**, click any trace and expand the span detail panel. Switch to the **Evals** tab to see scores for `completeness_check`, `context_adherence_check`, and `context_relevance_check`. The eval columns also appear in the main trace table, so you can filter for low-scoring responses directly.
+In **Tracing**, the eval columns appear in the main trace table alongside every row, so you can sort or filter for low-scoring responses directly.
 
-<video autoPlay muted loop playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
-  <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-2-tracing-spans.mp4" type="video/mp4" />
-</video>
+![Trace table showing inline eval columns next to each trace row](https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-3-trace-table-with-evals.png)
+
+Click any trace and switch to the **Evals** tab in the span detail panel to see the per-span scores for `completeness_check`, `context_adherence_check`, and `context_relevance_check`, along with the reason each evaluator gave for the score.
+
+![Evals tab on a trace showing completeness, context adherence, and context relevance scores with reasons](https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-3-evals-tab-detail.png)
 
 <Tip>
 `turing_small` balances speed and accuracy for inline evals. Use `turing_flash` if latency is critical at high volume, or `turing_large` for maximum accuracy on complex evaluations.
