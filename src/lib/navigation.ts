@@ -964,6 +964,14 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Simulation Analytics',
+            items: [
+              { title: 'Get Simulation Metrics', href: '/docs/api/simulation-analytics/metrics' },
+              { title: 'Get Simulation Runs', href: '/docs/api/simulation-analytics/runs' },
+              { title: 'Get Simulation Analytics', href: '/docs/api/simulation-analytics/analytics' },
+            ]
+          },
+          {
             title: 'Datasets',
             items: [
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
