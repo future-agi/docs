@@ -348,7 +348,6 @@ export const tabNavigation: NavTab[] = [
         icon: 'server',
         items: [
           { title: 'Overview', href: '/docs/prism' },
-          { title: 'Quickstart', href: '/docs/prism/quickstart' },
           {
             title: 'Concepts',
             items: [
