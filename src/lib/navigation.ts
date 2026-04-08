@@ -45,13 +45,19 @@ export const tabNavigation: NavTab[] = [
             icon: 'rocket',
             href: '/docs',
             items: [
-              { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
-              { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
-              { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
               { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
+              { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
+              { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
+              { title: 'Prism AI Gateway', href: '/docs/quickstart/prism-ai-gateway' },
+              { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
+              { title: 'Annotations', href: '/docs/quickstart/annotations' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
-              { title: 'Annotations Quickstart', href: '/docs/annotations/quickstart' },
-              { title: 'Prism AI Gateway Quickstart', href: '/docs/prism/quickstart' },
+            ]
+          },
+          {
+            title: 'Release Notes',
+            items: [
+              { title: 'Release Notes', href: '/docs/release-notes' },
             ]
           },
         ]
@@ -550,7 +556,6 @@ export const tabNavigation: NavTab[] = [
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
           { title: 'Installation', href: '/docs/installation' },
           { title: 'FAQ', href: '/docs/faq' },
-          { title: 'Release Notes', href: '/docs/release-notes' },
         ]
       },
       {
