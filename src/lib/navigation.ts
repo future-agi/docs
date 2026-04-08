@@ -85,6 +85,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
               { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
+              { title: 'Annotation Queue Using SDK', href: '/docs/annotations/sdk/annotation-queue-using-sdk' },
             ]
           },
         ]
@@ -131,6 +132,21 @@ export const tabNavigation: NavTab[] = [
             title: 'Features',
             items: [
               { title: 'Using Error Feed', href: '/docs/error-feed/features/using-error-feed' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Falcon AI',
+        icon: 'rocket',
+        items: [
+          { title: 'Overview', href: '/docs/falcon-ai' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
+              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
+              { title: 'MCP Connectors', href: '/docs/falcon-ai/features/mcp-connectors' },
             ]
           },
         ]
@@ -190,55 +206,41 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/observe' },
           {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
+              { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
+              { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
+              { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
+              { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
+            ]
+          },
+          {
             title: 'Features',
             items: [
               { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
-              { title: 'Evals', href: '/docs/observe/features/evals' },
+              { title: 'Run Evals on Traces', href: '/docs/observe/features/evals' },
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
-              { title: 'Annotation Queue Using SDK', href: '/docs/observe/features/annotation-queue-using-sdk' },
-            ]
-          },
-          {
-            title: 'Voice Observability',
-            items: [
-              { title: 'Overview', href: '/docs/observe/voice' },
-              { title: 'Set Up Voice Observability', href: '/docs/observe/voice/set-up' },
-            ]
-          },
-          {
-            title: 'Tracing',
-            items: [
-              { title: 'Overview', href: '/docs/tracing' },
-              {
-                title: 'Concept',
-                items: [
-                  { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
-                  { title: 'Components of Observability', href: '/docs/tracing/concepts/components' },
-                  { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
-                  { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
-                  { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
-                  { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
-                ]
-              },
+              { title: 'Voice Observability', href: '/docs/observe/features/voice' },
               {
                 title: 'Manual Tracing',
                 items: [
-                  { title: 'Set Up Tracing', href: '/docs/tracing/manual/set-up-tracing' },
-                  { title: 'Instrument with traceAI Helpers', href: '/docs/tracing/manual/instrument-with-traceai-helpers' },
-                  { title: 'Get Current Tracer and Span', href: '/docs/tracing/manual/get-current-span-context' },
-                  { title: 'Enriching Spans with Attributes, Metadata, and Tags', href: '/docs/tracing/manual/add-attributes-metadata-tags' },
-                  { title: 'Logging Prompt Templates & Variables', href: '/docs/tracing/manual/log-prompt-templates' },
-                  { title: 'Integrate Events, Exceptions, and Status into Spans', href: '/docs/tracing/manual/add-events-exceptions-status' },
-                  { title: 'Set Session ID and User ID', href: '/docs/tracing/manual/set-session-user-id' },
-                  { title: 'Tool Spans Creation', href: '/docs/tracing/manual/create-tool-spans' },
-                  { title: 'Mask Span Attributes', href: '/docs/tracing/manual/mask-span-attributes' },
-                  { title: 'Advanced Tracing (OTEL)', href: '/docs/tracing/manual/advanced-tracing-examples' },
-                  { title: 'FI Semantic Conventions', href: '/docs/tracing/manual/semantic-conventions' },
-                  { title: 'In-line Evaluations', href: '/docs/tracing/manual/in-line-evals' },
-                  { title: 'Adding Annotations to your Spans', href: '/docs/tracing/manual/annotating-using-api' },
-                  { title: 'Langfuse Integration', href: '/docs/tracing/manual/langfuse-integration' },
+                  { title: 'Set Up Tracing', href: '/docs/observe/features/manual-tracing/set-up-tracing' },
+                  { title: 'Instrument with traceAI Helpers', href: '/docs/observe/features/manual-tracing/instrument-with-traceai-helpers' },
+                  { title: 'Get Current Tracer and Span', href: '/docs/observe/features/manual-tracing/get-current-span-context' },
+                  { title: 'Enriching Spans with Attributes, Metadata, and Tags', href: '/docs/observe/features/manual-tracing/add-attributes-metadata-tags' },
+                  { title: 'Logging Prompt Templates & Variables', href: '/docs/observe/features/manual-tracing/log-prompt-templates' },
+                  { title: 'Events, Exceptions, and Status', href: '/docs/observe/features/manual-tracing/add-events-exceptions-status' },
+                  { title: 'Set Session ID and User ID', href: '/docs/observe/features/manual-tracing/set-session-user-id' },
+                  { title: 'Tool Spans Creation', href: '/docs/observe/features/manual-tracing/create-tool-spans' },
+                  { title: 'Mask Span Attributes', href: '/docs/observe/features/manual-tracing/mask-span-attributes' },
+                  { title: 'Advanced Tracing (OTEL)', href: '/docs/observe/features/manual-tracing/advanced-tracing-examples' },
+                  { title: 'FI Semantic Conventions', href: '/docs/observe/features/manual-tracing/semantic-conventions' },
+                  { title: 'In-line Evaluations', href: '/docs/observe/features/manual-tracing/in-line-evals' },
+                  { title: 'Adding Annotations to your Spans', href: '/docs/observe/features/manual-tracing/annotating-using-api' },
+                  { title: 'Langfuse Integration', href: '/docs/observe/features/manual-tracing/langfuse-integration' },
                 ]
               },
             ]
@@ -943,6 +945,30 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Eval Tasks',
+            items: [
+              { title: 'List Eval Tasks', href: '/docs/api/eval-tasks/list-eval-tasks-filtered' },
+              { title: 'Create Eval Task', href: '/docs/api/eval-tasks/create-eval-task' },
+              { title: 'Get Eval Task', href: '/docs/api/eval-tasks/get-eval-task' },
+              { title: 'Update Eval Task', href: '/docs/api/eval-tasks/update-eval-task' },
+              { title: 'Delete Eval Task', href: '/docs/api/eval-tasks/delete-eval-task' },
+              { title: 'Bulk Delete Eval Tasks', href: '/docs/api/eval-tasks/bulk-delete-eval-tasks' },
+              { title: 'Pause Eval Task', href: '/docs/api/eval-tasks/pause-eval-task' },
+              { title: 'Unpause Eval Task', href: '/docs/api/eval-tasks/unpause-eval-task' },
+            ]
+          },
+          {
+            title: 'Custom Eval Configs',
+            items: [
+              { title: 'List Custom Eval Configs', href: '/docs/api/custom-eval-configs/list-configs-filtered' },
+              { title: 'Create Custom Eval Config', href: '/docs/api/custom-eval-configs/create-custom-eval-config' },
+              { title: 'Get Custom Eval Config', href: '/docs/api/custom-eval-configs/get-custom-eval-config' },
+              { title: 'Update Custom Eval Config', href: '/docs/api/custom-eval-configs/update-custom-eval-config' },
+              { title: 'Delete Custom Eval Config', href: '/docs/api/custom-eval-configs/delete-custom-eval-config' },
+              { title: 'Check Config Exists', href: '/docs/api/custom-eval-configs/check-config-exists' },
+            ]
+          },
+          {
             title: 'Eval Logs & Metrics',
             items: [
               { title: 'Get Eval Log Details', href: '/docs/api/eval-logs-metrics/getevallogdetails' },
@@ -951,22 +977,34 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Scenarios',
             items: [
+              { title: 'List Scenarios', href: '/docs/api/scenarios/listscenarios' },
+              { title: 'Get Scenario Details', href: '/docs/api/scenarios/getscenario' },
               { title: 'Create Scenario', href: '/docs/api/scenarios/createscenario' },
               { title: 'Edit Scenario', href: '/docs/api/scenarios/editscenario' },
-              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
+              { title: 'Delete Scenario', href: '/docs/api/scenarios/deletescenario' },
               { title: 'Add Rows with AI', href: '/docs/api/scenarios/addscenariorowswithai' },
+              { title: 'Add Columns', href: '/docs/api/scenarios/addcolumns' },
+              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
             ]
           },
           {
             title: 'Agent Definitions',
             items: [
+              { title: 'List Agent Definitions', href: '/docs/api/agent-definitions/listagentdefinitions' },
               { title: 'Create Agent Definition', href: '/docs/api/agent-definitions/createagentdefinition' },
+              { title: 'Get Agent Definition', href: '/docs/api/agent-definitions/getagentdefinition' },
+              { title: 'Delete Agent Definitions', href: '/docs/api/agent-definitions/deleteagentdefinitions' },
+              { title: 'Fetch from Provider', href: '/docs/api/agent-definitions/fetchassistantfromprovider' },
             ]
           },
           {
             title: 'Agent Versions',
             items: [
+              { title: 'List Agent Versions', href: '/docs/api/agent-versions/listagentversions' },
               { title: 'Create Agent Version', href: '/docs/api/agent-versions/createagentversion' },
+              { title: 'Get Agent Version', href: '/docs/api/agent-versions/getagentversion' },
+              { title: 'Get Version Call Executions', href: '/docs/api/agent-versions/getversioncallexecutions' },
+              { title: 'Get Version Eval Summary', href: '/docs/api/agent-versions/getversionevalsummary' },
             ]
           },
           {
@@ -974,6 +1012,14 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
+            ]
+          },
+          {
+            title: 'Simulation Analytics',
+            items: [
+              { title: 'Get Simulation Metrics', href: '/docs/api/simulation-analytics/metrics' },
+              { title: 'Get Simulation Runs', href: '/docs/api/simulation-analytics/runs' },
+              { title: 'Get Simulation Analytics', href: '/docs/api/simulation-analytics/analytics' },
             ]
           },
           {
