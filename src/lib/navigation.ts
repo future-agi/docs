@@ -224,6 +224,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
+              { title: 'Dashboards', href: '/docs/observe/features/dashboard' },
               {
                 title: 'Manual Tracing',
                 items: [
