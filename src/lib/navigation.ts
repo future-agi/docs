@@ -353,36 +353,87 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Core Concepts', href: '/docs/prism/concepts/core' },
-              { title: 'API Reference', href: '/docs/prism/concepts/api-reference' },
+              { title: 'How it works', href: '/docs/prism/concepts/core' },
+              { title: 'Virtual keys & access control', href: '/docs/prism/concepts/virtual-keys' },
               { title: 'Configuration', href: '/docs/prism/concepts/configuration' },
-              { title: 'Platform Integration', href: '/docs/prism/concepts/platform-integration' },
+              { title: 'Platform integration', href: '/docs/prism/concepts/platform-integration' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Manage Providers', href: '/docs/prism/features/providers' },
-              { title: 'Routing & Reliability', href: '/docs/prism/features/routing' },
-              { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
-              { title: 'Caching', href: '/docs/prism/features/caching' },
-              { title: 'Cost Tracking & Budgets', href: '/docs/prism/features/cost-tracking' },
-              { title: 'Streaming', href: '/docs/prism/features/streaming' },
-              { title: 'Shadow Experiments', href: '/docs/prism/features/shadow-experiments' },
-              { title: 'Rate Limiting', href: '/docs/prism/features/rate-limiting' },
-              { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
-              { title: 'Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
-              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
-              { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
-              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
+              {
+                title: 'Providers',
+                items: [
+                  { title: 'Supported providers', href: '/docs/prism/features/providers' },
+                  { title: 'Self-hosted models', href: '/docs/prism/features/self-hosted-models' },
+                ]
+              },
+              {
+                title: 'API Reference',
+                items: [
+                  { title: 'Endpoints overview', href: '/docs/prism/api/endpoints' },
+                  { title: 'Chat completions', href: '/docs/prism/api/chat' },
+                  { title: 'Embeddings & reranking', href: '/docs/prism/api/embeddings' },
+                  { title: 'Media endpoints', href: '/docs/prism/api/media' },
+                  { title: 'Assistants API', href: '/docs/prism/api/assistants' },
+                  { title: 'Files & vector stores', href: '/docs/prism/api/files' },
+                  { title: 'Async & batch', href: '/docs/prism/api/async-batch' },
+                  { title: 'Request & response headers', href: '/docs/prism/api/headers' },
+                ]
+              },
+              {
+                title: 'Routing',
+                items: [
+                  { title: 'Routing & reliability', href: '/docs/prism/features/routing' },
+                ]
+              },
+              {
+                title: 'Safety & Policy',
+                items: [
+                  { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
+                ]
+              },
+              {
+                title: 'Performance',
+                items: [
+                  { title: 'Caching', href: '/docs/prism/features/caching' },
+                  { title: 'Rate limiting', href: '/docs/prism/features/rate-limiting' },
+                ]
+              },
+              {
+                title: 'Cost & Observability',
+                items: [
+                  { title: 'Cost tracking', href: '/docs/prism/features/cost-tracking' },
+                  { title: 'Observability', href: '/docs/prism/features/observability' },
+                  { title: 'Shadow experiments', href: '/docs/prism/features/shadow-experiments' },
+                ]
+              },
+              {
+                title: 'Agentic',
+                items: [
+                  { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'Admin',
+            items: [
+              { title: 'Organization management', href: '/docs/prism/admin/organizations' },
             ]
           },
           {
             title: 'Deployment',
             items: [
-              { title: 'Self-Hosted', href: '/docs/prism/deployment/self-hosted' },
+              { title: 'Self-hosted', href: '/docs/prism/deployment/self-hosted' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Error handling', href: '/docs/prism/guides/errors' },
+              { title: 'Troubleshooting', href: '/docs/prism/guides/troubleshooting' },
             ]
           },
         ]
