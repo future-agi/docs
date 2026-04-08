@@ -778,6 +778,14 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Use Cases',
+            icon: 'flask',
+            items: [
+              { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
+              { title: 'Monitor LLM Quality in Production and Catch Regressions', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
+            ]
+          },
+          {
             title: 'Getting Started',
             icon: 'zap',
             items: [
