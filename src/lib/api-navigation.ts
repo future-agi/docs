@@ -409,6 +409,26 @@ export const apiNavigation: ApiNavGroup[] = [
     ]
   },
   {
+    "title": "Simulation Analytics",
+    "items": [
+      {
+        "title": "Get Simulation Metrics",
+        "href": "/docs/api/simulation-analytics/metrics",
+        "method": "GET"
+      },
+      {
+        "title": "Get Simulation Runs",
+        "href": "/docs/api/simulation-analytics/runs",
+        "method": "GET"
+      },
+      {
+        "title": "Get Simulation Analytics",
+        "href": "/docs/api/simulation-analytics/analytics",
+        "method": "GET"
+      }
+    ]
+  },
+  {
     "title": "Datasets",
     "items": [
       { "title": "Get Dataset", "href": "/docs/api/datasets/get-dataset", "method": "GET" },
