@@ -70,6 +70,36 @@ export const apiNavigation: ApiNavGroup[] = [
     ]
   },
   {
+    "title": "Personas",
+    "items": [
+      {
+        "title": "List personas",
+        "href": "/docs/api/personas/listpersonas",
+        "method": "GET"
+      },
+      {
+        "title": "Create persona",
+        "href": "/docs/api/personas/createpersona",
+        "method": "POST"
+      },
+      {
+        "title": "Update persona",
+        "href": "/docs/api/personas/updatepersona",
+        "method": "PATCH"
+      },
+      {
+        "title": "Delete persona",
+        "href": "/docs/api/personas/deletepersona",
+        "method": "DELETE"
+      },
+      {
+        "title": "Duplicate persona",
+        "href": "/docs/api/personas/duplicatepersona",
+        "method": "POST"
+      }
+    ]
+  },
+  {
     "title": "Agent Definitions",
     "items": [
       {
@@ -133,13 +163,163 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Run Tests",
     "items": [
       {
+        "title": "List test runs",
+        "href": "/docs/api/run-tests/listruntests",
+        "method": "GET"
+      },
+      {
         "title": "Create a New Test Run",
         "href": "/docs/api/run-tests/createruntest",
         "method": "POST"
       },
       {
+        "title": "Get test run details",
+        "href": "/docs/api/run-tests/getruntestdetails",
+        "method": "GET"
+      },
+      {
+        "title": "Delete a test run",
+        "href": "/docs/api/run-tests/deleteruntest",
+        "method": "DELETE"
+      },
+      {
         "title": "Execute a test run",
         "href": "/docs/api/run-tests/executeruntest",
+        "method": "POST"
+      },
+      {
+        "title": "Update test run components",
+        "href": "/docs/api/run-tests/updatetestcomponents",
+        "method": "PATCH"
+      },
+      {
+        "title": "Get test executions",
+        "href": "/docs/api/run-tests/gettestexecutions",
+        "method": "GET"
+      },
+      {
+        "title": "Get scenarios for a test run",
+        "href": "/docs/api/run-tests/gettestscenarios",
+        "method": "GET"
+      },
+      {
+        "title": "Get call executions for a test run",
+        "href": "/docs/api/run-tests/getcallexecutions",
+        "method": "GET"
+      },
+      {
+        "title": "Get evaluation summary",
+        "href": "/docs/api/run-tests/getevalsummary",
+        "method": "GET"
+      },
+      {
+        "title": "Compare evaluation summaries",
+        "href": "/docs/api/run-tests/compareevalsummaries",
+        "method": "GET"
+      },
+      {
+        "title": "Add evaluation configurations",
+        "href": "/docs/api/run-tests/addevalconfigs",
+        "method": "POST"
+      },
+      {
+        "title": "Update evaluation configuration",
+        "href": "/docs/api/run-tests/updateevalconfig",
+        "method": "PATCH"
+      },
+      {
+        "title": "Delete evaluation configuration",
+        "href": "/docs/api/run-tests/deleteevalconfig",
+        "method": "DELETE"
+      },
+      {
+        "title": "Run new evaluations on test executions",
+        "href": "/docs/api/run-tests/runnewevalsontestexecution",
+        "method": "POST"
+      },
+      {
+        "title": "Rerun test executions",
+        "href": "/docs/api/run-tests/reruntestexecutions",
+        "method": "POST"
+      },
+      {
+        "title": "Delete test executions",
+        "href": "/docs/api/run-tests/deletetestexecutions",
+        "method": "POST"
+      }
+    ]
+  },
+  {
+    "title": "Test Executions",
+    "items": [
+      {
+        "title": "Get test execution details",
+        "href": "/docs/api/test-executions/gettestexecutiondetails",
+        "method": "GET"
+      },
+      {
+        "title": "Get execution KPIs",
+        "href": "/docs/api/test-executions/getkpis",
+        "method": "GET"
+      },
+      {
+        "title": "Get performance summary",
+        "href": "/docs/api/test-executions/getperformancesummary",
+        "method": "GET"
+      },
+      {
+        "title": "Get eval explanation summary",
+        "href": "/docs/api/test-executions/getevalexplanationsummary",
+        "method": "GET"
+      },
+      {
+        "title": "Cancel test execution",
+        "href": "/docs/api/test-executions/cancelexecution",
+        "method": "POST"
+      },
+      {
+        "title": "Rerun call executions",
+        "href": "/docs/api/test-executions/reruncalls",
+        "method": "POST"
+      }
+    ]
+  },
+  {
+    "title": "Call Executions",
+    "items": [
+      {
+        "title": "Get call execution details",
+        "href": "/docs/api/call-executions/getcallexecutiondetails",
+        "method": "GET"
+      },
+      {
+        "title": "Compare execution sessions",
+        "href": "/docs/api/call-executions/getsessioncomparison",
+        "method": "GET"
+      }
+    ]
+  },
+  {
+    "title": "Prompt Simulations",
+    "items": [
+      {
+        "title": "List prompt simulation scenarios",
+        "href": "/docs/api/prompt-simulations/listscenarios",
+        "method": "GET"
+      },
+      {
+        "title": "List simulations for prompt template",
+        "href": "/docs/api/prompt-simulations/listsimulations",
+        "method": "GET"
+      },
+      {
+        "title": "Get prompt simulation details",
+        "href": "/docs/api/prompt-simulations/getsimulationdetails",
+        "method": "GET"
+      },
+      {
+        "title": "Execute prompt simulation",
+        "href": "/docs/api/prompt-simulations/executesimulation",
         "method": "POST"
       }
     ]
