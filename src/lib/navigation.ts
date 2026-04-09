@@ -45,13 +45,19 @@ export const tabNavigation: NavTab[] = [
             icon: 'rocket',
             href: '/docs',
             items: [
-              { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
-              { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
-              { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
               { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
+              { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
+              { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
+              { title: 'Prism AI Gateway', href: '/docs/quickstart/prism-ai-gateway' },
+              { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
+              { title: 'Annotations', href: '/docs/quickstart/annotations' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
-              { title: 'Annotations Quickstart', href: '/docs/annotations/quickstart' },
-              { title: 'Prism AI Gateway Quickstart', href: '/docs/prism/quickstart' },
+            ]
+          },
+          {
+            title: 'Release Notes',
+            items: [
+              { title: 'Release Notes', href: '/docs/release-notes' },
             ]
           },
         ]
@@ -137,6 +143,21 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Falcon AI',
+        icon: 'rocket',
+        items: [
+          { title: 'Overview', href: '/docs/falcon-ai' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
+              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
+              { title: 'MCP Connectors', href: '/docs/falcon-ai/features/mcp-connectors' },
+            ]
+          },
+        ]
+      },
+      {
         group: 'Evaluation',
         icon: 'chart',
         items: [
@@ -209,6 +230,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
+              { title: 'Dashboards', href: '/docs/observe/features/dashboard' },
               {
                 title: 'Manual Tracing',
                 items: [
@@ -338,30 +360,87 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Core Concepts', href: '/docs/prism/concepts/core' },
-              { title: 'API Reference', href: '/docs/prism/concepts/api-reference' },
+              { title: 'How it works', href: '/docs/prism/concepts/core' },
+              { title: 'Virtual keys & access control', href: '/docs/prism/concepts/virtual-keys' },
               { title: 'Configuration', href: '/docs/prism/concepts/configuration' },
-              { title: 'Platform Integration', href: '/docs/prism/concepts/platform-integration' },
+              { title: 'Platform integration', href: '/docs/prism/concepts/platform-integration' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Manage Providers', href: '/docs/prism/features/providers' },
-              { title: 'Routing & Reliability', href: '/docs/prism/features/routing' },
-              { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
-              { title: 'Caching', href: '/docs/prism/features/caching' },
-              { title: 'Cost Tracking & Budgets', href: '/docs/prism/features/cost-tracking' },
-              { title: 'Streaming', href: '/docs/prism/features/streaming' },
-              { title: 'Shadow Experiments', href: '/docs/prism/features/shadow-experiments' },
-              { title: 'Rate Limiting', href: '/docs/prism/features/rate-limiting' },
-              { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
+              {
+                title: 'Providers',
+                items: [
+                  { title: 'Supported providers', href: '/docs/prism/features/providers' },
+                  { title: 'Self-hosted models', href: '/docs/prism/features/self-hosted-models' },
+                ]
+              },
+              {
+                title: 'API Reference',
+                items: [
+                  { title: 'Endpoints overview', href: '/docs/prism/api/endpoints' },
+                  { title: 'Chat completions', href: '/docs/prism/api/chat' },
+                  { title: 'Embeddings & reranking', href: '/docs/prism/api/embeddings' },
+                  { title: 'Media endpoints', href: '/docs/prism/api/media' },
+                  { title: 'Assistants API', href: '/docs/prism/api/assistants' },
+                  { title: 'Files & vector stores', href: '/docs/prism/api/files' },
+                  { title: 'Async & batch', href: '/docs/prism/api/async-batch' },
+                  { title: 'Request & response headers', href: '/docs/prism/api/headers' },
+                ]
+              },
+              {
+                title: 'Routing',
+                items: [
+                  { title: 'Routing & reliability', href: '/docs/prism/features/routing' },
+                ]
+              },
+              {
+                title: 'Safety & Policy',
+                items: [
+                  { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
+                ]
+              },
+              {
+                title: 'Performance',
+                items: [
+                  { title: 'Caching', href: '/docs/prism/features/caching' },
+                  { title: 'Rate limiting', href: '/docs/prism/features/rate-limiting' },
+                ]
+              },
+              {
+                title: 'Cost & Observability',
+                items: [
+                  { title: 'Cost tracking', href: '/docs/prism/features/cost-tracking' },
+                  { title: 'Observability', href: '/docs/prism/features/observability' },
+                  { title: 'Shadow experiments', href: '/docs/prism/features/shadow-experiments' },
+                ]
+              },
+              {
+                title: 'Agentic',
+                items: [
+                  { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'Admin',
+            items: [
+              { title: 'Organization management', href: '/docs/prism/admin/organizations' },
             ]
           },
           {
             title: 'Deployment',
             items: [
-              { title: 'Self-Hosted', href: '/docs/prism/deployment/self-hosted' },
+              { title: 'Self-hosted', href: '/docs/prism/deployment/self-hosted' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Error handling', href: '/docs/prism/guides/errors' },
+              { title: 'Troubleshooting', href: '/docs/prism/guides/troubleshooting' },
             ]
           },
         ]
@@ -477,7 +556,6 @@ export const tabNavigation: NavTab[] = [
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
           { title: 'Installation', href: '/docs/installation' },
           { title: 'FAQ', href: '/docs/faq' },
-          { title: 'Release Notes', href: '/docs/release-notes' },
         ]
       },
       {
@@ -703,6 +781,14 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Agent Compass: Surface Agent Failures Automatically', href: '/docs/cookbook/quickstart/agent-compass-debug' },
                 ]
               },
+            ]
+          },
+          {
+            title: 'Use Cases',
+            icon: 'flask',
+            items: [
+              { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
+              { title: 'Monitor LLM Quality in Production and Catch Regressions', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
             ]
           },
           {
@@ -992,6 +1078,14 @@ export const tabNavigation: NavTab[] = [
               { title: 'List Simulations', href: '/docs/api/prompt-simulations/listsimulations' },
               { title: 'Get Simulation Details', href: '/docs/api/prompt-simulations/getsimulationdetails' },
               { title: 'Execute Simulation', href: '/docs/api/prompt-simulations/executesimulation' },
+            ]
+          },
+          {
+            title: 'Simulation Analytics',
+            items: [
+              { title: 'Get Simulation Metrics', href: '/docs/api/simulation-analytics/metrics' },
+              { title: 'Get Simulation Runs', href: '/docs/api/simulation-analytics/runs' },
+              { title: 'Get Simulation Analytics', href: '/docs/api/simulation-analytics/analytics' },
             ]
           },
           {
