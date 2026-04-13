@@ -989,6 +989,20 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Dataset Evals',
+            items: [
+              { title: 'Get Eval Template Names', href: '/docs/api/dataset-evals/get-eval-template-names' },
+              { title: 'Create Custom Eval Template', href: '/docs/api/dataset-evals/create-custom-eval-template' },
+              { title: 'List Dataset Evals', href: '/docs/api/dataset-evals/list-dataset-evals' },
+              { title: 'Get Eval Structure', href: '/docs/api/dataset-evals/get-eval-structure' },
+              { title: 'Add Dataset Eval', href: '/docs/api/dataset-evals/add-dataset-eval' },
+              { title: 'Start Evals Process', href: '/docs/api/dataset-evals/start-evals-process' },
+              { title: 'Delete Dataset Eval', href: '/docs/api/dataset-evals/delete-dataset-eval' },
+              { title: 'Edit and Run Eval', href: '/docs/api/dataset-evals/edit-and-run-eval' },
+              { title: 'Get Eval Metrics', href: '/docs/api/dataset-evals/get-eval-metrics' },
+            ]
+          },
+          {
             title: 'Scenarios',
             items: [
               { title: 'List Scenarios', href: '/docs/api/scenarios/listscenarios' },
@@ -1091,8 +1105,59 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Datasets',
             items: [
+              { title: 'Get Dataset', href: '/docs/api/datasets/get-dataset' },
+              { title: 'List Datasets', href: '/docs/api/datasets/list-datasets' },
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
+              { title: 'Create Empty Dataset', href: '/docs/api/datasets/create-empty-dataset' },
               { title: 'Upload Dataset from File', href: '/docs/api/datasets/upload-dataset' },
+              { title: 'Create from HuggingFace', href: '/docs/api/datasets/create-dataset-from-huggingface' },
+              { title: 'Clone Dataset', href: '/docs/api/datasets/clone-dataset' },
+              { title: 'Duplicate Dataset', href: '/docs/api/datasets/duplicate-dataset' },
+              { title: 'Add as New Dataset', href: '/docs/api/datasets/add-as-new' },
+              { title: 'Update Dataset', href: '/docs/api/datasets/update-dataset' },
+              { title: 'Merge Dataset', href: '/docs/api/datasets/merge-dataset' },
+              { title: 'Delete Dataset', href: '/docs/api/datasets/delete-dataset' },
+              { title: 'Add Rows from File', href: '/docs/api/datasets/add-rows-from-file' },
+              { title: 'Add Empty Rows', href: '/docs/api/datasets/add-empty-rows' },
+              { title: 'Add Rows from Existing', href: '/docs/api/datasets/add-rows-from-existing' },
+              { title: 'Add Rows from HuggingFace', href: '/docs/api/datasets/add-rows-from-huggingface' },
+              { title: 'Duplicate Rows', href: '/docs/api/datasets/duplicate-rows' },
+              { title: 'Delete Rows', href: '/docs/api/datasets/delete-rows' },
+              { title: 'Update Cell Value', href: '/docs/api/datasets/update-cell-value' },
+            ]
+          },
+          {
+            title: 'Dataset Columns',
+            items: [
+              { title: 'Get Column Details', href: '/docs/api/datasets/columns/get-column-details' },
+              { title: 'Get Column Config', href: '/docs/api/datasets/columns/get-column-config' },
+              { title: 'Add Static Column', href: '/docs/api/datasets/columns/add-static-column' },
+              { title: 'Add Multiple Static Columns', href: '/docs/api/datasets/columns/add-multiple-static-columns' },
+              { title: 'Add Columns', href: '/docs/api/datasets/columns/add-columns' },
+              { title: 'Update Column Name', href: '/docs/api/datasets/columns/update-column-name' },
+              { title: 'Update Column Type', href: '/docs/api/datasets/columns/update-column-type' },
+              { title: 'Delete Column', href: '/docs/api/datasets/columns/delete-column' },
+            ]
+          },
+          {
+            title: 'Dataset Run Prompt',
+            items: [
+              { title: 'Add Run Prompt Column', href: '/docs/api/datasets/run-prompt/add-run-prompt-column' },
+              { title: 'Edit Run Prompt Column', href: '/docs/api/datasets/run-prompt/edit-run-prompt-column' },
+              { title: 'Get Run Prompt Config', href: '/docs/api/datasets/run-prompt/retrieve-run-prompt-column-config' },
+              { title: 'Get Run Prompt Options', href: '/docs/api/datasets/run-prompt/retrieve-run-prompt-options' },
+              { title: 'Get Model Voices', href: '/docs/api/datasets/run-prompt/get-model-voices' },
+              { title: 'TTS Voices', href: '/docs/api/datasets/run-prompt/tts-voices' },
+              { title: 'Get Column Values', href: '/docs/api/datasets/run-prompt/get-column-values' },
+            ]
+          },
+          {
+            title: 'Dataset Analytics',
+            items: [
+              { title: 'Run Prompt Stats', href: '/docs/api/datasets/analytics/run-prompt-stats' },
+              { title: 'Eval Stats', href: '/docs/api/datasets/analytics/eval-stats' },
+              { title: 'Annotation Summary', href: '/docs/api/datasets/analytics/annotation-summary' },
+              { title: 'Explanation Summary', href: '/docs/api/datasets/analytics/explanation-summary' },
             ]
           },
           {
