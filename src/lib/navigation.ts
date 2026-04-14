@@ -414,6 +414,8 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Cost tracking', href: '/docs/prism/features/cost-tracking' },
                   { title: 'Observability', href: '/docs/prism/features/observability' },
                   { title: 'Shadow experiments', href: '/docs/prism/features/shadow-experiments' },
+                  { title: 'Webhooks', href: '/docs/prism/features/webhooks' },
+                  { title: 'Custom Properties', href: '/docs/prism/features/custom-properties' },
                 ]
               },
               {
