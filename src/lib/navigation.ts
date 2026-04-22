@@ -63,6 +63,28 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Agent Playground',
+        icon: 'play-circle',
+        items: [
+          { title: 'Overview', href: '/docs/agent-playground' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Agent Playground', href: '/docs/agent-playground/concepts/understanding-agent-playground' },
+              { title: 'Versions & Execution', href: '/docs/agent-playground/concepts/versions-and-execution' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Create a Graph', href: '/docs/agent-playground/features/create-graph' },
+              { title: 'Build a Workflow', href: '/docs/agent-playground/features/build-workflow' },
+              { title: 'Run & Monitor', href: '/docs/agent-playground/features/run-and-monitor' },
+            ]
+          },
+        ]
+      },
+      {
         group: 'Annotations',
         icon: 'pen',
         items: [
@@ -238,21 +260,6 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Falcon AI',
-        icon: 'rocket',
-        items: [
-          { title: 'Overview', href: '/docs/falcon-ai' },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
-              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
-              { title: 'MCP Connectors', href: '/docs/falcon-ai/features/mcp-connectors' },
-            ]
-          },
-        ]
-      },
-      {
         group: 'Evaluation',
         icon: 'chart',
         items: [
@@ -277,6 +284,21 @@ export const tabNavigation: NavTab[] = [
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Falcon AI',
+        icon: 'rocket',
+        items: [
+          { title: 'Overview', href: '/docs/falcon-ai' },
+          {
+            title: 'Features',
+            items: [
+              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
+              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
+              { title: 'MCP Connectors', href: '/docs/falcon-ai/features/mcp-connectors' },
             ]
           },
         ]
@@ -488,28 +510,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Features',
             items: [
               { title: 'Run Protect via SDK', href: '/docs/protect/features/run-protect' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Agent Playground',
-        icon: 'play-circle',
-        items: [
-          { title: 'Overview', href: '/docs/agent-playground' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Understanding Agent Playground', href: '/docs/agent-playground/concepts/understanding-agent-playground' },
-              { title: 'Versions & Execution', href: '/docs/agent-playground/concepts/versions-and-execution' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Create a Graph', href: '/docs/agent-playground/features/create-graph' },
-              { title: 'Build a Workflow', href: '/docs/agent-playground/features/build-workflow' },
-              { title: 'Run & Monitor', href: '/docs/agent-playground/features/run-and-monitor' },
             ]
           },
         ]
