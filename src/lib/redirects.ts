@@ -29,7 +29,7 @@ export const redirectMap: Record<string, string> = {
   '/cookbook/ai-evaluation/multimodal-judge': '/docs/cookbook',
   '/cookbook/ai-evaluation/overview': '/docs/optimization/optimizers/overview',
   '/cookbook/ai-evaluation/rag-evaluation': '/docs/cookbook/quickstart/rag-evaluation',
-  '/cookbook/ai-evaluation/streaming': '/docs/prism/features/streaming',
+  '/cookbook/ai-evaluation/streaming': '/docs/command-center/features/streaming',
   '/cookbook/cookbook1/AI-Evaluation-for-Meeting-Summarization': '/docs/cookbook/meeting-summarization',
   '/cookbook/cookbook10/Using-FutureAGI-Dataset': '/docs/cookbook/using-futureagi-dataset',
   '/cookbook/cookbook10/Using-FutureAGI-Evals': '/docs/cookbook/using-futureagi-evals',
