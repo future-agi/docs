@@ -48,7 +48,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
               { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
-              { title: 'Command Center', href: '/docs/quickstart/prism-ai-gateway' },
+              { title: 'Command Center', href: '/docs/quickstart/command-center-gateway' },
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Annotations', href: '/docs/quickstart/annotations' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
@@ -92,6 +92,101 @@ export const tabNavigation: NavTab[] = [
               { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
               { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
               { title: 'Annotation Queue Using SDK', href: '/docs/annotations/sdk/annotation-queue-using-sdk' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Command Center',
+        icon: 'server',
+        items: [
+          { title: 'Overview', href: '/docs/command-center' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'How it works', href: '/docs/command-center/concepts/core' },
+              { title: 'Virtual keys & access control', href: '/docs/command-center/concepts/virtual-keys' },
+              { title: 'Configuration', href: '/docs/command-center/concepts/configuration' },
+              { title: 'Platform integration', href: '/docs/command-center/concepts/platform-integration' },
+            ]
+          },
+          {
+            title: 'Features',
+            items: [
+              {
+                title: 'Providers',
+                items: [
+                  { title: 'Supported providers', href: '/docs/command-center/features/providers' },
+                  { title: 'Self-hosted models', href: '/docs/command-center/features/self-hosted-models' },
+                ]
+              },
+              {
+                title: 'API Reference',
+                items: [
+                  { title: 'Endpoints overview', href: '/docs/command-center/api/endpoints' },
+                  { title: 'Chat completions', href: '/docs/command-center/api/chat' },
+                  { title: 'Embeddings & reranking', href: '/docs/command-center/api/embeddings' },
+                  { title: 'Media endpoints', href: '/docs/command-center/api/media' },
+                  { title: 'Assistants API', href: '/docs/command-center/api/assistants' },
+                  { title: 'Files & vector stores', href: '/docs/command-center/api/files' },
+                  { title: 'Async & batch', href: '/docs/command-center/api/async-batch' },
+                  { title: 'Request & response headers', href: '/docs/command-center/api/headers' },
+                ]
+              },
+              {
+                title: 'Routing',
+                items: [
+                  { title: 'Routing & reliability', href: '/docs/command-center/features/routing' },
+                ]
+              },
+              {
+                title: 'Safety & Policy',
+                items: [
+                  { title: 'Guardrails', href: '/docs/command-center/features/guardrails' },
+                ]
+              },
+              {
+                title: 'Performance',
+                items: [
+                  { title: 'Caching', href: '/docs/command-center/features/caching' },
+                  { title: 'Rate limiting', href: '/docs/command-center/features/rate-limiting' },
+                ]
+              },
+              {
+                title: 'Cost & Observability',
+                items: [
+                  { title: 'Cost tracking', href: '/docs/command-center/features/cost-tracking' },
+                  { title: 'Observability', href: '/docs/command-center/features/observability' },
+                  { title: 'Shadow experiments', href: '/docs/command-center/features/shadow-experiments' },
+                  { title: 'Webhooks', href: '/docs/command-center/features/webhooks' },
+                  { title: 'Custom Properties', href: '/docs/command-center/features/custom-properties' },
+                ]
+              },
+              {
+                title: 'Agentic',
+                items: [
+                  { title: 'MCP & A2A', href: '/docs/command-center/features/mcp-a2a' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'Admin',
+            items: [
+              { title: 'Organization management', href: '/docs/command-center/admin/organizations' },
+            ]
+          },
+          {
+            title: 'Deployment',
+            items: [
+              { title: 'Self-hosted', href: '/docs/command-center/deployment/self-hosted' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Error handling', href: '/docs/command-center/guides/errors' },
+              { title: 'Troubleshooting', href: '/docs/command-center/guides/troubleshooting' },
             ]
           },
         ]
@@ -348,101 +443,6 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
               { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Command Center',
-        icon: 'server',
-        items: [
-          { title: 'Overview', href: '/docs/prism' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'How it works', href: '/docs/prism/concepts/core' },
-              { title: 'Virtual keys & access control', href: '/docs/prism/concepts/virtual-keys' },
-              { title: 'Configuration', href: '/docs/prism/concepts/configuration' },
-              { title: 'Platform integration', href: '/docs/prism/concepts/platform-integration' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              {
-                title: 'Providers',
-                items: [
-                  { title: 'Supported providers', href: '/docs/prism/features/providers' },
-                  { title: 'Self-hosted models', href: '/docs/prism/features/self-hosted-models' },
-                ]
-              },
-              {
-                title: 'API Reference',
-                items: [
-                  { title: 'Endpoints overview', href: '/docs/prism/api/endpoints' },
-                  { title: 'Chat completions', href: '/docs/prism/api/chat' },
-                  { title: 'Embeddings & reranking', href: '/docs/prism/api/embeddings' },
-                  { title: 'Media endpoints', href: '/docs/prism/api/media' },
-                  { title: 'Assistants API', href: '/docs/prism/api/assistants' },
-                  { title: 'Files & vector stores', href: '/docs/prism/api/files' },
-                  { title: 'Async & batch', href: '/docs/prism/api/async-batch' },
-                  { title: 'Request & response headers', href: '/docs/prism/api/headers' },
-                ]
-              },
-              {
-                title: 'Routing',
-                items: [
-                  { title: 'Routing & reliability', href: '/docs/prism/features/routing' },
-                ]
-              },
-              {
-                title: 'Safety & Policy',
-                items: [
-                  { title: 'Guardrails', href: '/docs/prism/features/guardrails' },
-                ]
-              },
-              {
-                title: 'Performance',
-                items: [
-                  { title: 'Caching', href: '/docs/prism/features/caching' },
-                  { title: 'Rate limiting', href: '/docs/prism/features/rate-limiting' },
-                ]
-              },
-              {
-                title: 'Cost & Observability',
-                items: [
-                  { title: 'Cost tracking', href: '/docs/prism/features/cost-tracking' },
-                  { title: 'Observability', href: '/docs/prism/features/observability' },
-                  { title: 'Shadow experiments', href: '/docs/prism/features/shadow-experiments' },
-                  { title: 'Webhooks', href: '/docs/prism/features/webhooks' },
-                  { title: 'Custom Properties', href: '/docs/prism/features/custom-properties' },
-                ]
-              },
-              {
-                title: 'Agentic',
-                items: [
-                  { title: 'MCP & A2A', href: '/docs/prism/features/mcp-a2a' },
-                ]
-              },
-            ]
-          },
-          {
-            title: 'Admin',
-            items: [
-              { title: 'Organization management', href: '/docs/prism/admin/organizations' },
-            ]
-          },
-          {
-            title: 'Deployment',
-            items: [
-              { title: 'Self-hosted', href: '/docs/prism/deployment/self-hosted' },
-            ]
-          },
-          {
-            title: 'Guides',
-            items: [
-              { title: 'Error handling', href: '/docs/prism/guides/errors' },
-              { title: 'Troubleshooting', href: '/docs/prism/guides/troubleshooting' },
             ]
           },
         ]
