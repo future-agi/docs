@@ -1,0 +1,190 @@
+---
+title: "How it works"
+description: "Understand Command Center's request pipeline, plugin architecture, virtual keys, multi-tenancy, and configuration hierarchy."
+---
+
+## About
+
+Every request flows through a pipeline of plugins in a fixed order: authentication, caching, budget checks, guardrails, rate limiting, then the provider call, followed by cost tracking and logging. Cache hits skip the provider entirely. Per-org configuration keeps tenants isolated.
+
+## The request pipeline
+
+Command Center is a proxy that sits between your application and your LLM providers. Every request passes through a chain of plugins before reaching the provider, and the response passes through another chain on the way back.
+
+The plugins run in a fixed priority order. Lower numbers run first:
+
+### Pre-request plugins (run before the provider call)
+
+| Priority | Plugin | What it does |
+|---|---|---|
+| 10 | **IP ACL** | Blocks requests from denied IP addresses or CIDR ranges |
+| 20 | **Auth** | Validates the virtual API key, identifies the organization |
+| 30 | **RBAC** | Checks role-based permissions (can this key call this model?) |
+| 35 | **Cache** | Checks for an exact or semantic cache match. On a hit, skips everything below and returns instantly. |
+| 40 | **Budget** | Checks org/key/user spend against configured limits |
+| 50 | **Guardrails** | Runs safety checks on the incoming request (PII, injection, blocklist, etc.) |
+| 60 | **Tool policy** | Filters or rejects tool/function calls based on allow/deny lists |
+| 70 | **Validation** | Validates the model name against the model database |
+| 80 | **Rate limit** | Enforces RPM/TPM limits per org, key, user, or model |
+
+### Provider call
+
+After all pre-request plugins pass, Command Center forwards the request to the selected LLM provider. The routing layer picks the provider based on your configured strategy (round-robin, weighted, least-latency, etc.) and handles failover if the primary provider is down.
+
+### Post-response plugins (run after the provider responds)
+
+Some post-plugins run sequentially because they depend on each other. The rest run in parallel for performance.
+
+**Sequential (order matters):**
+
+| Priority | Plugin | What it does |
+|---|---|---|
+| 35 | **Cache** | Writes the fresh response to cache for future requests |
+| 40 | **Budget** | Updates spend counters |
+| 80 | **Rate limit** | Updates rate counters |
+| 500 | **Cost** | Calculates the request cost from token usage and model pricing |
+| 510 | **Credits** | Deducts cost from the key's credit balance (managed keys only) |
+
+**Parallel (independent observers, run concurrently):**
+
+| Priority | Plugin | What it does |
+|---|---|---|
+| 900 | **Logging** | Buffers the request trace for the control plane |
+| 900 | **Audit** | Emits structured audit events to configured sinks |
+| 997 | **Alerting** | Checks alert rule conditions (error rate, cost, latency) |
+| 998 | **Prometheus** | Increments counters and histograms |
+| 999 | **OpenTelemetry** | Exports a span to your OTLP endpoint |
+
+<Note>
+Post-plugin failures are non-fatal. If logging or metrics fail, the response has already been sent to your application. Errors are logged as warnings but never block the response.
+</Note>
+
+---
+
+## Cache hits and short-circuiting
+
+When the cache plugin finds an exact match at priority 35, it short-circuits the pipeline. The provider is never called, and the cached response is returned immediately.
+
+On an exact cache hit:
+- Budget, guardrails, tool policy, validation, and rate limiting are all skipped
+- Cost and credits are skipped (no tokens were consumed)
+- Logging, audit, metrics, and alerting still run (so cache hits appear in your dashboards)
+
+Semantic cache hits (similar but not identical requests) also short-circuit the provider call. Cost and credits plugins still run on semantic hits, unlike exact hits where they're skipped entirely.
+
+---
+
+## Virtual API keys
+
+Command Center uses virtual keys (prefixed `sk-agentcc-`) to authenticate requests. These are not your provider API keys - they're Command Center-specific keys that map to an organization and its configuration.
+
+When a request arrives with a virtual key, Command Center:
+
+1. Validates the key and checks it hasn't expired or been revoked
+2. Identifies which organization the key belongs to
+3. Loads that organization's providers, guardrails, routing rules, rate limits, and budgets
+4. Routes the request using the org's stored provider credentials
+
+Your application never sees or stores raw provider API keys. Rotate a provider key in Command Center and every application using that org's virtual keys picks up the change automatically.
+
+Each virtual key can have its own restrictions:
+
+- **Model restrictions** - limit which models this key can call
+- **Provider restrictions** - limit which providers this key can use
+- **RPM/TPM limits** - per-key rate limits (independent of org limits)
+- **Expiration date** - auto-expires the key
+- **Allowed IPs** - restrict which IPs can use this key
+- **Tool allow/deny lists** - control which function calls are permitted
+- **Guardrail overrides** - change enforcement mode per key
+- **BYOK (Bring Your Own Key)** - let the caller supply their own provider key
+- **Credit balance** - managed keys with a USD budget that auto-deducts per request
+
+---
+
+## Multi-tenancy
+
+Multiple organizations share the same gateway but are completely isolated. Each organization has its own:
+
+- Providers and their encrypted API keys
+- Guardrails and safety policies
+- Routing rules and strategies
+- Rate limits and budgets
+- Cache namespace
+- Tool policies
+- MCP tool server registrations
+- Audit and alerting configuration
+
+One organization's configuration never affects another's.
+
+**Common use cases:**
+- **SaaS products** - each customer gets an isolated gateway environment
+- **Team separation** - track spend and enforce policies per team
+- **Staging vs production** - different configs on the same gateway
+- **Resellers** - provision isolated environments for downstream customers
+
+---
+
+## Configuration hierarchy
+
+When a setting is defined in multiple places, the most specific one wins:
+
+```
+Request headers > API key config > Organization config > Global config
+```
+
+For example, if the org sets cache TTL to 5 minutes but a request sends `x-agentcc-cache-ttl: 60`, that request uses a 60-second TTL. If a key has a guardrail override that sets PII detection to "log only," it overrides the org's "enforce" setting for requests using that key.
+
+This lets you set sensible defaults at the org level and override them for specific keys or individual requests without changing the org config.
+
+---
+
+## Hot-reload and sync
+
+Configuration changes take effect without restarting the gateway.
+
+**Control plane sync:** Every 15 seconds (configurable), the gateway pulls the latest org configs and API keys from the control plane. Only orgs whose config actually changed (detected via SHA-256 hash comparison) trigger updates. Unchanged orgs are skipped.
+
+**What happens on a config change:**
+- Provider clients are rebuilt with new credentials
+- Dynamic guardrail configs are refreshed
+- Budget counters are recalculated
+- Cache namespaces are isolated per org, so one org's cache change doesn't affect others
+
+**Key revocation:** When a key is revoked via the admin API, the revocation is broadcast to all gateway replicas via Redis pub/sub immediately - no waiting for the next 15-second sync.
+
+**Model database:** The model pricing and capability database is swapped atomically via an atomic pointer. No locking, no downtime.
+
+---
+
+## Sessions and metadata
+
+**Sessions:** Group related requests using the `x-agentcc-session-id` header. Sessions are for grouping and analytics only. Command Center does not maintain conversation state between requests.
+
+**Custom metadata:** Attach arbitrary key-value pairs using the `x-agentcc-metadata` header. Metadata appears in logs and analytics for cost attribution and tracking by team, feature, user, or any custom dimension.
+
+---
+
+## Streaming
+
+For streaming requests, pre-request plugins run normally before the stream starts. The stream then flows directly to your application chunk by chunk. Post-response plugins run after the final chunk, once the full response (including token usage) is available.
+
+Streaming requests bypass the cache entirely - both on read and write. This is because streaming responses arrive in chunks and caching partial streams creates consistency problems.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/docs/command-center/quickstart">
+    Get your first request through Command Center in 5 minutes
+  </Card>
+  <Card title="Configuration" href="/docs/command-center/concepts/configuration">
+    SDK config, per-request overrides, and the configuration hierarchy
+  </Card>
+  <Card title="Supported providers" href="/docs/command-center/features/providers">
+    See all supported LLM providers and how to add them
+  </Card>
+  <Card title="Guardrails" href="/docs/command-center/features/guardrails">
+    Set up safety checks on requests and responses
+  </Card>
+</CardGroup>
