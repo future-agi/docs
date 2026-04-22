@@ -571,6 +571,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Agent Definition', href: '/docs/simulation/concepts/agent-definition' },
               { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
               { title: 'Personas', href: '/docs/simulation/concepts/personas' },
+              { title: 'Global Nodes', href: '/docs/simulation/concepts/global-nodes' },
             ]
           },
           {
