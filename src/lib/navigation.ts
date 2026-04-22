@@ -48,7 +48,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
               { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
-              { title: 'Prism AI Gateway', href: '/docs/quickstart/prism-ai-gateway' },
+              { title: 'Command Center', href: '/docs/quickstart/prism-ai-gateway' },
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Annotations', href: '/docs/quickstart/annotations' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
@@ -353,7 +353,7 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Prism AI Gateway',
+        group: 'Command Center',
         icon: 'server',
         items: [
           { title: 'Overview', href: '/docs/prism' },
