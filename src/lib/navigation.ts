@@ -280,7 +280,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
               { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
               { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
-              { title: 'Eval Groups', href: '/docs/evaluation/features/groups' },
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
@@ -947,18 +946,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Evals',
             items: [
               { title: 'Get Evals List', href: '/docs/api/evals-list/getevalslist' },
-            ]
-          },
-          {
-            title: 'Eval Groups',
-            items: [
-              { title: 'Create Eval Group', href: '/docs/api/eval-groups/createevalgroup' },
-              { title: 'List Eval Groups', href: '/docs/api/eval-groups/listevalgroups' },
-              { title: 'Retrieve Eval Group', href: '/docs/api/eval-groups/retrieveevalgroup' },
-              { title: 'Update Eval Group', href: '/docs/api/eval-groups/updateevalgroup' },
-              { title: 'Delete Eval Group', href: '/docs/api/eval-groups/deleteevalgroup' },
-              { title: 'Apply Eval Group', href: '/docs/api/eval-groups/applyevalgroup' },
-              { title: 'Edit Eval List', href: '/docs/api/eval-groups/editevallist' },
             ]
           },
           {

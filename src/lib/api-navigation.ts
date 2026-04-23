@@ -325,46 +325,6 @@ export const apiNavigation: ApiNavGroup[] = [
     ]
   },
   {
-    "title": "Eval Groups",
-    "items": [
-      {
-        "title": "List Evaluation Groups",
-        "href": "/docs/api/eval-groups/listevalgroups",
-        "method": "GET"
-      },
-      {
-        "title": "Create Evaluation Group",
-        "href": "/docs/api/eval-groups/createevalgroup",
-        "method": "POST"
-      },
-      {
-        "title": "Retrieve Evaluation Group",
-        "href": "/docs/api/eval-groups/retrieveevalgroup",
-        "method": "GET"
-      },
-      {
-        "title": "Update Evaluation Group",
-        "href": "/docs/api/eval-groups/updateevalgroup",
-        "method": "PUT"
-      },
-      {
-        "title": "Delete Evaluation Group",
-        "href": "/docs/api/eval-groups/deleteevalgroup",
-        "method": "DELETE"
-      },
-      {
-        "title": "Edit Evaluation Group Members",
-        "href": "/docs/api/eval-groups/editevallist",
-        "method": "POST"
-      },
-      {
-        "title": "Apply Evaluation Group",
-        "href": "/docs/api/eval-groups/applyevalgroup",
-        "method": "POST"
-      }
-    ]
-  },
-  {
     "title": "Eval Tasks",
     "items": [
       { "title": "List Eval Tasks", "href": "/docs/api/eval-tasks/list-eval-tasks-filtered", "method": "GET" },
