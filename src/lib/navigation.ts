@@ -48,7 +48,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
               { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
               { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
-              { title: 'Command Center', href: '/docs/quickstart/command-center-gateway' },
+              { title: 'Agent Command Center', href: '/docs/quickstart/command-center-gateway' },
               { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
               { title: 'Annotations', href: '/docs/quickstart/annotations' },
               { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
@@ -119,7 +119,7 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Command Center',
+        group: 'Agent Command Center',
         icon: 'server',
         items: [
           { title: 'Overview', href: '/docs/command-center' },
