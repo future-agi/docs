@@ -300,31 +300,6 @@ export const apiNavigation: ApiNavGroup[] = [
     ]
   },
   {
-    "title": "Prompt Simulations",
-    "items": [
-      {
-        "title": "List prompt simulation scenarios",
-        "href": "/docs/api/prompt-simulations/listscenarios",
-        "method": "GET"
-      },
-      {
-        "title": "List simulations for prompt template",
-        "href": "/docs/api/prompt-simulations/listsimulations",
-        "method": "GET"
-      },
-      {
-        "title": "Get prompt simulation details",
-        "href": "/docs/api/prompt-simulations/getsimulationdetails",
-        "method": "GET"
-      },
-      {
-        "title": "Execute prompt simulation",
-        "href": "/docs/api/prompt-simulations/executesimulation",
-        "method": "POST"
-      }
-    ]
-  },
-  {
     "title": "Eval Tasks",
     "items": [
       { "title": "List Eval Tasks", "href": "/docs/api/eval-tasks/list-eval-tasks-filtered", "method": "GET" },
@@ -346,26 +321,6 @@ export const apiNavigation: ApiNavGroup[] = [
       { "title": "Update Custom Eval Config", "href": "/docs/api/custom-eval-configs/update-custom-eval-config", "method": "PATCH" },
       { "title": "Delete Custom Eval Config", "href": "/docs/api/custom-eval-configs/delete-custom-eval-config", "method": "DELETE" },
       { "title": "Check Config Exists", "href": "/docs/api/custom-eval-configs/check-config-exists", "method": "POST" }
-    ]
-  },
-  {
-    "title": "Eval Logs & Metrics",
-    "items": [
-      {
-        "title": "Get Evaluation Log Details",
-        "href": "/docs/api/eval-logs-metrics/getevallogdetails",
-        "method": "GET"
-      }
-    ]
-  },
-  {
-    "title": "Evals List",
-    "items": [
-      {
-        "title": "Get Evals List",
-        "href": "/docs/api/evals-list/getevalslist",
-        "method": "GET"
-      }
     ]
   },
   {
@@ -391,7 +346,6 @@ export const apiNavigation: ApiNavGroup[] = [
   {
     "title": "Datasets",
     "items": [
-      { "title": "Get Dataset", "href": "/docs/api/datasets/get-dataset", "method": "GET" },
       { "title": "List Datasets", "href": "/docs/api/datasets/list-datasets", "method": "GET" },
       { "title": "Create Dataset", "href": "/docs/api/datasets/create-dataset", "method": "POST" },
       { "title": "Create Empty Dataset", "href": "/docs/api/datasets/create-empty-dataset", "method": "POST" },

@@ -4,8 +4,6 @@ export const redirectMap: Record<string, string> = {
   '/admin-settings': '/docs/admin-settings',
   '/api-reference/agent-definitions/create-agent-definition': '/docs/api/agent-definitions/createagentdefinition',
   '/api-reference/agent-versions/create-new-version-of-agent': '/docs/api/agent-versions/createagentversion',
-  '/api-reference/eval-logs-and-metrics/get-evaluation-log-details': '/docs/api/eval-logs-metrics/getevallogdetails',
-  '/api-reference/evals-list/get-evals-list': '/docs/api/evals-list/getevalslist',
   '/api-reference/health/health-check': '/docs/api/health/healthcheck',
   '/api-reference/prompt-workbench/get-prompt-version-by-name': '/docs/api',
   '/api-reference/run-tests/create-a-new-test-run': '/docs/api/run-tests/createruntest',

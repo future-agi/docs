@@ -943,12 +943,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Evals',
-            items: [
-              { title: 'Get Evals List', href: '/docs/api/evals-list/getevalslist' },
-            ]
-          },
-          {
             title: 'Eval Tasks',
             items: [
               { title: 'List Eval Tasks', href: '/docs/api/eval-tasks/list-eval-tasks-filtered' },
@@ -973,12 +967,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Eval Logs & Metrics',
-            items: [
-              { title: 'Get Eval Log Details', href: '/docs/api/eval-logs-metrics/getevallogdetails' },
-            ]
-          },
-          {
             title: 'Dataset Evals',
             items: [
               { title: 'Get Eval Template Names', href: '/docs/api/dataset-evals/get-eval-template-names' },
@@ -989,7 +977,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Start Evals Process', href: '/docs/api/dataset-evals/start-evals-process' },
               { title: 'Delete Dataset Eval', href: '/docs/api/dataset-evals/delete-dataset-eval' },
               { title: 'Edit and Run Eval', href: '/docs/api/dataset-evals/edit-and-run-eval' },
-              { title: 'Get Eval Metrics', href: '/docs/api/dataset-evals/get-eval-metrics' },
             ]
           },
           {
@@ -1076,15 +1063,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Prompt Simulations',
-            items: [
-              { title: 'List Scenarios', href: '/docs/api/prompt-simulations/listscenarios' },
-              { title: 'List Simulations', href: '/docs/api/prompt-simulations/listsimulations' },
-              { title: 'Get Simulation Details', href: '/docs/api/prompt-simulations/getsimulationdetails' },
-              { title: 'Execute Simulation', href: '/docs/api/prompt-simulations/executesimulation' },
-            ]
-          },
-          {
             title: 'Simulation Analytics',
             items: [
               { title: 'Get Simulation Metrics', href: '/docs/api/simulation-analytics/metrics' },
@@ -1095,7 +1073,6 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Datasets',
             items: [
-              { title: 'Get Dataset', href: '/docs/api/datasets/get-dataset' },
               { title: 'List Datasets', href: '/docs/api/datasets/list-datasets' },
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
               { title: 'Create Empty Dataset', href: '/docs/api/datasets/create-empty-dataset' },
