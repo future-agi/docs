@@ -280,7 +280,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
               { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
               { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
-              { title: 'Eval Groups', href: '/docs/evaluation/features/groups' },
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
@@ -944,24 +943,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Evals',
-            items: [
-              { title: 'Get Evals List', href: '/docs/api/evals-list/getevalslist' },
-            ]
-          },
-          {
-            title: 'Eval Groups',
-            items: [
-              { title: 'Create Eval Group', href: '/docs/api/eval-groups/createevalgroup' },
-              { title: 'List Eval Groups', href: '/docs/api/eval-groups/listevalgroups' },
-              { title: 'Retrieve Eval Group', href: '/docs/api/eval-groups/retrieveevalgroup' },
-              { title: 'Update Eval Group', href: '/docs/api/eval-groups/updateevalgroup' },
-              { title: 'Delete Eval Group', href: '/docs/api/eval-groups/deleteevalgroup' },
-              { title: 'Apply Eval Group', href: '/docs/api/eval-groups/applyevalgroup' },
-              { title: 'Edit Eval List', href: '/docs/api/eval-groups/editevallist' },
-            ]
-          },
-          {
             title: 'Eval Tasks',
             items: [
               { title: 'List Eval Tasks', href: '/docs/api/eval-tasks/list-eval-tasks-filtered' },
@@ -986,12 +967,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Eval Logs & Metrics',
-            items: [
-              { title: 'Get Eval Log Details', href: '/docs/api/eval-logs-metrics/getevallogdetails' },
-            ]
-          },
-          {
             title: 'Dataset Evals',
             items: [
               { title: 'Get Eval Template Names', href: '/docs/api/dataset-evals/get-eval-template-names' },
@@ -1002,7 +977,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Start Evals Process', href: '/docs/api/dataset-evals/start-evals-process' },
               { title: 'Delete Dataset Eval', href: '/docs/api/dataset-evals/delete-dataset-eval' },
               { title: 'Edit and Run Eval', href: '/docs/api/dataset-evals/edit-and-run-eval' },
-              { title: 'Get Eval Metrics', href: '/docs/api/dataset-evals/get-eval-metrics' },
             ]
           },
           {
@@ -1089,15 +1063,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Prompt Simulations',
-            items: [
-              { title: 'List Scenarios', href: '/docs/api/prompt-simulations/listscenarios' },
-              { title: 'List Simulations', href: '/docs/api/prompt-simulations/listsimulations' },
-              { title: 'Get Simulation Details', href: '/docs/api/prompt-simulations/getsimulationdetails' },
-              { title: 'Execute Simulation', href: '/docs/api/prompt-simulations/executesimulation' },
-            ]
-          },
-          {
             title: 'Simulation Analytics',
             items: [
               { title: 'Get Simulation Metrics', href: '/docs/api/simulation-analytics/metrics' },
@@ -1108,7 +1073,6 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Datasets',
             items: [
-              { title: 'Get Dataset', href: '/docs/api/datasets/get-dataset' },
               { title: 'List Datasets', href: '/docs/api/datasets/list-datasets' },
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
               { title: 'Create Empty Dataset', href: '/docs/api/datasets/create-empty-dataset' },
