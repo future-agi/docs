@@ -39,7 +39,20 @@ export const tabNavigation: NavTab[] = [
         icon: 'rocket',
         items: [
           { title: 'Introduction', href: '/docs' },
-          { title: 'Self-Hosting', href: '/docs/self-hosting', badge: 'New' },
+          {
+            title: 'Self-Hosting',
+            badge: 'New',
+            items: [
+              { title: 'Overview', href: '/docs/self-hosting' },
+              { title: 'Requirements', href: '/docs/self-hosting/requirements' },
+              { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
+              { title: 'Environment Variables', href: '/docs/self-hosting/environment' },
+              { title: 'System Configuration', href: '/docs/self-hosting/configuration' },
+              { title: 'User Management', href: '/docs/self-hosting/user-management' },
+              { title: 'Production', href: '/docs/self-hosting/production' },
+              { title: 'Troubleshooting', href: '/docs/self-hosting/troubleshooting' },
+            ]
+          },
           {
             title: 'Quickstart',
             icon: 'rocket',

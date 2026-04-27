@@ -1,0 +1,122 @@
+---
+title: "Production"
+description: "Hardening checklist, backups, monitoring, and upgrade runbook."
+---
+
+## Hardening checklist
+
+**Secrets** — replace all `CHANGEME` values before going live:
+
+```bash
+openssl rand -hex 32    # SECRET_KEY, AGENTCC_INTERNAL_API_KEY
+openssl rand -base64 24 # PG_PASSWORD, MINIO_ROOT_PASSWORD
+```
+
+**Runtime flags** in `.env`:
+- `ENV_TYPE=prod`
+- `FAST_STARTUP=false`
+- `GRANIAN_WORKERS=<your CPU count>`
+
+**TLS** — the frontend and backend don't terminate TLS. Put Caddy, nginx, or Traefik in front:
+
+```
+# Caddyfile (simplest — auto-issues Let's Encrypt certs)
+app.yourcompany.com    { reverse_proxy localhost:3031 }
+api.yourcompany.com    { reverse_proxy localhost:8000 }
+```
+
+After setting up TLS, set `VITE_HOST_API=https://api.yourcompany.com` in `.env` and rebuild:
+
+```bash
+docker compose build frontend && docker compose up -d frontend
+```
+
+**Managed data stores** — for production, replace compose-managed services:
+
+| Replace | With | Change |
+|---|---|---|
+| `postgres` | RDS / Aurora / Cloud SQL | Set `PG_*` vars to managed endpoint |
+| `clickhouse` | ClickHouse Cloud | Set `CH_HOST`, `CH_PORT`, etc. |
+| `redis` | ElastiCache / Upstash | Set `REDIS_URL` |
+| `minio` | AWS S3 | Set `S3_ENDPOINT_URL=https://s3.amazonaws.com` + AWS creds |
+
+<Note>
+`code-executor` requires `privileged: true`. Run on EC2 / GCE instances — not Fargate or Cloud Run.
+</Note>
+
+**Secrets manager** — use AWS Secrets Manager, HashiCorp Vault, or GCP Secret Manager instead of a plain `.env` file.
+
+---
+
+## Backups
+
+### PostgreSQL
+
+```bash
+# Backup
+docker compose exec postgres \
+  pg_dump -U futureagi -d futureagi --format=custom \
+  > backup-$(date +%F).dump
+
+# Restore
+docker compose exec -T postgres \
+  pg_restore -U futureagi -d futureagi --clean --if-exists \
+  < backup-2026-04-22.dump
+```
+
+Volumes: `future-agi_postgres-data` · `future-agi_clickhouse-data` · `future-agi_redis-data` · `future-agi_minio-data` · `future-agi_peerdb-catalog-data` · `future-agi_peerdb-minio-data`
+
+### ClickHouse
+
+```sql
+BACKUP TABLE default.traces TO S3('s3://your-bucket/ch-backup/', 'KEY', 'SECRET');
+```
+
+ClickHouse data can also be rebuilt from scratch by re-running PeerDB init since it replicates from Postgres.
+
+### MinIO
+
+```bash
+mc alias set local http://localhost:9005 futureagi <MINIO_ROOT_PASSWORD>
+mc alias set s3 https://s3.amazonaws.com <AWS_KEY> <AWS_SECRET>
+mc mirror local/ s3/your-bucket/
+```
+
+---
+
+## Monitoring
+
+Backend exposes Prometheus metrics at `http://localhost:8000/metrics`. Add a scraper:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: futureagi
+    static_configs:
+      - targets: ['localhost:8000']
+    metrics_path: /metrics
+```
+
+Key signals: backend error rate, Temporal workflow success/failure, Postgres WAL lag (PeerDB health), ClickHouse query latency, PeerDB mirror status at [localhost:3001](http://localhost:3001).
+
+---
+
+## Upgrades
+
+```bash
+git pull
+docker compose build
+docker compose up -d
+```
+
+Migrations run automatically. If a migration fails: `docker compose exec backend python manage.py migrate`
+
+If release notes mention PeerDB changes: `docker compose run --rm peerdb-init bash /setup.sh`
+
+**Rollback:**
+
+```bash
+git log --oneline -5
+git checkout <previous-hash>
+docker compose build && docker compose up -d
+```
