@@ -248,13 +248,25 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
+              { title: 'How It Works', href: '/docs/error-feed/concepts/how-it-works' },
               { title: 'Error Taxonomy', href: '/docs/error-feed/concepts/taxonomy' },
+              { title: 'Scoring', href: '/docs/error-feed/concepts/scoring' },
+              { title: 'Severity and Status', href: '/docs/error-feed/concepts/severity-and-status' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Using Error Feed', href: '/docs/error-feed/features/using-error-feed' },
+              { title: 'The Feed', href: '/docs/error-feed/features/the-feed' },
+              { title: 'Issue Overview', href: '/docs/error-feed/features/issue-overview' },
+              { title: 'Traces', href: '/docs/error-feed/features/traces' },
+              { title: 'State Graph', href: '/docs/error-feed/features/state-graph' },
+              { title: 'Trends', href: '/docs/error-feed/features/trends' },
+              { title: 'Metadata Panel', href: '/docs/error-feed/features/metadata-panel' },
+              { title: 'Triage Workflow', href: '/docs/error-feed/features/triage-workflow' },
+              { title: 'Deep Analysis', href: '/docs/error-feed/features/deep-analysis' },
+              { title: 'Linear Integration', href: '/docs/error-feed/features/linear-integration' },
+              { title: 'Sampling', href: '/docs/error-feed/features/sampling' },
             ]
           },
         ]
@@ -776,12 +788,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Experimentation: Compare Prompts and Models on a Dataset', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
                   { title: 'Evaluation-Driven Development: Score Every Prompt Change Before Shipping', href: '/docs/cookbook/quickstart/eval-driven-dev' },
                   { title: 'CI/CD Eval Pipeline: Automate Quality Gates in GitHub Actions', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
-                ]
-              },
-              {
-                title: 'Agent Compass',
-                items: [
-                  { title: 'Agent Compass: Surface Agent Failures Automatically', href: '/docs/cookbook/quickstart/agent-compass-debug' },
                 ]
               },
             ]
