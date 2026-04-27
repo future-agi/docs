@@ -1,5 +1,12 @@
 <div align="center">
 
+<a href="https://futureagi.com">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Logo.png">
+    <img alt="Future AGI" src="Logo.png" width="100%">
+  </picture>
+</a>
+
 # Future AGI Documentation
 
 The source for **[docs.futureagi.com](https://docs.futureagi.com)** — the developer and user documentation for [Future AGI](https://futureagi.com).
@@ -12,6 +19,12 @@ Built with [Astro](https://astro.build), MDX, React islands, and Tailwind CSS v4
 &nbsp;·&nbsp;
 [**Open a PR**](https://github.com/future-agi/docs/pulls)
 
+</div>
+
+---
+
+<div align="center">
+  <img alt="Future AGI docs assistant in action" src="docs-assistant.gif" width="100%">
 </div>
 
 ---
