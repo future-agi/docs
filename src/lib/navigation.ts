@@ -798,6 +798,9 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
               { title: 'Monitor LLM Quality in Production and Catch Regressions', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
+              { title: 'End-to-End with Falcon AI: Trace, Debug, Evaluate, Dataset, Fix in One Workflow', href: '/docs/cookbook/use-cases/falcon-ai-end-to-end' },
+              { title: 'Context-Aware Trace Debugging with Falcon AI: From Error to Fix in Minutes', href: '/docs/cookbook/use-cases/falcon-ai-context-aware-debugging' },
+              { title: 'Building Evaluation Datasets from Production Traces with Falcon AI', href: '/docs/cookbook/use-cases/falcon-ai-eval-datasets-from-traces' },
             ]
           },
           {

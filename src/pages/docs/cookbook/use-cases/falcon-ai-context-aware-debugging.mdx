@@ -1,0 +1,372 @@
+---
+title: "Context-Aware Trace Debugging with Falcon AI: From Error to Fix in Minutes"
+description: "Open Falcon AI directly on one failing trace, let page context pick up the trace automatically, and get a verbatim prompt fix in minutes without copy-pasting trace IDs or switching tools."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/falcon-ai-context-aware-debugging.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/falcon-ai-context-aware-debugging.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty |
+|------|-----------|
+| 15 min | Beginner |
+
+You launched a research assistant for your team last week. It searches your internal paper database and synthesizes summaries with citations. This morning a colleague pings you: "this paper you cited doesn't exist." You open the dashboard, find the trace, and there it is. A confidently-formatted citation that the model invented because the search tool returned no results for the topic.
+
+You do not need a full regression suite right now. You do not need to build a dataset or run a sweep. You need to know what broke in this one trace and what to change so it stops happening. Fast.
+
+The slow version of this is familiar: open the trace, expand the span tree, scroll through 6 nested spans, copy the system prompt out, copy the model output out, diff them in your head, write the fix in a notebook, run it, look at the new trace, repeat if it didn't work. Easily an hour for one trace, longer if you context-switch.
+
+This is the failure mode that got a New York lawyer sanctioned in 2023 for citing six cases that ChatGPT had completely fabricated. The pattern is the same: a search returns nothing, the model fills the gap with plausible-looking output, and a downstream user trusts it.
+
+This cookbook walks the fast version. You open Falcon AI directly on the failing trace, and the chat input shows the trace as a context chip automatically. No copy-pasting trace IDs, no re-establishing "which trace are we talking about" between turns. You ask one open question, drill into the span with `/analyze-trace-errors`, get a verbatim prompt fix from `/fix-with-falcon`, paste it into your code, re-run the same query, watch the agent refuse instead of fabricate. End to end in under 15 minutes.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.10+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Tip>
+The fastest way to run this is **Google Colab** (click the Colab badge at the top of the page). Colab has Python 3.11 and you skip all the local setup. If you're running locally, `fi-instrumentation-otel` requires Python 3.10+; in Jupyter use `%pip install ...` instead of `!pip install ...` so packages land in the kernel's Python.
+</Tip>
+
+<Steps>
+<Step title="Build a research assistant with a small knowledge base">
+
+The agent has one tool, `search_papers`, that returns hits from a tiny three-paper mock database. The system prompt is intentionally permissive: it tells the model to answer with citations, but it does not say what to do when the search comes back empty. That gap is where the failure lives.
+
+```python
+import json
+from openai import OpenAI
+
+client = OpenAI()
+
+SYSTEM_PROMPT = """You are a research assistant for an ML research team.
+Answer questions using the search_papers tool. Provide citations to support your claims."""
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_papers",
+            "description": "Search the team's internal database of ML papers",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Topic or keyword to search for"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+
+def search_papers(query: str) -> dict:
+    db = {
+        "transformer": [
+            {"title": "Attention Is All You Need", "authors": "Vaswani et al.", "year": 2017, "venue": "NeurIPS"},
+        ],
+        "diffusion": [
+            {"title": "Denoising Diffusion Probabilistic Models", "authors": "Ho et al.", "year": 2020, "venue": "NeurIPS"},
+        ],
+        "rlhf": [
+            {"title": "Training language models to follow instructions with human feedback", "authors": "Ouyang et al.", "year": 2022, "venue": "NeurIPS"},
+        ],
+    }
+    q = query.lower()
+    for keyword, papers in db.items():
+        if keyword in q:
+            return {"results": papers, "total": len(papers)}
+    return {"results": [], "total": 0}
+
+
+TOOL_MAP = {"search_papers": search_papers}
+
+
+def handle_message(messages: list) -> str:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        tools=TOOLS,
+    )
+    msg = response.choices[0].message
+
+    if msg.tool_calls:
+        tool_messages = [msg]
+        for tc in msg.tool_calls:
+            result = TOOL_MAP[tc.function.name](**json.loads(tc.function.arguments))
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result),
+            })
+        followup = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages + tool_messages,
+            tools=TOOLS,
+        )
+        return followup.choices[0].message.content
+
+    return msg.content
+```
+
+Three topics covered (transformers, diffusion, RLHF). Anything else hits the empty-result branch.
+
+</Step>
+<Step title="Add tracing so Falcon AI can read the spans">
+
+```python
+from fi_instrumentation import register, FITracer, using_user, using_session
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="research-assistant-debug",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer("research-assistant-debug"))
+
+
+@tracer.agent(name="research_assistant")
+def traced_handle(user_id: str, session_id: str, messages: list) -> str:
+    with using_user(user_id), using_session(session_id):
+        return handle_message(messages)
+```
+
+`@tracer.agent` makes the entire request show up as one parent span with the OpenAI calls and tool calls nested underneath. That nesting is what `/fix-with-falcon` needs in order to read the verbatim system prompt and model output later.
+
+</Step>
+<Step title="Trigger the failing trace">
+
+Two queries: one inside the knowledge base and one outside. The second one is the trace you'll debug.
+
+```python
+# In-database query: should work cleanly
+traced_handle(
+    user_id="alice",
+    session_id="session-good",
+    messages=[{"role": "user", "content": "What's the seminal paper on transformers?"}],
+)
+
+# Outside-database query: should expose the failure
+answer = traced_handle(
+    user_id="alice",
+    session_id="session-bad",
+    messages=[{"role": "user", "content": "What are the key papers on contrastive learning for self-supervised vision?"}],
+)
+print(answer)
+
+trace_provider.force_flush()
+```
+
+Sample output for the failing query (your wording will vary):
+
+```
+It seems that there are currently no papers available in the database
+specifically focused on "contrastive learning for self-supervised vision."
+However, I can provide you with general insights on this topic.
+
+Contrastive learning has gained significant attention in the realm of
+self-supervised learning, especially in computer vision. Key papers often
+referenced in this area typically include:
+
+1. SimCLR: This framework for contrastive learning applies augmentation
+   techniques to create multiple views of images and leverages contrastive
+   loss to train models without labels.
+
+2. MoCo (Momentum Contrast): This method builds a dynamic dictionary with a
+   queue and a moving-averaged encoder, improving the feature representation
+   learned via contrastive methods.
+
+3. BYOL (Bootstrap Your Own Latent): Differing from traditional contrastive
+   methods, BYOL avoids negative samples and instead uses two neural networks
+   to learn representations from each other.
+
+These papers have been foundational in establishing contrastive learning
+techniques in self-supervised vision...
+```
+
+Look closely. The agent did acknowledge the empty database ("there are currently no papers available… However, I can provide you with general insights"), then named three specific papers (SimCLR, MoCo, BYOL) with descriptions, framed as "key papers often referenced." The hedge-phrasing makes it sound careful, but the names and descriptions are not grounded in any tool result. The system prompt told the model to provide citations and never told it what to do when the tool returned nothing, so the model filled the gap from its training data and dressed it up as helpfulness.
+
+Open **Tracing** in the dashboard, select `research-assistant-debug`, and click into the second trace. The span tree shows the empty tool result and the fabricated answer side by side. That contradiction is the bug.
+
+</Step>
+<Step title="Debug the trace conversationally using page context">
+
+Open the failing trace in the **Tracing** Feed. Click into it so the trace detail page is the active view. Now press `Cmd+K` (Mac) or `Ctrl+K` (Windows) to open the Falcon AI sidebar.
+
+Look at the chat input. There is a **context chip** above the message box showing the current trace ID (something like `trace 7ab8c…`). You did not type that. Falcon AI saw what page you were on and attached it to the conversation. Every question you ask in this chat will be answered against that specific trace until you remove or replace the chip.
+
+<Tip>
+Without page context, you would have to start every question with "Look at trace 7ab8c… in project research-assistant-debug, …" and re-paste the ID for each follow-up. With it, you ask the question and Falcon AI already knows what you mean. This is the difference between debugging by chat and debugging by chat that knows what you are looking at.
+</Tip>
+
+You will run three turns in the same chat. Each turn builds on the previous one, and the trace context carries through automatically.
+
+**Turn 1 (≈0:30 in): the open question.** Start by asking what went wrong, the way you would ask a teammate looking over your shoulder.
+
+> What went wrong with this trace?
+
+Falcon AI reads the trace summary and gives an exploratory diagnosis:
+
+> **The problem: search returned no results.** The agent correctly called `search_papers(query="contrastive learning self-supervised vision")`, the tool returned no matches, and the model then fell back to general knowledge, citing three papers (SimCLR, MoCo, BYOL) without any database citations.
+>
+> Possible root causes:
+>
+> | Cause | Detail |
+> |---|---|
+> | Empty / incomplete database | The paper database may not contain these foundational works |
+> | Poor search or retrieval logic | The query may not be matching correctly (embedding mismatch, strict keyword filter) |
+> | Tagging or indexing issue | Papers may exist but aren't indexed under the right terms |
+>
+> Impact: the user received a response, but it was based on hallucinated / general knowledge rather than verified database entries, which defeats the purpose of a RAG-based research assistant.
+
+Notice the angle. The first-turn response treats "what went wrong" as a question about the system as a whole and leads with the data and retrieval layer. That is a reasonable default; in production, an empty result on a famous topic is more often a retrieval bug than an agent behavior bug. For our case, the database is intentionally tiny (three papers), so the retrieval is working correctly and the real failure is the agent's response to an empty result. The next turn narrows to the agent.
+
+**Turn 2 (≈2:00 in): drill into the span with `/analyze-trace-errors`.** In the same chat, type:
+
+> /analyze-trace-errors
+
+Falcon AI runs the [analyze-trace-errors.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/analyze-trace-errors.yaml) skill against the trace already in context. It calls `explore_trace_legacy` and `read_trace_span(exact=True)` on the LLM span, submits structured findings, and writes a quality scorecard.
+
+Two findings, both High impact, both on the same LLM span:
+
+| # | Category | Severity | Evidence |
+|---|---|---|---|
+| 1 | **Workflow & Task Gaps > Retrieval Errors > No Retrieval** | High | `search_papers` returned zero results for "contrastive learning self-supervised vision" |
+| 2 | **Thinking & Response Issues > Hallucination Errors > Hallucinated Content** | High | Model fabricated SimCLR, MoCo, BYOL descriptions from memory with zero citations, violating the system prompt |
+
+Quality scorecard:
+
+| Dimension | Score |
+|---|---|
+| **Overall** | **1.5 / 5** |
+| Factual Grounding | 2 / 5 |
+| Instruction Adherence | 1 / 5 |
+| Optimal Plan Execution | 1 / 5 |
+| Privacy & Safety | 5 / 5 |
+
+And three recommended fixes, all High priority:
+
+1. **Fix the retrieval pipeline.** Audit `search_papers` to ensure foundational papers are indexed.
+2. **Harden the system prompt.** Add: *"If `search_papers` returns no results, say: 'I could not find relevant papers.' Do NOT use general knowledge."*
+3. **Add a fallback handler.** Detect empty retrieval results programmatically and surface them to the user rather than silently hallucinating.
+
+Two things to notice. First, the skill captures both layers of the failure (retrieval returned nothing, then the agent hallucinated) instead of picking one. Second, recommendation #2 already previews the fix you will get verbatim in the next turn, but as advice rather than a diff. That is the difference between `/analyze-trace-errors` (diagnosis with suggestions) and `/fix-with-falcon` (one concrete prompt change you can paste).
+
+**Turn 3 (≈4:00 in): get the prompt diff with `/fix-with-falcon`.** Type:
+
+> /fix-with-falcon
+
+Falcon AI runs the [fix-with-falcon.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/fix-with-falcon.yaml) skill, reads the verbatim system prompt and model output one more time (it does not trust your description of the failure, only the spans), and returns the fix in a fixed format. For our run:
+
+> **What happened.** The user asked "What are the key papers on contrastive learning for self-supervised vision?" The agent correctly called `search_papers({"query":"contrastive learning self-supervised vision"})`. The tool returned no results. In span `3bee82f0ce5a4565`, the model then produced a response describing SimCLR, MoCo, and BYOL from memory with zero citations, while explicitly acknowledging "there are currently no papers available in the database." The system prompt says "Provide citations to support your claims" but says nothing about what to do when retrieval fails.
+>
+> **Root cause in the agent.** The system prompt has no empty-results instruction. When `search_papers` returns nothing, the model has no directive to stop, so it defaults to general knowledge and hallucinates descriptions. The single sentence "Answer questions using the search_papers tool" is not strong enough to suppress fallback behavior when the tool comes back empty.
+>
+> **The fix.** *Category: System prompt change.*
+>
+> **Current** *(verbatim from span `e31d8bd7f4384064`):*
+> ```
+> You are a research assistant for an ML research team. Answer questions using
+> the search_papers tool. Provide citations to support your claims.
+> ```
+>
+> **Replace with:**
+> ```
+> You are a research assistant for an ML research team. Answer questions using
+> the search_papers tool. Provide citations to support your claims. If
+> search_papers returns no results or an empty list, respond ONLY with:
+> "I could not find any papers in the database matching your query. Please
+> try a different search term." Do NOT use general knowledge, describe papers
+> from memory, or answer without citations.
+> ```
+>
+> **Expected score improvement.** The Instruction Adherence eval (currently 1/5) and Factual Grounding eval (currently 2/5) should both improve significantly, because the model will no longer produce uncited, hallucinated content when retrieval fails.
+
+Two things worth noticing about this output. First, Falcon AI quoted the system prompt **verbatim** from span `e31d8bd7f4384064`, not from a guess. The OpenAI auto-instrumentor captured the system message in this run, so the diff is grounded in actual span content. Second, the response references the scorecard from Turn 2 ("currently 1/5", "currently 2/5"). The chat remembered what it discovered two turns ago and used those numbers to predict the impact. That is page context plus conversation memory paying off compounding.
+
+Wall-clock so far: open question to verbatim prompt diff, three turns, about **5 minutes**. None of the turns required you to type a trace ID, paste a span ID, or repeat what the bug was.
+
+</Step>
+<Step title="Apply the fix and verify with the same query">
+
+```python
+SYSTEM_PROMPT = """You are a research assistant for an ML research team. Answer questions using the search_papers tool. Provide citations to support your claims. If search_papers returns no results or an empty list, respond ONLY with: "I could not find any papers in the database matching your query. Please try a different search term." Do NOT use general knowledge, describe papers from memory, or answer without citations."""
+
+# Re-run the exact same failing query
+verify = traced_handle(
+    user_id="alice",
+    session_id="session-bad-verify",
+    messages=[{"role": "user", "content": "What are the key papers on contrastive learning for self-supervised vision?"}],
+)
+print(verify)
+
+# Sanity-check the in-database query still works
+ok = traced_handle(
+    user_id="alice",
+    session_id="session-good-verify",
+    messages=[{"role": "user", "content": "What's the seminal paper on transformers?"}],
+)
+print(ok)
+
+trace_provider.force_flush()
+```
+
+After the fix the contrastive-learning query returns the verbatim refusal, and the transformer query still pulls Vaswani et al. 2017 from the tool result. Both are now grounded in what `search_papers` actually returned.
+
+Open the new traces in the dashboard. The span tree for the contrastive-learning trace now shows the empty tool result followed by the refusal, with no fabricated content in between. Same input, same metric (faithfulness on the citation content), opposite outcome.
+
+Wall-clock from the moment your colleague pinged you to the moment the fix is verified: roughly **8 to 10 minutes**. The hour-long version of this loop (read the spans by hand, write the fix, test, repeat) is the version you do not run today.
+
+<Tip>
+Want to ask Falcon AI to confirm the fix worked? Open the new failing-query trace and type "did the fix from the previous trace land?" The chat will compare the two spans and tell you. The page-context awareness carries across traces in the same conversation.
+</Tip>
+
+</Step>
+</Steps>
+
+## What you solved
+
+You took a single hallucinated citation, opened Falcon AI on the trace, ran a three-turn conversation that walked from open question to verbatim prompt diff, applied the fix in code, and verified the agent now refuses instead of fabricating. The manual version of this (open spans, scroll, copy out, diff in your head, write the fix, test, repeat) is roughly an hour. The page-context version is closer to ten minutes.
+
+<Check>
+The single-trace debug loop: open the trace, ask one open question, drill in with `/analyze-trace-errors`, get the diff with `/fix-with-falcon`, paste it into your code, re-run. About 10 minutes end to end.
+</Check>
+
+- **"Where do I even start?"**: page context picks up the trace, so the conversation begins in the right place. No "look at trace abc-123" preamble
+- **"Which span actually broke?"**: `/analyze-trace-errors` reads the spans for you and quotes the offending text verbatim
+- **"What exactly should I change?"**: `/fix-with-falcon` returns a Current and Replace with diff, not advice
+- **"Did it work?"**: re-run the same query, look at the new trace, the refusal speaks for itself
+- **"Could I do this in five tabs and a notebook instead?"**: yes, in about an hour. The point of context-aware debugging is to never have to
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="End-to-End with Falcon AI" icon="sparkles" href="/docs/cookbook/use-cases/falcon-ai-end-to-end">
+    The full lifecycle: trace, debug, evaluate, dataset, fix in one workflow
+  </Card>
+  <Card title="Falcon AI Skills" icon="zap" href="/docs/falcon-ai/features/skills">
+    All built-in slash commands, including /localize-errors and /debug-traces
+  </Card>
+  <Card title="Error Feed" icon="bug" href="/docs/error-feed">
+    Per-trace quality scoring and error-category drilldown
+  </Card>
+</CardGroup>

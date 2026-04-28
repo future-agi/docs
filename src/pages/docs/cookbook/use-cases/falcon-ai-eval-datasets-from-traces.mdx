@@ -1,0 +1,307 @@
+---
+title: "Building Evaluation Datasets from Production Traces with Falcon AI"
+description: "Turn the traces your agent already produced in production into a curated, balanced, ground-truthed eval dataset that doubles as a regression suite, in one Falcon AI conversation."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/falcon-ai-eval-datasets-from-traces.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/falcon-ai-eval-datasets-from-traces.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty |
+|------|-----------|
+| 25 min | Intermediate |
+
+Your email triage agent has been live for two weeks. It's classifying support inbox emails into urgent, billing, technical, general, and spam. Every now and then a customer complaint slips into the wrong queue and someone has to escalate it manually. You'd like to fix the prompt, but first you need a way to measure: a test set you can rerun every time you change anything.
+
+Synthetic test cases will not cut it. The emails you would invent on a whiteboard are too clean. Real production traffic has angry customers, multi-issue emails, vague timing words, sarcasm, and edge cases you would never think to write. That variety is exactly what catches subtle prompt regressions, and you already have it sitting in your trace history.
+
+The slow way to harvest it is familiar: scroll through traces, copy promising ones into a spreadsheet, write expected categories by hand, save as CSV, hope the file does not go stale. Two hours later you have a one-off dataset that someone will never update.
+
+The fast way is to use Falcon AI to read your traces, surface the failure patterns, select a balanced set of rows for evaluation, suggest ground-truth labels, and persist the result as a real dataset on the platform. The dataset is reusable. Every future prompt change can be re-scored against it in one chat message. This cookbook walks that loop end-to-end.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.10+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Tip>
+The fastest way to run this is **Google Colab** (click the Colab badge at the top of the page). Colab has Python 3.11 and you skip all the local setup. If you're running locally, `fi-instrumentation-otel` requires Python 3.10+; in Jupyter use `%pip install ...` instead of `!pip install ...` so packages land in the kernel's Python.
+</Tip>
+
+<Steps>
+<Step title="Build a small email triage agent">
+
+The agent has one tool, `classify_email`, that records the category and a short reasoning string. We force the tool call with `tool_choice` so every trace has the same structured shape (one LLM span plus one tool span). The system prompt is intentionally thin: it lists the categories but says nothing about how to handle hostile tone, multi-issue emails, or vague urgency words. Those gaps are where the production failures live.
+
+```python
+import json
+from openai import OpenAI
+
+client = OpenAI()
+
+CATEGORIES = ["urgent", "billing", "technical", "general", "spam"]
+
+SYSTEM_PROMPT = f"""You are an email triage assistant for a SaaS company's support inbox.
+Classify each incoming email into one of these categories: {", ".join(CATEGORIES)}.
+Use the classify_email tool to record your classification."""
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "classify_email",
+            "description": "Record the chosen category for an incoming email",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": CATEGORIES,
+                        "description": "Email category",
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "One-sentence justification for the chosen category",
+                    },
+                },
+                "required": ["category", "reasoning"],
+            },
+        },
+    }
+]
+
+
+def classify_email(category: str, reasoning: str) -> dict:
+    return {"recorded": True, "category": category, "reasoning": reasoning}
+
+
+TOOL_MAP = {"classify_email": classify_email}
+
+
+def handle_message(email_text: str) -> dict:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": email_text},
+        ],
+        tools=TOOLS,
+        tool_choice={"type": "function", "function": {"name": "classify_email"}},
+    )
+    msg = response.choices[0].message
+    tc = msg.tool_calls[0]
+    args = json.loads(tc.function.arguments)
+    return {"category": args["category"], "reasoning": args["reasoning"]}
+```
+
+</Step>
+<Step title="Add tracing so each classification becomes a row candidate">
+
+```python
+import os
+from fi_instrumentation import register, FITracer, using_user, using_session
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="email-triage-prod",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer("email-triage-prod"))
+
+
+@tracer.agent(name="email_triage")
+def traced_handle(user_id: str, session_id: str, email_text: str) -> dict:
+    with using_user(user_id), using_session(session_id):
+        return handle_message(email_text)
+```
+
+Two things to know about why the tracing matters here. First, every classification gets its own parent trace tagged with the `user_id` and `session_id`, so Falcon AI can later filter and group when building the dataset. Second, the tool call inside each trace carries the chosen `category` and `reasoning` as span attributes, which is what makes "select all traces where category was X" possible without extra labeling.
+
+</Step>
+<Step title="Generate a varied batch of production-like traces">
+
+Real production has variety. The synthetic batch below mirrors what you would actually see in a SaaS support inbox: clear cases, multi-issue emails, hostile tone over a small problem, vague timing language, and a couple of cases that are deliberately ambiguous. The thin prompt will get the easy ones right and stumble on the rest. That mix is what makes the eval dataset worth building.
+
+```python
+emails = [
+    # Clear category, agent should nail these
+    ("Production is down. Payment processing has been failing for 30 minutes.", "ops-001"),
+    ("I was charged twice for my July invoice. Please refund the duplicate.", "fin-201"),
+    ("The export-to-CSV button does not work in Safari but works in Chrome.", "qa-310"),
+    ("How do I invite a teammate to my workspace?", "user-414"),
+    ("Make $$$ from home! Click here NOW: bit.ly/scam-link", "spam-001"),
+
+    # Ambiguous: hostile tone over a small issue, multi-issue, vague timing
+    ("WORST SERVICE EVER. I have been on hold for 2 hours. CALL ME BACK.", "user-501"),
+    ("I have a billing question and also my login is not working since yesterday.", "user-502"),
+    ("Hey, just wondering, is the platform GDPR compliant?", "user-503"),
+    ("I need someone to call me ASAP about an enterprise contract.", "user-504"),
+    ("URGENT: My password reset email is not arriving.", "user-505"),
+
+    # Time-sensitive but quiet, business-critical but soft language
+    ("Hi team, gentle reminder we have a board meeting Friday and the dashboard has been broken since Monday.", "user-601"),
+    ("Why am I being charged $499 when I signed up for the $49 plan? Please fix this or I am canceling.", "user-602"),
+    ("Your platform deleted all my data. I want my money back AND damages.", "legal-701"),
+
+    # Edge cases
+    ("When will the dark mode feature be released?", "user-801"),
+    ("I forgot my admin password, please reset it.", "user-802"),
+]
+
+for i, (text, base_id) in enumerate(emails):
+    result = traced_handle(
+        user_id=base_id,
+        session_id=f"sess-{i:03d}",
+        email_text=text,
+    )
+    print(f"[{base_id}] {result['category']:<10} | {text[:80]}")
+
+trace_provider.force_flush()
+```
+
+Sample output (your wording will vary):
+
+```
+[ops-001] urgent     | Production is down. Payment processing has been failing for 30 minutes.
+[fin-201] billing    | I was charged twice for my July invoice. Please refund the duplicate.
+[qa-310]  technical  | The export-to-CSV button does not work in Safari but works in Chrome.
+[user-501] general   | WORST SERVICE EVER. I have been on hold for 2 hours. CALL ME BACK.
+[user-502] billing   | I have a billing question and also my login is not working since yesterday.
+[user-602] billing   | Why am I being charged $499 when I signed up for the $49 plan? Please fix this or I am canceling.
+[legal-701] urgent   | Your platform deleted all my data. I want my money back AND damages.
+```
+
+Look at `user-501` and `user-602`. The hostile tone in the first one and the cancellation threat in the second probably belong in `urgent` (or at least flagged for human review), not `general` and `billing`. The agent followed the literal categories without weighing tone or escalation signals. That is exactly the kind of subtle production failure an eval dataset should capture.
+
+Open **Tracing** in the dashboard and select `email-triage-prod`. You should see fifteen traces, each with the parent agent span, the LLM span, and the `classify_email` tool span underneath. Those traces are your raw material.
+
+</Step>
+<Step title="Explore the failure landscape with Falcon AI">
+
+Open Falcon AI on the project (Cmd+K on Mac, Ctrl+K on Windows). The context chip should show the `email-triage-prod` project automatically. Start with one open question:
+
+> What categories did my agent assign across these traces, and which ones look like misclassifications?
+
+Falcon AI calls `search_traces` and `read_trace_span` across the project, returns a category histogram, and flags traces where the category looks off given the email content. Sample response shape (your wording and counts will vary):
+
+> **Distribution.** urgent: 3, billing: 5, technical: 3, general: 3, spam: 1.
+>
+> **Likely misclassifications.** Three traces stand out:
+> - `user-501` ("WORST SERVICE EVER... 2 hours on hold") was classified `general`. The hostile tone and SLA-breach language suggest `urgent`.
+> - `user-602` ("Why am I being charged $499 when I signed up for $49... or I am canceling") was classified `billing`. The cancellation threat and dollar-amount discrepancy suggest `urgent` or at minimum a human-review flag.
+> - `user-503` ("is the platform GDPR compliant") was classified `general`. Compliance questions often need to route to legal, not the standard general queue.
+
+Two things matter here. First, Falcon AI's "likely misclassifications" are not ground truth, they are a strong starting point. You will confirm them in step 6. Second, this exploration is what tells you the dataset needs balancing rules: include the misclassifications **and** the easy successes, so the eval can detect both regressions and false positives.
+
+</Step>
+<Step title="Build the dataset with explicit curation criteria">
+
+Now type a `/build-dataset` request that bakes in your curation rules. The Falcon AI [build-dataset.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/build-dataset.yaml) skill calls `create_dataset`, then `add_columns`, then `add_dataset_rows` against the traces in context.
+
+> /build-dataset
+>
+> Build a dataset called `email-triage-eval-v1`. Pull rows from the `email-triage-prod` traces in this project. Selection criteria: include at least 2 traces from each category (urgent, billing, technical, general, spam) plus the 3 likely misclassifications you flagged in the previous turn. Total target: 12-15 rows. Columns:
+> - `email_text` (text) - the user message
+> - `predicted_category` (text) - what the agent chose
+> - `agent_reasoning` (text) - the reasoning string from the tool call
+> - `trace_id` (text) - so we can trace any failure back
+
+Falcon AI confirms the dataset shape, runs the three tool calls in order, and returns a completion card with a link to **Datasets → email-triage-eval-v1**. A typical row count for these criteria is around 13: 2 from each category (10) plus the 3 misclassifications. Your exact count will depend on which traces Falcon AI selected.
+
+The curation rules matter more than the row count. A dataset that is 90% successes will not catch regressions; a dataset that is 90% failures will not catch false positives. The "at least 2 from each category plus the misclassifications" rule gives both classes meaningful coverage with very few rows.
+
+<Tip>
+If your trace volume is much larger than this example, replace the "at least 2 from each category" rule with a stratified sample: "Sample 5% of each category proportionally, with a floor of 5 rows per category." Falcon AI accepts that phrasing in the same `/build-dataset` prompt.
+</Tip>
+
+</Step>
+<Step title="Add a ground truth column for the eval to score against">
+
+The `predicted_category` column is what the agent chose. To turn the dataset into an eval, you need an `expected_category` column, which is what the agent **should have** chosen. Falcon AI can suggest these but cannot fully replace human review for the close calls.
+
+In the same chat, type:
+
+> Add a column `expected_category` (text) to `email-triage-eval-v1`. For each row, propose the correct category based on the email text. For rows where the correct category is genuinely ambiguous (e.g., hostile tone over a small issue, multi-issue emails), use the value `NEEDS_REVIEW` and add a one-sentence note in a new column `review_note` (text) explaining why.
+
+Falcon AI runs `add_columns` for the two new columns and populates them per row. A typical split for this dataset is roughly 10 rows with confident `expected_category` values and 3 rows tagged `NEEDS_REVIEW` (the misclassifications from step 4, plus the GDPR question). Your split will depend on which rows Falcon AI judges ambiguous.
+
+This split is the dataset's most important feature. The 10 confident rows give you a regression baseline you can score automatically. The 3 review rows tell you exactly where to spend 5 minutes of human judgment instead of trying to write a rule for the gray zone. Open the dataset in **Datasets → email-triage-eval-v1**, click each `NEEDS_REVIEW` row, and decide:
+
+| Row | Email | Falcon AI note | Your call |
+|---|---|---|---|
+| `user-501` | "WORST SERVICE EVER. 2 hours on hold." | Hostile tone, but the underlying issue (long hold) is unclear | `urgent` if your team treats SLA complaints as escalations, otherwise `general` |
+| `user-602` | "Why am I charged $499... I am canceling" | Billing dispute plus retention risk | `urgent` for retention-sensitive teams, `billing` otherwise |
+| `user-503` | "is the platform GDPR compliant" | Compliance question, may need legal | `general` if legal handles it via your standard escalation, custom value `legal` if you want a separate queue |
+
+Once you've made these calls, edit the rows in the Datasets UI (or ask Falcon AI to update them via `add_dataset_rows`). The dataset now has full ground truth.
+
+</Step>
+<Step title="Validate the dataset by running evals on it">
+
+A dataset is only as useful as the evals it can run. Score the current agent's predictions against the ground truth you just added.
+
+> Run a `correctness` eval on the `email-triage-eval-v1` dataset, comparing `predicted_category` against `expected_category`.
+
+Falcon AI runs the [run-evaluations.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/run-evaluations.yaml) skill: `add_dataset_eval` to attach the eval template, then `run_dataset_evals`, then `get_dataset_eval_stats`. Sample baseline (your numbers will vary):
+
+| Metric | Value |
+|---|---|
+| **Pass rate** | 9 / 13 |
+| **Avg score** | 0.69 |
+| Failed rows | `user-501`, `user-602`, `user-503`, `user-504` |
+
+The four failures are the rows we expected to fail: the misclassifications plus the enterprise-contract escalation. The 9 pass rows are the easy categories. **Both the failure pattern and the pass pattern are what you want.** A regression test where every row passes is not testing anything; a regression test where every row fails is just noisy.
+
+Now the dataset has compounding value. Any time you change the system prompt, run this same eval against `email-triage-eval-v1` and compare the pass rate. The first change you'll likely make is adding tone and escalation rules to the prompt, which should bring `user-501` and `user-602` into the pass column without regressing the 9 that already pass.
+
+<Tip>
+If `correctness` is not the right template name in your workspace, ask Falcon AI: "What eval templates compare two text columns for an exact match?" It will list candidates from the catalog. The cookbook 1 (end-to-end) cookbook ran into this exact mismatch, which is why we use the looser phrasing here.
+</Tip>
+
+</Step>
+</Steps>
+
+## What you solved
+
+You took fifteen production traces, asked Falcon AI which ones looked off, used `/build-dataset` to curate a balanced 13-row eval set, added a ground-truth column with explicit `NEEDS_REVIEW` flags for the gray-zone rows, and ran a `correctness` eval to lock in a numerical baseline. The dataset is now a permanent regression check that any future prompt change can be scored against in one chat message.
+
+<Check>
+Production traces, curated and ground-truthed in one Falcon AI conversation, become a reusable eval dataset that catches both regressions (rows that used to pass and now fail) and false positives (rows that used to fail and still fail).
+</Check>
+
+- **"Synthetic test cases miss the real failure modes"**: production traces include the angry customers, multi-issue emails, and vague timing language a whiteboard never produces
+- **"My one-off CSV is going stale"**: the dataset lives on the platform; new prompt versions re-score against the same rows in one chat
+- **"How do I balance the dataset?"**: explicit curation criteria in the `/build-dataset` prompt (at least N per category, plus the misclassifications)
+- **"Where do I draw the line on ground truth?"**: confident rows get auto-labeled, gray-zone rows get `NEEDS_REVIEW`, you spend five minutes on the close calls instead of debating every row
+- **"Did the next prompt change actually help?"**: re-run `correctness` on `email-triage-eval-v1`, compare pass rates, no manual scoring
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="End-to-End with Falcon AI" icon="sparkles" href="/docs/cookbook/use-cases/falcon-ai-end-to-end">
+    The full lifecycle: trace, debug, evaluate, dataset, fix in one workflow
+  </Card>
+  <Card title="Context-Aware Trace Debugging" icon="zap" href="/docs/cookbook/use-cases/falcon-ai-context-aware-debugging">
+    From a single bad trace to a verbatim prompt fix in minutes
+  </Card>
+  <Card title="Falcon AI Skills" icon="bolt" href="/docs/falcon-ai/features/skills">
+    All built-in slash commands and how to write your own
+  </Card>
+</CardGroup>

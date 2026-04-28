@@ -1,0 +1,405 @@
+---
+title: "End-to-End with Falcon AI: Trace, Debug, Evaluate, Dataset, Fix in One Workflow"
+description: "Use Falcon AI as the single interface that takes you from a failing trace, through debugging, evaluation, dataset creation, and a concrete prompt fix, all without leaving the dashboard chat."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/falcon-ai-end-to-end.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/quickstart-notebooks/use-cases/falcon-ai-end-to-end.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty |
+|------|-----------|
+| 30 min | Beginner |
+
+You shipped a small support agent yesterday. This morning, three users say it gave them confidently wrong answers about return windows. You open the dashboard and see hundreds of traces. Reading them by hand is not realistic. Spinning up a separate eval pipeline before you even know what's broken is overkill. Writing a fix without seeing the actual prompt the model was running is guessing.
+
+The usual debugging flow forces you to context-switch across five tabs: traces to find a bad request, evals to score it, datasets to capture it, the prompt page to look at the system prompt, and a notebook to draft the fix. Each tab is one more thing to keep in your head. By the time you have a fix, you've forgotten which span started this.
+
+What if one chat could hold the whole loop? Open Falcon AI, ask it to find the failures, group them, save them as a dataset, score them with the right evals, and propose a concrete prompt diff, all in the same conversation. The dashboard renders the artifacts (datasets, eval runs, prompt diffs) as completion cards underneath each step.
+
+This cookbook walks through that loop end-to-end on a small support agent. You will instrument the agent with **Tracing**, generate a batch of mixed-quality requests, then drive the rest of the workflow from a single Falcon AI chat: `/analyze-trace-errors` to debug, `/build-dataset` to capture the failing cases, `/run-evaluations` to score them, and `/fix-with-falcon` to get a verbatim prompt fix you can paste back into your code.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- OpenAI API key (`OPENAI_API_KEY`)
+- Python 3.10+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+<Tip>
+The fastest way to run this is **Google Colab** (click the Colab badge at the top of the page). Colab has Python 3.11 and you skip all the local setup. If you're running locally, `fi-instrumentation-otel` requires Python 3.10+; in Jupyter use `%pip install ...` instead of `!pip install ...` so packages land in the kernel's Python.
+</Tip>
+
+<Steps>
+<Step title="Build a small agent with intentional weaknesses">
+
+The point of this cookbook is to drive the workflow from Falcon AI, not to build a perfect agent. So we use a deliberately thin support agent: a short system prompt that does not forbid speculation, two tool stubs, and `gpt-4o-mini`. The thin prompt is what produces the failing traces we want Falcon AI to find.
+
+```python
+import json
+from openai import OpenAI
+
+client = OpenAI()
+
+SYSTEM_PROMPT = """You are a customer support assistant for an electronics store.
+Answer customer questions about products and orders. Use the tools when relevant."""
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_products",
+            "description": "Search the product catalog",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_order_status",
+            "description": "Look up order status by order ID",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "The order ID"},
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
+]
+
+
+def search_products(query: str) -> dict:
+    return {
+        "results": [
+            {"id": "P-101", "name": "Wireless Headphones", "price": 79.99},
+            {"id": "P-205", "name": "USB-C Hub", "price": 45.00},
+        ],
+    }
+
+
+def get_order_status(order_id: str) -> dict:
+    return {
+        "order_id": order_id,
+        "status": "shipped",
+        "tracking": "1Z999AA10123456784",
+        "estimated_delivery": "2026-05-04",
+    }
+
+
+TOOL_MAP = {"search_products": search_products, "get_order_status": get_order_status}
+
+
+def handle_message(messages: list) -> str:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        tools=TOOLS,
+    )
+    msg = response.choices[0].message
+
+    if msg.tool_calls:
+        tool_messages = [msg]
+        for tc in msg.tool_calls:
+            result = TOOL_MAP[tc.function.name](**json.loads(tc.function.arguments))
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result),
+            })
+        followup = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages + tool_messages,
+            tools=TOOLS,
+        )
+        return followup.choices[0].message.content
+
+    return msg.content
+```
+
+The agent will answer product and order questions fine. The places it will fumble are predictable: refund-policy questions (no tool, no instruction to refuse), comparisons that need details the tool doesn't return, and anything that asks "is this a good deal?". That is on purpose. Those are the traces Falcon AI will pick up later.
+
+</Step>
+<Step title="Add tracing so Falcon AI has something to read">
+
+Falcon AI works on traces. No traces, nothing to debug. Three lines of instrumentation send every LLM call and tool invocation to the platform as structured spans.
+
+```python
+import os
+from fi_instrumentation import register, FITracer, using_user, using_session
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="falcon-ai-end-to-end",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer("falcon-ai-end-to-end"))
+
+
+@tracer.agent(name="support_assistant")
+def traced_handle(user_id: str, session_id: str, messages: list) -> str:
+    with using_user(user_id), using_session(session_id):
+        return handle_message(messages)
+```
+
+`@tracer.agent` makes the entire request show up as one parent span in the dashboard, with the OpenAI calls and tool calls nested underneath. `using_user` / `using_session` tag each trace so Falcon AI can later filter by who hit it.
+
+See [Manual Tracing](/docs/cookbook/quickstart/manual-tracing) for span decorators, metadata tagging, and prompt template tracking.
+
+</Step>
+<Step title="Generate a batch of mixed traces">
+
+You need enough traces for Falcon AI to find a pattern. Ten requests is the floor: a mix that the thin prompt will partly handle and partly fumble. A handful of these are deliberately outside the tool surface (refund window, comparison, recommendation) so the model has nothing to ground on and is forced to either guess or refuse. The thin system prompt doesn't tell it to refuse, so guessing is what we get, and that's the failure mode we want to see surface in the next step.
+
+```python
+test_queries = [
+    # Tool-able, should be fine
+    "Show me wireless headphones",
+    "Where is order ORD-12345?",
+    "What's the price of the USB-C Hub?",
+    "Track order ORD-99877 please",
+    # No tool, no rule against speculating, these will likely fail
+    "What's your return policy for opened headphones?",
+    "Is the USB-C Hub compatible with a 2019 MacBook Pro?",
+    "Which is better value, the headphones or the hub?",
+    "Can you ship to Germany?",
+    "How long is the warranty on the headphones?",
+    "Will my order ORD-12345 arrive before my birthday on May 5th?",
+]
+
+for i, query in enumerate(test_queries):
+    answer = traced_handle(
+        user_id=f"user-{100 + i}",
+        session_id=f"session-{i}",
+        messages=[{"role": "user", "content": query}],
+    )
+    print(f"Q: {query}")
+    print(f"A: {answer[:140]}\n")
+
+trace_provider.force_flush()
+```
+
+Sample output (your results may vary):
+
+```
+Q: Show me wireless headphones
+A: We have Wireless Headphones in stock for $79.99. Want more details?
+
+Q: What's your return policy for opened headphones?
+A: Our standard return window is 30 days from delivery, even for opened items, as long as packaging is intact.
+
+Q: Is the USB-C Hub compatible with a 2019 MacBook Pro?
+A: Yes, the USB-C Hub is fully compatible with the 2019 MacBook Pro and supports up to 4K passthrough.
+```
+
+Both of the last two responses are pure invention. The agent has no return-policy tool and no compatibility data. Falcon AI is about to find that out.
+
+Open **Tracing** → select `falcon-ai-end-to-end`. You should see ten parent traces, each with the nested OpenAI and tool spans.
+
+</Step>
+<Step title="Open Falcon AI on the project and analyze the failures">
+
+Stay on the Tracing page for `falcon-ai-end-to-end` so Falcon AI picks up the project as context automatically. Press `Cmd+K` (Mac) or `Ctrl+K` (Windows) to open the sidebar.
+
+Type `/` and pick **Analyze Trace Errors** from the slash command picker, or just type:
+
+> Analyze trace errors in this project
+
+Falcon AI runs `analyze_project_traces` on the whole project in the background. The skill is defined in [analyze-trace-errors.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/analyze-trace-errors.yaml). It explores each trace, classifies issues against an error taxonomy (Hallucination, Wrong Intent, Tool Misuse, Dropped Context, Instruction Adherence, etc.), submits findings, and scores each trace 1 to 5.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/falcon-ai-end-to-end/step-4-analyze-trace-errors.png" alt="Falcon AI sidebar showing the analyze trace errors completion card with per-trace scores and the dominant error category" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Falcon AI flagged two distinct failure modes across the run, plus a quality scorecard:
+
+| Finding | Affected traces | Severity | What Falcon AI saw |
+|---|---|---|---|
+| **Hallucinated / Unverifiable Data** | 6 / 20 | Medium | Made-up warranty length ("typically 1 to 2 years"), speculative Germany shipping ("we generally ship internationally"), and other product specs not present in the `search_products` tool output. |
+| **No Retrieval Spans Visible** | 20 / 20 | High | The agent's local Python tool functions (`search_products`, `get_order_status`) execute, but they are not wrapped in tracing spans, so Falcon AI sees only the LLM call and treats every answer as ungrounded. |
+| **Missing Chain-of-Thought / ReAct Planning** | 20 / 20 | Medium | Every trace jumps directly from user input to final answer with no intermediate reasoning span. |
+| **Missed Detail** | 1 / 20 | Low | "Show me wireless headphones" (plural) returned only one product without explanation. |
+
+Quality scorecard (1 to 5, your numbers will vary):
+
+| Dimension | Score | Notes |
+|---|---|---|
+| **Reliability** | 5 / 5 | Zero hard errors or crashes. |
+| **Grounding** | 2 / 5 | No retrieval traces visible, so claims cannot be verified. |
+| **Reasoning Transparency** | 1 / 5 | No CoT, no sub-spans, no tool spans. |
+| **Response Accuracy** | 3 / 5 | Some answers correct, but duplicate tracking number (returned for two different orders) and future-dated delivery look suspicious. |
+| **Overall** | **2.5 / 5** | Functionally running, but quality and trust are at risk. |
+
+Two failure modes from one analysis. The hallucinations are a content problem the prompt can fix (step 7). The missing tool spans are an instrumentation problem your agent code can fix by wrapping each tool with `@tracer.tool` so every retrieval shows up in the trace. Both surface from the same `/analyze-trace-errors` run.
+
+Switch to the **Feed** tab in Tracing to see the same findings rendered per-trace, with the exact span and the verbatim quote that triggered each finding.
+
+See [Error Feed](/docs/error-feed) for the full per-trace quality scoring and error-category drilldown.
+
+</Step>
+<Step title="Capture the failing traces as a dataset">
+
+You found the bad traces. Now lock them in as a regression set so any future fix is evaluated against the same failures, not a new sample. In the same Falcon AI conversation, type:
+
+> Build me a dataset called `falcon-demo-failures` with the queries from the traces flagged with Hallucinated Content. Columns: `query` (text), `agent_output` (text), `failure_category` (text).
+
+Falcon AI runs the [build-dataset.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/build-dataset.yaml) skill: `create_dataset` → `add_columns` → `add_dataset_rows`, pulling the row contents from the traces it just analyzed. A completion card appears in the chat with a link to the new dataset.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/falcon-ai-end-to-end/step-5-build-dataset.png" alt="Falcon AI completion card showing the new falcon-demo-failures dataset with row count and link" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+<Tip>
+The thin agent in step 1 returned guesses. If you want the dataset to also capture the correct answer (so you can score against ground truth), add an `expected_behavior` column and tell Falcon AI what each row should have done. For our case, every row's expected behavior is `"refuse and offer to escalate"`.
+</Tip>
+
+Open **Datasets** → `falcon-demo-failures` to confirm the rows. This dataset is now your regression baseline.
+
+</Step>
+<Step title="Score the dataset to get a numerical baseline">
+
+Same conversation. Now run evaluations on the dataset so you have a number to beat after the fix.
+
+> Run `factual_accuracy` and `completeness` evals on the `falcon-demo-failures` dataset.
+
+Falcon AI runs the [run-evaluations.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/run-evaluations.yaml) skill: it calls `add_dataset_eval` to attach each eval template to the dataset, then `run_dataset_evals` to score every row, then `get_dataset_eval_stats` to summarize the results in the chat.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/falcon-ai-end-to-end/step-6-run-evaluations.png" alt="Falcon AI evaluation results card showing per-row scores for factual_accuracy and completeness" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Sample baseline (your numbers will vary):
+
+| Eval | Pass rate | Avg score |
+|---|---|---|
+| **factual_accuracy** | 1 / 5 | 0.24 |
+| **completeness** | 5 / 5 | 1.00 |
+
+The split tells the story. **factual_accuracy** is in the floor because the model invented return windows, warranties, and compatibility statements. **completeness** is perfect because the agent does fully address each question, even when the answer is invented. As we noticed in step 4, the prompt doesn't tell the model not to do that, so there's no instruction to violate. That's the gap we need the prompt fix to close.
+
+</Step>
+<Step title="Ask Falcon AI to fix the agent">
+
+Open one of the worst-scoring traces (the warranty or compatibility one) from the Feed. With that trace as context, type in the same chat:
+
+> /fix-with-falcon
+
+Falcon AI runs the [fix-with-falcon.yaml](https://github.com/future-agi/futureagi/blob/main/ee/falcon_ai/builtin_skills/fix-with-falcon.yaml) skill, which has a strict shape: gate-check that there is actually a failure, read the verbatim system prompt and model output from the span (`read_trace_span(exact=True)`), and then return one concrete change in a fixed format (*Current* then *Replace with*) under 400 words.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/falcon-ai-end-to-end/step-7-fix-with-falcon.png" alt="Falcon AI fix-with-falcon output with sections for What happened, Root cause in the agent, The fix (current vs replace with), and Expected score improvement" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+For our run, Falcon AI returned the diagnosis below. It cross-referenced all 6 hallucination-flagged traces (order tracking, warranty, return policy, shipping eligibility, product pricing) before proposing the fix:
+
+> **What happened.** Across the 6 hallucination-flagged traces, the `support_assistant` agent received real customer queries (order tracking `ORD-12345` and `ORD-99877`, warranty questions, return policy, shipping eligibility, product pricing) and returned specific, confident, fabricated facts with zero retrieval. The most egregious case: both `ORD-12345` and `ORD-99877` were returned with the identical tracking number `1Z999AA10123456784` and the same delivery date `May 4, 2026`. The agent stated *"Your order has been shipped and is estimated to be delivered on May 4th, 2026. It will arrive just in time for your birthday!"*, a completely invented answer grounded in nothing.
+>
+> **Root cause in the agent.** The system prompt contains no instruction prohibiting the agent from answering when it lacks real data. There is no grounding constraint, no instruction saying "only answer order/shipping/product questions using retrieved data; if no data is available, say so explicitly." The single-span trace structure confirms no tool or retrieval call was attempted before answering.
+>
+> **The fix.** *Category: System Prompt Change.*
+>
+> **Current** *(inferred from agent behavior, no explicit grounding constraint exists):*
+> ```
+> You are a helpful customer support assistant. Answer customer questions about orders,
+> products, shipping, and return policies.
+> ```
+>
+> **Replace with:**
+> ```
+> You are a helpful customer support assistant. Answer customer questions about orders,
+> products, shipping, and return policies.
+>
+> STRICT GROUNDING RULE: You must NEVER state specific order details (tracking numbers,
+> delivery dates, order status), product prices, or policy specifics unless that data was
+> returned by a tool call in this conversation. If no tool result is available, respond:
+> "I don't have access to that information right now. Please check your order confirmation
+> email or contact support at [support channel]." Do not estimate, infer, or fabricate
+> any order or product data.
+> ```
+>
+> **Expected score improvement.** A faithfulness/hallucination eval on the 6 flagged rows should move from Fail to Pass for all order-tracking and policy queries, since the agent will now refuse to generate ungrounded specifics rather than confidently fabricating them.
+
+A few things to notice. Falcon AI explicitly flagged that it **inferred** the current prompt rather than reading it verbatim. The OpenAI auto-instrumentor doesn't always capture system messages in span attributes the skill can parse, and the skill is honest about that limitation. The proposed fix is still load-bearing because the failure mode (ungrounded specifics) is independent of the exact wording of the original prompt. It also did not propose adding a new tool, switching models, or building a guardrail; the skill is hard-constrained to one change to the agent's own configuration.
+
+</Step>
+<Step title="Apply the fix and verify the dataset scores recover">
+
+Drop the new prompt into your code, re-run the same ten queries, and re-run the same evals on the same dataset. Same inputs and same metrics give you a real before/after.
+
+```python
+SYSTEM_PROMPT = """You are a helpful customer support assistant. Answer customer questions about orders, products, shipping, and return policies.
+
+STRICT GROUNDING RULE: You must NEVER state specific order details (tracking numbers, delivery dates, order status), product prices, or policy specifics unless that data was returned by a tool call in this conversation. If no tool result is available, respond:
+"I don't have access to that information right now. Please check your order confirmation email or contact support at [support channel]." Do not estimate, infer, or fabricate any order or product data."""
+
+# Re-run the same queries
+for i, query in enumerate(test_queries):
+    traced_handle(
+        user_id=f"user-{200 + i}",
+        session_id=f"verify-session-{i}",
+        messages=[{"role": "user", "content": query}],
+    )
+
+trace_provider.force_flush()
+```
+
+Back in Falcon AI, in the same conversation:
+
+> Re-run the same evals on `falcon-demo-failures` and compare to the previous run.
+
+Sample after-fix scores (your numbers will vary):
+
+| Eval | Before | After |
+|---|---|---|
+| **factual_accuracy** | 1 / 5 | 5 / 5 |
+| **completeness** | 5 / 5 | 5 / 5 |
+
+factual_accuracy recovered because the agent no longer fabricates. completeness stays at 5 / 5 because the refusal still fully addresses the user's question (it tells them what's happening and offers a next step). The dataset now serves as a permanent regression check. Any future prompt change can be re-scored against `falcon-demo-failures` in one chat message.
+
+<Tip>
+Save this conversation. The next time someone asks "why does our support agent refuse the warranty question?" the full audit trail (failing traces, dataset, eval scores, prompt diff) is one click away in your Falcon AI history.
+</Tip>
+
+</Step>
+</Steps>
+
+## What you solved
+
+You took a support agent that was confidently inventing return policies and walked the entire fix loop inside one Falcon AI conversation: found the failures, captured them as a regression dataset, scored them, applied a one-line prompt change, and verified the scores recovered. No tab-switching, no separate notebook, no guessing about which span produced which output.
+
+<Check>
+Trace → Debug → Evaluate → Dataset → Fix, all driven from one chat panel, with every artifact (dataset, eval run, prompt diff) saved as a clickable completion card you can return to.
+</Check>
+
+- **"I don't know which traces are bad"**: `/analyze-trace-errors` clusters them by category with verbatim evidence
+- **"I want a regression set, not a one-off check"**: `/build-dataset` snapshots the failing rows
+- **"I need a number to beat"**: `/run-evaluations` gives a baseline score on the dataset
+- **"Tell me what to change"**: `/fix-with-falcon` returns a verbatim prompt diff grounded in the span
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Falcon AI Overview" icon="sparkles" href="/docs/falcon-ai">
+    What Falcon AI can do across the platform, from analysis to creation
+  </Card>
+  <Card title="Falcon AI Skills" icon="zap" href="/docs/falcon-ai/features/skills">
+    All built-in slash commands and how to write your own
+  </Card>
+  <Card title="Monitor LLM Quality in Production" icon="gauge" href="/docs/cookbook/use-cases/production-quality-monitoring">
+    Score every response, alert on regressions, diagnose failures
+  </Card>
+</CardGroup>
