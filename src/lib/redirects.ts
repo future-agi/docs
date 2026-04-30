@@ -1,6 +1,22 @@
 // Auto-generated redirect map: old Mintlify URLs → new docs URLs
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
+  '/docs/prism': '/docs/command-center',
+  '/docs/prism/concepts/api-reference': '/docs/command-center/concepts/api-reference',
+  '/docs/prism/concepts/configuration': '/docs/command-center/concepts/configuration',
+  '/docs/prism/concepts/core': '/docs/command-center/concepts/core',
+  '/docs/prism/concepts/platform-integration': '/docs/command-center/concepts/platform-integration',
+  '/docs/prism/deployment/self-hosted': '/docs/command-center/deployment/self-hosted',
+  '/docs/prism/features/caching': '/docs/command-center/features/caching',
+  '/docs/prism/features/cost-tracking': '/docs/command-center/features/cost-tracking',
+  '/docs/prism/features/guardrails': '/docs/command-center/features/guardrails',
+  '/docs/prism/features/mcp-a2a': '/docs/command-center/features/mcp-a2a',
+  '/docs/prism/features/providers': '/docs/command-center/features/providers',
+  '/docs/prism/features/rate-limiting': '/docs/command-center/features/rate-limiting',
+  '/docs/prism/features/routing': '/docs/command-center/features/routing',
+  '/docs/prism/features/shadow-experiments': '/docs/command-center/features/shadow-experiments',
+  '/docs/prism/features/streaming': '/docs/command-center/features/streaming',
+  '/docs/prism/quickstart': '/docs/command-center/quickstart',
   '/admin-settings': '/docs/admin-settings',
   '/api-reference/agent-definitions/create-agent-definition': '/docs/api/agent-definitions/createagentdefinition',
   '/api-reference/agent-versions/create-new-version-of-agent': '/docs/api/agent-versions/createagentversion',
