@@ -603,7 +603,13 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
               { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
-              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
+              {
+                title: 'Replay',
+                items: [
+                  { title: 'Chat Replay', href: '/docs/simulation/features/observe-to-simulate' },
+                  { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
+                ]
+              },
               { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
               { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
               { title: 'View Results', href: '/docs/simulation/features/view-results' },
