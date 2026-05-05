@@ -830,6 +830,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'MCP Server',
+            icon: 'plug',
+            items: [
+              { title: 'Debug LLM Traces From Your IDE Using Natural Language MCP Queries', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
+            ]
+          },
+          {
             title: 'Getting Started',
             icon: 'zap',
             items: [
