@@ -1,0 +1,191 @@
+---
+title: "Set Up LLM Provider Fallback and Weighted Routing With Agent Command Center"
+description: "Split traffic across providers by weight and auto-failover on 429s and 5xx errors with the Agent Command Center SDK, no application-code rewrites."
+---
+
+<TLDR>
+Point your OpenAI SDK at Agent Command Center, then attach an `agentcc.GatewayConfig` with weighted load balancing (e.g., 70% OpenAI, 30% Anthropic) and a fallback chain to your client's default headers. Verify per-request which provider answered via response headers. You walk away with cross-provider load balancing and automatic recovery on rate limits and outages.
+</TLDR>
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/falcon-ai-page/command-center/fallback-and-weighted-routing.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/falcon-ai-page/command-center/fallback-and-weighted-routing.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 10 min | Beginner | `agentcc` |
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- Agent Command Center API key starting with `sk-agentcc-` (Settings → API Keys)
+- At least two LLM providers configured in [Agent Command Center → Providers](/docs/command-center/features/providers) (e.g., OpenAI + Anthropic)
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+Install the OpenAI and Agent Command Center SDKs and set your API key.
+
+```bash
+pip install openai agentcc
+```
+
+```bash
+export AGENTCC_API_KEY="sk-agentcc-your-key"
+```
+
+## Tutorial
+
+<Steps>
+<Step title="Send a baseline request through Agent Command Center">
+
+Point the OpenAI SDK at the gateway's `base_url` with your Agent Command Center key. No new SDK to learn for inference, no app-code rewrites.
+
+```python
+import os
+from openai import OpenAI
+
+API_KEY = os.environ["AGENTCC_API_KEY"]
+
+client = OpenAI(
+    api_key=API_KEY,
+    base_url="https://gateway.futureagi.com/v1",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Ping"}],
+)
+print(response.choices[0].message.content)
+```
+
+Every request through this client now flows through Agent Command Center's routing, caching, and observability layers.
+
+</Step>
+<Step title="Add weighted load balancing with agentcc.GatewayConfig">
+
+The dashboard's **Providers → Routing** tab sets one strategy globally. To add per-request weighted targets without changing the org-level config, build a `GatewayConfig` with a `LoadBalanceConfig` and attach the rendered headers to your client.
+
+```python
+import agentcc
+from openai import OpenAI
+
+config = agentcc.GatewayConfig(
+    load_balance=agentcc.LoadBalanceConfig(
+        strategy="weighted",
+        targets=[
+            agentcc.LoadBalanceTarget(model="gpt-4o-mini", provider="openai", weight=0.7),
+            agentcc.LoadBalanceTarget(model="claude-3-5-sonnet-20241022", provider="anthropic", weight=0.3),
+        ],
+    ),
+)
+
+client = OpenAI(
+    api_key=API_KEY,
+    base_url="https://gateway.futureagi.com/v1",
+    default_headers=config.to_headers(),
+)
+```
+
+Every request now splits 70/30 between OpenAI and Anthropic. Your application code does not change beyond `default_headers`; the gateway handles the split.
+
+<Tip>
+Start with a 90/10 split when migrating to a new provider. Bump the new provider's weight over days or weeks once you're confident in its reliability, then re-create the client with updated `weight=` values.
+</Tip>
+
+</Step>
+<Step title="Add provider failover to the config">
+
+Extend your `GatewayConfig` with a `FallbackConfig` so the gateway automatically tries the next target when the primary returns a `429` (rate limit) or any `5xx` error.
+
+```python
+config = agentcc.GatewayConfig(
+    load_balance=agentcc.LoadBalanceConfig(
+        strategy="weighted",
+        targets=[
+            agentcc.LoadBalanceTarget(model="gpt-4o-mini", provider="openai", weight=0.7),
+            agentcc.LoadBalanceTarget(model="claude-3-5-sonnet-20241022", provider="anthropic", weight=0.3),
+        ],
+    ),
+    fallback=agentcc.FallbackConfig(
+        targets=[
+            agentcc.FallbackTarget(model="gpt-4o-mini", provider="openai"),
+            agentcc.FallbackTarget(model="claude-3-5-sonnet-20241022", provider="anthropic"),
+        ],
+        on_status_codes=[429, 500, 502, 503, 504],
+    ),
+)
+
+client = OpenAI(
+    api_key=API_KEY,
+    base_url="https://gateway.futureagi.com/v1",
+    default_headers=config.to_headers(),
+)
+```
+
+If a routed request to OpenAI returns a 429 or 5xx, the gateway retries with the next fallback target. No application-code change.
+
+<Tip>
+For richer reliability behavior, configure **Retry** and **Circuit Breaker** in the dashboard at **Gateway → Fallbacks**. Retries happen before failover (fast retry on the same provider with backoff); circuit breaking removes a chronically failing provider from rotation entirely until it recovers.
+</Tip>
+
+</Step>
+<Step title="Verify which provider answered each request">
+
+Agent Command Center attaches metadata to every response so you can see which provider served the request, which model was used, how long it took, and what it cost.
+
+```python
+response = client.chat.completions.with_raw_response.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+
+print(f"Provider: {response.headers.get('x-agentcc-provider')}")
+print(f"Model:    {response.headers.get('x-agentcc-model-used')}")
+print(f"Latency:  {response.headers.get('x-agentcc-latency-ms')}ms")
+print(f"Cost:     ${response.headers.get('x-agentcc-cost')}")
+```
+
+Repeat this and tally the providers — the ratio should land around 70/30, matching the weights from step 2.
+
+</Step>
+<Step title="Force a request to a specific provider (sticky routing)">
+
+To bypass the weighted policy for a specific request — for in-flight conversation threads, A/B testing, or debugging — build a second client without the `LoadBalanceConfig`. Requests through it route directly to the model you specify.
+
+```python
+sticky_client = OpenAI(
+    api_key=API_KEY,
+    base_url="https://gateway.futureagi.com/v1",
+)
+
+response = sticky_client.chat.completions.with_raw_response.create(
+    model="claude-3-5-sonnet-20241022",
+    messages=[{"role": "user", "content": "ping"}],
+)
+print("Locked to:", response.headers.get('x-agentcc-provider'))
+```
+
+Your main `client` keeps using the weighted policy.
+
+</Step>
+</Steps>
+
+<Check>
+You configured a 70/30 weighted split and a failover chain via `agentcc.GatewayConfig`, then verified routing via response headers, without changing a line of application code beyond `default_headers`.
+</Check>
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Routing & Reliability" icon="route" href="/docs/command-center/features/routing">
+    All routing strategies: round-robin, weighted, least-latency, cost-optimized, adaptive
+  </Card>
+  <Card title="Supported providers" icon="plug" href="/docs/command-center/features/providers">
+    Add OpenAI, Anthropic, Gemini, Groq, and more
+  </Card>
+  <Card title="Caching" icon="bolt" href="/docs/command-center/features/caching">
+    Reduce latency and cost with response caching
+  </Card>
+</CardGroup>

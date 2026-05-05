@@ -822,6 +822,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Agent Command Center',
+            icon: 'server',
+            items: [
+              { title: 'Set Up LLM Provider Fallback and Weighted Routing', href: '/docs/cookbook/command-center/fallback-and-weighted-routing' },
+            ]
+          },
+          {
             title: 'Getting Started',
             icon: 'zap',
             items: [
