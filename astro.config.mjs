@@ -17,7 +17,14 @@ export default defineConfig({
   // Optimize build output
   compressHTML: true,
   vite: {
-    plugins: [tailwindcss(), viteDocsTransform(), compression({ algorithm: 'gzip' })]
+    plugins: [tailwindcss(), viteDocsTransform(), compression({ algorithm: 'gzip' })],
+    server: {
+      // Hostnames the dev server accepts. Leading `.` matches any subdomain.
+      // Override via VITE_ALLOWED_HOSTS=host1,host2 in your env.
+      allowedHosts: process.env.VITE_ALLOWED_HOSTS
+        ? process.env.VITE_ALLOWED_HOSTS.split(',').map((h) => h.trim())
+        : ['.ngrok-free.dev', '.ngrok-free.app', '.ngrok.io', '.loca.lt', '.trycloudflare.com']
+    }
   },
   integrations: [
     react(),

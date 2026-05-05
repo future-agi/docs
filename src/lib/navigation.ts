@@ -825,7 +825,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Agent Command Center',
             icon: 'server',
             items: [
-              { title: 'Set Up LLM Provider Fallback and Weighted Routing', href: '/docs/cookbook/command-center/fallback-and-weighted-routing' },
               { title: 'Cut LLM Costs 80% With Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
             ]
           },
