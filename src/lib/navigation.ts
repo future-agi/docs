@@ -837,6 +837,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Evaluation',
+            icon: 'check-double',
+            items: [
+              { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
+            ]
+          },
+          {
             title: 'Getting Started',
             icon: 'zap',
             items: [

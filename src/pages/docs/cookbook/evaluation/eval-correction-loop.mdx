@@ -1,0 +1,258 @@
+---
+title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain"
+description: "Run a built-in eval, mark the rows where it disagrees with your judgment, bake those corrections into a custom eval, and re-run until the eval matches how your team scores quality."
+---
+
+<TLDR>
+Score a batch with a built-in eval, find the rows where it scored differently than you would, and rewrite the criteria as a custom eval that includes your corrections as few-shot examples. Re-run on the same batch and watch eval-human agreement climb. The result is an evaluator that captures *your* domain's definition of quality, not a generic one.
+</TLDR>
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/falcon-ai-page/evaluation/eval-correction-loop.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/falcon-ai-page/evaluation/eval-correction-loop.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 15 min | Intermediate | `ai-evaluation` |
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+Install the FutureAGI evaluation SDK and set your API keys.
+
+```bash
+pip install ai-evaluation requests
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+```
+
+## Tutorial
+
+The example below uses SaaS customer-support replies. The trick: pick failure modes a generic eval can't catch. A reply that pitches an upsell, commits a front-line agent to a refund, or recommends disabling 2FA can sound polished and on-topic. A generic helpfulness eval rates the surface form. Your team's rules rate what the reply *should not* do. The correction loop closes that gap.
+
+<Steps>
+<Step title="Score the batch with a built-in eval">
+
+Start with a built-in template like `is_helpful` or `tone`. It gives you a baseline plus the explanations the judge model used. The explanations are what you'll inspect in step 2.
+
+```python
+import os
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+# Real support replies from your agent. The bad ones look helpful but
+# violate domain-specific rules (refund escalation, no upsells) that
+# a generic helpfulness eval has no way to know about.
+samples = [
+    {
+        "id": "r1",
+        "user_query": "I forgot my password and can't log in.",
+        "agent_response": "Click 'Forgot password' on the sign-in page and follow the email link. If the email doesn't arrive within 5 minutes, reply here with a screenshot and I'll resend it from our end.",
+        "human_verdict": "good",
+    },
+    {
+        "id": "r2",
+        "user_query": "I want a refund for last month's subscription. The service was down 3 times.",
+        "agent_response": "I'm sorry to hear about the disruption. I'll process a full refund for last month's $49 today, and you'll see it in your account within 7 to 10 business days.",
+        "human_verdict": "bad",  # all refund offers must be escalated to a manager per policy
+    },
+    {
+        "id": "r3",
+        "user_query": "Why is my bill higher than expected this month?",
+        "agent_response": "Your Pro plan has overage fees for usage above 10GB. You used 15GB this billing cycle, which added $12 to your bill. By the way, our Premium plan includes unlimited storage and the new collaboration features. Want me to upgrade you?",
+        "human_verdict": "bad",  # answer is correct but the upsell is a brand-voice violation
+    },
+    {
+        "id": "r4",
+        "user_query": "How do I export my data?",
+        "agent_response": "Go to Settings > Data > Export. You can pick CSV or JSON, and we'll email a download link within 30 minutes.",
+        "human_verdict": "good",
+    },
+]
+
+baseline_results = []
+for s in samples:
+    r = evaluator.evaluate(
+        eval_templates="is_helpful",
+        inputs={"input": s["user_query"], "output": s["agent_response"]},
+        model_name="turing_flash",
+    )
+    baseline_results.append({
+        "id": s["id"],
+        "eval_score": r.eval_results[0].output,
+        "eval_reason": r.eval_results[0].reason,
+        "human_verdict": s["human_verdict"],
+    })
+
+for row in baseline_results:
+    print(f"{row['id']}: eval={row['eval_score']!s:>5} | human={row['human_verdict']:>4} | {row['eval_reason'][:80]}")
+```
+
+The built-in `is_helpful` eval will likely return `Passed` for `r2` and `r3`. Both replies are on-topic, well-formed, and offer a concrete action. Nothing about the surface form gives the generic judge a reason to fail them. Your team flags them as bad because they violate domain rules the judge has no way to know about. That's the disagreement signal the correction loop will fix.
+
+</Step>
+<Step title="Identify the disagreements">
+
+A disagreement is any row where the eval and the human reach different verdicts. Sort by these. They're the rows that teach the evaluator something new.
+
+```python
+def passed(score):
+    return str(score).strip().lower() == "passed"
+
+disagreements = [
+    r for r in baseline_results
+    if passed(r["eval_score"]) != (r["human_verdict"] == "good")
+]
+
+print(f"{len(disagreements)} / {len(baseline_results)} disagreed with humans")
+for r in disagreements:
+    print(f"  {r['id']}: eval said {r['eval_score']}, human said {r['human_verdict']}")
+    print(f"    reason: {r['eval_reason'][:120]}")
+```
+
+Pick 2 or 3 disagreement rows that capture distinct failure modes (here: cheerful-but-empty replies, off-policy promises). Those become your few-shot examples in the next step.
+
+</Step>
+<Step title="Encode the corrections as a custom eval">
+
+Create a custom eval whose rule prompt spells out your domain's definition of "good" and includes the corrected examples inline. The judge model uses the examples to calibrate its decisions on new rows.
+
+```python
+import requests
+
+rule_prompt = """\
+You evaluate customer-support replies for a SaaS product.
+
+A reply passes ONLY if ALL of the following hold:
+1. Stays focused on the user's specific issue. No marketing language, no upsells, no pivots to other products.
+2. Gives a concrete next step (a procedure, a link, a timeline, or a specific owner).
+3. Does NOT commit to a refund, credit, or policy exception. Front-line agents must acknowledge the request and escalate to a manager.
+4. Does NOT instruct the user to disable security features (2FA, MFA, encryption) as a workaround.
+
+Examples of FAIL replies (learn from these):
+- "I'm sorry to hear about the disruption. I'll process a full refund for last month's $49 today, and you'll see it in your account within 7 to 10 business days."
+  -> FAIL: rule 3. Front-line agents can't commit to refunds. Should acknowledge and escalate.
+- "Your Pro plan has overage fees for usage above 10GB. You used 15GB this billing cycle, which added $12 to your bill. By the way, our Premium plan includes unlimited storage and the new collaboration features. Want me to upgrade you?"
+  -> FAIL: rule 1. Pivots from billing question to a sales pitch.
+
+Example of a PASS reply:
+- "Click 'Forgot password' on the sign-in page and follow the email link. If the email doesn't arrive within 5 minutes, reply here with a screenshot and I'll resend it from our end."
+  -> PASS: focused on the issue, concrete next step, clear escalation path.
+
+Now evaluate this reply.
+
+User query: {{user_query}}
+Agent response: {{agent_response}}
+"""
+
+resp = requests.post(
+    "https://api.futureagi.com/model-hub/create_custom_evals/",
+    headers={
+        "X-Api-Key": os.environ["FI_API_KEY"],
+        "X-Secret-Key": os.environ["FI_SECRET_KEY"],
+    },
+    json={
+        "name": "support_reply_quality_v1",
+        "description": "Domain-calibrated support-reply evaluator with policy and tone rules.",
+        "criteria": rule_prompt,
+        "output_type": "Pass/Fail",
+        "required_keys": ["user_query", "agent_response"],
+        "config": {"model": "turing_flash"},
+    },
+)
+print(resp.json())  # {"eval_template_id": "...", "name": "support_reply_quality_v1"}
+```
+
+Two things make this work. First, the rule prompt enumerates the domain rules explicitly, so the judge model has criteria instead of vibes. Second, the few-shot examples cover the exact failure modes you found in step 2, so the judge sees what "FAIL" looks like for *your* domain.
+
+<Tip>
+Version your eval names (`_v1`, `_v2`). Each iteration creates a new template so historical eval runs stay reproducible. You can compare v1 vs v2 head-to-head later.
+</Tip>
+
+</Step>
+<Step title="Re-score the same batch and measure agreement">
+
+Run the new eval on the same samples and compare against your human verdicts.
+
+```python
+calibrated_results = []
+for s in samples:
+    r = evaluator.evaluate(
+        eval_templates="support_reply_quality_v1",
+        inputs={"user_query": s["user_query"], "agent_response": s["agent_response"]},
+    )
+    calibrated_results.append({
+        "id": s["id"],
+        "eval_score": r.eval_results[0].output,
+        "human_verdict": s["human_verdict"],
+    })
+
+agreement = sum(
+    1 for r in calibrated_results
+    if passed(r["eval_score"]) == (r["human_verdict"] == "good")
+)
+print(f"agreement: {agreement} / {len(samples)} ({100 * agreement / len(samples):.0f}%)")
+for r in calibrated_results:
+    match = "OK" if passed(r["eval_score"]) == (r["human_verdict"] == "good") else "MISS"
+    print(f"  {match} {r['id']}: eval={r['eval_score']} human={r['human_verdict']}")
+```
+
+Expect a jump from around 50% baseline to 100% on this set. `r2` and `r3` now fail correctly because the rule prompt explicitly forbids out-of-policy refund commits and in-support upsells. `is_helpful` had no way to know either rule existed.
+
+</Step>
+<Step title="Iterate when agreement plateaus below your bar">
+
+If agreement is still below where you need it (typical bar: 85%+ on a held-out batch), the loop continues.
+
+1. Pull a fresh sample of 20 to 30 rows the eval hasn't seen.
+2. Re-score with the latest version (`support_reply_quality_v1`).
+3. Find the new disagreements. These are failure modes your rule prompt didn't cover.
+4. Rev to `_v2`: add 1 or 2 new few-shot examples or sharpen one of the rules. Avoid bloating. Every example added trades calibration for prompt length and inference cost.
+
+```python
+# After collecting fresh disagreements...
+rule_prompt_v2 = rule_prompt + """
+
+Additional FAIL example (learn from this):
+- "Try disabling 2FA temporarily so you can log in, then re-enable it once you're past the issue."
+  -> FAIL: rule 4. Never instruct users to disable security features. Offer a recovery code or escalate to security ops.
+"""
+
+# Re-register as support_reply_quality_v2 and compare scores side-by-side.
+```
+
+A well-calibrated eval typically converges in 2 or 3 iterations. Stop when fresh batches stay above your agreement bar. Adding more examples beyond that hurts more than it helps.
+
+</Step>
+</Steps>
+
+<Check>
+You ran a built-in eval, found rows where it disagreed with human judgment, encoded those corrections as a custom eval with explicit rules and few-shot failure examples, then re-scored to confirm the eval now matches how your team defines quality.
+</Check>
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Create Custom Evals" icon="wand-magic-sparkles" href="/docs/evaluation/features/custom">
+    Full reference for the custom eval template API
+  </Card>
+  <Card title="Future AGI Models" icon="brain" href="/docs/evaluation/features/futureagi-models">
+    Pick the right judge model: turing_small, turing_flash, turing_large
+  </Card>
+  <Card title="Eval Templates" icon="layer-group" href="/docs/evaluation/concepts/eval-templates">
+    Built-in vs custom templates and required-key conventions
+  </Card>
+</CardGroup>
