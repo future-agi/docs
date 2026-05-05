@@ -1,0 +1,208 @@
+---
+title: "Deploy the Full Open-Source AI Stack Locally With Docker Compose in 5 Minutes"
+description: "Clone the Future AGI repo, configure .env, run `docker compose up`, and start sending traces. Five commands to a complete self-hosted stack on your laptop."
+---
+
+<TLDR>
+Five commands and one `.env` edit gets you a complete self-hosted Future AGI stack running locally: frontend, backend, gateway, Postgres, ClickHouse, Redis, MinIO, Temporal, and PeerDB CDC. All 21 containers, no external dependencies. Your traces, datasets, and evals stay on your machine.
+</TLDR>
+
+| Time | Difficulty |
+|------|-----------|
+| 5 min hands-on (10 to 15 min for first image build) | Beginner |
+
+<Prerequisites>
+- Docker Engine 24.0+ and Docker Compose v2.20+ (`docker --version`, `docker compose version`)
+- 8+ GB RAM and 64+ GB disk allocated to Docker (Docker Desktop defaults of 2 to 4 GB will OOM-kill ClickHouse)
+- Linux, macOS, or Windows with WSL 2 (ECS Fargate and Cloud Run are NOT supported because the `code-executor` service needs `privileged: true`)
+- Python 3.11
+</Prerequisites>
+
+## Tutorial
+
+<Steps>
+<Step title="Clone the repo">
+
+```bash
+git clone https://github.com/future-agi/future-agi.git
+cd future-agi
+```
+
+The OSS build uses `futureagi/Dockerfile.oss` (Python 3.11 base) and builds locally, so there's nothing to pre-pull. First-build downloads about 6 GB of layers; subsequent boots reuse the cache.
+
+</Step>
+<Step title="Configure .env">
+
+Copy the template and rotate the four `CHANGEME` placeholders.
+
+```bash
+cp .env.example .env
+```
+
+Replace these four values in `.env` with generated secrets:
+
+- `SECRET_KEY` (Django)
+- `PG_PASSWORD` (Postgres)
+- `MINIO_ROOT_PASSWORD` (object storage)
+- `AGENTCC_INTERNAL_API_KEY` (gateway shared secret)
+
+A one-liner to generate each:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Drop your provider keys in the same file so the gateway can route requests:
+
+```bash
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+If you want signup confirmations and password-reset emails to actually deliver, add Mailgun credentials too:
+
+```bash
+MAILGUN_API_KEY=key-...
+MAILGUN_DOMAIN=mg.your-domain.com
+```
+
+If you don't have Mailgun, skip this. You can still create a user and set a password via the Django shell in [Step 4](#step-4).
+
+See [Environment Variables](/docs/self-hosting/environment) for the full list of knobs.
+
+</Step>
+<Step title="Start the stack">
+
+```bash
+docker compose up -d
+docker compose ps --format "{{.Names}} {{.Status}}"
+```
+
+`-d` runs detached. The `--format` flag prints one line per service so you can scan health quickly without horizontal-scrolling the default table. The stack is ready when the backend logs `Application startup complete`:
+
+```bash
+docker compose logs -f backend
+```
+
+What you just started:
+
+| Layer | Services |
+|-------|----------|
+| **Application** | frontend, backend, worker, gateway, serving, code-executor |
+| **Data** | postgres, clickhouse, redis, minio |
+| **Workflow** | temporal |
+| **CDC** | 10 PeerDB services replicating Postgres to ClickHouse |
+
+<Tip>
+First boot builds from source. Subsequent `docker compose up` calls reuse the cached image and start in under 30 seconds.
+</Tip>
+
+</Step>
+<span id="step-4"></span>
+<Step title="Open the dashboard and create your first user">
+
+Three URLs are now live on your machine:
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| Frontend | http://localhost:3000 | Sign up here |
+| Backend API | http://localhost:8000 | Health check at `/health/` |
+| PeerDB UI | http://localhost:3001 | Login: `peerdb` / `peerdb` |
+
+Open the frontend, sign up with any email (the local stack doesn't enforce verification by default), and grab an API key from **Settings -> API Keys**. Set the keys in your shell so the next step can use them:
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+```
+
+<Tip>
+**No Mailgun?** Set the password directly via the Django shell instead of waiting for a reset email:
+
+```bash
+docker compose exec backend python manage.py shell -c "
+from django.contrib.auth import get_user_model
+u = get_user_model().objects.get(email='you@example.com')
+u.set_password('your-new-password')
+u.save()
+"
+```
+</Tip>
+
+</Step>
+<Step title="Send your first trace to the local stack">
+
+Point the FutureAGI instrumentation SDK at your local backend with the `FI_BASE_URL` env var. Anything else is identical to the cloud setup.
+
+```bash
+pip install fi-instrumentation-otel traceai-openai openai
+```
+
+```python
+import os
+from fi_instrumentation import register, FITracer
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+os.environ["FI_BASE_URL"] = "http://localhost:8000"  # SDK sends spans to /tracer/v1/traces on this host
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="local-stack-smoke-test",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer("local-stack-smoke-test"))
+
+from openai import OpenAI
+client = OpenAI()
+
+@tracer.agent(name="hello_agent")
+def hello_agent(q: str) -> str:
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": q}],
+    )
+    return r.choices[0].message.content
+
+print(hello_agent("Say hi to my self-hosted Future AGI stack."))
+trace_provider.force_flush()
+```
+
+Open **Tracing -> local-stack-smoke-test** in the dashboard. You should see one parent span (`hello_agent`) with the OpenAI call nested underneath. If the trace shows up, every layer of the stack is wired correctly: backend ingestion, ClickHouse via PeerDB, frontend rendering, gateway routing.
+
+</Step>
+</Steps>
+
+<Check>
+You're running 21 containers, ingested a trace through the same code path the cloud uses, and rendered it in a dashboard at http://localhost:3000. Every byte stayed on your machine.
+</Check>
+
+## Common operations
+
+```bash
+# Tail logs across services
+docker compose logs -f backend worker gateway
+
+# Shell into the backend
+docker compose exec backend bash
+
+# Stop the stack (data persists in named volumes)
+docker compose down
+
+# Wipe everything and start over
+docker compose down -v
+```
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Docker Compose reference" icon="docker" href="/docs/self-hosting/docker-compose">
+    Full deployment modes (full stack, dev overlay, frontend-only)
+  </Card>
+  <Card title="Environment variables" icon="settings" href="/docs/self-hosting/environment">
+    Every secret, port, and runtime flag the stack reads
+  </Card>
+  <Card title="Production hardening" icon="shield" href="/docs/self-hosting/production">
+    Reverse proxy, HTTPS, secret rotation before exposing the stack
+  </Card>
+</CardGroup>
