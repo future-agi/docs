@@ -843,6 +843,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Self-Hosting',
+            icon: 'box',
+            items: [
+              { title: 'Deploy the Full Open-Source AI Stack Locally With Docker Compose in 5 Minutes', href: '/docs/cookbook/self-hosting/docker-compose-quickstart' },
+            ]
+          },
+          {
             title: 'Getting Started',
             icon: 'zap',
             items: [
