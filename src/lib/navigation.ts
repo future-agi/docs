@@ -813,6 +813,36 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Falcon AI',
+            icon: 'rocket',
+            items: [
+              { title: 'End-to-End with Falcon AI: Trace → Debug → Evaluate → Dataset → Fix in One Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
+              { title: 'Context-Aware Trace Debugging with Falcon AI', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
+              { title: 'Building Evaluation Datasets from Production Traces with Falcon AI', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
+            ]
+          },
+          {
+            title: 'Agent Command Center',
+            icon: 'server',
+            items: [
+              { title: 'Cut LLM Costs 80% With Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
+            ]
+          },
+          {
+            title: 'MCP Server',
+            icon: 'plug',
+            items: [
+              { title: 'Debug LLM Traces From Your IDE Using Natural Language MCP Queries', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
+            ]
+          },
+          {
+            title: 'Evaluation',
+            icon: 'check-double',
+            items: [
+              { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
+            ]
+          },
+          {
             title: 'Getting Started',
             icon: 'zap',
             items: [
