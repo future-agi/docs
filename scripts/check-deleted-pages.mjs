@@ -27,8 +27,8 @@ try {
     );
     deletedFiles = output.trim().split('\n').filter(Boolean);
   } catch {
-    console.log('Could not determine deleted files — skipping check.');
-    process.exit(0);
+    console.error('Could not determine deleted files — failing to surface the error.');
+    process.exit(1);
   }
 }
 
@@ -50,7 +50,7 @@ function fileToPath(file) {
 
 // Load redirects map
 const redirectsRaw = readFileSync('src/lib/redirects.ts', 'utf-8');
-const redirectEntries = [...redirectsRaw.matchAll(/'([^']+)':\s*'([^']+)'/g)];
+const redirectEntries = [...redirectsRaw.matchAll(/["']([^"']+)["']:\s*["']([^"']+)["']/g)];
 const redirectMap = new Set(redirectEntries.map(([, from]) => from));
 
 // Check each deleted page
