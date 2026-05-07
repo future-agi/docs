@@ -1,0 +1,1322 @@
+# AEO / GEO / SEO Audit Report
+
+**Site:** docs.futureagi.com | **Files scanned:** 612 | **Date:** 2026-05-06
+
+---
+
+## Summary Table
+
+| Check | Affected | % |
+|---|---|---|
+| Missing description | 0 | 0% |
+| Duplicate title | 4 | 1% |
+| No `## About` first heading | 434 | 71% |
+| Title too short (<15) | 0 | 0% |
+| Title too long (>60) | 1 | 0% |
+| Generic/bare title | 0 | 0% |
+| Description too short (<120) | 16 | 3% |
+| Description too long (>155) | 47 | 8% |
+| Description bad start phrase | 1 | 0% |
+| Vague single-word headings | 20 | 3% |
+| Heading hierarchy skip/H3-no-H2 | 127 | 21% |
+| No TLDR block (AEO opportunity) | 525 | 86% |
+| First para is code/list | 107 | 17% |
+| Has question-style headings ✅ | 274 | 45% |
+| Has Accordion/FAQ block ✅ | 18 | 3% |
+
+---
+
+## 🔴 Critical Issues
+
+### 1. Missing `description` — 0 (0%)
+
+_None._
+
+### 2. Duplicate Titles — 2 groups
+
+**"Google GenAI Integration with Future AGI for Gemini Tracing"** (2 files)
+  - src/pages/docs/integrations/google-genai.mdx
+  - src/pages/docs/integrations/traceai/google_genai.mdx
+
+**"OpenAI Agents SDK Integration with Future AGI Tracing"** (2 files)
+  - src/pages/docs/integrations/openai-agents.mdx
+  - src/pages/docs/integrations/traceai/openai_agents.mdx
+
+### 3. No `## About` First Heading — 434 (71%)
+
+**No headings at all** (148 files — typically API reference pages):
+- src/pages/docs/api/agent-definitions/createagentdefinition.mdx
+- src/pages/docs/api/agent-definitions/deleteagentdefinitions.mdx
+- src/pages/docs/api/agent-definitions/fetchassistantfromprovider.mdx
+- src/pages/docs/api/agent-definitions/getagentdefinition.mdx
+- src/pages/docs/api/agent-definitions/listagentdefinitions.mdx
+- src/pages/docs/api/agent-versions/createagentversion.mdx
+- src/pages/docs/api/agent-versions/getagentversion.mdx
+- src/pages/docs/api/agent-versions/getversioncallexecutions.mdx
+- src/pages/docs/api/agent-versions/getversionevalsummary.mdx
+- src/pages/docs/api/agent-versions/listagentversions.mdx
+- src/pages/docs/api/annotations/bulk/bulk-annotate-spans.mdx
+- src/pages/docs/api/annotations/items/add-items.mdx
+- src/pages/docs/api/annotations/items/assign-items.mdx
+- src/pages/docs/api/annotations/items/bulk-remove-items.mdx
+- src/pages/docs/api/annotations/items/complete-item.mdx
+- src/pages/docs/api/annotations/items/get-annotate-detail.mdx
+- src/pages/docs/api/annotations/items/get-item-annotations.mdx
+- src/pages/docs/api/annotations/items/get-next-item.mdx
+- src/pages/docs/api/annotations/items/list-items.mdx
+- src/pages/docs/api/annotations/items/release-item.mdx
+- src/pages/docs/api/annotations/items/skip-item.mdx
+- src/pages/docs/api/annotations/items/submit-annotations.mdx
+- src/pages/docs/api/annotations/labels/create-label.mdx
+- src/pages/docs/api/annotations/labels/delete-label.mdx
+- src/pages/docs/api/annotations/labels/get-label.mdx
+- src/pages/docs/api/annotations/labels/list-labels.mdx
+- src/pages/docs/api/annotations/labels/restore-label.mdx
+- src/pages/docs/api/annotations/labels/update-label.mdx
+- src/pages/docs/api/annotations/queues/add-label.mdx
+- src/pages/docs/api/annotations/queues/create-queue.mdx
+- src/pages/docs/api/annotations/queues/delete-queue.mdx
+- src/pages/docs/api/annotations/queues/export-to-dataset.mdx
+- src/pages/docs/api/annotations/queues/export.mdx
+- src/pages/docs/api/annotations/queues/find-queues-for-source.mdx
+- src/pages/docs/api/annotations/queues/get-agreement.mdx
+- src/pages/docs/api/annotations/queues/get-analytics.mdx
+- src/pages/docs/api/annotations/queues/get-or-create-default.mdx
+- src/pages/docs/api/annotations/queues/get-progress.mdx
+- src/pages/docs/api/annotations/queues/get-queue.mdx
+- src/pages/docs/api/annotations/queues/list-queues.mdx
+- src/pages/docs/api/annotations/queues/remove-label.mdx
+- src/pages/docs/api/annotations/queues/update-queue.mdx
+- src/pages/docs/api/annotations/queues/update-status.mdx
+- src/pages/docs/api/annotations/scores/bulk-create-scores.mdx
+- src/pages/docs/api/annotations/scores/create-score.mdx
+- src/pages/docs/api/annotations/scores/delete-score.mdx
+- src/pages/docs/api/annotations/scores/get-scores-for-source.mdx
+- src/pages/docs/api/annotations/scores/list-scores.mdx
+- src/pages/docs/api/call-executions/getcallexecutiondetails.mdx
+- src/pages/docs/api/call-executions/getsessioncomparison.mdx
+- src/pages/docs/api/custom-eval-configs/check-config-exists.mdx
+- src/pages/docs/api/custom-eval-configs/create-custom-eval-config.mdx
+- src/pages/docs/api/custom-eval-configs/delete-custom-eval-config.mdx
+- src/pages/docs/api/custom-eval-configs/get-custom-eval-config.mdx
+- src/pages/docs/api/custom-eval-configs/list-configs-filtered.mdx
+- src/pages/docs/api/custom-eval-configs/update-custom-eval-config.mdx
+- src/pages/docs/api/dataset-evals/add-dataset-eval.mdx
+- src/pages/docs/api/dataset-evals/create-custom-eval-template.mdx
+- src/pages/docs/api/dataset-evals/delete-dataset-eval.mdx
+- src/pages/docs/api/dataset-evals/edit-and-run-eval.mdx
+- src/pages/docs/api/dataset-evals/get-eval-structure.mdx
+- src/pages/docs/api/dataset-evals/get-eval-template-names.mdx
+- src/pages/docs/api/dataset-evals/list-dataset-evals.mdx
+- src/pages/docs/api/dataset-evals/start-evals-process.mdx
+- src/pages/docs/api/datasets/add-as-new.mdx
+- src/pages/docs/api/datasets/add-empty-rows.mdx
+- src/pages/docs/api/datasets/add-rows-from-existing.mdx
+- src/pages/docs/api/datasets/add-rows-from-file.mdx
+- src/pages/docs/api/datasets/add-rows-from-huggingface.mdx
+- src/pages/docs/api/datasets/analytics/annotation-summary.mdx
+- src/pages/docs/api/datasets/analytics/eval-stats.mdx
+- src/pages/docs/api/datasets/analytics/explanation-summary.mdx
+- src/pages/docs/api/datasets/analytics/run-prompt-stats.mdx
+- src/pages/docs/api/datasets/clone-dataset.mdx
+- src/pages/docs/api/datasets/columns/add-columns.mdx
+- src/pages/docs/api/datasets/columns/add-multiple-static-columns.mdx
+- src/pages/docs/api/datasets/columns/add-static-column.mdx
+- src/pages/docs/api/datasets/columns/delete-column.mdx
+- src/pages/docs/api/datasets/columns/get-column-config.mdx
+- src/pages/docs/api/datasets/columns/get-column-details.mdx
+- src/pages/docs/api/datasets/columns/update-column-name.mdx
+- src/pages/docs/api/datasets/columns/update-column-type.mdx
+- src/pages/docs/api/datasets/create-dataset-from-huggingface.mdx
+- src/pages/docs/api/datasets/create-dataset.mdx
+- src/pages/docs/api/datasets/create-empty-dataset.mdx
+- src/pages/docs/api/datasets/delete-dataset.mdx
+- src/pages/docs/api/datasets/delete-rows.mdx
+- src/pages/docs/api/datasets/duplicate-dataset.mdx
+- src/pages/docs/api/datasets/duplicate-rows.mdx
+- src/pages/docs/api/datasets/list-datasets.mdx
+- src/pages/docs/api/datasets/merge-dataset.mdx
+- src/pages/docs/api/datasets/run-prompt/add-run-prompt-column.mdx
+- src/pages/docs/api/datasets/run-prompt/edit-run-prompt-column.mdx
+- src/pages/docs/api/datasets/run-prompt/get-column-values.mdx
+- src/pages/docs/api/datasets/run-prompt/get-model-voices.mdx
+- src/pages/docs/api/datasets/run-prompt/retrieve-run-prompt-column-config.mdx
+- src/pages/docs/api/datasets/run-prompt/retrieve-run-prompt-options.mdx
+- src/pages/docs/api/datasets/run-prompt/tts-voices.mdx
+- src/pages/docs/api/datasets/update-cell-value.mdx
+- src/pages/docs/api/datasets/update-dataset.mdx
+- src/pages/docs/api/eval-tasks/bulk-delete-eval-tasks.mdx
+- src/pages/docs/api/eval-tasks/create-eval-task.mdx
+- src/pages/docs/api/eval-tasks/delete-eval-task.mdx
+- src/pages/docs/api/eval-tasks/get-eval-task.mdx
+- src/pages/docs/api/eval-tasks/list-eval-tasks-filtered.mdx
+- src/pages/docs/api/eval-tasks/pause-eval-task.mdx
+- src/pages/docs/api/eval-tasks/unpause-eval-task.mdx
+- src/pages/docs/api/eval-tasks/update-eval-task.mdx
+- src/pages/docs/api/health/healthcheck.mdx
+- src/pages/docs/api/personas/createpersona.mdx
+- src/pages/docs/api/personas/deletepersona.mdx
+- src/pages/docs/api/personas/duplicatepersona.mdx
+- src/pages/docs/api/personas/listpersonas.mdx
+- src/pages/docs/api/personas/updatepersona.mdx
+- src/pages/docs/api/run-tests/addevalconfigs.mdx
+- src/pages/docs/api/run-tests/compareevalsummaries.mdx
+- src/pages/docs/api/run-tests/createruntest.mdx
+- src/pages/docs/api/run-tests/deleteevalconfig.mdx
+- src/pages/docs/api/run-tests/deleteruntest.mdx
+- src/pages/docs/api/run-tests/deletetestexecutions.mdx
+- src/pages/docs/api/run-tests/executeruntest.mdx
+- src/pages/docs/api/run-tests/getcallexecutions.mdx
+- src/pages/docs/api/run-tests/getevalsummary.mdx
+- src/pages/docs/api/run-tests/getruntestdetails.mdx
+- src/pages/docs/api/run-tests/gettestexecutions.mdx
+- src/pages/docs/api/run-tests/gettestscenarios.mdx
+- src/pages/docs/api/run-tests/listruntests.mdx
+- src/pages/docs/api/run-tests/reruntestexecutions.mdx
+- src/pages/docs/api/run-tests/runnewevalsontestexecution.mdx
+- src/pages/docs/api/run-tests/updateevalconfig.mdx
+- src/pages/docs/api/run-tests/updatetestcomponents.mdx
+- src/pages/docs/api/scenarios/addcolumns.mdx
+- src/pages/docs/api/scenarios/addemptyrowstodataset.mdx
+- src/pages/docs/api/scenarios/addscenariorowswithai.mdx
+- src/pages/docs/api/scenarios/createscenario.mdx
+- src/pages/docs/api/scenarios/deletescenario.mdx
+- src/pages/docs/api/scenarios/editscenario.mdx
+- src/pages/docs/api/scenarios/getscenario.mdx
+- src/pages/docs/api/scenarios/listscenarios.mdx
+- src/pages/docs/api/test-executions/cancelexecution.mdx
+- src/pages/docs/api/test-executions/getevalexplanationsummary.mdx
+- src/pages/docs/api/test-executions/getkpis.mdx
+- src/pages/docs/api/test-executions/getperformancesummary.mdx
+- src/pages/docs/api/test-executions/gettestexecutiondetails.mdx
+- src/pages/docs/api/test-executions/reruncalls.mdx
+- src/pages/docs/evaluation/builtin/context-relevance.mdx
+- src/pages/docs/evaluation/builtin/index.mdx
+- src/pages/docs/evaluation/builtin/prompt-injection.mdx
+
+**Different first heading** (286 files):
+- `## Accessing API Keys` → src/pages/docs/admin-settings.mdx
+- `## What you will do` → src/pages/docs/annotations/quickstart.mdx
+- `## Installation` → src/pages/docs/annotations/sdk/annotation-queue-using-sdk.mdx
+- `# JavaScript SDK` → src/pages/docs/annotations/sdk/javascript.mdx
+- `# Python SDK` → src/pages/docs/annotations/sdk/python.mdx
+- `## Request Body` → src/pages/docs/api/datasets/upload-dataset.mdx
+- `# Get Simulation Analytics` → src/pages/docs/api/simulation-analytics/analytics.mdx
+- `# Get Simulation Metrics` → src/pages/docs/api/simulation-analytics/metrics.mdx
+- `# Get Simulation Runs` → src/pages/docs/api/simulation-analytics/runs.mdx
+- `## 1. Installing Future AGI's AI Evaluation Package` → src/pages/docs/cookbook/ai-agents.mdx
+- `## 1. Installing FutureAGI` → src/pages/docs/cookbook/ai-sdr.mdx
+- `## 1. Installation and Setup` → src/pages/docs/cookbook/basic-optimization.mdx
+- `## 1. Installation` → src/pages/docs/cookbook/chat-simulation-fix-agent.mdx
+- `## **Optimizer Comparison at a Glance**` → src/pages/docs/cookbook/compare-optimization.mdx
+- `## Overview` → src/pages/docs/cookbook/crewai-research-team.mdx
+- `## Objective` → src/pages/docs/cookbook/decrease-hallucination.mdx
+- `## 1. Introduction` → src/pages/docs/cookbook/end-to-end-optimization.mdx
+- `## 1. Using the FutureAGI Platform (Recommended)` → src/pages/docs/cookbook/eval-metrics-optimization.mdx
+- `### Retreival Augmented Generation Evaluation using Future AGI` → src/pages/docs/cookbook/evaluate-rag.mdx
+- `## **When to Use GEPA**` → src/pages/docs/cookbook/gepa-optimization.mdx
+- `### In this cookbook we demonstrate how FutureAGI SDK can be used to evaluate images:` → src/pages/docs/cookbook/image-evaluation.mdx
+- `## **The Required Data Format: A List of Dictionaries**` → src/pages/docs/cookbook/import-datasets.mdx
+- `## Getting Started` → src/pages/docs/cookbook/index.mdx
+- `## Introduction` → src/pages/docs/cookbook/langchain-langgraph.mdx
+- `## 1. Introduction` → src/pages/docs/cookbook/llamaindex-pdf-rag.mdx
+- `## 1. Loading Dataset` → src/pages/docs/cookbook/meeting-summarization.mdx
+- `## 1. Introduction` → src/pages/docs/cookbook/mongodb.mdx
+- `## Observability in AI Systems Explained` → src/pages/docs/cookbook/observability.mdx
+- `### In this cookbook we’ll learn` → src/pages/docs/cookbook/portkey-integration.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/async-batch-eval.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/batch-eval.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/chat-simulation-personas.mdx
+- `## Why eval in CI/CD?` → src/pages/docs/cookbook/quickstart/cicd-eval-pipeline.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/compare-optimizers.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/conversation-eval.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/custom-eval-metrics.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/dataset-annotation.mdx
+- `## What you built` → src/pages/docs/cookbook/quickstart/dataset-management.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/dataset-optimization.mdx
+- `## The Problem` → src/pages/docs/cookbook/quickstart/distributed-tracing.mdx
+- `## Starter dataset` → src/pages/docs/cookbook/quickstart/dynamic-dataset-columns.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/eval-driven-dev.mdx
+- `## What you built` → src/pages/docs/cookbook/quickstart/experimentation-compare-prompts.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/first-eval.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/hallucination-detection.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/huggingface-dataset-import.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/inline-evals-tracing.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/knowledge-base.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/manual-tracing.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/monitoring-alerts.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/multimodal-eval.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/prompt-optimization.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/prompt-versioning.mdx
+- `## What is Prompt Workbench Simulation?` → src/pages/docs/cookbook/quickstart/prompt-workbench-simulation.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/protect-guardrails.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/prototype-llm-app.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/rag-evaluation.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/session-observability.mdx
+- `## Tutorial` → src/pages/docs/cookbook/quickstart/synthetic-data-generation.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/text-to-sql-eval.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/tone-toxicity-bias-eval.mdx
+- `## Install` → src/pages/docs/cookbook/quickstart/tool-calling-simulation.mdx
+- `## Key concepts` → src/pages/docs/cookbook/quickstart/voice-simulation.mdx
+- `## 1. Installing The Depenencies` → src/pages/docs/cookbook/rag-langchain.mdx
+- `# Testing a Voice AI Agent with Agent Simulate SDK` → src/pages/docs/cookbook/simulate-sdk.mdx
+- `## 1. Installing Dependencies` → src/pages/docs/cookbook/text-to-sql.mdx
+- `## 1. Installing Future AGI` → src/pages/docs/cookbook/trustworthy-rag.mdx
+- `## Install` → src/pages/docs/cookbook/use-cases/end-to-end-agent-testing.mdx
+- `## Install` → src/pages/docs/cookbook/use-cases/production-quality-monitoring.mdx
+- `## Installing FutureAGI SDK` → src/pages/docs/cookbook/using-futureagi-dataset.mdx
+- `## Installing FutureAGI SDK` → src/pages/docs/cookbook/using-futureagi-evals.mdx
+- `## Installing FutureAGI SDK` → src/pages/docs/cookbook/using-futureagi-kb.mdx
+- `## Installing FutureAGI SDK` → src/pages/docs/cookbook/using-futureagi-protect.mdx
+- `### What to Do When Answer Refusal Fails` → src/pages/docs/evaluation/builtin/answer-refusal.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/audio-quality.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/audio-transcription.mdx
+- `### What to do if Bias is detected` → src/pages/docs/evaluation/builtin/bias-detection.mdx
+- `### About BLEU` → src/pages/docs/evaluation/builtin/bleu.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/caption-hallucination.mdx
+- `### What to Do When Chunk Attribution Fails` → src/pages/docs/evaluation/builtin/chunk-attribution.mdx
+- `### What to Do When Chunk Utilization Score is Low` → src/pages/docs/evaluation/builtin/chunk-utilization.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/clinically-inappropriate-tone.mdx
+- `### What to Do When CLIP Score is Low` → src/pages/docs/evaluation/builtin/clip-score.mdx
+- `### What to do when Completeness is Low` → src/pages/docs/evaluation/builtin/completeness.mdx
+- `### **1. Contains**` → src/pages/docs/evaluation/builtin/contain-evals.mdx
+- `### What to Do When Contains Valid Link Evaluation Fails` → src/pages/docs/evaluation/builtin/contains-valid-link.mdx
+- `### What to do when Context Adherence is Low` → src/pages/docs/evaluation/builtin/context-adherence.mdx
+- `### What to do when Conversation Coherence is Low` → src/pages/docs/evaluation/builtin/conversation-coherence.mdx
+- `### What to do when Conversation Resolution is Low` → src/pages/docs/evaluation/builtin/conversation-resolution.mdx
+- `### What to Do When Cultural Sensitivity Fails` → src/pages/docs/evaluation/builtin/cultural-sensitivity.mdx
+- `### What to Do When Clarification Seeking is Poor` → src/pages/docs/evaluation/builtin/customer-agent-clarification-seeking.mdx
+- `### What to Do When Context Retention Score is Low` → src/pages/docs/evaluation/builtin/customer-agent-context-retention.mdx
+- `### What to Do When Conversation Quality Score is Low` → src/pages/docs/evaluation/builtin/customer-agent-conversation-quality.mdx
+- `### What to Do When Human Escalation Fails` → src/pages/docs/evaluation/builtin/customer-agent-human-escalation.mdx
+- `### What to Do When Interruption Handling Score is Low` → src/pages/docs/evaluation/builtin/customer-agent-interruption-handling.mdx
+- `### What to Do When Language Handling Score is Low` → src/pages/docs/evaluation/builtin/customer-agent-language-handling.mdx
+- `### What to Do When Loop Detection is Flagged` → src/pages/docs/evaluation/builtin/customer-agent-loop-detection.mdx
+- `### What to Do When Objection Handling is Poor` → src/pages/docs/evaluation/builtin/customer-agent-objection-handling.mdx
+- `### What to Do When Prompt Conformance Score is Low` → src/pages/docs/evaluation/builtin/customer-agent-prompt-conformance.mdx
+- `### What to Do When Query Handling is Poor` → src/pages/docs/evaluation/builtin/customer-agent-query-handling.mdx
+- `### What to Do When Termination Issues are Detected` → src/pages/docs/evaluation/builtin/customer-agent-termination-handling.mdx
+- `### What to do when Data Privacy Compliance Failed` → src/pages/docs/evaluation/builtin/data-privacy.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/detect-hallucination.mdx
+- `### About Embedding Similarity` → src/pages/docs/evaluation/builtin/embedding-similarity.mdx
+- `### What to do if the Eval Ranking is Low` → src/pages/docs/evaluation/builtin/eval-ranking.mdx
+- `### What to Do When FID Score is High` → src/pages/docs/evaluation/builtin/fid-score.mdx
+- `### What to Do When Fuzzy Match Score is Low` → src/pages/docs/evaluation/builtin/fuzzy-match.mdx
+- `### What to Do When Ground Truth Match Fails` → src/pages/docs/evaluation/builtin/ground-truth-match.mdx
+- `### What to do when Groundedness Evaluation Fails` → src/pages/docs/evaluation/builtin/groundedness.mdx
+- `### Batch evaluation` → src/pages/docs/evaluation/builtin/hit-rate.mdx
+- `### What to Do When Image Instruction Adherence Score is Low` → src/pages/docs/evaluation/builtin/image-instruction-adherence.mdx
+- `### What to Do if Prompt Instruction Adherence is Low` → src/pages/docs/evaluation/builtin/instruction-adherence.mdx
+- `### What to Do When Contains Code Score is Low` → src/pages/docs/evaluation/builtin/is-code.mdx
+- `### What to Do When Is Concise Score is Low` → src/pages/docs/evaluation/builtin/is-concise.mdx
+- `### What to Do When "Is Email" Eval Fails` → src/pages/docs/evaluation/builtin/is-email.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/is-good-summary.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/is-harmful-advice.mdx
+- `### What to Do When Is Helpful Score is Low` → src/pages/docs/evaluation/builtin/is-helpful.mdx
+- `### What to do If you get Undesired Informal Tone` → src/pages/docs/evaluation/builtin/is-informal-tone.mdx
+- `### What to Do When JSON Validation Fails` → src/pages/docs/evaluation/builtin/is-json.mdx
+- `### What to Do When Is Polite Score is Low` → src/pages/docs/evaluation/builtin/is-polite.mdx
+- `### About Levenshtein Similarity` → src/pages/docs/evaluation/builtin/lavenshtein-similarity.mdx
+- `### What to Do When Function Calling Evaluation Fails` → src/pages/docs/evaluation/builtin/llm-function-calling.mdx
+- `### Batch evaluation` → src/pages/docs/evaluation/builtin/mrr.mdx
+- `### Batch evaluation` → src/pages/docs/evaluation/builtin/ndcg-at-k.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/no-age-bias.mdx
+- `### What to Do When No Apologies Score is Low` → src/pages/docs/evaluation/builtin/no-apologies.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/no-gender-bias.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/no-harmful-therapeutic-guidance.mdx
+- `### What to Do When No Invalid Links Evaluation Fails` → src/pages/docs/evaluation/builtin/no-invalid-links.mdx
+- `### What to Do When No LLM Reference Score is Low` → src/pages/docs/evaluation/builtin/no-llm-reference.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/no-racial-bias.mdx
+- `### Purpose of Numeric Similarity Eval` → src/pages/docs/evaluation/builtin/numeric-similarity.mdx
+- `### What to Do When OCR Evaluation Score is Low` → src/pages/docs/evaluation/builtin/ocr-evaluation.mdx
+- `### Comparing PII Detection with Similar Evals` → src/pages/docs/evaluation/builtin/pii.mdx
+- `### Batch evaluation` → src/pages/docs/evaluation/builtin/precision-at-k.mdx
+- `### Batch evaluation` → src/pages/docs/evaluation/builtin/recall-at-k.mdx
+- `### About ROUGE Score` → src/pages/docs/evaluation/builtin/rouge.mdx
+- `### About Semantic List Contains` → src/pages/docs/evaluation/builtin/semantic-list-contains.mdx
+- `### What to do when Sexist Content is Detected` → src/pages/docs/evaluation/builtin/sexist.mdx
+- `### What to Do When Summary Quality Evaluation Gives a Low Score` → src/pages/docs/evaluation/builtin/summary-quality.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/synthetic-image-evaluator.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/task-completion.mdx
+- `### What to do If you get Undesired Results` → src/pages/docs/evaluation/builtin/text-to-sql.mdx
+- `### What to do If you get Undesired Tone in Content` → src/pages/docs/evaluation/builtin/tone.mdx
+- `### What to do when Toxicity is Detected` → src/pages/docs/evaluation/builtin/toxicity.mdx
+- `### What to Do When Translation Accuracy Evaluation Gives a Low Score` → src/pages/docs/evaluation/builtin/translation-accuracy.mdx
+- `### What to Do When TTS Accuracy Score is Low` → src/pages/docs/evaluation/builtin/tts-accuracy.mdx
+- `## Simulate & Iterate` → src/pages/docs/index.mdx
+- `## Requirements` → src/pages/docs/installation.mdx
+- `## What this does` → src/pages/docs/integrations/export/cloud-storage.mdx
+- `## What this does` → src/pages/docs/integrations/export/datadog.mdx
+- `## What this does` → src/pages/docs/integrations/export/message-queues.mdx
+- `## What this does` → src/pages/docs/integrations/export/mixpanel.mdx
+- `## What this does` → src/pages/docs/integrations/export/pagerduty.mdx
+- `## What this does` → src/pages/docs/integrations/export/posthog.mdx
+- `## 1. Installation` → src/pages/docs/integrations/google-adk.mdx
+- `## 1. Installation` → src/pages/docs/integrations/google-genai.mdx
+- `## What this does` → src/pages/docs/integrations/import/langfuse.mdx
+- `## TraceAI` → src/pages/docs/integrations/index.mdx
+- `## 1. Installation` → src/pages/docs/integrations/openai-agents.mdx
+- `## 1. Installation` → src/pages/docs/integrations/smol-agents.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/anthropic.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/autogen.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/bedrock.mdx
+- `## 2. Set Environment Variables` → src/pages/docs/integrations/traceai/crewai.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/dspy.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/google_adk.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/google_genai.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/groq.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/guardrails.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/haystack.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/instructor.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/anthropic.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/bedrock.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/cohere.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/frameworks.mdx
+- `## How it works` → src/pages/docs/integrations/traceai/java/index.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/llm-providers.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/openai.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/pinecone.mdx
+- `## Prerequisites` → src/pages/docs/integrations/traceai/java/vector-databases.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/langchain.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/langgraph.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/litellm.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/livekit.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/llamaindex-workflows.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/llamaindex.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/mastra.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/mcp.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/mistralai.mdx
+- `### Installing Community Nodes` → src/pages/docs/integrations/traceai/n8n.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/ollama.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/openai.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/openai_agents.mdx
+- `## Overview` → src/pages/docs/integrations/traceai/pipecat.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/portkey.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/promptflow.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/smol_agents.mdx
+- `## How it works` → src/pages/docs/integrations/traceai/spring-boot.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/togetherai.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/vercel.mdx
+- `## 1. Installation` → src/pages/docs/integrations/traceai/vertexai.mdx
+- `## When to Use Bayesian Search` → src/pages/docs/optimization/optimizers/bayesian-search.mdx
+- `## When to Use GEPA` → src/pages/docs/optimization/optimizers/gepa.mdx
+- `## When to Use Meta-Prompt` → src/pages/docs/optimization/optimizers/meta-prompt.mdx
+- `## When to Use PromptWizard` → src/pages/docs/optimization/optimizers/promptwizard.mdx
+- `## When to Use ProTeGi` → src/pages/docs/optimization/optimizers/protegi.mdx
+- `## When to Use Random Search` → src/pages/docs/optimization/optimizers/random-search.mdx
+- `## **Key Use Cases**` → src/pages/docs/protect/concepts/concept.mdx
+- `## What you will do` → src/pages/docs/quickstart/annotations.mdx
+- `## Week of 2026-04-21` → src/pages/docs/release-notes.mdx
+- `## Organization Roles` → src/pages/docs/roles-and-permissions.mdx
+- `# `AnnotationQueue` Class` → src/pages/docs/sdk/annotation-queues.mdx
+- `## Quick Example` → src/pages/docs/sdk/datasets.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/autoeval.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/cloud-evals.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/code-security.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/distributed.mdx
+- `## Quick Examples` → src/pages/docs/sdk/evals/evaluate.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/feedback.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/guardrails-module.mdx
+- `# Local metric — runs instantly, no API key needed` → src/pages/docs/sdk/evals/index.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/llm-judge.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/local.mdx
+- `## Agent Trajectory Metrics` → src/pages/docs/sdk/evals/metrics/agents.mdx
+- `## Scanners` → src/pages/docs/sdk/evals/metrics/guardrails.mdx
+- `## Metrics` → src/pages/docs/sdk/evals/metrics/hallucination.mdx
+- `## Categories` → src/pages/docs/sdk/evals/metrics/index.mdx
+- `## JSON Metrics` → src/pages/docs/sdk/evals/metrics/json.mdx
+- `## Retrieval Metrics` → src/pages/docs/sdk/evals/metrics/rag.mdx
+- `## String Check Metrics` → src/pages/docs/sdk/evals/metrics/string.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/otel.mdx
+- `## Quick Example` → src/pages/docs/sdk/evals/streaming.mdx
+- `## Language Support` → src/pages/docs/sdk/index.mdx
+- `## Quick Example` → src/pages/docs/sdk/knowledgebase.mdx
+- `## Quick Example` → src/pages/docs/sdk/optimization.mdx
+- `## Quick Example` → src/pages/docs/sdk/protect.mdx
+- `## Quick Example` → src/pages/docs/sdk/simulate.mdx
+- `# Test Case Classes` → src/pages/docs/sdk/testcase.mdx
+- `## Quick Example` → src/pages/docs/sdk/tracing.mdx
+- `## What it is` → src/pages/docs/simulation/features/voice-replay.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/anthropic.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/autogen.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/bedrock.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/crewai.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/dspy.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/google_adk.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/google_genai.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/groq.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/guardrails.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/haystack.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/instructor.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/anthropic.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/bedrock.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/cohere.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/frameworks.mdx
+- `## How it works` → src/pages/docs/tracing/auto/java/index.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/llm-providers.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/openai.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/pinecone.mdx
+- `## Prerequisites` → src/pages/docs/tracing/auto/java/vector-databases.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/langchain.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/langgraph.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/litellm.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/livekit.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/llamaindex-workflows.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/llamaindex.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/mastra.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/mcp.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/mistralai.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/ollama.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/openai.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/openai_agents.mdx
+- `## Overview` → src/pages/docs/tracing/auto/pipecat.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/portkey.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/promptflow.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/smol_agents.mdx
+- `## How it works` → src/pages/docs/tracing/auto/spring-boot.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/togetherai.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/vercel.mdx
+- `## 1. Installation` → src/pages/docs/tracing/auto/vertexai.mdx
+- `## Why Use It?` → src/pages/docs/tracing/concepts/otel.mdx
+- `## Structure of Spans` → src/pages/docs/tracing/concepts/spans.mdx
+- `## Python` → src/pages/docs/tracing/concepts/traceai.mdx
+- `## Key Features` → src/pages/docs/tracing/concepts/traces.mdx
+
+---
+
+## 🟡 Warnings
+
+### 4. Title Too Short (<15 chars) — 0 (0%)
+
+_None._
+
+### 5. Title Too Long (>60 chars) — 1 (0%)
+
+- "Understanding Prototype: Pre-Production Testing in Future AGI" (61) → src/pages/docs/prototype/concepts/understanding-prototype.mdx
+
+### 6. Generic / Keyword-Poor Title — 0 (0%)
+
+_None._
+
+### 7. Description Too Short (<120 chars) — 16 (3%)
+
+- (119 chars) → src/pages/docs/admin-settings.mdx
+- (116 chars) → src/pages/docs/api/call-executions/getcallexecutiondetails.mdx
+- (106 chars) → src/pages/docs/api/custom-eval-configs/list-configs-filtered.mdx
+- (115 chars) → src/pages/docs/api/dataset-evals/edit-and-run-eval.mdx
+- (119 chars) → src/pages/docs/api/dataset-evals/start-evals-process.mdx
+- (112 chars) → src/pages/docs/api/datasets/add-empty-rows.mdx
+- (118 chars) → src/pages/docs/api/datasets/add-rows-from-existing.mdx
+- (118 chars) → src/pages/docs/api/datasets/add-rows-from-file.mdx
+- (119 chars) → src/pages/docs/api/datasets/columns/add-columns.mdx
+- (113 chars) → src/pages/docs/api/datasets/delete-rows.mdx
+- (119 chars) → src/pages/docs/api/datasets/duplicate-rows.mdx
+- (116 chars) → src/pages/docs/api/datasets/run-prompt/retrieve-run-prompt-options.mdx
+- (113 chars) → src/pages/docs/api/eval-tasks/delete-eval-task.mdx
+- (119 chars) → src/pages/docs/api/eval-tasks/pause-eval-task.mdx
+- (119 chars) → src/pages/docs/faq.mdx
+- (119 chars) → src/pages/docs/prompt/features/create-from-scratch.mdx
+
+### 8. Description Too Long (>155 chars) — 47 (8%)
+
+- (158 chars) → src/pages/docs/api/agent-versions/createagentversion.mdx
+- (156 chars) → src/pages/docs/api/annotations/queues/get-or-create-default.mdx
+- (157 chars) → src/pages/docs/api/annotations/queues/update-status.mdx
+- (162 chars) → src/pages/docs/api/eval-tasks/create-eval-task.mdx
+- (161 chars) → src/pages/docs/api/personas/createpersona.mdx
+- (170 chars) → src/pages/docs/api/personas/listpersonas.mdx
+- (182 chars) → src/pages/docs/api/run-tests/addevalconfigs.mdx
+- (181 chars) → src/pages/docs/api/run-tests/compareevalsummaries.mdx
+- (162 chars) → src/pages/docs/api/run-tests/createruntest.mdx
+- (168 chars) → src/pages/docs/api/run-tests/deleteevalconfig.mdx
+- (170 chars) → src/pages/docs/api/run-tests/executeruntest.mdx
+- (165 chars) → src/pages/docs/api/run-tests/getcallexecutions.mdx
+- (161 chars) → src/pages/docs/api/run-tests/getevalsummary.mdx
+- (164 chars) → src/pages/docs/api/run-tests/getruntestdetails.mdx
+- (162 chars) → src/pages/docs/api/run-tests/gettestexecutions.mdx
+- (165 chars) → src/pages/docs/api/run-tests/listruntests.mdx
+- (162 chars) → src/pages/docs/api/run-tests/reruntestexecutions.mdx
+- (168 chars) → src/pages/docs/api/run-tests/runnewevalsontestexecution.mdx
+- (159 chars) → src/pages/docs/api/run-tests/updateevalconfig.mdx
+- (161 chars) → src/pages/docs/api/run-tests/updatetestcomponents.mdx
+- (159 chars) → src/pages/docs/api/scenarios/addcolumns.mdx
+- (166 chars) → src/pages/docs/api/scenarios/addemptyrowstodataset.mdx
+- (171 chars) → src/pages/docs/api/scenarios/addscenariorowswithai.mdx
+- (167 chars) → src/pages/docs/api/scenarios/createscenario.mdx
+- (168 chars) → src/pages/docs/api/scenarios/listscenarios.mdx
+- (173 chars) → src/pages/docs/api/simulation-analytics/metrics.mdx
+- (175 chars) → src/pages/docs/api/simulation-analytics/runs.mdx
+- (165 chars) → src/pages/docs/api/test-executions/cancelexecution.mdx
+- (178 chars) → src/pages/docs/api/test-executions/getevalexplanationsummary.mdx
+- (167 chars) → src/pages/docs/api/test-executions/getperformancesummary.mdx
+- (168 chars) → src/pages/docs/api/test-executions/gettestexecutiondetails.mdx
+- (171 chars) → src/pages/docs/api/test-executions/reruncalls.mdx
+- (162 chars) → src/pages/docs/command-center/api/headers.mdx
+- (160 chars) → src/pages/docs/command-center/concepts/api-reference.mdx
+- (162 chars) → src/pages/docs/command-center/concepts/configuration.mdx
+- (161 chars) → src/pages/docs/command-center/concepts/platform-integration.mdx
+- (161 chars) → src/pages/docs/command-center/deployment/self-hosted.mdx
+- (156 chars) → src/pages/docs/command-center/features/rate-limiting.mdx
+- (156 chars) → src/pages/docs/cookbook/quickstart/async-batch-eval.mdx
+- (156 chars) → src/pages/docs/cookbook/quickstart/custom-eval-metrics.mdx
+- (158 chars) → src/pages/docs/cookbook/quickstart/rag-evaluation.mdx
+- (157 chars) → src/pages/docs/cookbook/quickstart/tone-toxicity-bias-eval.mdx
+- (161 chars) → src/pages/docs/cookbook/quickstart/tool-calling-simulation.mdx
+- (157 chars) → src/pages/docs/cookbook/use-cases/production-quality-monitoring.mdx
+- (159 chars) → src/pages/docs/self-hosting/environment.mdx
+- (163 chars) → src/pages/docs/self-hosting/production.mdx
+- (166 chars) → src/pages/docs/self-hosting/troubleshooting.mdx
+
+### 9. Description Bad Start Phrase — 1 (0%)
+
+- "A guide to using GEPA, a powerful evolutionary algorithm for state-of-the-art pr..." → src/pages/docs/cookbook/gepa-optimization.mdx
+
+### 10. Vague Single-Word Headings — 20 (3%) files affected
+
+- src/pages/docs/command-center/features/caching.mdx
+  - `## Configuration`
+- src/pages/docs/command-center/features/rate-limiting.mdx
+  - `### Configuration`
+- src/pages/docs/command-center/features/self-hosted-models.mdx
+  - `## Configuration`
+- src/pages/docs/command-center/features/shadow-experiments.mdx
+  - `## Configuration`
+- src/pages/docs/cookbook/crewai-research-team.mdx
+  - `## Overview`
+  - `## Resources`
+- src/pages/docs/cookbook/error-feed/google-adk-multi-agent.mdx
+  - `## Setup`
+- src/pages/docs/cookbook/langchain-langgraph.mdx
+  - `## Introduction`
+- src/pages/docs/falcon-ai/features/mcp-connectors.mdx
+  - `## Examples`
+- src/pages/docs/faq.mdx
+  - `## General`
+- src/pages/docs/installation.mdx
+  - `## Configuration`
+- src/pages/docs/integrations/index.mdx
+  - `### Other`
+- src/pages/docs/integrations/traceai/pipecat.mdx
+  - `## Overview`
+- src/pages/docs/sdk/evals/guardrails-module.mdx
+  - `## Configuration`
+- src/pages/docs/sdk/evals/local.mdx
+  - `### Setup`
+- src/pages/docs/sdk/evals/otel.mdx
+  - `## Setup`
+- src/pages/docs/self-hosting/configuration.mdx
+  - `### Setup`
+- src/pages/docs/self-hosting/docker-compose.mdx
+  - `## Setup`
+- src/pages/docs/simulation/features/evaluate-tool-calling.mdx
+  - `## Notes`
+- src/pages/docs/tracing/auto/index.mdx
+  - `## Other`
+- src/pages/docs/tracing/auto/pipecat.mdx
+  - `## Overview`
+
+### 11. Heading Hierarchy Issues (skipped level / H3 before H2) — 127 (21%)
+
+- src/pages/docs/annotations/sdk/annotation-queue-using-sdk.mdx
+  - H1→H3 skip at "Export to a Dataset"
+- src/pages/docs/api/simulation-analytics/analytics.mdx
+  - H1→H3 skip at "Python — Automated promotion gate"
+  - H1→H3 skip at "JavaScript — Dashboard integration"
+- src/pages/docs/api/simulation-analytics/metrics.mdx
+  - H1→H3 skip at "Python"
+  - H1→H3 skip at "JavaScript"
+- src/pages/docs/api/simulation-analytics/runs.mdx
+  - H1→H3 skip at "Python"
+  - H1→H3 skip at "JavaScript"
+- src/pages/docs/command-center/api/async-batch.mdx
+  - H1→H3 skip at "Polling for results"
+  - H1→H3 skip at "Checking batch status"
+- src/pages/docs/command-center/api/embeddings.mdx
+  - H1→H3 skip at "Encoding format"
+  - H1→H3 skip at "Response format"
+- src/pages/docs/command-center/api/files.mdx
+  - H1→H3 skip at "Purpose values"
+  - H1→H3 skip at "Batch upload"
+  - H1→H3 skip at "Search a vector store"
+- src/pages/docs/command-center/api/headers.mdx
+  - H1→H3 skip at "OpenAI SDK"
+  - H1→H3 skip at "OpenAI SDK with create_headers()"
+- src/pages/docs/command-center/concepts/api-reference.mdx
+  - H1→H3 skip at "Embeddings"
+- src/pages/docs/command-center/concepts/configuration.mdx
+  - H1→H3 skip at "Per-request overrides"
+- src/pages/docs/command-center/features/mcp-a2a.mdx
+  - H1→H3 skip at "MCP methods"
+  - H1→H3 skip at "Listing registered agents"
+- src/pages/docs/command-center/features/observability.mdx
+  - H1→H3 skip at "OpenTelemetry integration"
+  - H1→H3 skip at "Self-hosted metrics config"
+- src/pages/docs/command-center/features/rate-limiting.mdx
+  - H1→H3 skip at "Response headers"
+- src/pages/docs/command-center/features/shadow-experiments.mdx
+  - H1→H3 skip at "Configuration options"
+- src/pages/docs/command-center/guides/errors.mdx
+  - H1→H3 skip at "What to retry"
+- src/pages/docs/command-center/guides/troubleshooting.mdx
+  - H1→H3 skip at "Provider returns 404 upstream"
+  - H1→H3 skip at "Guardrails blocking legitimate requests"
+- src/pages/docs/cookbook/chat-simulation-fix-agent.mdx
+  - H1→H3 skip at "Create the Agent Function"
+  - H1→H3 skip at "Understanding the Results"
+- src/pages/docs/cookbook/crewai-research-team.mdx
+  - H1→H3 skip at "2. Initialize Observability and Tracing"
+  - H1→H3 skip at "3. Define the Research Team Agents"
+  - H1→H3 skip at "4. Implement In-line Evaluations"
+  - H1→H3 skip at "6. Execute the Research Crew"
+  - H1→H3 skip at "7. Advanced Monitoring and Analysis"
+  - H1→H4 skip at "Issue 2: Completeness Gaps (0.85)"
+  - H1→H3 skip at "2. Continuous Monitoring"
+- src/pages/docs/cookbook/decrease-hallucination.mdx
+  - H1→H3 skip at "**3. Installing Required Libraries**"
+- src/pages/docs/cookbook/evaluate-rag.mdx
+  - H3 "Retreival Augmented Generation Evaluation using Future AGI" with no preceding H2
+  - H3 "Available RAG evaluations in Future AGI :" with no preceding H2
+  - H1→H3 skip at "Available RAG evaluations in Future AGI :"
+- src/pages/docs/cookbook/image-evaluation.mdx
+  - H3 "In this cookbook we demonstrate how FutureAGI SDK can be used to evaluate images:" with no preceding H2
+  - H3 "Making Necessary Imports" with no preceding H2
+  - H1→H3 skip at "Making Necessary Imports"
+  - H3 "Loading and Visualising Data" with no preceding H2
+  - H3 "Initializing the FutureAGI Evaluator Class and Deterministic Eval" with no preceding H2
+  - H1→H3 skip at "Initializing the FutureAGI Evaluator Class and Deterministic Eval"
+- src/pages/docs/cookbook/import-datasets.mdx
+  - H1→H3 skip at "**b. From a JSON File (List of Objects)**"
+  - H1→H3 skip at "**c. From a JSONL File (JSON Lines)**"
+- src/pages/docs/cookbook/observability.mdx
+  - H1→H3 skip at "Key Features Explained"
+- src/pages/docs/cookbook/portkey-integration.mdx
+  - H3 "In this cookbook we’ll learn" with no preceding H2
+  - H3 "Core Concepts" with no preceding H2
+  - H3 "Prerequisites" with no preceding H2
+  - H3 "Step-by-Step Guide" with no preceding H2
+  - H3 "Step 1: Basic Setup and Imports" with no preceding H2
+  - H3 "Step 2: Setting Up Tracing with FutureAGI Evals" with no preceding H2
+  - H3 "Step 3: Defining Models and Test Scenarios" with no preceding H2
+  - H3 "Step 4: Executing a Test and Capturing Results" with no preceding H2
+  - H3 "**Step 4: Orchestrate with a main Function**" with no preceding H2
+  - H3 "**Trace Analysis**" with no preceding H2
+  - H3 "How Utilizing Portkey and FutureAGI will help enhancing your CI/CD pipelines" with no preceding H2
+  - H3 "Conclusion" with no preceding H2
+- src/pages/docs/cookbook/quickstart/distributed-tracing.mdx
+  - H1→H3 skip at "Backend (backend.py)"
+  - H1→H3 skip at "Run it"
+  - H1→H3 skip at "Install"
+  - H1→H3 skip at "Dependencies"
+  - H1→H3 skip at "Install"
+- src/pages/docs/cookbook/quickstart/monitoring-alerts.mdx
+  - H1→H3 skip at "Controls"
+- src/pages/docs/cookbook/rag-langchain.mdx
+  - H1→H3 skip at "We will then utilize our sample Questionaire dataset and feed it to our RAG App, to get answers for evaluation"
+- src/pages/docs/evaluation/builtin/answer-refusal.mdx
+  - H3 "What to Do When Answer Refusal Fails" with no preceding H2
+  - H3 "Comparing Answer Refusal with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/audio-quality.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Audio Quality with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/audio-transcription.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Audio Transcription with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/bias-detection.mdx
+  - H3 "What to do if Bias is detected" with no preceding H2
+  - H3 "Differentiating Bias Detection with [Cultural Sensitivity](/docs/evaluation/builtin/cultural-sensitivity)" with no preceding H2
+- src/pages/docs/evaluation/builtin/bleu.mdx
+  - H3 "About BLEU" with no preceding H2
+  - H3 "n-gram" with no preceding H2
+  - H3 "Modified n-gram Precision" with no preceding H2
+  - H3 "Calculation of BLEU Score" with no preceding H2
+  - H3 "What if BLEU Score is Low?" with no preceding H2
+- src/pages/docs/evaluation/builtin/caption-hallucination.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Caption Hallucination with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/chunk-attribution.mdx
+  - H3 "What to Do When Chunk Attribution Fails" with no preceding H2
+  - H3 "Differentiating Chunk Attribution with [Chunk Utilization](/docs/evaluation/builtin/chunk-utilization)" with no preceding H2
+- src/pages/docs/evaluation/builtin/chunk-utilization.mdx
+  - H3 "What to Do When Chunk Utilization Score is Low" with no preceding H2
+  - H3 "Comparing Chunk Utilization with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/clinically-inappropriate-tone.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Clinically Inappropriate Tone with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/clip-score.mdx
+  - H3 "What to Do When CLIP Score is Low" with no preceding H2
+  - H3 "Comparing CLIP Score with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/completeness.mdx
+  - H3 "What to do when Completeness is Low" with no preceding H2
+- src/pages/docs/evaluation/builtin/contain-evals.mdx
+  - H3 "**1. Contains**" with no preceding H2
+  - H3 "**2. Contains Any**" with no preceding H2
+  - H3 "**3. Contains All**" with no preceding H2
+  - H3 "**4. Contains None**" with no preceding H2
+  - H3 "**5. Starts With**" with no preceding H2
+  - H3 "**6. Ends With**" with no preceding H2
+  - H3 "**7. Equals**" with no preceding H2
+- src/pages/docs/evaluation/builtin/contains-valid-link.mdx
+  - H3 "What to Do When Contains Valid Link Evaluation Fails" with no preceding H2
+  - H3 "Comparing Contains Valid Link with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/context-adherence.mdx
+  - H3 "What to do when Context Adherence is Low" with no preceding H2
+  - H3 "Comparing Context Adherence with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/conversation-coherence.mdx
+  - H3 "What to do when Conversation Coherence is Low" with no preceding H2
+  - H3 "Comparing Conversation Coherence with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/conversation-resolution.mdx
+  - H3 "What to do when Conversation Resolution is Low" with no preceding H2
+  - H3 "Comparing Conversation Resolution with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/cultural-sensitivity.mdx
+  - H3 "What to Do When Cultural Sensitivity Fails" with no preceding H2
+  - H3 "Differentiating Cultural Sensitivity with [Tone](/docs/evaluation/builtin/tone)" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-clarification-seeking.mdx
+  - H3 "What to Do When Clarification Seeking is Poor" with no preceding H2
+  - H3 "Comparing Clarification Seeking with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-context-retention.mdx
+  - H3 "What to Do When Context Retention Score is Low" with no preceding H2
+  - H3 "Comparing Context Retention with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-conversation-quality.mdx
+  - H3 "What to Do When Conversation Quality Score is Low" with no preceding H2
+  - H3 "Comparing Conversation Quality with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-human-escalation.mdx
+  - H3 "What to Do When Human Escalation Fails" with no preceding H2
+  - H3 "Comparing Human Escalation with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-interruption-handling.mdx
+  - H3 "What to Do When Interruption Handling Score is Low" with no preceding H2
+  - H3 "Comparing Interruption Handling with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-language-handling.mdx
+  - H3 "What to Do When Language Handling Score is Low" with no preceding H2
+  - H3 "Comparing Language Handling with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-loop-detection.mdx
+  - H3 "What to Do When Loop Detection is Flagged" with no preceding H2
+  - H3 "Comparing Loop Detection with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-objection-handling.mdx
+  - H3 "What to Do When Objection Handling is Poor" with no preceding H2
+  - H3 "Comparing Objection Handling with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-prompt-conformance.mdx
+  - H3 "What to Do When Prompt Conformance Score is Low" with no preceding H2
+  - H3 "Comparing Prompt Conformance with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-query-handling.mdx
+  - H3 "What to Do When Query Handling is Poor" with no preceding H2
+  - H3 "Comparing Query Handling with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/customer-agent-termination-handling.mdx
+  - H3 "What to Do When Termination Issues are Detected" with no preceding H2
+  - H3 "Comparing Termination Handling with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/data-privacy.mdx
+  - H3 "What to do when Data Privacy Compliance Failed" with no preceding H2
+  - H3 "Differentiating Data Privacy Compliance with [PII](/docs/evaluation/builtin/pii)" with no preceding H2
+- src/pages/docs/evaluation/builtin/detect-hallucination.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Detect Hallucination with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/embedding-similarity.mdx
+  - H3 "About Embedding Similarity" with no preceding H2
+  - H3 "How Similarity Is Calculated?" with no preceding H2
+- src/pages/docs/evaluation/builtin/eval-ranking.mdx
+  - H3 "What to do if the Eval Ranking is Low" with no preceding H2
+  - H3 "Differentiating Eval Ranking with [Context Adherence](/docs/evaluation/builtin/context-adherence)" with no preceding H2
+- src/pages/docs/evaluation/builtin/fid-score.mdx
+  - H3 "What to Do When FID Score is High" with no preceding H2
+  - H3 "Comparing FID Score with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/fuzzy-match.mdx
+  - H3 "What to Do When Fuzzy Match Score is Low" with no preceding H2
+  - H3 "Comparing Fuzzy Match with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/ground-truth-match.mdx
+  - H3 "What to Do When Ground Truth Match Fails" with no preceding H2
+  - H3 "Comparing Ground Truth Match with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/groundedness.mdx
+  - H3 "What to do when Groundedness Evaluation Fails" with no preceding H2
+  - H3 "Differentiating Groundedness from [Context Adherence](/docs/evaluation/builtin/context-adherence)" with no preceding H2
+- src/pages/docs/evaluation/builtin/hit-rate.mdx
+  - H3 "Batch evaluation" with no preceding H2
+  - H3 "How it works" with no preceding H2
+  - H1→H3 skip at "How it works"
+  - H3 "What to do when Hit Rate is Low" with no preceding H2
+  - H3 "Differentiating Hit Rate with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/image-instruction-adherence.mdx
+  - H3 "What to Do When Image Instruction Adherence Score is Low" with no preceding H2
+  - H3 "Comparing Image Instruction Adherence with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/instruction-adherence.mdx
+  - H3 "What to Do if Prompt Instruction Adherence is Low" with no preceding H2
+  - H3 "Differentiating Prompt/Instruction Adherence with [Context Adherence](/docs/evaluation/builtin/context-adherence)" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-code.mdx
+  - H3 "What to Do When Contains Code Score is Low" with no preceding H2
+  - H3 "Comparing Contains Code with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-concise.mdx
+  - H3 "What to Do When Is Concise Score is Low" with no preceding H2
+  - H3 "Comparing Is Concise with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-email.mdx
+  - H3 "What to Do When "Is Email" Eval Fails" with no preceding H2
+  - H3 "Differentiating "Is Email" with [Contain](/docs/evaluation/builtin/contain-evals) Eval" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-good-summary.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Is Good Summary with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-harmful-advice.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Is Harmful Advice with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-helpful.mdx
+  - H3 "What to Do When Is Helpful Score is Low" with no preceding H2
+  - H3 "Comparing Is Helpful with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-informal-tone.mdx
+  - H3 "What to do If you get Undesired Informal Tone" with no preceding H2
+  - H3 "Comparing Is Informal Tone with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-json.mdx
+  - H3 "What to Do When JSON Validation Fails" with no preceding H2
+  - H3 "Comparing Is JSON with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/is-polite.mdx
+  - H3 "What to Do When Is Polite Score is Low" with no preceding H2
+  - H3 "Comparing Is Polite with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/lavenshtein-similarity.mdx
+  - H3 "About Levenshtein Similarity" with no preceding H2
+  - H3 "Edit Operations" with no preceding H2
+  - H3 "Normalized Levenshtein Score" with no preceding H2
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Levenshtein Similarity with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/llm-function-calling.mdx
+  - H3 "What to Do When Function Calling Evaluation Fails" with no preceding H2
+  - H3 "Comparing Evaluate Function Calling with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/mrr.mdx
+  - H3 "Batch evaluation" with no preceding H2
+  - H3 "How it works" with no preceding H2
+  - H1→H3 skip at "How it works"
+  - H3 "What to do when MRR is Low" with no preceding H2
+  - H3 "Differentiating MRR with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/ndcg-at-k.mdx
+  - H3 "Batch evaluation" with no preceding H2
+  - H3 "How it works" with no preceding H2
+  - H1→H3 skip at "How it works"
+  - H3 "What to do when NDCG@K is Low" with no preceding H2
+  - H3 "Differentiating NDCG@K with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/no-age-bias.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing No Age Bias with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/no-apologies.mdx
+  - H3 "What to Do When No Apologies Score is Low" with no preceding H2
+  - H3 "Comparing No Apologies with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/no-gender-bias.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing No Gender Bias with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/no-harmful-therapeutic-guidance.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing No Harmful Therapeutic Guidance with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/no-invalid-links.mdx
+  - H3 "What to Do When No Invalid Links Evaluation Fails" with no preceding H2
+  - H3 "Comparing No Invalid Links with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/no-llm-reference.mdx
+  - H3 "What to Do When No LLM Reference Score is Low" with no preceding H2
+- src/pages/docs/evaluation/builtin/no-racial-bias.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing No Racial Bias with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/numeric-similarity.mdx
+  - H3 "Purpose of Numeric Similarity Eval" with no preceding H2
+- src/pages/docs/evaluation/builtin/ocr-evaluation.mdx
+  - H3 "What to Do When OCR Evaluation Score is Low" with no preceding H2
+  - H3 "Comparing OCR Evaluation with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/pii.mdx
+  - H3 "Comparing PII Detection with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/precision-at-k.mdx
+  - H3 "Batch evaluation" with no preceding H2
+  - H3 "How it works" with no preceding H2
+  - H1→H3 skip at "How it works"
+  - H3 "What to do when Precision@K is Low" with no preceding H2
+  - H3 "Differentiating Precision@K with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/recall-at-k.mdx
+  - H3 "Batch evaluation" with no preceding H2
+  - H3 "How it works" with no preceding H2
+  - H1→H3 skip at "How it works"
+  - H3 "What to do when Recall@K is Low" with no preceding H2
+  - H3 "Differentiating Recall@K with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/rouge.mdx
+  - H3 "About ROUGE Score" with no preceding H2
+  - H3 "ROUGE-N" with no preceding H2
+  - H3 "ROUGE-L (Longest Common Subsequence)" with no preceding H2
+  - H3 "Calculation of ROUGE Scores" with no preceding H2
+  - H3 "When to Use ROUGE?" with no preceding H2
+  - H3 "What if ROUGE Score is Low?" with no preceding H2
+- src/pages/docs/evaluation/builtin/semantic-list-contains.mdx
+  - H3 "About Semantic List Contains" with no preceding H2
+  - H3 "How Semantic List Contains Evals Work?" with no preceding H2
+  - H3 "What if Semantic List Contains Eval Score is Low?" with no preceding H2
+- src/pages/docs/evaluation/builtin/sexist.mdx
+  - H3 "What to do when Sexist Content is Detected" with no preceding H2
+  - H3 "Comparing Sexist Evaluation with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/summary-quality.mdx
+  - H3 "What to Do When Summary Quality Evaluation Gives a Low Score" with no preceding H2
+- src/pages/docs/evaluation/builtin/synthetic-image-evaluator.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Synthetic Image Evaluator with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/task-completion.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Task Completion with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/text-to-sql.mdx
+  - H3 "What to do If you get Undesired Results" with no preceding H2
+  - H3 "Comparing Text to SQL with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/tone.mdx
+  - H3 "What to do If you get Undesired Tone in Content" with no preceding H2
+  - H3 "Comparing Tone with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/toxicity.mdx
+  - H3 "What to do when Toxicity is Detected" with no preceding H2
+  - H3 "Comparing Toxicity with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/translation-accuracy.mdx
+  - H3 "What to Do When Translation Accuracy Evaluation Gives a Low Score" with no preceding H2
+  - H3 "Comparing Translation Accuracy with Similar Evals" with no preceding H2
+- src/pages/docs/evaluation/builtin/tts-accuracy.mdx
+  - H3 "What to Do When TTS Accuracy Score is Low" with no preceding H2
+  - H3 "Comparing TTS Accuracy with Similar Evals" with no preceding H2
+- src/pages/docs/integrations/traceai/n8n.mdx
+  - H3 "Installing Community Nodes" with no preceding H2
+- src/pages/docs/integrations/traceai/openai.mdx
+  - H1→H3 skip at "Image Generation"
+- src/pages/docs/prompt/features/sdk.mdx
+  - H1→H3 skip at "Remove labels"
+- src/pages/docs/sdk/datasets.mdx
+  - H1→H3 skip at "From HuggingFace"
+- src/pages/docs/sdk/evals/autoeval.mdx
+  - H1→H3 skip at "From a template"
+- src/pages/docs/sdk/evals/cloud-evals.mdx
+  - H1→H3 skip at "Filtering by tag"
+  - H1→H3 skip at "Available tags"
+  - H1→H3 skip at "With the Evaluator class"
+- src/pages/docs/sdk/evals/code-security.mdx
+  - H1→H3 skip at "Language-specific analyzers"
+  - H1→H3 skip at "Custom detectors"
+  - H1→H4 skip at "Evaluate with a generator function"
+  - H1→H3 skip at "Autocomplete Mode"
+  - H1→H3 skip at "Run a benchmark"
+  - H1→H3 skip at "Generate reports"
+- src/pages/docs/sdk/evals/distributed.mdx
+  - H1→H3 skip at "Distributed"
+- src/pages/docs/sdk/evals/guardrails-module.mdx
+  - H1→H3 skip at "Response"
+  - H1→H3 skip at "Configuring individual scanners"
+  - H1→H3 skip at "Composing scanners"
+  - H1→H3 skip at "Screening sessions"
+- src/pages/docs/sdk/evals/llm-judge.mdx
+  - H1→H3 skip at "Criteria with input references"
+  - H1→H3 skip at "Multi-dimensional criteria"
+- src/pages/docs/sdk/evals/local.mdx
+  - H1→H3 skip at "Batch evaluation"
+  - H1→H3 skip at "Partition evaluations"
+  - H1→H3 skip at "Evaluate"
+  - H1→H3 skip at "Offline mode"
+  - H1→H3 skip at "Using with HybridEvaluator"
+  - H1→H3 skip at "Direct LLM usage"
+  - H1→H3 skip at "Factory"
+  - H1→H3 skip at "Registering custom metrics"
+  - H1→H3 skip at "Lazy registration"
+- src/pages/docs/sdk/evals/metrics/agents.mdx
+  - H1→H3 skip at "step_efficiency"
+  - H1→H3 skip at "tool_selection_accuracy"
+  - H1→H3 skip at "trajectory_score"
+  - H1→H3 skip at "goal_progress"
+  - H1→H3 skip at "action_safety"
+  - H1→H3 skip at "reasoning_quality"
+  - H1→H3 skip at "parameter_validation"
+  - H1→H3 skip at "function_call_accuracy"
+  - H1→H3 skip at "function_call_exact_match"
+- src/pages/docs/sdk/evals/metrics/guardrails.mdx
+  - H1→H3 skip at "pii_detection"
+  - H1→H3 skip at "secret_detection"
+  - H1→H3 skip at "sql_injection"
+- src/pages/docs/sdk/evals/metrics/hallucination.mdx
+  - H1→H3 skip at "claim_support"
+  - H1→H3 skip at "factual_consistency"
+  - H1→H3 skip at "contradiction_detection"
+  - H1→H3 skip at "hallucination_score"
+- src/pages/docs/sdk/evals/metrics/json.mdx
+  - H1→H3 skip at "contains_json"
+  - H1→H3 skip at "json_schema"
+  - H1→H3 skip at "json_validation"
+  - H1→H3 skip at "json_syntax"
+  - H1→H3 skip at "type_compliance"
+  - H1→H3 skip at "field_completeness"
+  - H1→H3 skip at "required_fields"
+  - H1→H3 skip at "field_coverage"
+  - H1→H3 skip at "hierarchy_score"
+  - H1→H3 skip at "tree_edit_distance"
+  - H1→H3 skip at "structured_output_score"
+  - H1→H3 skip at "quick_structured_check"
+- src/pages/docs/sdk/evals/metrics/rag.mdx
+  - H1→H3 skip at "context_precision"
+  - H1→H3 skip at "context_entity_recall"
+  - H1→H3 skip at "noise_sensitivity"
+  - H1→H3 skip at "context_utilization"
+  - H1→H3 skip at "context_relevance_to_response"
+  - H1→H3 skip at "rag_faithfulness_with_reference"
+  - H1→H3 skip at "source_attribution"
+- src/pages/docs/sdk/evals/metrics/string.mdx
+  - H1→H3 skip at "contains_all"
+  - H1→H3 skip at "contains_any"
+  - H1→H3 skip at "contains_none"
+  - H1→H3 skip at "contains_email"
+  - H1→H3 skip at "contains_link"
+  - H1→H3 skip at "contains_valid_link"
+  - H1→H3 skip at "is_email"
+  - H1→H3 skip at "one_line"
+  - H1→H3 skip at "equals"
+  - H1→H3 skip at "starts_with"
+  - H1→H3 skip at "ends_with"
+  - H1→H3 skip at "regex"
+  - H1→H3 skip at "length_less_than"
+  - H1→H3 skip at "length_greater_than"
+  - H1→H3 skip at "length_between"
+  - H1→H3 skip at "rouge_score"
+  - H1→H3 skip at "recall_score"
+  - H1→H3 skip at "levenshtein_similarity"
+  - H1→H3 skip at "numeric_similarity"
+  - H1→H3 skip at "embedding_similarity"
+  - H1→H3 skip at "semantic_list_contains"
+- src/pages/docs/sdk/evals/otel.mdx
+  - H1→H3 skip at "Tracer utilities"
+  - H1→H3 skip at "Tracing LLM calls manually"
+  - H1→H3 skip at "Manual enrichment"
+  - H1→H3 skip at "Span context for scoring"
+  - H1→H3 skip at "Built-in pricing"
+  - H1→H3 skip at "Helper functions"
+- src/pages/docs/sdk/evals/streaming.mdx
+  - H1→H3 skip at "Adding scoring functions"
+  - H1→H3 skip at "Processing tokens"
+  - H1→H3 skip at "Getting results"
+  - H1→H3 skip at "EarlyStopReason values"
+  - H1→H3 skip at "Callbacks for real-time monitoring"
+- src/pages/docs/sdk/optimization.mdx
+  - H1→H3 skip at "Data Mapper"
+  - H1→H3 skip at "Result"
+- src/pages/docs/sdk/simulate.mdx
+  - H1→H3 skip at "AgentInput"
+- src/pages/docs/sdk/tracing.mdx
+  - H1→H3 skip at "Cleanup"
+- src/pages/docs/self-hosting/configuration.mdx
+  - H1→H3 skip at "Provider config examples"
+- src/pages/docs/self-hosting/production.mdx
+  - H1→H3 skip at "ClickHouse"
+- src/pages/docs/tracing/auto/openai.mdx
+  - H1→H3 skip at "Image Generation"
+
+---
+
+## 🔵 AEO / GEO Opportunities
+
+### 12. No TLDR Block — 525 (86%) files lack a summary block
+
+_A `<TLDR>` component or `## TL;DR` section near the top helps LLMs extract concise answers for AI-generated responses._
+
+Pages with highest priority (most content, no TLDR) — top 30:
+
+- src/pages/docs/admin-settings/ai-providers.mdx
+- src/pages/docs/admin-settings/api-keys.mdx
+- src/pages/docs/admin-settings/billing-pricing.mdx
+- src/pages/docs/admin-settings/integrations.mdx
+- src/pages/docs/admin-settings/organization-settings.mdx
+- src/pages/docs/admin-settings/profile-security.mdx
+- src/pages/docs/admin-settings/usage-summary.mdx
+- src/pages/docs/admin-settings/user-management.mdx
+- src/pages/docs/admin-settings/workspace-management.mdx
+- src/pages/docs/admin-settings.mdx
+- src/pages/docs/agent-playground/concepts/understanding-agent-playground.mdx
+- src/pages/docs/agent-playground/concepts/versions-and-execution.mdx
+- src/pages/docs/agent-playground/features/build-workflow.mdx
+- src/pages/docs/agent-playground/features/create-graph.mdx
+- src/pages/docs/agent-playground/features/run-and-monitor.mdx
+- src/pages/docs/annotations/concepts/scores.mdx
+- src/pages/docs/annotations/features/add-items.mdx
+- src/pages/docs/annotations/features/analytics.mdx
+- src/pages/docs/annotations/features/annotate.mdx
+- src/pages/docs/annotations/features/automation.mdx
+- src/pages/docs/annotations/features/export.mdx
+- src/pages/docs/annotations/features/inline.mdx
+- src/pages/docs/annotations/features/labels.mdx
+- src/pages/docs/annotations/features/queues.mdx
+- src/pages/docs/annotations/quickstart.mdx
+- src/pages/docs/annotations/sdk/annotation-queue-using-sdk.mdx
+- src/pages/docs/annotations/sdk/javascript.mdx
+- src/pages/docs/annotations/sdk/python.mdx
+- src/pages/docs/command-center/admin/organizations.mdx
+- src/pages/docs/command-center/concepts/api-reference.mdx
+
+_...and 495 more (mostly API reference pages)._
+
+### 13. First Paragraph Is Code Block or List — 107 (17%)
+
+_Generative engines prefer prose definitions before code. Pages that open with a code block or bullet list after the heading miss the chance to define the concept in plain language._
+
+- src/pages/docs/annotations/sdk/annotation-queue-using-sdk.mdx
+- src/pages/docs/cookbook/ai-agents.mdx
+- src/pages/docs/cookbook/ai-sdr.mdx
+- src/pages/docs/cookbook/evaluate-rag.mdx
+- src/pages/docs/cookbook/image-evaluation.mdx
+- src/pages/docs/cookbook/quickstart/async-batch-eval.mdx
+- src/pages/docs/cookbook/quickstart/batch-eval.mdx
+- src/pages/docs/cookbook/quickstart/chat-simulation-personas.mdx
+- src/pages/docs/cookbook/quickstart/compare-optimizers.mdx
+- src/pages/docs/cookbook/quickstart/conversation-eval.mdx
+- src/pages/docs/cookbook/quickstart/custom-eval-metrics.mdx
+- src/pages/docs/cookbook/quickstart/dataset-annotation.mdx
+- src/pages/docs/cookbook/quickstart/eval-driven-dev.mdx
+- src/pages/docs/cookbook/quickstart/first-eval.mdx
+- src/pages/docs/cookbook/quickstart/hallucination-detection.mdx
+- src/pages/docs/cookbook/quickstart/huggingface-dataset-import.mdx
+- src/pages/docs/cookbook/quickstart/inline-evals-tracing.mdx
+- src/pages/docs/cookbook/quickstart/knowledge-base.mdx
+- src/pages/docs/cookbook/quickstart/manual-tracing.mdx
+- src/pages/docs/cookbook/quickstart/monitoring-alerts.mdx
+- src/pages/docs/cookbook/quickstart/multimodal-eval.mdx
+- src/pages/docs/cookbook/quickstart/prompt-optimization.mdx
+- src/pages/docs/cookbook/quickstart/prompt-versioning.mdx
+- src/pages/docs/cookbook/quickstart/protect-guardrails.mdx
+- src/pages/docs/cookbook/quickstart/prototype-llm-app.mdx
+- src/pages/docs/cookbook/quickstart/rag-evaluation.mdx
+- src/pages/docs/cookbook/quickstart/session-observability.mdx
+- src/pages/docs/cookbook/quickstart/text-to-sql-eval.mdx
+- src/pages/docs/cookbook/quickstart/tone-toxicity-bias-eval.mdx
+- src/pages/docs/cookbook/quickstart/tool-calling-simulation.mdx
+- src/pages/docs/cookbook/quickstart/voice-simulation.mdx
+- src/pages/docs/cookbook/rag-langchain.mdx
+- src/pages/docs/cookbook/text-to-sql.mdx
+- src/pages/docs/cookbook/trustworthy-rag.mdx
+- src/pages/docs/cookbook/use-cases/end-to-end-agent-testing.mdx
+- src/pages/docs/cookbook/use-cases/production-quality-monitoring.mdx
+- src/pages/docs/cookbook/using-futureagi-dataset.mdx
+- src/pages/docs/cookbook/using-futureagi-evals.mdx
+- src/pages/docs/cookbook/using-futureagi-kb.mdx
+- src/pages/docs/cookbook/using-futureagi-protect.mdx
+- src/pages/docs/evaluation/builtin/answer-refusal.mdx
+- src/pages/docs/evaluation/builtin/chunk-attribution.mdx
+- src/pages/docs/evaluation/builtin/chunk-utilization.mdx
+- src/pages/docs/evaluation/builtin/clip-score.mdx
+- src/pages/docs/evaluation/builtin/contain-evals.mdx
+- src/pages/docs/evaluation/builtin/conversation-coherence.mdx
+- src/pages/docs/evaluation/builtin/conversation-resolution.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-clarification-seeking.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-context-retention.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-conversation-quality.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-human-escalation.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-interruption-handling.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-language-handling.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-loop-detection.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-objection-handling.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-prompt-conformance.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-query-handling.mdx
+- src/pages/docs/evaluation/builtin/customer-agent-termination-handling.mdx
+- src/pages/docs/evaluation/builtin/fid-score.mdx
+- src/pages/docs/evaluation/builtin/fuzzy-match.mdx
+- src/pages/docs/evaluation/builtin/ground-truth-match.mdx
+- src/pages/docs/evaluation/builtin/image-instruction-adherence.mdx
+- src/pages/docs/evaluation/builtin/is-code.mdx
+- src/pages/docs/evaluation/builtin/is-concise.mdx
+- src/pages/docs/evaluation/builtin/is-helpful.mdx
+- src/pages/docs/evaluation/builtin/is-json.mdx
+- src/pages/docs/evaluation/builtin/is-polite.mdx
+- src/pages/docs/evaluation/builtin/no-apologies.mdx
+- src/pages/docs/evaluation/builtin/no-llm-reference.mdx
+- src/pages/docs/evaluation/builtin/numeric-similarity.mdx
+- src/pages/docs/evaluation/builtin/pii.mdx
+- src/pages/docs/evaluation/builtin/tts-accuracy.mdx
+- src/pages/docs/installation.mdx
+- src/pages/docs/observe/features/alerts.mdx
+- src/pages/docs/observe/features/dashboard.mdx
+- src/pages/docs/optimization/features/using-platform.mdx
+- src/pages/docs/optimization/features/using-python-sdk.mdx
+- src/pages/docs/optimization/index.mdx
+- src/pages/docs/protect/features/run-protect.mdx
+- src/pages/docs/protect/index.mdx
+- src/pages/docs/quickstart/generate-synthetic-data.mdx
+- src/pages/docs/quickstart/prompts.mdx
+- src/pages/docs/quickstart/running-evals-in-simulation.mdx
+- src/pages/docs/quickstart/setup-observability.mdx
+- src/pages/docs/sdk/datasets.mdx
+- src/pages/docs/sdk/evals/autoeval.mdx
+- src/pages/docs/sdk/evals/cloud-evals.mdx
+- src/pages/docs/sdk/evals/code-security.mdx
+- src/pages/docs/sdk/evals/distributed.mdx
+- src/pages/docs/sdk/evals/feedback.mdx
+- src/pages/docs/sdk/evals/guardrails-module.mdx
+- src/pages/docs/sdk/evals/llm-judge.mdx
+- src/pages/docs/sdk/evals/local.mdx
+- src/pages/docs/sdk/evals/otel.mdx
+- src/pages/docs/sdk/evals/streaming.mdx
+- src/pages/docs/sdk/knowledgebase.mdx
+- src/pages/docs/sdk/optimization.mdx
+- src/pages/docs/sdk/protect.mdx
+- src/pages/docs/sdk/simulate.mdx
+- src/pages/docs/simulation/features/evaluate-tool-calling.mdx
+- src/pages/docs/simulation/features/fix-my-agent.mdx
+- src/pages/docs/simulation/features/observe-to-simulate.mdx
+- src/pages/docs/simulation/features/prompt-simulation.mdx
+- src/pages/docs/simulation/features/simulation-using-sdk.mdx
+- src/pages/docs/simulation/features/voice-replay.mdx
+- src/pages/docs/tracing/concepts/otel.mdx
+- src/pages/docs/tracing/concepts/traces.mdx
+
+### 14. Question-Style Headings (AEO signal) ✅
+
+274 pages already use question-style headings — good for AEO.
+
+**338 pages have no question-style headings** — opportunity to add "What is X?", "How does Y work?", "When should I use Z?" sub-sections.
+
+Pages with question headings (examples):
+- src/pages/docs/admin-settings/ai-providers.mdx (1 question headings)
+- src/pages/docs/admin-settings/api-keys.mdx (1 question headings)
+- src/pages/docs/admin-settings/integrations.mdx (1 question headings)
+- src/pages/docs/admin-settings/organization-settings.mdx (1 question headings)
+- src/pages/docs/admin-settings/usage-summary.mdx (1 question headings)
+- src/pages/docs/admin-settings/user-management.mdx (1 question headings)
+- src/pages/docs/agent-playground/concepts/versions-and-execution.mdx (2 question headings)
+- src/pages/docs/agent-playground/index.mdx (1 question headings)
+- src/pages/docs/annotations/concepts/scores.mdx (1 question headings)
+- src/pages/docs/annotations/features/add-items.mdx (2 question headings)
+- src/pages/docs/annotations/features/annotate.mdx (1 question headings)
+- src/pages/docs/annotations/features/automation.mdx (1 question headings)
+- src/pages/docs/annotations/features/export.mdx (1 question headings)
+- src/pages/docs/annotations/features/inline.mdx (1 question headings)
+- src/pages/docs/annotations/features/labels.mdx (1 question headings)
+
+### 15. Accordion / FAQ Blocks (AEO signal) ✅
+
+18 pages have `<Accordion>` or FAQ sections — these are strong AEO signals.
+
+- src/pages/docs/agent-playground/index.mdx
+- src/pages/docs/command-center/index.mdx
+- src/pages/docs/cookbook/chat-simulation-fix-agent.mdx
+- src/pages/docs/cookbook/compare-optimization.mdx
+- src/pages/docs/cookbook/decrease-hallucination.mdx
+- src/pages/docs/cookbook/end-to-end-optimization.mdx
+- src/pages/docs/cookbook/gepa-optimization.mdx
+- src/pages/docs/cookbook/import-datasets.mdx
+- src/pages/docs/cookbook/observability.mdx
+- src/pages/docs/integrations/export/cloud-storage.mdx
+- src/pages/docs/integrations/export/datadog.mdx
+- src/pages/docs/integrations/export/message-queues.mdx
+- src/pages/docs/integrations/export/mixpanel.mdx
+- src/pages/docs/integrations/export/pagerduty.mdx
+- src/pages/docs/integrations/export/posthog.mdx
+- src/pages/docs/integrations/import/langfuse.mdx
+- src/pages/docs/roles-and-permissions.mdx
+- src/pages/docs/sdk/index.mdx
+
+---
+
+## 📋 Top 20 Pages by Issue Count (Priority Rewrite List)
+
+| # | File | Issues |
+|---|---|---|
+| 1 | src/pages/docs/sdk/evals/metrics/string.mdx | 23 |
+| 2 | src/pages/docs/cookbook/portkey-integration.mdx | 15 |
+| 3 | src/pages/docs/sdk/evals/metrics/json.mdx | 14 |
+| 4 | src/pages/docs/sdk/evals/local.mdx | 13 |
+| 5 | src/pages/docs/cookbook/crewai-research-team.mdx | 12 |
+| 6 | src/pages/docs/evaluation/builtin/contain-evals.mdx | 11 |
+| 7 | src/pages/docs/sdk/evals/metrics/agents.mdx | 11 |
+| 8 | src/pages/docs/cookbook/image-evaluation.mdx | 10 |
+| 9 | src/pages/docs/sdk/evals/otel.mdx | 10 |
+| 10 | src/pages/docs/evaluation/builtin/rouge.mdx | 9 |
+| 11 | src/pages/docs/sdk/evals/code-security.mdx | 9 |
+| 12 | src/pages/docs/sdk/evals/metrics/rag.mdx | 9 |
+| 13 | src/pages/docs/evaluation/builtin/bleu.mdx | 8 |
+| 14 | src/pages/docs/evaluation/builtin/hit-rate.mdx | 8 |
+| 15 | src/pages/docs/evaluation/builtin/lavenshtein-similarity.mdx | 8 |
+| 16 | src/pages/docs/evaluation/builtin/mrr.mdx | 8 |
+| 17 | src/pages/docs/evaluation/builtin/ndcg-at-k.mdx | 8 |
+| 18 | src/pages/docs/evaluation/builtin/precision-at-k.mdx | 8 |
+| 19 | src/pages/docs/evaluation/builtin/recall-at-k.mdx | 8 |
+| 20 | src/pages/docs/sdk/evals/guardrails-module.mdx | 8 |
