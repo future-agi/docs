@@ -268,11 +268,6 @@ export const apiNavigation: ApiNavGroup[] = [
         "method": "GET"
       },
       {
-        "title": "Get eval explanation summary",
-        "href": "/docs/api/test-executions/getevalexplanationsummary",
-        "method": "GET"
-      },
-      {
         "title": "Cancel test execution",
         "href": "/docs/api/test-executions/cancelexecution",
         "method": "POST"
@@ -281,20 +276,10 @@ export const apiNavigation: ApiNavGroup[] = [
         "title": "Rerun call executions",
         "href": "/docs/api/test-executions/reruncalls",
         "method": "POST"
-      }
-    ]
-  },
-  {
-    "title": "Call Executions",
-    "items": [
-      {
-        "title": "Get call execution details",
-        "href": "/docs/api/call-executions/getcallexecutiondetails",
-        "method": "GET"
       },
       {
-        "title": "Compare execution sessions",
-        "href": "/docs/api/call-executions/getsessioncomparison",
+        "title": "Get call execution details",
+        "href": "/docs/api/test-executions/getcallexecutiondetails",
         "method": "GET"
       }
     ]

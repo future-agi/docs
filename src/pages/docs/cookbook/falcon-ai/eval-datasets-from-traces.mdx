@@ -1,0 +1,172 @@
+---
+title: "Building Evaluation Datasets from Production Traces with Falcon AI"
+description: "Turn production traces into a curated, ground-truthed eval dataset in one Falcon AI conversation."
+---
+
+<TLDR>
+Use Falcon AI to read your traces, surface misclassifications, curate a balanced row set, label ground truth (with `NEEDS_REVIEW` for the gray zone), and run an exact-match eval. The result is a reusable regression dataset.
+</TLDR>
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/falcon-ai-page/falcon-ai/eval-datasets-from-traces.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/falcon-ai-page/falcon-ai/eval-datasets-from-traces.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 15 min | Intermediate | `fi-instrumentation-otel` |
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- A traced project with traces of varied quality. If you don't have one, instrument any agent with the `Add tracing` step below.
+</Prerequisites>
+
+## Install
+
+Install the FutureAGI instrumentation SDK and set your API keys.
+
+```bash
+pip install fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+## Tutorial
+
+<Steps>
+<Step title="Add tracing to your agent">
+
+Three lines send every LLM call and tool invocation to FutureAGI as structured spans. Wrap your agent's entry point with `@tracer.agent` so each classification becomes one parent span Falcon AI can filter on.
+
+```python
+from fi_instrumentation import register, FITracer
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="email-triage-prod",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer("email-triage-prod"))
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI()
+
+
+# Replace this with your own agent's entry point.
+# The @tracer.agent decorator makes each call show up as one parent span
+# in your FutureAGI Tracing project, with the OpenAI calls nested underneath.
+@tracer.agent(name="my_agent")
+def my_agent(email_text: str) -> str:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Classify this email into one of: urgent, billing, technical, general, spam. Reply with just the category name."},
+            {"role": "user", "content": email_text},
+        ],
+    )
+    return response.choices[0].message.content
+
+
+# A classifier with a thin prompt will misclassify ambiguous emails (hostile tone
+# over a small issue, multi-issue emails, etc.). Run a varied batch so Falcon AI
+# has both clean classifications and likely misclassifications in the next step.
+print(my_agent("Production is down. Payment processing has been failing for 30 minutes."))
+print(my_agent("WORST SERVICE EVER. I have been on hold for 2 hours. CALL ME BACK."))
+print(my_agent("I have a billing question and also my login is not working since yesterday."))
+print(my_agent("Why am I being charged $499 when I signed up for the $49 plan? Please fix this or I am canceling."))
+
+trace_provider.force_flush()
+```
+
+Once traces are flowing, move on. For broader instrumentation patterns see [Manual Tracing](/docs/cookbook/quickstart/manual-tracing).
+
+</Step>
+<Step title="Explore failures with Falcon AI">
+
+Open the Falcon AI sidebar on the project. The context chip should show the project. Type:
+
+> What categories did my agent assign across these traces, and which ones look like misclassifications?
+
+<Tip>
+`Cmd+K` (Mac) or `Ctrl+K` (Windows) opens Falcon AI from anywhere in the dashboard, with the current page auto-attached as a context chip.
+</Tip>
+
+Falcon AI returns a category histogram and flags traces where the category looks off given the email content (your wording and counts will vary).
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/eval-datasets-from-traces/step-4-explore-failures.png" alt="Falcon AI sidebar showing the per-category distribution and flagged misclassifications for the email-triage-prod project" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+These flagged misclassifications are a strong starting point, not ground truth. You'll confirm them in a later step.
+
+</Step>
+<Step title="/build-dataset with explicit curation criteria">
+
+Bake the curation rules into the prompt so the dataset balances easy-pass rows with the misclassifications.
+
+> /build-dataset
+>
+> Build a dataset called `email-triage-eval-v1`. Pull rows from the traces in this project. Selection criteria: include at least 2 traces from each category (urgent, billing, technical, general, spam) plus the likely misclassifications you flagged in the previous turn. Total target: 12-15 rows. Columns:
+> - `email_text` (text) - the user message
+> - `predicted_category` (text) - what the agent chose
+> - `agent_reasoning` (text) - the reasoning string from the tool call
+> - `trace_id` (text) - so we can trace any failure back
+
+Falcon AI orchestrates the dataset tools (such as `create_dataset`, `add_columns`, `add_dataset_rows`) against the traces in context and returns a completion card with a link to the new dataset.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/eval-datasets-from-traces/step-5-build-dataset.png" alt="Falcon AI completion card for the email-triage-eval-v1 dataset showing per-category coverage and the flagged misclassifications that were included" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+A dataset that is 90% successes won't catch regressions; one that is 90% failures won't catch false positives. The "at least 2 from each category plus the misclassifications" rule gives both classes meaningful coverage.
+
+</Step>
+<Step title="Add a ground truth column">
+
+`predicted_category` is what the agent chose. To turn the dataset into an eval, you need `expected_category`, what the agent **should have** chosen.
+
+> Add a column `expected_category` (text) to `email-triage-eval-v1`. For each row, propose the correct category based on the email text. For rows where the correct category is genuinely ambiguous (e.g., hostile tone over a small issue, multi-issue emails), use the value `NEEDS_REVIEW` and add a one-sentence note in a new column `review_note` (text) explaining why.
+
+Falcon AI populates both columns per row. Expect a split between confident `expected_category` values and a few rows tagged `NEEDS_REVIEW`.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/eval-datasets-from-traces/step-6-ground-truth-column.png" alt="Falcon AI per-row preview of the new expected_category and review_note columns with NEEDS_REVIEW flags on the genuinely ambiguous rows" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Open the dataset in **Datasets → email-triage-eval-v1**, click each `NEEDS_REVIEW` row, and decide based on your team's routing rules. Edit the rows in the UI or ask Falcon AI to update them.
+
+</Step>
+<Step title="/run-evaluations to lock in a baseline">
+
+Score the agent's predictions against the ground truth. Describe the goal in plain English so Falcon AI picks the right template from your workspace's catalog.
+
+> Run an evaluation on `email-triage-eval-v1` that checks whether `predicted_category` exactly matches `expected_category` for each row. Use the eval template from this workspace that best fits a string-equality check between two columns.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/eval-datasets-from-traces/step-7-run-evaluations.png" alt="Falcon AI eval run output showing the per-row predicted vs expected category and pass/fail/skip verdict for email-triage-eval-v1" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Both the pass pattern and the fail pattern are what you want. A regression test where every row passes is not testing anything; one where every row fails is just noisy. The dataset now has compounding value: any future prompt change can be re-scored against it in one chat message.
+
+</Step>
+</Steps>
+
+<Check>
+Production traces, curated and ground-truthed in one Falcon AI conversation, become a reusable eval dataset that catches both regressions and false positives.
+</Check>
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="End-to-End with Falcon AI" icon="sparkles" href="/docs/cookbook/falcon-ai/end-to-end">
+    The full lifecycle: trace, debug, evaluate, dataset, fix in one workflow
+  </Card>
+  <Card title="Context-Aware Trace Debugging" icon="zap" href="/docs/cookbook/falcon-ai/context-aware-debugging">
+    From a single bad trace to a paste-ready prompt fix in minutes
+  </Card>
+  <Card title="Falcon AI Skills" icon="bolt" href="/docs/falcon-ai/features/skills">
+    All built-in slash commands and how to write your own
+  </Card>
+</CardGroup>
