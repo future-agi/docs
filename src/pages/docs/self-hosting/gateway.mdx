@@ -1,0 +1,685 @@
+---
+title: "AgentCC Gateway"
+description: "Self-host AgentCC Gateway for provider routing, virtual keys, failover, caching, budgets, observability, and model access control."
+---
+
+## Overview
+
+AgentCC Gateway is the self-hosted model gateway that sits between Future AGI, your applications, and upstream model providers. It gives one controlled entry point for model traffic instead of spreading provider keys, retry logic, usage policy, and provider-specific API handling across every service.
+
+Use AgentCC Gateway when you want to:
+
+- Keep OpenAI, Anthropic, Gemini, Bedrock, Azure OpenAI, and self-hosted model credentials on the server side
+- Give applications virtual keys with model, provider, rate, IP, and expiry controls
+- Route the same model across multiple providers or regions
+- Add retries, failover, circuit breaking, timeouts, and model fallbacks
+- Track usage, budgets, model costs, and operational metrics
+- Cache safe repeated calls and support self-hosted inference servers such as vLLM, Ollama, LM Studio, TGI, or OpenAI-compatible endpoints
+
+In the default Compose stack, the gateway runs as the `agentcc-gateway` service. The container listens on port `8080`, and Compose exposes it on the host as `http://localhost:8090` by default.
+
+```text
+Future AGI backend
+  -> agentcc-gateway
+      -> OpenAI, Anthropic, Gemini, Bedrock, Azure OpenAI, vLLM, Ollama, or another endpoint
+
+External app
+  -> https://gateway.yourcompany.com
+      -> AgentCC Gateway virtual key
+          -> provider selected by policy
+```
+
+<Warning>
+Provider API keys should stay in `.env`, your secret manager, or the gateway config. Do not ship raw provider keys to browsers, notebooks, mobile apps, or customer environments.
+</Warning>
+
+## Deployment modes
+
+| Mode | Use when | Public exposure |
+|---|---|---|
+| Internal gateway | Only the Future AGI backend calls models | Keep `agentcc-gateway` private on the Docker network |
+| Shared internal gateway | Internal services and workers call models through one gateway | Expose on a private VPC, VPN, or service mesh |
+| External app gateway | Your applications call AgentCC Gateway directly | Put it behind TLS, auth, rate limits, and IP restrictions |
+| Multi-replica gateway | You need high availability or higher throughput | Run multiple replicas and use Redis-backed shared state |
+
+Start with the internal gateway. Expose it externally only when applications outside the Future AGI stack need an OpenAI-compatible endpoint.
+
+## Files and ports
+
+| Item | Default | Notes |
+|---|---|---|
+| Compose service | `agentcc-gateway` | Built from `future-agi/agentcc-gateway` |
+| Example config | `agentcc-gateway/config.example.yaml` | Copy this before editing |
+| Production config | `agentcc-gateway/config.yaml` | Set with `AGENTCC_CONFIG_PATH` |
+| Container port | `8080` | Configured under `server.port` |
+| Host port | `8090` | Controlled by `AGENTCC_GATEWAY_PORT` |
+| Local URL | `http://localhost:8090` | Use from your host machine |
+| Internal Docker URL | `http://agentcc-gateway:8080` | Use from containers on the same Compose network |
+
+## Create a gateway config
+
+Copy the example config and keep the edited file out of git:
+
+```bash
+cp agentcc-gateway/config.example.yaml \
+   agentcc-gateway/config.yaml
+```
+
+Point Compose at the edited file in `.env`:
+
+```bash
+AGENTCC_CONFIG_PATH=agentcc-gateway/config.yaml
+AGENTCC_GATEWAY_PORT=8090
+AGENTCC_INTERNAL_API_KEY=$(openssl rand -hex 32)
+AGENTCC_ADMIN_TOKEN=$(openssl rand -hex 32)
+```
+
+Recreate only the gateway after changing provider config:
+
+```bash
+docker compose up -d --force-recreate agentcc-gateway
+docker compose logs -f agentcc-gateway
+```
+
+The gateway interpolates `${ENV_VAR}` values from the container environment when it starts. Keep provider secrets in `.env` or a secret manager, then reference them from `config.yaml`.
+
+## Minimal production baseline
+
+This baseline enables virtual-key auth, request logging without bodies, Prometheus metrics, conservative timeouts, and an OpenAI provider.
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 5s
+  write_timeout: 300s
+  idle_timeout: 120s
+  default_request_timeout: 60s
+  max_request_body_size: 10485760
+
+providers:
+  openai:
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    api_format: "openai"
+    default_timeout: 60s
+    max_concurrent: 100
+    conn_pool_size: 100
+    models:
+      - gpt-4o
+      - gpt-4o-mini
+
+auth:
+  enabled: true
+  keys:
+    - name: "future-agi-backend"
+      key: "${AGENTCC_INTERNAL_API_KEY}"
+      owner: "platform"
+      models: ["gpt-4o", "gpt-4o-mini"]
+    - name: "internal-apps"
+      key: "${AGENTCC_APP_KEY}"
+      owner: "apps"
+      models: ["gpt-4o-mini"]
+      rate_limit_rpm: 120
+
+logging:
+  level: info
+  format: json
+  request_logging:
+    enabled: true
+    include_bodies: false
+
+prometheus:
+  enabled: true
+  path: "/-/metrics"
+```
+
+Set the matching environment variables:
+
+```bash
+OPENAI_API_KEY=sk-...
+AGENTCC_APP_KEY=sk-agentcc-your-app-key
+```
+
+<Warning>
+Set `request_logging.include_bodies: false` unless you have a reviewed data-retention policy. Model prompts and responses can contain customer data.
+</Warning>
+
+## Provider configuration
+
+Each provider declares the upstream endpoint, auth material, API format, limits, and model list. You can start with one provider and add more without changing application code.
+
+<Tabs>
+<Tab title="OpenAI">
+
+```yaml
+providers:
+  openai:
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    api_format: "openai"
+    default_timeout: 60s
+    max_concurrent: 100
+    conn_pool_size: 100
+    models:
+      - gpt-4o
+      - gpt-4o-mini
+```
+
+</Tab>
+<Tab title="Anthropic">
+
+```yaml
+providers:
+  anthropic:
+    base_url: "https://api.anthropic.com"
+    api_key: "${ANTHROPIC_API_KEY}"
+    api_format: "anthropic"
+    default_timeout: 120s
+    max_concurrent: 50
+    conn_pool_size: 50
+    headers:
+      anthropic-version: "2023-06-01"
+    models:
+      - claude-sonnet-4-20250514
+      - claude-3-5-haiku-20241022
+```
+
+</Tab>
+<Tab title="Gemini">
+
+```yaml
+providers:
+  gemini:
+    base_url: "https://generativelanguage.googleapis.com"
+    api_key: "${GEMINI_API_KEY}"
+    api_format: "gemini"
+    default_timeout: 120s
+    max_concurrent: 50
+    conn_pool_size: 50
+    models:
+      - gemini-2.0-flash
+      - gemini-1.5-pro
+```
+
+</Tab>
+<Tab title="Bedrock">
+
+```yaml
+providers:
+  bedrock:
+    base_url: "https://bedrock-runtime.us-east-1.amazonaws.com"
+    api_format: "bedrock"
+    default_timeout: 120s
+    max_concurrent: 50
+    conn_pool_size: 50
+    headers:
+      x-aws-region: "us-east-1"
+    models:
+      - anthropic.claude-3-sonnet-20240229-v1:0
+```
+
+</Tab>
+</Tabs>
+
+For Bedrock, set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`, or run the container with an IAM role. Prefer an IAM role in production.
+
+## Self-hosted models
+
+Self-hosted inference servers usually expose an OpenAI-compatible API. Point `base_url` at the endpoint reachable from the gateway container.
+
+<Warning>
+Inside Docker, `localhost` means the gateway container itself. For a model server running on your laptop, use `host.docker.internal` on Docker Desktop. On Linux servers, use a private routable host address or put the model server on the same Docker network.
+</Warning>
+
+<Tabs>
+<Tab title="vLLM">
+
+```yaml
+providers:
+  vllm:
+    base_url: "http://vllm.internal:8000"
+    api_format: "openai"
+    type: "vllm"
+    auto_discover: true
+```
+
+</Tab>
+<Tab title="Ollama">
+
+```yaml
+providers:
+  ollama:
+    base_url: "http://host.docker.internal:11434"
+    api_format: "openai"
+    type: "ollama"
+    models:
+      - llama3.1
+      - qwen2.5
+```
+
+</Tab>
+<Tab title="LM Studio">
+
+```yaml
+providers:
+  lmstudio:
+    base_url: "http://host.docker.internal:1234"
+    api_format: "openai"
+    type: "lmstudio"
+```
+
+</Tab>
+<Tab title="Custom">
+
+```yaml
+providers:
+  internal:
+    base_url: "https://models.internal.example.com"
+    api_key: "${INTERNAL_MODEL_API_KEY}"
+    api_format: "openai"
+    local: false
+    skip_tls: false
+    auto_discover: true
+    models:
+      - company-chat-prod
+```
+
+</Tab>
+</Tabs>
+
+## Virtual keys
+
+Virtual keys are the boundary between applications and upstream provider keys. Create one key per service, environment, or customer-facing integration so you can rotate and limit access without touching provider credentials.
+
+```yaml
+auth:
+  enabled: true
+  keys:
+    - name: "backend-prod"
+      key: "${AGENTCC_INTERNAL_API_KEY}"
+      owner: "future-agi"
+      models: ["gpt-4o", "gpt-4o-mini"]
+      providers: ["openai"]
+      rate_limit_rpm: 600
+      rate_limit_tpm: 200000
+      allowed_ips: ["10.0.0.0/8"]
+      metadata:
+        env: "prod"
+
+    - name: "notebooks-dev"
+      key: "${AGENTCC_NOTEBOOK_KEY}"
+      owner: "ml-platform"
+      models: ["gpt-4o-mini"]
+      rate_limit_rpm: 60
+      expires_at: "2026-12-31T00:00:00Z"
+```
+
+Key design guidelines:
+
+- Use separate keys for backend services, evaluation jobs, notebooks, and customer-facing apps
+- Restrict high-cost models to keys that need them
+- Put low RPM and TPM limits on exploratory or developer keys
+- Rotate a virtual key when an app owner changes or an integration is retired
+- Keep provider keys stable and rotate them separately from app keys
+
+## Routing and failover
+
+Routing controls where a model request goes. Start with explicit provider mapping, then add failover and load balancing where production traffic needs it.
+
+```yaml
+model_map:
+  gpt-4o: openai
+  claude-sonnet-4-20250514: anthropic
+
+routing:
+  default_strategy: "round-robin"
+  failover:
+    enabled: true
+    max_attempts: 3
+    on_status_codes: [429, 500, 502, 503, 504]
+    on_timeout: true
+  retry:
+    enabled: true
+    max_retries: 2
+    initial_delay: 500ms
+    max_delay: 10s
+    multiplier: 2.0
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    success_threshold: 2
+    cooldown: 30s
+  model_timeouts:
+    gpt-4o-mini: 60s
+    o1: 300s
+  model_fallbacks:
+    gpt-4o:
+      - claude-sonnet-4-20250514
+      - gemini-2.0-flash
+```
+
+For regional or account-level balancing, define multiple provider entries and route one model across them:
+
+```yaml
+providers:
+  openai-primary:
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_PRIMARY_API_KEY}"
+    api_format: "openai"
+    models: ["gpt-4o-mini"]
+  openai-secondary:
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_SECONDARY_API_KEY}"
+    api_format: "openai"
+    models: ["gpt-4o-mini"]
+
+routing:
+  default_strategy: "weighted"
+  targets:
+    gpt-4o-mini:
+      - provider: openai-primary
+        weight: 80
+      - provider: openai-secondary
+        weight: 20
+```
+
+## Budgets and cost tracking
+
+Enable cost tracking before you enforce budgets. Use budgets to protect shared environments and customer-facing endpoints from unexpected spend.
+
+```yaml
+cost_tracking:
+  enabled: true
+  custom_pricing:
+    company-chat-prod:
+      input_per_mtok: 1.00
+      output_per_mtok: 5.00
+
+budgets:
+  enabled: true
+  default_period: "monthly"
+  warn_threshold: 0.8
+  org:
+    limit: 10000.0
+    hard: true
+  teams:
+    platform:
+      limit: 5000.0
+      period: "monthly"
+      per_model:
+        gpt-4o: 2000.0
+  keys:
+    sk-agentcc-your-app-key:
+      limit: 100.0
+```
+
+Use hard budgets for non-critical or external app keys. For core production services, start with alerts and a reviewed runbook before rejecting traffic.
+
+## Caching
+
+Caching is useful for deterministic evaluations, repeated development prompts, and low-risk read-heavy workloads. Avoid caching requests that include private user data unless your retention policy allows it.
+
+```yaml
+cache:
+  enabled: true
+  backend: "redis"
+  default_ttl: 5m
+  max_entries: 10000
+  redis:
+    address: "redis:6379"
+    db: 0
+    key_prefix: "agentcc-cache:"
+    timeout: 2s
+```
+
+Per-request cache controls:
+
+```bash
+curl -X POST http://localhost:8090/v1/chat/completions \
+  -H "Authorization: Bearer $AGENTCC_APP_KEY" \
+  -H "Content-Type: application/json" \
+  -H "x-agentcc-cache-ttl: 10m" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize this fixed document."}]}'
+```
+
+## Security hardening
+
+For an externally reachable gateway, enable virtual-key auth, TLS, body-safe logging, CORS restrictions, IP allowlists where possible, and least-privilege provider credentials.
+
+```yaml
+cors:
+  enabled: true
+  allowed_origins: ["https://app.example.com"]
+  allowed_methods: ["GET", "POST", "OPTIONS"]
+  allowed_headers: ["Authorization", "Content-Type"]
+  allow_credentials: false
+
+ip_acl:
+  enabled: true
+  trusted_proxies: 1
+  allow: ["10.0.0.0/8", "192.168.1.0/24"]
+  deny: ["203.0.113.7"]
+
+privacy:
+  enabled: true
+  mode: "patterns"
+  redact_patterns:
+    - name: "email"
+      pattern: '[\w.+-]+@[\w-]+\.[\w.-]+'
+    - name: "ssn"
+      pattern: '\d{3}-\d{2}-\d{4}'
+
+audit:
+  enabled: true
+  min_severity: "info"
+  sinks:
+    - type: "stdout"
+```
+
+Minimum production rules:
+
+- Put the gateway behind a reverse proxy or load balancer with TLS
+- Keep `agentcc-gateway/config.yaml` readable only by operators and the deployment process
+- Use one virtual key per app or team
+- Never enable body logging by default
+- Restrict direct internet access unless external apps must call it
+- Rotate leaked virtual keys immediately; rotate provider keys if provider credentials were exposed
+
+## Observability
+
+Enable metrics and structured logs before sending real traffic through the gateway.
+
+```yaml
+logging:
+  level: info
+  format: json
+  request_logging:
+    enabled: true
+    include_bodies: false
+
+prometheus:
+  enabled: true
+  path: "/-/metrics"
+
+otel:
+  enabled: true
+  service_name: "agentcc-gateway"
+  exporter: "stdout"
+  sample_rate: 0.1
+  attributes:
+    environment: "production"
+```
+
+Scrape metrics from the gateway container:
+
+```bash
+curl http://localhost:8090/-/metrics
+```
+
+Alert on:
+
+- Gateway 5xx rate
+- Provider 401 or 403 errors
+- Provider 429 rate limits
+- Timeout rate by provider and model
+- Circuit breaker open events
+- Spend spikes and budget threshold warnings
+- Cache error rate if cache is enabled
+
+## Scaling and high availability
+
+For a single-node Compose install, one gateway replica is enough. For higher traffic or failover, run multiple replicas behind a load balancer and move shared state to Redis.
+
+```yaml
+redis:
+  enabled: true
+  address: "redis:6379"
+  password: "${REDIS_PASSWORD}"
+  db: 0
+  pool_size: 20
+  timeout: 2s
+  prefix: "agentcc:"
+
+cluster:
+  enabled: true
+  node_id: "gateway-1"
+  redis_url: "redis://redis:6379/0"
+  heartbeat_interval: 5s
+  heartbeat_ttl: 15s
+  drain_timeout: 30s
+```
+
+When you scale:
+
+- Use Redis-backed state for rate limits, budgets, credits, and cluster heartbeats
+- Keep provider connection pools below upstream provider limits
+- Use readiness checks before sending traffic to a new replica
+- Drain old replicas during deploys so streaming responses can finish
+- Keep each replica on the same `config.yaml` version during a rollout
+
+## Test the gateway
+
+Health check:
+
+```bash
+curl http://localhost:8090/healthz
+```
+
+Metrics check:
+
+```bash
+curl http://localhost:8090/-/metrics
+```
+
+OpenAI-compatible chat completion:
+
+```bash
+curl -X POST http://localhost:8090/v1/chat/completions \
+  -H "Authorization: Bearer $AGENTCC_APP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Reply with one sentence."}]
+  }'
+```
+
+Streaming check:
+
+```bash
+curl -N -X POST http://localhost:8090/v1/chat/completions \
+  -H "Authorization: Bearer $AGENTCC_APP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "stream": true,
+    "messages": [{"role": "user", "content": "Count from one to five."}]
+  }'
+```
+
+If the chat call works, provider credentials, gateway auth, routing, and outbound network access are wired correctly.
+
+## Use AgentCC Gateway from an app
+
+Most OpenAI-compatible clients only need a new `base_url` and `api_key`.
+
+<CodeGroup>
+```python Python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-agentcc-your-app-key",
+    base_url="https://gateway.yourcompany.com/v1",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello from AgentCC Gateway"}],
+)
+
+print(response.choices[0].message.content)
+```
+
+```typescript TypeScript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: "sk-agentcc-your-app-key",
+  baseURL: "https://gateway.yourcompany.com/v1",
+});
+
+const response = await client.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello from AgentCC Gateway" }],
+});
+
+console.log(response.choices[0].message.content);
+```
+
+```bash cURL
+curl -X POST https://gateway.yourcompany.com/v1/chat/completions \
+  -H "Authorization: Bearer sk-agentcc-your-app-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello from AgentCC Gateway"}]
+  }'
+```
+</CodeGroup>
+
+## Upgrade runbook
+
+1. Save the current `agentcc-gateway/config.yaml`.
+2. Pull the new release or branch.
+3. Compare your config with the new `agentcc-gateway/config.example.yaml`.
+4. Add any new required fields or recommended defaults.
+5. Recreate one gateway instance first.
+6. Run `/healthz`, `/-/metrics`, a non-streaming chat call, and a streaming chat call.
+7. Watch gateway logs for provider auth, model validation, timeout, and routing errors.
+8. Roll the remaining replicas after smoke tests pass.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `401 unauthorized` from gateway | Missing or wrong virtual key | Check `auth.enabled`, `auth.keys`, and the `Authorization: Bearer ...` header |
+| Provider returns `401` or `403` | Upstream provider credential is wrong or lacks access | Check `.env`, config interpolation, provider dashboard access, and IAM permissions |
+| `model not found` | Model is not listed, mapped, or discoverable | Add the model under the provider, set `model_map`, or enable `auto_discover` for compatible endpoints |
+| `connection refused` for vLLM, Ollama, or LM Studio | Gateway container cannot reach a host-local endpoint | Use `host.docker.internal`, a private host IP, or the same Docker network |
+| Requests hang | Timeout too high, provider unavailable, or no outbound route | Set provider `default_timeout`, model timeouts, and verify DNS/firewall access from the container |
+| Repeated provider 429s | Provider rate limit is lower than gateway traffic | Lower `max_concurrent`, add another provider key, enable failover, or add per-key limits |
+| Budgets differ across replicas | Shared state is in memory | Enable Redis-backed `redis` and `cluster` config before running multiple replicas |
+| Browser request blocked | CORS does not allow the frontend origin | Add the app origin under `cors.allowed_origins` |
+| Metrics missing | Prometheus endpoint is disabled or wrong path | Enable `prometheus.enabled` and scrape `/-/metrics` |
+
+Useful commands:
+
+```bash
+docker compose ps agentcc-gateway
+docker compose logs --tail=200 agentcc-gateway
+docker compose exec agentcc-gateway env | grep -E "OPENAI|ANTHROPIC|GEMINI|AWS|AGENTCC"
+curl http://localhost:8090/healthz
+curl http://localhost:8090/-/metrics
+```
+
+Do not paste `.env`, provider keys, virtual keys, or request bodies into support channels.

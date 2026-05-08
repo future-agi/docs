@@ -1,146 +1,232 @@
 ---
 title: "Self-Hosting Troubleshooting"
-description: "Debug self-hosted Future AGI — symptoms, causes, and fixes for startup failures, network issues, PeerDB CDC errors, Temporal worker problems, and post-upgrade breaks."
+description: "Debug self-hosted Future AGI — symptoms, causes, and fixes for startup failures, network issues, AgentCC Gateway errors, Temporal worker problems, and post-upgrade breaks."
 ---
-
-## About
-
-Symptoms, causes, and fixes for the errors most commonly hit when self-hosting. Grouped by where they show up: startup, network, PeerDB, Temporal, and post-upgrade.
 
 ## Start here
 
+Run these first. They usually identify the failing layer.
+
 ```bash
-docker compose ps                    # what's running / what's restarting
-docker compose logs -f backend       # most informative starting point
-docker compose exec backend bash     # shell into any container
+docker compose ps
+docker compose logs --tail=150 backend
+docker compose logs --tail=150 worker
+docker compose logs --tail=150 agentcc-gateway
 ```
 
----
+Check the data services:
 
-## Startup errors
-
-**`Cannot connect to the Docker daemon`**
-Docker isn't running. Start Docker Desktop (Mac/Windows) or `sudo systemctl start docker` (Linux).
-
----
-
-**First build takes 15+ min or hangs on `uv pip install`**
-Normal on first boot. If stuck >20 min, cancel and retry:
 ```bash
-docker compose build --no-cache backend
+docker compose exec postgres pg_isready -U futureagi -d futureagi
+docker compose exec clickhouse clickhouse-client --query "SELECT 1"
+docker compose exec redis redis-cli ping
 ```
 
----
+If you changed `.env`, remember that some values are only read when the container is recreated:
 
-**`ERROR: not enough free space`**
-Docker Desktop's virtual disk is full. Settings → Resources → Disk image size → raise to 100 GB+. Or prune: `docker system prune -af && docker builder prune -af`
-
----
-
-**Port already in use**
 ```bash
-lsof -i :3000   # find the conflicting process
-# or override in .env:
-FRONTEND_PORT=3100
-BACKEND_PORT=8100
+docker compose up -d --force-recreate backend worker agentcc-gateway
 ```
 
----
+## Startup
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Cannot connect to the Docker daemon` | Docker is stopped | Start Docker Desktop or `sudo systemctl start docker` |
+| First boot takes several minutes | Docker is pulling published images and initializing databases | Wait; if stuck, check `docker compose logs --tail=150 backend` |
+| `no space left on device` | Docker disk is full | Increase Docker disk to 100 GB+ or prune unused images |
+| Container exits with code 137 | Out of memory | Allocate at least 8 GB RAM to Docker; 16 GB recommended for team use |
+| Port already in use | Another local process owns the port | Change the matching port in `.env` or stop the process |
+| Installer exits before startup | Preflight or port check failed | Read the generated `install-*.log`, fix the reported issue, then re-run `./bin/install` |
+
+Find port conflicts:
+
+```bash
+lsof -i :3000
+lsof -i :8000
+lsof -i :8090
+```
+
+## Backend
 
 **Backend never reaches `Application startup complete`**
-- Check RAM: `docker info | grep -i memory` — Docker needs ≥ 8 GB
-- Check for migration errors: `docker compose logs backend | grep -i error`
-- Run migrations manually: `docker compose exec backend python manage.py migrate`
 
----
-
-**`FATAL: password authentication failed for user "futureagi"`**
-`PG_PASSWORD` was changed after the Postgres volume was initialized. Postgres sets the password only on first boot.
-- Option 1: revert `PG_PASSWORD` to the original value
-- Option 2 (data loss): `docker compose down -v && docker compose up -d`
-
----
-
-**`code-executor` crashes with `clone: Operation not permitted`**
-Host platform blocks `privileged: true`. Won't work on Fargate, Cloud Run, or restricted Kubernetes. Use EC2, GCE, or bare metal. The rest of the stack runs — only code-based eval features are unavailable.
-
----
-
-## Network and UI errors
-
-**Frontend blank page or CORS errors**
-`VITE_HOST_API` in `.env` doesn't match the current backend URL. Rebuild:
 ```bash
-docker compose build --no-cache frontend
-docker compose up -d frontend
-```
-
----
-
-**API calls fail with 502**
-Backend isn't healthy. Check: `docker compose logs backend` and `docker compose ps backend`.
-
----
-
-## PeerDB errors
-
-**Mirrors show "not started" or don't appear**
-PeerDB init ran before Django migrations completed. Fix:
-```bash
-docker compose logs -f backend      # wait for "Application startup complete"
-docker compose run --rm peerdb-init bash /setup.sh
-```
-Verify at [http://localhost:3001](http://localhost:3001) — mirrors should show `running`.
-
----
-
-**Analytics data is stale**
-PeerDB replication has fallen behind. Check mirror lag in the PeerDB UI. Re-run init if a mirror shows an error:
-```bash
-docker compose run --rm peerdb-init bash /setup.sh
-```
-
----
-
-## Temporal errors
-
-**`temporal-server` keeps restarting**
-Almost always a Postgres issue. Check: `docker compose logs postgres`. If Postgres is OOM-killing, raise Docker RAM to ≥ 8 GB. If Postgres is healthy: `docker compose restart postgres temporal`
-
----
-
-## After an upgrade
-
-**Migration fails after `git pull`**
-```bash
+docker compose logs backend | grep -iE "error|exception|traceback|migration"
 docker compose exec backend python manage.py migrate
 ```
-If a conflict persists, check the release notes for manual steps.
 
-**Everything worked before the upgrade, now it doesn't**
+Common causes are not enough RAM, Postgres not healthy, failed migrations, or changed database credentials after the Postgres volume was initialized.
+
+**`FATAL: password authentication failed for user "futureagi"`**
+
+Postgres applies `POSTGRES_PASSWORD` only on first volume initialization. If you changed `PG_PASSWORD` after first boot, either restore the original password or recreate the volume:
+
 ```bash
-git log --oneline -5
-git checkout <previous-hash>
-docker compose build && docker compose up -d
+docker compose down -v
+docker compose up -d
 ```
 
----
+<Warning>
+`docker compose down -v` deletes local data.
+</Warning>
 
-## Still stuck?
+## Frontend and API
 
-Open an issue at [github.com/future-agi/future-agi/issues](https://github.com/future-agi/future-agi/issues) with:
+**Frontend loads but API calls fail**
+
+`VITE_HOST_API` is wrong or stale in the frontend container environment.
+
 ```bash
-docker compose logs > all-logs.txt 2>&1
-docker compose ps >> all-logs.txt
+grep VITE_HOST_API .env
+docker compose up -d --force-recreate frontend
 ```
+
+**Browser shows CORS or mixed-content errors**
+
+Use HTTPS consistently. If the frontend is served over `https://app.yourcompany.com`, set:
+
+```bash
+VITE_HOST_API=https://api.yourcompany.com
+```
+
+Then recreate the frontend container.
+
+## AgentCC Gateway
+
+**AgentCC Gateway health check fails**
+
+```bash
+docker compose ps agentcc-gateway
+docker compose logs --tail=200 agentcc-gateway
+curl http://localhost:8090/healthz
+```
+
+If the container is restarting, check `config.yaml` syntax and mounted path.
+
+**Model call returns `401 unauthorized`**
+
+There are two different keys:
+
+| Key | Used for |
+|---|---|
+| `AGENTCC_INTERNAL_API_KEY` | Backend-to-AgentCC Gateway internal calls |
+| AgentCC Gateway virtual key in `config.yaml` | External app calls to AgentCC Gateway |
+
+Check the `Authorization: Bearer ...` header and the `auth.keys` section in AgentCC Gateway config.
+
+**Provider returns `401` or `403`**
+
+The upstream provider rejected the provider credential. Check `.env` and whether the AgentCC Gateway container received it:
+
+```bash
+docker compose exec agentcc-gateway env | grep -E "OPENAI|ANTHROPIC|GOOGLE|AWS"
+```
+
+**Ollama or vLLM connection refused**
+
+From inside Docker, `localhost` means the AgentCC Gateway container. Use `host.docker.internal` on Docker Desktop or a private network address on Linux:
+
+```yaml
+base_url: "http://host.docker.internal:11434/v1"
+```
+
+**Model not found**
+
+Add the model to the provider's `models` list or confirm provider auto-discovery works:
+
+```bash
+docker compose logs agentcc-gateway | grep -i model
+```
+
+**ClickHouse is OOM-killed**
+
+Increase Docker memory or reduce workload. ClickHouse needs SSD-backed disk and enough page cache for trace-heavy deployments.
+
+## Temporal and workers
+
+**Temporal keeps restarting**
+
+Temporal depends on Postgres:
+
+```bash
+docker compose logs --tail=200 postgres
+docker compose logs --tail=200 temporal
+docker compose restart postgres temporal
+```
+
+**Jobs are stuck or evaluations never finish**
+
+```bash
+docker compose logs --tail=200 worker
+docker compose ps worker
+```
+
+If workers are healthy but overloaded, increase:
+
+```bash
+TEMPORAL_MAX_CONCURRENT_ACTIVITIES=100
+TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS=100
+```
+
+Then recreate workers:
+
+```bash
+docker compose up -d --force-recreate worker
+```
+
+## Code executor
+
+**`code-executor` crashes with `clone: Operation not permitted`**
+
+The host platform blocks privileged containers. Code execution uses sandboxing that requires `privileged: true`.
+
+Supported today: EC2, GCE, Azure VM, and bare metal hosts that allow privileged containers.
+
+Kubernetes and Helm chart deployment guides are coming soon. If you run Future AGI on Kubernetes before the official charts are available, the code executor still needs nodes that allow privileged pods.
+
+Not supported: ECS Fargate, Cloud Run, many restricted PaaS platforms.
+
+The rest of Future AGI can still run, but eval features that execute user code will be unavailable.
+
+## Upgrades
+
+**Migration fails after `git pull`**
+
+```bash
+docker compose exec backend python manage.py migrate
+docker compose logs --tail=200 backend
+```
+
+**Rollback needed**
+
+If migrations are backward-compatible:
+
+```bash
+git log --oneline -10
+git checkout <previous-good-commit>
+docker compose pull
+docker compose up -d
+```
+
+If migrations changed data irreversibly, restore from backup.
+
+## Collect logs for support
+
+```bash
+docker compose ps > futureagi-debug.txt
+docker compose logs --no-color >> futureagi-debug.txt 2>&1
+```
+
+Include your Compose command, host OS, Docker version, available memory, and the commit or release you are running. Do not include `.env`, provider keys, or AgentCC Gateway virtual keys.
 
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Requirements" icon="server" href="/docs/self-hosting/requirements">
-    Verify your platform and resources meet the minimums.
+  <Card title="Docker Compose" icon="docker" href="/docs/self-hosting/docker-compose">
+    Verify the standard install and health check flow.
   </Card>
   <Card title="Production" icon="shield" href="/docs/self-hosting/production">
-    Hardening, backups, and monitoring once the stack is stable.
+    Harden the deployment after it is stable.
   </Card>
 </CardGroup>
