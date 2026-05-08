@@ -28,7 +28,7 @@ export default function GiscusComments({ pagePath }: { pagePath: string }) {
 
   return (
     <div>
-      <h3 className="text-lg font-semibold text-[var(--color-text-primary)] mb-4">Questions & Discussion</h3>
+      <p className="text-lg font-semibold text-[var(--color-text-primary)] mb-4">Questions & Discussion</p>
       <div ref={ref} />
     </div>
   );
