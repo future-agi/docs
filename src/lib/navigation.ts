@@ -39,7 +39,20 @@ export const tabNavigation: NavTab[] = [
         icon: 'rocket',
         items: [
           { title: 'Introduction', href: '/docs' },
-          { title: 'Self-Hosting', href: '/docs/self-hosting', badge: 'New' },
+          {
+            title: 'Self-Hosting',
+            badge: 'New',
+            items: [
+              { title: 'Overview', href: '/docs/self-hosting' },
+              { title: 'Requirements', href: '/docs/self-hosting/requirements' },
+              { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
+              { title: 'Environment Variables', href: '/docs/self-hosting/environment' },
+              { title: 'System Configuration', href: '/docs/self-hosting/configuration' },
+              { title: 'User Management', href: '/docs/self-hosting/user-management' },
+              { title: 'Production', href: '/docs/self-hosting/production' },
+              { title: 'Troubleshooting', href: '/docs/self-hosting/troubleshooting' },
+            ]
+          },
           {
             title: 'Quickstart',
             icon: 'rocket',
@@ -248,13 +261,25 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
+              { title: 'How It Works', href: '/docs/error-feed/concepts/how-it-works' },
               { title: 'Error Taxonomy', href: '/docs/error-feed/concepts/taxonomy' },
+              { title: 'Scoring', href: '/docs/error-feed/concepts/scoring' },
+              { title: 'Severity and Status', href: '/docs/error-feed/concepts/severity-and-status' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Using Error Feed', href: '/docs/error-feed/features/using-error-feed' },
+              { title: 'The Feed', href: '/docs/error-feed/features/the-feed' },
+              { title: 'Issue Overview', href: '/docs/error-feed/features/issue-overview' },
+              { title: 'Traces', href: '/docs/error-feed/features/traces' },
+              { title: 'State Graph', href: '/docs/error-feed/features/state-graph' },
+              { title: 'Trends', href: '/docs/error-feed/features/trends' },
+              { title: 'Metadata Panel', href: '/docs/error-feed/features/metadata-panel' },
+              { title: 'Triage Workflow', href: '/docs/error-feed/features/triage-workflow' },
+              { title: 'Deep Analysis', href: '/docs/error-feed/features/deep-analysis' },
+              { title: 'Linear Integration', href: '/docs/error-feed/features/linear-integration' },
+              { title: 'Sampling', href: '/docs/error-feed/features/sampling' },
             ]
           },
         ]
@@ -280,7 +305,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
               { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
               { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
-              { title: 'Eval Groups', href: '/docs/evaluation/features/groups' },
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
@@ -579,7 +603,13 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
               { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
-              { title: 'Replay', href: '/docs/simulation/features/observe-to-simulate' },
+              {
+                title: 'Replay',
+                items: [
+                  { title: 'Chat Replay', href: '/docs/simulation/features/observe-to-simulate' },
+                  { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
+                ]
+              },
               { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
               { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
               { title: 'View Results', href: '/docs/simulation/features/view-results' },
@@ -778,12 +808,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'CI/CD Eval Pipeline: Automate Quality Gates in GitHub Actions', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
                 ]
               },
-              {
-                title: 'Agent Compass',
-                items: [
-                  { title: 'Agent Compass: Surface Agent Failures Automatically', href: '/docs/cookbook/quickstart/agent-compass-debug' },
-                ]
-              },
             ]
           },
           {
@@ -792,6 +816,43 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
               { title: 'Monitor LLM Quality in Production and Catch Regressions', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
+            ]
+          },
+          {
+            title: 'Falcon AI',
+            icon: 'rocket',
+            items: [
+              { title: 'End-to-End with Falcon AI: Trace → Debug → Evaluate → Dataset → Fix in One Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
+              { title: 'Context-Aware Trace Debugging with Falcon AI', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
+              { title: 'Building Golden Datasets from Production Traces with Falcon AI', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
+            ]
+          },
+          {
+            title: 'Agent Command Center',
+            icon: 'server',
+            items: [
+              { title: 'Cut LLM Costs 80% With Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
+            ]
+          },
+          {
+            title: 'MCP Server',
+            icon: 'plug',
+            items: [
+              { title: 'Debug LLM Traces From Your IDE Using Natural Language MCP Queries', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
+            ]
+          },
+          {
+            title: 'Evaluation',
+            icon: 'check-double',
+            items: [
+              { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
+            ]
+          },
+          {
+            title: 'Self-Hosting',
+            icon: 'box',
+            items: [
+              { title: 'Deploy the Full Open-Source AI Stack Locally With Docker Compose in 5 Minutes', href: '/docs/cookbook/self-hosting/docker-compose-quickstart' },
             ]
           },
           {
@@ -944,24 +1005,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Evals',
-            items: [
-              { title: 'Get Evals List', href: '/docs/api/evals-list/getevalslist' },
-            ]
-          },
-          {
-            title: 'Eval Groups',
-            items: [
-              { title: 'Create Eval Group', href: '/docs/api/eval-groups/createevalgroup' },
-              { title: 'List Eval Groups', href: '/docs/api/eval-groups/listevalgroups' },
-              { title: 'Retrieve Eval Group', href: '/docs/api/eval-groups/retrieveevalgroup' },
-              { title: 'Update Eval Group', href: '/docs/api/eval-groups/updateevalgroup' },
-              { title: 'Delete Eval Group', href: '/docs/api/eval-groups/deleteevalgroup' },
-              { title: 'Apply Eval Group', href: '/docs/api/eval-groups/applyevalgroup' },
-              { title: 'Edit Eval List', href: '/docs/api/eval-groups/editevallist' },
-            ]
-          },
-          {
             title: 'Eval Tasks',
             items: [
               { title: 'List Eval Tasks', href: '/docs/api/eval-tasks/list-eval-tasks-filtered' },
@@ -986,12 +1029,6 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Eval Logs & Metrics',
-            items: [
-              { title: 'Get Eval Log Details', href: '/docs/api/eval-logs-metrics/getevallogdetails' },
-            ]
-          },
-          {
             title: 'Dataset Evals',
             items: [
               { title: 'Get Eval Template Names', href: '/docs/api/dataset-evals/get-eval-template-names' },
@@ -1002,7 +1039,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Start Evals Process', href: '/docs/api/dataset-evals/start-evals-process' },
               { title: 'Delete Dataset Eval', href: '/docs/api/dataset-evals/delete-dataset-eval' },
               { title: 'Edit and Run Eval', href: '/docs/api/dataset-evals/edit-and-run-eval' },
-              { title: 'Get Eval Metrics', href: '/docs/api/dataset-evals/get-eval-metrics' },
             ]
           },
           {
@@ -1073,25 +1109,9 @@ export const tabNavigation: NavTab[] = [
               { title: 'Get Execution Details', href: '/docs/api/test-executions/gettestexecutiondetails' },
               { title: 'Get Execution KPIs', href: '/docs/api/test-executions/getkpis' },
               { title: 'Get Performance Summary', href: '/docs/api/test-executions/getperformancesummary' },
-              { title: 'Get Eval Explanation', href: '/docs/api/test-executions/getevalexplanationsummary' },
               { title: 'Cancel Execution', href: '/docs/api/test-executions/cancelexecution' },
               { title: 'Rerun Calls', href: '/docs/api/test-executions/reruncalls' },
-            ]
-          },
-          {
-            title: 'Call Executions',
-            items: [
-              { title: 'Get Call Details', href: '/docs/api/call-executions/getcallexecutiondetails' },
-              { title: 'Compare Sessions', href: '/docs/api/call-executions/getsessioncomparison' },
-            ]
-          },
-          {
-            title: 'Prompt Simulations',
-            items: [
-              { title: 'List Scenarios', href: '/docs/api/prompt-simulations/listscenarios' },
-              { title: 'List Simulations', href: '/docs/api/prompt-simulations/listsimulations' },
-              { title: 'Get Simulation Details', href: '/docs/api/prompt-simulations/getsimulationdetails' },
-              { title: 'Execute Simulation', href: '/docs/api/prompt-simulations/executesimulation' },
+              { title: 'Get Call Details', href: '/docs/api/test-executions/getcallexecutiondetails' },
             ]
           },
           {
@@ -1105,7 +1125,6 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Datasets',
             items: [
-              { title: 'Get Dataset', href: '/docs/api/datasets/get-dataset' },
               { title: 'List Datasets', href: '/docs/api/datasets/list-datasets' },
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
               { title: 'Create Empty Dataset', href: '/docs/api/datasets/create-empty-dataset' },

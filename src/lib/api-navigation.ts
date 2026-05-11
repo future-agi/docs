@@ -253,11 +253,6 @@ export const apiNavigation: ApiNavGroup[] = [
         "method": "GET"
       },
       {
-        "title": "Get eval explanation summary",
-        "href": "/docs/api/test-executions/getevalexplanationsummary",
-        "method": "GET"
-      },
-      {
         "title": "Cancel test execution",
         "href": "/docs/api/test-executions/cancelexecution",
         "method": "POST"
@@ -266,86 +261,11 @@ export const apiNavigation: ApiNavGroup[] = [
         "title": "Rerun call executions",
         "href": "/docs/api/test-executions/reruncalls",
         "method": "POST"
-      }
-    ]
-  },
-  {
-    "title": "Call Executions",
-    "items": [
+      },
       {
         "title": "Get call execution details",
-        "href": "/docs/api/call-executions/getcallexecutiondetails",
+        "href": "/docs/api/test-executions/getcallexecutiondetails",
         "method": "GET"
-      },
-      {
-        "title": "Compare execution sessions",
-        "href": "/docs/api/call-executions/getsessioncomparison",
-        "method": "GET"
-      }
-    ]
-  },
-  {
-    "title": "Prompt Simulations",
-    "items": [
-      {
-        "title": "List prompt simulation scenarios",
-        "href": "/docs/api/prompt-simulations/listscenarios",
-        "method": "GET"
-      },
-      {
-        "title": "List simulations for prompt template",
-        "href": "/docs/api/prompt-simulations/listsimulations",
-        "method": "GET"
-      },
-      {
-        "title": "Get prompt simulation details",
-        "href": "/docs/api/prompt-simulations/getsimulationdetails",
-        "method": "GET"
-      },
-      {
-        "title": "Execute prompt simulation",
-        "href": "/docs/api/prompt-simulations/executesimulation",
-        "method": "POST"
-      }
-    ]
-  },
-  {
-    "title": "Eval Groups",
-    "items": [
-      {
-        "title": "List Evaluation Groups",
-        "href": "/docs/api/eval-groups/listevalgroups",
-        "method": "GET"
-      },
-      {
-        "title": "Create Evaluation Group",
-        "href": "/docs/api/eval-groups/createevalgroup",
-        "method": "POST"
-      },
-      {
-        "title": "Retrieve Evaluation Group",
-        "href": "/docs/api/eval-groups/retrieveevalgroup",
-        "method": "GET"
-      },
-      {
-        "title": "Update Evaluation Group",
-        "href": "/docs/api/eval-groups/updateevalgroup",
-        "method": "PUT"
-      },
-      {
-        "title": "Delete Evaluation Group",
-        "href": "/docs/api/eval-groups/deleteevalgroup",
-        "method": "DELETE"
-      },
-      {
-        "title": "Edit Evaluation Group Members",
-        "href": "/docs/api/eval-groups/editevallist",
-        "method": "POST"
-      },
-      {
-        "title": "Apply Evaluation Group",
-        "href": "/docs/api/eval-groups/applyevalgroup",
-        "method": "POST"
       }
     ]
   },
@@ -374,26 +294,6 @@ export const apiNavigation: ApiNavGroup[] = [
     ]
   },
   {
-    "title": "Eval Logs & Metrics",
-    "items": [
-      {
-        "title": "Get Evaluation Log Details",
-        "href": "/docs/api/eval-logs-metrics/getevallogdetails",
-        "method": "GET"
-      }
-    ]
-  },
-  {
-    "title": "Evals List",
-    "items": [
-      {
-        "title": "Get Evals List",
-        "href": "/docs/api/evals-list/getevalslist",
-        "method": "GET"
-      }
-    ]
-  },
-  {
     "title": "Simulation Analytics",
     "items": [
       {
@@ -416,7 +316,6 @@ export const apiNavigation: ApiNavGroup[] = [
   {
     "title": "Datasets",
     "items": [
-      { "title": "Get Dataset", "href": "/docs/api/datasets/get-dataset", "method": "GET" },
       { "title": "List Datasets", "href": "/docs/api/datasets/list-datasets", "method": "GET" },
       { "title": "Create Dataset", "href": "/docs/api/datasets/create-dataset", "method": "POST" },
       { "title": "Create Empty Dataset", "href": "/docs/api/datasets/create-empty-dataset", "method": "POST" },

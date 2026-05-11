@@ -1,0 +1,197 @@
+---
+title: "End-to-End with Falcon AI: Trace → Debug → Evaluate → Dataset → Fix in One Workflow"
+description: "Find failing traces, lock them as a regression set, score the baseline, get a paste-ready prompt diff, and verify the scores recover, all from one Falcon AI conversation."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/falcon-ai-page/falcon-ai/end-to-end.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/falcon-ai-page/falcon-ai/end-to-end.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 15 min | Beginner | `fi-instrumentation-otel` |
+
+By the end of this cookbook you will have a fixed agent and a reusable regression dataset, built by chaining four Falcon AI skills (`/analyze-trace-errors`, `/build-dataset`, `/run-evaluations`, `/fix-with-falcon`) in one chat without leaving the dashboard.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- A traced project with mixed-quality traces. If you don't have one, instrument any agent with the `Add tracing` step below.
+</Prerequisites>
+
+## Install
+
+Install the FutureAGI instrumentation SDK and set your API keys.
+
+```bash
+pip install fi-instrumentation-otel traceai-openai openai
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+## What is Falcon AI?
+
+Falcon AI is the AI assistant built into the FutureAGI dashboard. Open it from the sidebar and it picks up whatever page you're viewing as context, so questions are answered against the trace, project, or dataset you're already on.
+
+It runs **skills**: slash commands that execute a structured workflow over the current context and produce a clickable artifact (a dataset, an eval run, a prompt diff). The six steps below add tracing to your agent, then chain four skills back-to-back in the same chat.
+
+<Steps>
+<Step title="Add tracing to your agent">
+
+Falcon AI does its work by reading your agent's **traces**: a trace is the structured record of one request, broken into **spans** for each LLM call, tool invocation, or sub-step inside it. The agent has to be sending traces to FutureAGI before any of the next steps can run.
+
+Three lines below set that up. `OpenAIInstrumentor` patches the OpenAI SDK so every API call is captured automatically. The `@tracer.agent` decorator on your agent's entry point makes each request appear as one parent span with the OpenAI calls nested underneath.
+
+```python
+from fi_instrumentation import register, FITracer
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="falcon-ai-end-to-end",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer("falcon-ai-end-to-end"))
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI()
+
+
+# Replace this with your own agent's entry point.
+# The @tracer.agent decorator makes each call show up as one parent span
+# in your FutureAGI Tracing project, with the OpenAI calls nested underneath.
+@tracer.agent(name="my_agent")
+def my_agent(user_message: str) -> str:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a customer support assistant for an electronics store. Answer questions about products and orders."},
+            {"role": "user", "content": user_message},
+        ],
+    )
+    return response.choices[0].message.content
+
+
+# A support agent without any grounding tool is likely to fabricate specifics
+# (tracking numbers, return windows, warranty lengths) when asked about them.
+# This gives Falcon AI a failing trace to analyze in the next step.
+print(my_agent("Where is order ORD-12345?"))
+print(my_agent("What\'s your return policy for opened wireless headphones?"))
+
+trace_provider.force_flush()
+```
+
+Open **Tracing** → your project. Once traces are flowing, move to the next step. For broader instrumentation patterns see [Manual Tracing](/docs/cookbook/quickstart/manual-tracing).
+
+</Step>
+<Step title="Find the failing traces">
+
+Falcon AI picks up whatever page you're viewing as **context**. So when you open the sidebar from the Tracing page of your project, every question and skill is scoped to that project automatically.
+
+`/analyze-trace-errors` runs across every trace in the project, classifies each issue against an error taxonomy (Hallucination, Wrong Intent, Tool Misuse, etc.), and scores every trace 1 to 5 so you can see at a glance which ones are failing and why.
+
+Stay on the Tracing page, open the sidebar, and type:
+
+> Analyze trace errors in this project
+
+<Tip>
+`Cmd+K` (Mac) or `Ctrl+K` (Windows) opens Falcon AI from anywhere in the dashboard, with the current page auto-attached as a context chip.
+</Tip>
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/end-to-end/step-4-analyze-trace-errors.png" alt="Falcon AI sidebar showing the analyze trace errors completion card with per-trace scores and the dominant error category" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Switch to the **Feed** tab in Tracing (the chronological list of traces with their quality scores) to see the same findings rendered per-trace, with the exact quote that triggered each finding.
+
+</Step>
+<Step title="Lock the failures into a regression dataset">
+
+Same conversation. `/build-dataset` reads the findings from the previous turn and writes the matching rows to a new dataset. This locks the bad traces as a **regression dataset** (a fixed snapshot you can re-run anytime): when you try a fix later, you can score it against the exact same failing inputs instead of new traffic that may not exhibit the same problem.
+
+> Build me a dataset called `falcon-demo-failures` with the queries from the traces flagged with Hallucinated Content. Columns: `query` (text), `agent_output` (text), `failure_category` (text).
+
+A completion card appears with a link to the new dataset.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/end-to-end/step-5-build-dataset.png" alt="Falcon AI completion card showing the new falcon-demo-failures dataset with row count and link" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Open **Datasets** → `falcon-demo-failures` to confirm the rows.
+
+</Step>
+<Step title="Score the baseline">
+
+Same conversation. `/run-evaluations` runs FutureAGI **evals** (LLM-as-judge metrics like `factual_accuracy` or `completeness`) against every row in the dataset and returns a card with per-row and aggregate scores. The output of this step is the baseline we need to beat once the fix is applied.
+
+> Run `factual_accuracy` and `completeness` evals on the `falcon-demo-failures` dataset.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/end-to-end/step-6-run-evaluations.png" alt="Falcon AI evaluation results card showing per-row scores for factual_accuracy and completeness" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Expect `factual_accuracy` to be at the floor and `completeness` to be high: the agent fully addresses each question, but the answers are invented.
+
+</Step>
+<Step title="Generate the prompt fix">
+
+The last skill in the chain, `/fix-with-falcon`, reads the system prompt and model output from a specific span and returns a copy-pasteable prompt edit in a *Current* / *Replace with* format. Unlike the previous skills it needs a single failing trace as context rather than a whole project, so you open it from a trace detail page.
+
+For ungrounded hallucinations like these, the typical fix is a refusal instruction: the agent is told to decline rather than invent specifics when it lacks tool grounding.
+
+Open one of the worst-scoring traces from the Feed. With that trace as context, type:
+
+> /fix-with-falcon
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/falcon-ai/end-to-end/step-7-fix-with-falcon.png" alt="Falcon AI fix-with-falcon output with sections for What happened, Root cause in the agent, The fix (current vs replace with), and Expected score improvement" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+If the OpenAI auto-instrumentor didn't capture the literal system message, the **Current** block is flagged as inferred. The fix is still load-bearing because the failure mode (ungrounded specifics) is independent of the exact wording.
+
+</Step>
+<Step title="Apply the fix and verify scores recover">
+
+Paste the **Replace with** block as your new system prompt and re-run the same queries through your traced agent. Then back in Falcon AI:
+
+> Re-run the same evals on `falcon-demo-failures` and compare to the previous run.
+
+Sample after-fix scores (your numbers will vary):
+
+| Eval | Before | After |
+|---|---|---|
+| **factual_accuracy** | 1 / 5 | 5 / 5 |
+| **completeness** | 5 / 5 | 5 / 5 |
+
+`factual_accuracy` recovers because the agent no longer fabricates. `completeness` stays high because the refusal still addresses the user's question.
+
+</Step>
+</Steps>
+
+## What you solved
+
+The support agent no longer invents order specifics. The same failing inputs that scored 1/5 on `factual_accuracy` before the fix now score 5/5, and any future regression on the same hallucination pattern will be caught the moment you re-run `/run-evaluations` on the dataset.
+
+<Check>
+You went from a noisy traced project to a fixed agent and a reusable regression dataset, all driven from one Falcon AI chat. Every artifact (dataset, eval run, prompt diff) is saved as a clickable completion card.
+</Check>
+
+- **Hallucinated order details** (invented tracking numbers, wrong return windows): caught by `/analyze-trace-errors` classification, scored by `/run-evaluations` on `factual_accuracy`
+- **Ad-hoc debug workflow** (jumping between Tracing, Datasets, Evals, prompt files): replaced by chaining four skills in one chat with auto-attached page context
+- **No regression coverage** (same failure could ship again): locked into a reusable dataset by `/build-dataset`
+- **Prompt fixes by guesswork**: replaced by `/fix-with-falcon`'s *Current* / *Replace with* diff grounded in the actual trace
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Context-Aware Trace Debugging" icon="zap" href="/docs/cookbook/falcon-ai/context-aware-debugging">
+    From a single bad trace to a paste-ready prompt fix in minutes
+  </Card>
+  <Card title="Building Golden Datasets from Production Traces" icon="database" href="/docs/cookbook/falcon-ai/eval-datasets-from-traces">
+    Curate balanced golden datasets from real traces with `/build-dataset`
+  </Card>
+  <Card title="Falcon AI Skills" icon="bolt" href="/docs/falcon-ai/features/skills">
+    All built-in slash commands and how to write your own
+  </Card>
+</CardGroup>
