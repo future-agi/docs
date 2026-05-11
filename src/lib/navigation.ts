@@ -825,7 +825,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'End-to-End with Falcon AI: Trace → Debug → Evaluate → Dataset → Fix in One Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
               { title: 'Context-Aware Trace Debugging with Falcon AI', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
-              { title: 'Building Evaluation Datasets from Production Traces with Falcon AI', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
+              { title: 'Building Golden Datasets from Production Traces with Falcon AI', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
             ]
           },
           {
@@ -1113,16 +1113,9 @@ export const tabNavigation: NavTab[] = [
               { title: 'Get Execution Details', href: '/docs/api/test-executions/gettestexecutiondetails' },
               { title: 'Get Execution KPIs', href: '/docs/api/test-executions/getkpis' },
               { title: 'Get Performance Summary', href: '/docs/api/test-executions/getperformancesummary' },
-              { title: 'Get Eval Explanation', href: '/docs/api/test-executions/getevalexplanationsummary' },
               { title: 'Cancel Execution', href: '/docs/api/test-executions/cancelexecution' },
               { title: 'Rerun Calls', href: '/docs/api/test-executions/reruncalls' },
-            ]
-          },
-          {
-            title: 'Call Executions',
-            items: [
-              { title: 'Get Call Details', href: '/docs/api/call-executions/getcallexecutiondetails' },
-              { title: 'Compare Sessions', href: '/docs/api/call-executions/getsessioncomparison' },
+              { title: 'Get Call Details', href: '/docs/api/test-executions/getcallexecutiondetails' },
             ]
           },
           {
