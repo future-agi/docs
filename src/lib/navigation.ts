@@ -370,7 +370,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },
               { title: 'Run Evals on Traces', href: '/docs/observe/features/evals' },
-              { title: 'Charts', href: '/docs/observe/features/charts' },
               { title: 'Dashboards', href: '/docs/observe/features/dashboard' },
               { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
