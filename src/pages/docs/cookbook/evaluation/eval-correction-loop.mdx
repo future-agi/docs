@@ -3,10 +3,6 @@ title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Me
 description: "Run a built-in eval, mark the rows where it disagrees with your judgment, bake those corrections into a custom eval, and re-run until the eval matches how your team scores quality."
 ---
 
-<TLDR>
-Score a batch with a built-in eval, find the rows where it scored differently than you would, and rewrite the criteria as a custom eval that includes your corrections as few-shot examples. Re-run on the same batch and watch eval-human agreement climb. The result is an evaluator that captures *your* domain's definition of quality, not a generic one.
-</TLDR>
-
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
 <a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/falcon-ai-page/evaluation/eval-correction-loop.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
 <a href="https://github.com/future-agi/cookbooks/blob/cookbook/falcon-ai-page/evaluation/eval-correction-loop.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
@@ -15,6 +11,8 @@ Score a batch with a built-in eval, find the rows where it scored differently th
 | Time | Difficulty | Package |
 |------|-----------|---------|
 | 15 min | Intermediate | `ai-evaluation` |
+
+By the end of this cookbook you will have a custom eval that catches failures a generic eval misses (off-policy refund offers, upsells in support replies, anything that violates your team's domain rules), 100% agreement with human verdicts on a four-row demo batch where the baseline scored 50%, and a repeatable loop to recalibrate after every prompt change. The only application-code change is one API call to register the new eval template.
 
 <Prerequisites>
 - FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
@@ -35,14 +33,16 @@ export FI_API_KEY="your-fi-api-key"
 export FI_SECRET_KEY="your-fi-secret-key"
 ```
 
-## Tutorial
+## What is an eval correction loop?
 
-The example below uses SaaS customer-support replies. The trick: pick failure modes a generic eval can't catch. A reply that pitches an upsell, commits a front-line agent to a refund, or recommends disabling 2FA can sound polished and on-topic. A generic helpfulness eval rates the surface form. Your team's rules rate what the reply *should not* do. The correction loop closes that gap.
+Built-in evals like `is_helpful` or `tone` score the **surface form** of a response. They have no way to know your refund-escalation policy, your no-upsell rule, or your security team's blocklist. So a reply that looks polite, on-topic, and complete will pass a generic eval even when your team would flag it as bad.
+
+The correction loop closes that gap in five steps: score a batch with a generic eval, mark the rows where the eval and your team disagree, encode those disagreements as few-shot FAIL examples in a custom rule prompt, re-score to verify the eval now matches your judgment, and iterate until fresh batches stay above your agreement bar. The example below runs the full loop on a four-row SaaS support batch where the bad replies look helpful but violate domain rules a generic eval cannot see.
 
 <Steps>
 <Step title="Score the batch with a built-in eval">
 
-Start with a built-in template like `is_helpful` or `tone`. It gives you a baseline plus the explanations the judge model used. The explanations are what you'll inspect in step 2.
+Start with a built-in template that scores the **surface form** of the response (`is_helpful`, `tone`, `coherence`). These are the evals most likely to pass replies your team would fail, because they have no way to know your domain rules. That's exactly the gap the correction loop closes. Run on a small batch (4 to 10 rows is enough for the first pass) and capture both the verdict AND the judge's reason. The reasons tell you whether the eval missed your domain rules or correctly applied them.
 
 ```python
 import os
@@ -106,7 +106,7 @@ The built-in `is_helpful` eval will likely return `Passed` for `r2` and `r3`. Bo
 </Step>
 <Step title="Identify the disagreements">
 
-A disagreement is any row where the eval and the human reach different verdicts. Sort by these. They're the rows that teach the evaluator something new.
+The rows where the eval and human agree don't teach the eval anything new. The rows where they disagree are the entire point: they are the failure modes the generic eval can't see. Sort those out, then look at the judge's reason for each disagreement. The reason explains WHY the surface form passed the generic eval, which tells you exactly what your custom rule prompt needs to forbid.
 
 ```python
 def passed(score):
@@ -123,12 +123,12 @@ for r in disagreements:
     print(f"    reason: {r['eval_reason'][:120]}")
 ```
 
-Pick 2 or 3 disagreement rows that capture distinct failure modes (here: cheerful-but-empty replies, off-policy promises). Those become your few-shot examples in the next step.
+Pick 2 or 3 disagreement rows that capture distinct failure modes (here: out-of-policy refund commits, in-support upsells). Those become your few-shot examples in the next step.
 
 </Step>
 <Step title="Encode the corrections as a custom eval">
 
-Create a custom eval whose rule prompt spells out your domain's definition of "good" and includes the corrected examples inline. The judge model uses the examples to calibrate its decisions on new rows.
+A custom eval is just a rule prompt plus an output type. The rule prompt has two jobs. First, enumerate your domain rules in plain English so the judge model has criteria instead of vibes. Second, include 1 to 3 few-shot examples of FAILs your team has flagged so the judge knows what "FAIL" actually looks like in *your* domain. One API call to `/model-hub/create_custom_evals/` registers the template. Future eval calls reference it by name.
 
 ```python
 import requests
@@ -189,7 +189,7 @@ Version your eval names (`_v1`, `_v2`). Each iteration creates a new template so
 </Step>
 <Step title="Re-score the same batch and measure agreement">
 
-Run the new eval on the same samples and compare against your human verdicts.
+Re-score the **same** batch with the new eval. Same samples, same human verdicts, only the evaluator changed, so any agreement delta is fully attributable to your rule prompt. Track the percentage of rows where eval and human agree. That's your calibration metric and the number you'll watch climb across iterations.
 
 ```python
 calibrated_results = []
@@ -219,12 +219,14 @@ Expect a jump from around 50% baseline to 100% on this set. `r2` and `r3` now fa
 </Step>
 <Step title="Iterate when agreement plateaus below your bar">
 
-If agreement is still below where you need it (typical bar: 85%+ on a held-out batch), the loop continues.
+One pass rarely catches every failure mode. New disagreements on fresh batches are the signal that your rule prompt missed a category. The loop continues with disciplined stop rules: don't add an example for an edge case the eval already gets right (it adds prompt length without changing behavior), and don't bloat past 8 to 10 examples (past that, agreement gains plateau and inference cost keeps growing).
+
+If agreement is still below where you need it (typical bar: 85%+ on a held-out batch):
 
 1. Pull a fresh sample of 20 to 30 rows the eval hasn't seen.
 2. Re-score with the latest version (`support_reply_quality_v1`).
 3. Find the new disagreements. These are failure modes your rule prompt didn't cover.
-4. Rev to `_v2`: add 1 or 2 new few-shot examples or sharpen one of the rules. Avoid bloating. Every example added trades calibration for prompt length and inference cost.
+4. Rev to `_v2`: add 1 or 2 new few-shot examples or sharpen one of the rules.
 
 ```python
 # After collecting fresh disagreements...
@@ -238,14 +240,23 @@ Additional FAIL example (learn from this):
 # Re-register as support_reply_quality_v2 and compare scores side-by-side.
 ```
 
-A well-calibrated eval typically converges in 2 or 3 iterations. Stop when fresh batches stay above your agreement bar. Adding more examples beyond that hurts more than it helps.
+A well-calibrated eval typically converges in 2 or 3 iterations. Stop when fresh batches stay above your agreement bar.
 
 </Step>
 </Steps>
 
+## What you solved
+
+Repetitive prompt iteration with no objective signal (the kind every team hits when "is this output good?" depends on policy rules a generic eval can't see) now becomes a measurable loop. You have a domain-calibrated evaluator, a single number (agreement %) to track across prompt changes, and a versioned trail of eval templates so you can compare quality runs head-to-head over time.
+
 <Check>
 You ran a built-in eval, found rows where it disagreed with human judgment, encoded those corrections as a custom eval with explicit rules and few-shot failure examples, then re-scored to confirm the eval now matches how your team defines quality.
 </Check>
+
+- **Generic evals scoring surface form** (instead of domain rules): solved by encoding rules in a custom rule prompt with few-shot FAIL examples
+- **No signal which rows to focus on**: solved by surfacing only the disagreements as the calibration target
+- **Starting from scratch on every prompt change**: solved by versioning the eval template (`_v1`, `_v2`) so old runs stay reproducible
+- **No way to measure if the eval matches your team's bar**: solved by tracking agreement % between eval and human verdict across iterations
 
 ## Explore further
 
