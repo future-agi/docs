@@ -5,133 +5,215 @@ description: "Production readiness checklist — replace secrets, configure TLS,
 
 ## About
 
-Run through this before exposing the stack to real users. Covers secrets, TLS, swapping in managed data stores, backup commands for Postgres/ClickHouse/MinIO, Prometheus monitoring, and the upgrade and rollback runbook.
+Use this checklist before exposing a self-hosted Future AGI deployment to real users or production traffic. Harden secrets, TLS, networking, backups, monitoring, and upgrades before users depend on it.
 
-## Hardening checklist
+For production, prefer the production overlay in the `deploy/` directory. It requires explicit secrets, pins the image version, pulls published images, and refuses to start when required values are missing.
 
-**Secrets** — replace all `CHANGEME` values before going live:
+## Go-live checklist
 
-```bash
-openssl rand -hex 32    # SECRET_KEY, AGENTCC_INTERNAL_API_KEY
-openssl rand -base64 24 # PG_PASSWORD, MINIO_ROOT_PASSWORD
-```
+| Area | Required action |
+|---|---|
+| Secrets | Use `deploy/setup.sh` or generate production secrets, then move them to a secret manager when possible |
+| TLS | Terminate HTTPS in Caddy, nginx, Traefik, an ingress controller, or a load balancer |
+| Network | Expose only frontend, backend, and optionally AgentCC Gateway; keep data stores private |
+| Auth | Create admin users intentionally; configure email or SSO before inviting users |
+| AgentCC Gateway | Use virtual keys for apps; keep provider keys server-side |
+| Backups | Test restore for Postgres and object storage before launch |
+| Monitoring | Scrape backend and AgentCC Gateway metrics; alert on job failures and replication lag |
+| Upgrades | Take backups, upgrade in a staging clone first, and document rollback criteria |
 
-**Runtime flags** in `.env`:
-- `ENV_TYPE=prod`
-- `FAST_STARTUP=false`
-- `GRANIAN_WORKERS=<your CPU count>`
+## Secrets
 
-**TLS** — the frontend and backend don't terminate TLS. Put Caddy, nginx, or Traefik in front:
-
-```
-# Caddyfile (simplest — auto-issues Let's Encrypt certs)
-app.yourcompany.com    { reverse_proxy localhost:3000 }
-api.yourcompany.com    { reverse_proxy localhost:8000 }
-```
-
-After setting up TLS, set `VITE_HOST_API=https://api.yourcompany.com` in `.env` and rebuild:
+Generate production values:
 
 ```bash
-docker compose build frontend && docker compose up -d frontend
+openssl rand -hex 32       # SECRET_KEY
+openssl rand -base64 24    # PG_PASSWORD
+openssl rand -base64 24    # MINIO_ROOT_PASSWORD
+openssl rand -hex 32       # AGENTCC_INTERNAL_API_KEY
 ```
 
-**Managed data stores** — for production, replace compose-managed services:
+Set production runtime flags:
 
-| Replace | With | Change |
-|---|---|---|
-| `postgres` | RDS / Aurora / Cloud SQL | Set `PG_*` vars to managed endpoint |
-| `clickhouse` | ClickHouse Cloud | Set `CH_HOST`, `CH_PORT`, etc. |
-| `redis` | ElastiCache / Upstash | Set `REDIS_URL` |
-| `minio` | AWS S3 | Set `S3_ENDPOINT_URL=https://s3.amazonaws.com` + AWS creds |
+```bash
+ENV_TYPE=prod
+FAST_STARTUP=false
+GRANIAN_WORKERS=<cpu-count>
+GRANIAN_THREADS=2
+```
+
+Use a secret manager for shared environments. If you keep `.env` on disk, restrict permissions:
+
+```bash
+chmod 600 .env
+```
+
+## TLS and domains
+
+Run the frontend, backend, and optionally AgentCC Gateway behind TLS.
+
+Example Caddyfile:
+
+```text
+app.yourcompany.com {
+  reverse_proxy 127.0.0.1:3000
+}
+
+api.yourcompany.com {
+  reverse_proxy 127.0.0.1:8000
+}
+
+gateway.yourcompany.com {
+  reverse_proxy 127.0.0.1:8090
+}
+```
+
+For production installs, set `FRONTEND_URL` and `VITE_HOST_API` in `deploy/.env.production` before starting the stack:
+
+```bash
+FRONTEND_URL=https://app.yourcompany.com
+VITE_HOST_API=https://api.yourcompany.com
+docker compose --env-file deploy/.env.production \
+  -f docker-compose.yml -f deploy/docker-compose.production.yml up -d frontend
+```
+
+Only expose the AgentCC Gateway domain if external applications call it directly. If AgentCC Gateway is only used by the Future AGI backend, keep it private.
+
+## Network policy
+
+| Service | Production exposure |
+|---|---|
+| `frontend` | Public through HTTPS |
+| `backend` | Public through HTTPS if SDKs or browser UI call it |
+| `agentcc-gateway` | Private by default; public only for external app traffic |
+| `postgres`, `clickhouse`, `redis`, `minio`, `temporal` | Private network, VPN, or bastion only |
+
+Do not expose database or queue ports directly to the internet. Use firewall rules, security groups, private networking, or equivalent network policies to enforce this.
 
 <Note>
-`code-executor` requires `privileged: true`. Run on EC2 / GCE instances — not Fargate or Cloud Run.
+Official Kubernetes manifests and Helm charts are coming soon. Until then, the supported production path is Docker Compose on a VM or bare-metal host, with managed data stores where needed.
 </Note>
 
-**Secrets manager** — use AWS Secrets Manager, HashiCorp Vault, or GCP Secret Manager instead of a plain `.env` file.
+## Managed data stores
 
----
+For production, move durable services out of the Compose host when you need high availability, managed backups, or independent scaling.
+
+| Compose service | Production option | Notes |
+|---|---|---|
+| `postgres` | RDS, Aurora, Cloud SQL, self-managed HA Postgres | Primary transactional database |
+| `clickhouse` | ClickHouse Cloud or managed ClickHouse | Size for trace and eval query volume |
+| `redis` | ElastiCache, Memorystore, Upstash, self-managed Redis | Use persistence if it stores queues or state you cannot lose |
+| `minio` | S3, GCS via S3-compatible gateway, managed object storage | Update `S3_*` env vars |
+
+Keep latency low between backend, worker, Postgres, Redis, and Temporal.
 
 ## Backups
 
-### PostgreSQL
+### Postgres
 
 ```bash
-# Backup
 docker compose exec postgres \
   pg_dump -U futureagi -d futureagi --format=custom \
-  > backup-$(date +%F).dump
-
-# Restore
-docker compose exec -T postgres \
-  pg_restore -U futureagi -d futureagi --clean --if-exists \
-  < backup-2026-04-22.dump
+  > futureagi-postgres-$(date +%F).dump
 ```
 
-Volumes: `future-agi_postgres-data` · `future-agi_clickhouse-data` · `future-agi_redis-data` · `future-agi_minio-data` · `future-agi_peerdb-catalog-data` · `future-agi_peerdb-minio-data`
+Restore into a stopped or empty target:
+
+```bash
+docker compose exec -T postgres \
+  pg_restore -U futureagi -d futureagi --clean --if-exists \
+  < futureagi-postgres-2026-05-07.dump
+```
+
+### Object storage
+
+For local MinIO:
+
+```bash
+mc alias set local http://localhost:9005 futureagi "$MINIO_ROOT_PASSWORD"
+mc mirror local/futureagi ./futureagi-minio-backup
+```
+
+For S3, use bucket versioning and lifecycle policies. Back up files and metadata together with Postgres snapshots taken at the same point in time.
 
 ### ClickHouse
 
-```sql
-BACKUP TABLE default.traces TO S3('s3://your-bucket/ch-backup/', 'KEY', 'SECRET');
-```
-
-ClickHouse data can also be rebuilt from scratch by re-running PeerDB init since it replicates from Postgres.
-
-### MinIO
-
-```bash
-mc alias set local http://localhost:9005 futureagi <MINIO_ROOT_PASSWORD>
-mc alias set s3 https://s3.amazonaws.com <AWS_KEY> <AWS_SECRET>
-mc mirror local/ s3/your-bucket/
-```
-
----
+ClickHouse stores analytics and trace query data. For production, use native ClickHouse backups or your managed ClickHouse provider's snapshot feature.
 
 ## Monitoring
 
-Backend exposes Prometheus metrics at `http://localhost:8000/metrics`. Add a scraper:
+Backend exposes Prometheus metrics at:
+
+```text
+http://localhost:8000/metrics
+```
+
+Scrape it from Prometheus:
 
 ```yaml
-# prometheus.yml
 scrape_configs:
-  - job_name: futureagi
-    static_configs:
-      - targets: ['localhost:8000']
+  - job_name: futureagi-backend
+    scheme: https
     metrics_path: /metrics
+    static_configs:
+      - targets: ["api.yourcompany.com:443"]
 ```
 
-Key signals: backend error rate, Temporal workflow success/failure, Postgres WAL lag (PeerDB health), ClickHouse query latency, PeerDB mirror status at [localhost:3001](http://localhost:3001).
+Track these signals:
 
----
+| Signal | Why it matters |
+|---|---|
+| Backend 5xx rate and latency | User-facing API health |
+| Worker queue depth and failures | Eval and trace jobs are falling behind |
+| Temporal workflow failures | Durable background job failures |
+| ClickHouse query latency and disk | Trace and dashboard performance |
+| Postgres connections, CPU, disk, WAL | Primary data-store health |
+| AgentCC Gateway 4xx, 5xx, timeout, provider error rate | Model routing and provider health |
 
-## Upgrades
+## Upgrade runbook
+
+1. Announce a maintenance window if users depend on the deployment.
+2. Take Postgres and object-storage backups.
+3. Record current commit and `FUTURE_AGI_VERSION`.
+4. Upgrade a staging clone first when possible.
+5. Pull code, pull images, and restart.
+6. Watch backend migrations, worker logs, and AgentCC Gateway logs.
+7. Run an AgentCC Gateway model call and a trace ingestion smoke test.
+
+Commands:
 
 ```bash
+git rev-parse HEAD
 git pull
-docker compose build
-docker compose up -d
+docker compose --env-file deploy/.env.production \
+  -f docker-compose.yml -f deploy/docker-compose.production.yml pull
+docker compose --env-file deploy/.env.production \
+  -f docker-compose.yml -f deploy/docker-compose.production.yml up -d
+docker compose logs -f backend
 ```
 
-Migrations run automatically. If a migration fails: `docker compose exec backend python manage.py migrate`
+## Rollback
 
-If release notes mention PeerDB changes: `docker compose run --rm peerdb-init bash /setup.sh`
-
-**Rollback:**
+Rollback application code only when database migrations are backward-compatible:
 
 ```bash
-git log --oneline -5
-git checkout <previous-hash>
-docker compose build && docker compose up -d
+# Set FUTURE_AGI_VERSION in deploy/.env.production to the previous release,
+# then pull and restart.
+docker compose --env-file deploy/.env.production \
+  -f docker-compose.yml -f deploy/docker-compose.production.yml pull
+docker compose --env-file deploy/.env.production \
+  -f docker-compose.yml -f deploy/docker-compose.production.yml up -d
 ```
+
+If a migration changed data irreversibly, restore Postgres and object storage from the backups taken before the upgrade.
 
 ## Next Steps
 
 <CardGroup cols={2}>
   <Card title="Troubleshooting" icon="wrench" href="/docs/self-hosting/troubleshooting">
-    Symptoms, causes, and fixes for common errors.
+    Diagnose startup, AgentCC Gateway, Temporal, and upgrade failures.
   </Card>
-  <Card title="System Configuration" icon="sliders" href="/docs/self-hosting/configuration">
-    Tune the LLM gateway, PeerDB mirrors, and Temporal workers.
+  <Card title="AgentCC Gateway" icon="route" href="/docs/self-hosting/gateway">
+    Harden model access, virtual keys, and provider routing.
   </Card>
 </CardGroup>

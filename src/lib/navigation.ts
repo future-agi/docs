@@ -48,6 +48,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
               { title: 'Environment Variables', href: '/docs/self-hosting/environment' },
               { title: 'System Configuration', href: '/docs/self-hosting/configuration' },
+              { title: 'AgentCC Gateway', href: '/docs/self-hosting/gateway' },
               { title: 'User Management', href: '/docs/self-hosting/user-management' },
               { title: 'Production', href: '/docs/self-hosting/production' },
               { title: 'Troubleshooting', href: '/docs/self-hosting/troubleshooting' },
