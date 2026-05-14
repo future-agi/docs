@@ -1,0 +1,216 @@
+---
+title: "Running Continuous Evals in Production Without Blowing Your Token Budget"
+description: "Score every production trace for hallucination, tone, and policy violations on a tight token budget. Sampling, judge-model tiers, span filters, and alert-driven runs cut eval cost by 80%+ without losing the signal."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/falcon-ai-page/observe/continuous-evals-budget.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/falcon-ai-page/observe/continuous-evals-budget.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 15 min | Intermediate | `ai-evaluation` |
+
+By the end of this cookbook you will have a continuous eval task running on your production project that scores incoming traces for the failure modes you care about (hallucination, tone, policy violations), capped at a token budget you set in advance, with an alert monitor that pings you only when scores drop. Same coverage as scoring 100% of spans with the heaviest judge model, at roughly 10 to 15% of the token cost.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- A traced Observe project. If you don't have one, follow [Manual Tracing](/docs/cookbook/quickstart/manual-tracing) to instrument an agent first.
+</Prerequisites>
+
+## What is a continuous eval task?
+
+A continuous eval task runs your evaluators (hallucination detection, tone, custom rule prompts) against new spans as they arrive in your Observe project. Results show up per-span in the dashboard and can drive alerts when quality drops. Run once on every span in production with the heaviest judge model and you're paying for an extra LLM call on every user request, which is rarely the right tradeoff.
+
+Future AGI exposes four cost levers on every eval task. Tuning them well is the difference between a $50/month eval bill and a $500/month one for the same project.
+
+| Lever | What it controls | Typical setting |
+|---|---|---|
+| **Sampling rate** | Percentage of matching spans evaluated per run (1 to 100) | 5 to 20% for high-volume traffic |
+| **Span limit** | Hard cap on spans evaluated per run (1 to 1,000,000) | Match to your daily traffic |
+| **Judge model** | Which Turing model scores each span | `turing_flash` for routine evals, `turing_large` only for high-stakes |
+| **Filters** | Which spans the task even looks at | Restrict to user-facing LLM spans |
+
+The four steps below configure a continuous eval task with all four levers tuned, watch the cost, and wire up an alert monitor so the eval results actually drive action.
+
+<Steps>
+<Step title="Pick the right judge model for your workload">
+
+The judge model is the single biggest cost lever. Future AGI's three Turing tiers price out roughly 10x apart end to end:
+
+- **`turing_flash`**: Latency-optimized, text and image. Use for routine production evals (tone, helpfulness, completeness, custom rule prompts).
+- **`turing_small`**: Higher fidelity at moderate cost. Use when `turing_flash` disagrees with your team too often (find this with the [eval correction loop](/docs/cookbook/evaluation/eval-correction-loop)).
+- **`turing_large`**: Flagship multimodal accuracy. Use only for high-stakes evals (medical, legal, safety) or when you've measured `turing_flash` missing real failures.
+
+Default to `turing_flash` and only escalate per-eval when you have evidence of disagreement. The other two tiers exist for specific accuracy needs, not as a starting point.
+
+```python
+# Sanity-check the judge model cost difference on a representative span
+import os
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+inputs = {
+    "input": "What is your return policy?",
+    "output": (
+        "We accept returns of unopened items within 30 days of purchase for a "
+        "full refund. After 30 days, we can offer store credit. To start a "
+        "return, click 'Start Return' in your account dashboard. Let me know "
+        "if you'd like me to walk you through the process."
+    ),
+}
+
+for model in ["turing_flash", "turing_small", "turing_large"]:
+    r = evaluator.evaluate(eval_templates="is_helpful", inputs=inputs, model_name=model)
+    print(f"{model:>14} | {r.eval_results[0].output} | reason length: {len(r.eval_results[0].reason)} chars")
+```
+
+If `turing_flash` gives the same verdict as `turing_large` on a sample of 30 to 50 representative spans, use `turing_flash` for the continuous task. Save the heavier models for the eval correction loop where you're calibrating against human judgment, not running at scale.
+
+</Step>
+<Step title="Filter to spans that actually need evaluation">
+
+Most projects have spans that don't need quality evaluation: cache hits, tool calls without a model response, internal retrieval-only spans, health checks. Eval-ing them wastes tokens and pollutes your dashboards with `N/A` rows. Set filters before sampling so the sampling math runs against the right denominator.
+
+In **Observe → Evals & Tasks → Create Task**, you'll land on the form below. The four cost levers (Filters, Evaluations, Scheduling, sampling) all live here, plus a live preview on the right showing exactly which spans the filter will match before you save.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/observe/continuous-evals-budget/create-eval-task.png" alt="Create Task form in Observe showing sections for Basic info (name, project), Run Type (spans/traces/sessions), Evaluations, Filters, and Scheduling (Historical data vs New incoming data) with a live span preview on the right" style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}} />
+
+Configure the filters:
+
+| Filter | Recommended value | Why |
+|---|---|---|
+| `observation_type` | `["llm"]` | Only score actual LLM responses, skip tool calls and chains |
+| `span_attributes_filters` | `[{"key": "agent.name", "value": "support_bot", "operator": "equals"}]` | Restrict to the user-facing agent, skip background workers |
+| `date_range` | leave open for continuous tasks | Continuous mode picks up new spans only |
+
+If you're managing tasks programmatically, the same filters go in the eval task's `filters` field on `POST /tracer/eval-task/`. See [Eval task API](#eval-task-api) below.
+
+</Step>
+<Step title="Set sampling rate to match your traffic volume">
+
+Sampling cuts cost linearly. A `sampling_rate` of 10 means the task evaluates 10% of matching spans and pays 10% of the tokens.
+
+The right rate depends on traffic volume and how quickly you need to detect a quality drop:
+
+| Daily LLM spans | Sampling rate | Why |
+|---|---|---|
+| < 1,000 | 100% | Volume is low enough that full coverage is cheap |
+| 1,000 to 10,000 | 25 to 50% | Statistically meaningful per-day signal at moderate cost |
+| 10,000 to 100,000 | 10 to 20% | Drop detection within hours, not minutes |
+| > 100,000 | 5 to 10% | Minutes-level detection at high volume needs sampling discipline |
+
+Combine with `spans_limit` as a hard ceiling. For example: `sampling_rate=10` with `spans_limit=5000` means "evaluate 10% of matching spans, but never more than 5,000 per run, no matter how much traffic spikes."
+
+```bash
+# Eval task config (sent to POST /tracer/eval-task/)
+{
+  "project": "<your-project-uuid>",
+  "name": "support-bot-quality-continuous",
+  "evals": ["<config-uuid-1>", "<config-uuid-2>"],
+  "run_type": "continuous",
+  "sampling_rate": 10,
+  "spans_limit": 5000,
+  "filters": {
+    "observation_type": ["llm"],
+    "span_attributes_filters": [
+      {"key": "agent.name", "value": "support_bot", "operator": "equals"}
+    ]
+  }
+}
+```
+
+The defaults (`100%`, `1000` spans) are wrong for production. They exist to make the first run on a small dataset feel responsive, not to scale.
+
+</Step>
+<Step title="Wire up alert monitors so you only react to real drops">
+
+Without alerts you're paying for evals nobody reads. Create an alert monitor on the eval metric so the only time you look at the dashboard is when a quality drop has already crossed your threshold.
+
+In **Observe → Alerts → New Monitor**, configure:
+
+- **Metric**: the `CustomEvalConfig` UUID from the eval task above
+- **Threshold type**: `percentage_change` (catches regressions, not just absolute floors)
+- **Critical threshold**: 15 (a 15% drop in pass rate vs the prior window pages you)
+- **Warning threshold**: 5 (a 5% drop logs to the dashboard but doesn't page)
+- **Alert frequency**: 60 minutes (matches the typical cadence of a sampled continuous task)
+- **Notification emails**: your on-call rotation
+
+```python
+# Same monitor via the API
+import requests, os
+
+requests.post(
+    "https://api.futureagi.com/tracer/user-alerts/",
+    headers={
+        "X-Api-Key": os.environ["FI_API_KEY"],
+        "X-Secret-Key": os.environ["FI_SECRET_KEY"],
+    },
+    json={
+        "name": "support-bot-quality-drop",
+        "metric_type": "evaluation_metrics",
+        "metric": "<custom-eval-config-uuid>",
+        "threshold_type": "percentage_change",
+        "threshold_operator": "less_than",
+        "critical_threshold_value": 15,
+        "warning_threshold_value": 5,
+        "alert_frequency": 60,
+        "project": "<your-project-uuid>",
+        "notification_emails": ["oncall@your-company.com"],
+    },
+)
+```
+
+With sampling at 10% and `turing_flash` as the judge, a project doing 50,000 daily LLM spans now pays roughly 5,000 eval calls a day on the cheapest judge tier, with alerts wired up so quality drops actually surface. Compare to the naive setup (100% sampling, `turing_large`) at 50,000 calls on the most expensive judge tier per day. Same regression detection. Roughly 10% of the token spend.
+
+</Step>
+</Steps>
+
+## What you solved
+
+Every production LLM app needs continuous quality coverage, but the naive setup (100% sampling × heaviest judge model × every span) makes evaluation cost a meaningful fraction of total inference cost. The four levers above (sampling, judge model, filters, alert-driven attention) give you the same regression-detection signal at a fraction of the token spend, and the alert monitor turns the eval results into something a human actually reads.
+
+<Check>
+Continuous eval task running on your production project, scoped to user-facing LLM spans, sampling at a rate that matches your traffic, scored by the right judge model for the eval, with an alert monitor wired to your on-call rotation. Eval cost capped, regressions still surfaced.
+</Check>
+
+- **Eval cost scaling linearly with traffic**: solved by sampling at 5 to 20% of matching spans
+- **Spending heavyweight judge tokens on routine evals**: solved by using `turing_flash` as the default and escalating only with evidence
+- **Wasting tokens on spans that don't need eval coverage**: solved by `observation_type` and span-attribute filters
+- **Eval results piling up in a dashboard nobody reads**: solved by alert monitors with critical/warning thresholds wired to email or PagerDuty
+
+## Eval task API
+
+The dashboard does the same POST under the hood. Endpoint: `POST /tracer/eval-task/` with `X-Api-Key` and `X-Secret-Key` headers. Required fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `project` | UUID | Observe project to score |
+| `name` | string | Used in the dashboard to find the task later |
+| `evals` | list of UUIDs | One or more `CustomEvalConfig` IDs already attached to the project |
+| `run_type` | `"continuous"` or `"historical"` | `"continuous"` for ongoing, `"historical"` for one-shot |
+| `sampling_rate` | float, 1.0 to 100.0 | Percentage of matching spans to evaluate |
+| `spans_limit` | int, 1 to 1,000,000 | Hard cap per run. Required for `historical`, ignored for `continuous` |
+| `filters` | dict | `observation_type`, `date_range`, `session_id`, `span_attributes_filters` |
+
+Status values: `pending`, `running`, `completed`, `failed`, `paused`, `deleted`. Pause a runaway task with `POST /tracer/eval-task/<id>/pause/`.
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Run Evals on Traces" icon="play" href="/docs/observe/features/evals">
+    Full reference for the continuous and historical eval task UI
+  </Card>
+  <Card title="Future AGI Models" icon="brain" href="/docs/evaluation/features/futureagi-models">
+    Pick the right judge tier: turing_flash, turing_small, turing_large
+  </Card>
+  <Card title="Alerts & Monitors" icon="zap" href="/docs/observe/features/alerts">
+    Threshold-based alerts on eval metrics with email and PagerDuty
+  </Card>
+</CardGroup>
