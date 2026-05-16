@@ -1051,7 +1051,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Delete Scenario', href: '/docs/api/scenarios/deletescenario' },
               { title: 'Add Rows with AI', href: '/docs/api/scenarios/addscenariorowswithai' },
               { title: 'Add Columns', href: '/docs/api/scenarios/addcolumns' },
-              { title: 'Add Empty Rows', href: '/docs/api/scenarios/addemptyrowstodataset' },
             ]
           },
           {
@@ -1092,10 +1091,8 @@ export const tabNavigation: NavTab[] = [
               { title: 'Get Test Run Details', href: '/docs/api/run-tests/getruntestdetails' },
               { title: 'Delete Test Run', href: '/docs/api/run-tests/deleteruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
-              { title: 'Update Components', href: '/docs/api/run-tests/updatetestcomponents' },
               { title: 'Get Test Executions', href: '/docs/api/run-tests/gettestexecutions' },
               { title: 'Get Test Scenarios', href: '/docs/api/run-tests/gettestscenarios' },
-              { title: 'Get Call Executions', href: '/docs/api/run-tests/getcallexecutions' },
               { title: 'Get Eval Summary', href: '/docs/api/run-tests/getevalsummary' },
               { title: 'Compare Eval Summaries', href: '/docs/api/run-tests/compareevalsummaries' },
               { title: 'Add Eval Configs', href: '/docs/api/run-tests/addevalconfigs' },

@@ -61,11 +61,6 @@ export const apiNavigation: ApiNavGroup[] = [
         "title": "Add columns to a scenario",
         "href": "/docs/api/scenarios/addcolumns",
         "method": "POST"
-      },
-      {
-        "title": "Add empty rows to a scenario",
-        "href": "/docs/api/scenarios/addemptyrowstodataset",
-        "method": "POST"
       }
     ]
   },
@@ -188,11 +183,6 @@ export const apiNavigation: ApiNavGroup[] = [
         "method": "POST"
       },
       {
-        "title": "Update test run components",
-        "href": "/docs/api/run-tests/updatetestcomponents",
-        "method": "PATCH"
-      },
-      {
         "title": "Get test executions",
         "href": "/docs/api/run-tests/gettestexecutions",
         "method": "GET"
@@ -200,11 +190,6 @@ export const apiNavigation: ApiNavGroup[] = [
       {
         "title": "Get scenarios for a test run",
         "href": "/docs/api/run-tests/gettestscenarios",
-        "method": "GET"
-      },
-      {
-        "title": "Get call executions for a test run",
-        "href": "/docs/api/run-tests/getcallexecutions",
         "method": "GET"
       },
       {

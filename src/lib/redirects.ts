@@ -48,7 +48,6 @@ export const redirectMap: Record<string, string> = {
   '/api-reference/prompt-workbench/get-prompt-version-by-name': '/docs/api',
   '/api-reference/run-tests/create-a-new-test-run': '/docs/api/run-tests/createruntest',
   '/api-reference/run-tests/execute-a-test-run': '/docs/api/run-tests/executeruntest',
-  '/api-reference/scenarios/add-empty-rows-to-a-scenario': '/docs/api/scenarios/addemptyrowstodataset',
   '/api-reference/scenarios/add-rows-to-a-scenario-using-ai': '/docs/api/scenarios/addscenariorowswithai',
   '/api-reference/scenarios/edit-a-scenario': '/docs/api/scenarios/editscenario',
   '/api-reference/scenarios/generate-or-create-a-scenario': '/docs/api/scenarios/createscenario',
