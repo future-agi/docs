@@ -1,0 +1,184 @@
+---
+title: "Score Support Replies Against Live CRM Data Using MCP Connectors"
+description: "Build an Agent-mode eval that calls your CRM through an MCP connector to verify a customer-support reply against the user's real account state, then run it across a dataset."
+---
+
+<TLDR>
+Generic helpfulness evals can't tell you if an agent's reply is *factually* right for *this* customer. Wire your CRM as an MCP connector, attach it to an Agent-mode eval, and the judge will look up the real account state per row and score the reply against it. The result is an eval that fails on confident-sounding lies.
+</TLDR>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 25 min | Intermediate | `ai-evaluation`, any MCP server |
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- An MCP server exposing a read-only lookup tool (we use a stub `crm` server below; substitute your own)
+- Python 3.9+
+</Prerequisites>
+
+## Why this matters
+
+Customer support replies often quote things like a user's plan, billing state, or feature flags. A model that hallucinates one of those produces a reply that *reads* correct but is wrong for the user in front of it. A generic eval scores the reply's tone or coherence; it cannot catch a wrong plan name.
+
+An Agent-mode eval with a CRM connector calls `crm.get_user(user_id)` while it scores each row. The judge compares the reply against the real record and fails when they disagree.
+
+---
+
+## Step 1: Stand up the CRM MCP connector
+
+If you already have a CRM with an MCP server (HubSpot, Salesforce, Linear, or an internal one), skip to Step 2. Otherwise, here is a minimal Python stub you can run locally for the walkthrough. It exposes one `get_user(user_id)` tool over the MCP `streamable_http` transport.
+
+```python
+# crm_mcp_server.py
+from fastmcp import FastMCP
+
+mcp = FastMCP("crm")
+
+USERS = {
+    "u-1001": {"plan": "pro", "two_factor": True, "last_invoice": "paid"},
+    "u-1002": {"plan": "free", "two_factor": False, "last_invoice": "unpaid"},
+    "u-1003": {"plan": "team", "two_factor": True, "last_invoice": "paid"},
+}
+
+@mcp.tool()
+def get_user(user_id: str) -> dict:
+    """Return the user's current plan, 2FA state, and last invoice status."""
+    return USERS.get(user_id, {"error": "not found"})
+
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+```
+
+Run it:
+
+```bash
+pip install fastmcp
+python crm_mcp_server.py
+```
+
+Expose it through ngrok or your own tunnel so Future AGI can reach it:
+
+```bash
+ngrok http 8000
+```
+
+Grab the public URL (e.g. `https://abc123.ngrok-free.app`).
+
+---
+
+## Step 2: Register the connector in Future AGI
+
+1. Open **Settings → Connectors → Add Connector**.
+2. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Name | `crm-stub` |
+   | Server URL | `https://<your-tunnel>/mcp` |
+   | Transport | `streamable_http` |
+   | Auth type | `None` (the stub takes no auth — for a real server use the appropriate option) |
+
+3. Click **Test Connection** and then **Discover Tools**. You should see `get_user` in the list.
+4. Save.
+
+For a production connector, see [Falcon AI MCP Connectors](/docs/falcon-ai/features/mcp-connectors) for OAuth, bearer, and API-key setups.
+
+---
+
+## Step 3: Prepare the eval dataset
+
+Create a small dataset that pairs a user id with the agent's reply. Each row is one customer interaction.
+
+| user_id | reply |
+|---|---|
+| u-1001 | "Since you're on our Pro plan, you already have 2FA enabled. Your last invoice is paid in full." |
+| u-1002 | "I see you're on the Team plan with all premium features. Your invoice is up to date." |
+| u-1003 | "You're on the Team plan, 2FA is on, and your last invoice was settled." |
+
+The first and third rows are correct against the stub data. The second one is a hallucination: `u-1002` is on `free`, not `team`, and the last invoice is `unpaid`.
+
+Upload this dataset under **Datasets → New Dataset** with two text columns: `user_id` and `reply`.
+
+---
+
+## Step 4: Create the Agent-mode eval
+
+1. Open the dataset and click **Evaluate**.
+2. Click **Add Evaluation → Create your own eval**.
+3. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Name | `support_reply_matches_crm` |
+   | Mode | `Agent` |
+   | Output type | `pass_fail` |
+   | Model | `turing_large` |
+
+4. In **Tools**, enable the `crm-stub` connector. Leave Internet off — the eval should not need it.
+5. Paste this rule prompt:
+
+   ```text
+   You are scoring a customer-support reply against the user's real
+   account state.
+
+   user_id: {{user_id}}
+   reply: "{{reply}}"
+
+   Call `crm.get_user({{user_id}})` to fetch the user's real plan,
+   2FA state, and last_invoice status. Compare every concrete claim
+   in the reply against the live record.
+
+   Pass only if every concrete claim in the reply matches the record.
+   Fail otherwise. Your reason must quote the mismatched fields and
+   show both the claim and the live value.
+   ```
+
+6. Click **Test on Sample** with row 2 (`u-1002`) selected. You should see:
+
+   - A tool call: `crm.get_user("u-1002")`
+   - Tool response: `{"plan": "free", "two_factor": false, "last_invoice": "unpaid"}`
+   - Score: **Failed**
+   - Reason quoting the plan and invoice mismatch.
+
+7. Click **Add & Run** to score every row.
+
+---
+
+## Step 5: Read the results
+
+| user_id | Score | Reason |
+|---|---|---|
+| u-1001 | Passed | Plan matches Pro; 2FA matches enabled; invoice matches paid. |
+| u-1002 | Failed | Reply claimed Team plan but `crm.get_user` returned `free`. Reply said invoice up to date but record shows `unpaid`. |
+| u-1003 | Passed | All three claims match the live record. |
+
+Open any row to see the **Tool Trace** — the exact tool call and response the judge used. The trace is the audit log for why a row scored the way it did.
+
+---
+
+## Going further
+
+- **Add more tools**: Extend the MCP server with `get_subscription`, `get_invoices`, `get_feature_flags`. The judge will pick the right tool per claim.
+- **Use a real CRM**: Replace the stub with HubSpot, Stripe, or Linear MCP servers. Set the connector auth to OAuth or bearer.
+- **Score traces, not datasets**: The same Agent-mode eval can run against [traced](/docs/observe) production conversations — wire it as a [continuous evaluation](/docs/evaluation/features/cicd).
+- **Cross-source evals**: Enable two connectors at once (CRM + Notion docs). The judge calls both when the reply cites a product feature *and* a customer record.
+
+---
+
+## Pitfalls to avoid
+
+- **Vague rule prompts**. If the prompt does not mention which tool to use and what to check, the judge may skip the lookup. Spell it out.
+- **Too many enabled tools**. The judge has to read every tool schema on every row. Enable only the ones this eval needs.
+- **PII in tool responses**. The full tool response is included in the eval reason and trace. Mask or strip fields the eval doesn't need before they leave your MCP server.
+- **Rate limits**. A 100k-row run with two tool calls per row is 200k upstream requests. Throttle the dataset run or batch the eval rows accordingly.
+
+---
+
+## Next steps
+
+- [MCP Connectors concept](/docs/evaluation/concepts/mcp-connectors): The model behind Agent-mode evals.
+- [Configure MCP Connectors for an Eval](/docs/evaluation/features/mcp-connectors): The UI walkthrough.
+- [Create custom evals](/docs/evaluation/features/custom): Building eval templates without connectors.
+- [Falcon AI MCP Connectors](/docs/falcon-ai/features/mcp-connectors): Registering and authenticating a connector.

@@ -301,6 +301,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Versioning', href: '/docs/evaluation/concepts/versioning' },
               { title: 'Judge Models', href: '/docs/evaluation/concepts/judge-models' },
               { title: 'Eval Results', href: '/docs/evaluation/concepts/eval-results' },
+              { title: 'MCP Connectors in Evaluation', href: '/docs/evaluation/concepts/mcp-connectors' },
             ]
           },
           {
@@ -312,6 +313,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Test Playground', href: '/docs/evaluation/features/test-playground' },
               { title: 'Ground Truth', href: '/docs/evaluation/features/ground-truth' },
               { title: 'Error Localization', href: '/docs/evaluation/features/error-localization' },
+              { title: 'Configure MCP Connectors for an Eval', href: '/docs/evaluation/features/mcp-connectors' },
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
@@ -853,6 +855,7 @@ export const tabNavigation: NavTab[] = [
             icon: 'check-double',
             items: [
               { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
+              { title: 'Score Support Replies Against Live CRM Data Using MCP Connectors', href: '/docs/cookbook/evaluation/eval-with-mcp-connectors' },
             ]
           },
           {
