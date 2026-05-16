@@ -295,8 +295,13 @@ export const tabNavigation: NavTab[] = [
               { title: 'Understanding Evaluation', href: '/docs/evaluation/concepts/understanding-evaluation' },
               { title: 'Eval Types', href: '/docs/evaluation/concepts/eval-types' },
               { title: 'Eval Templates', href: '/docs/evaluation/concepts/eval-templates' },
+              { title: 'Output Types', href: '/docs/evaluation/concepts/output-types' },
+              { title: 'Data Injection', href: '/docs/evaluation/concepts/data-injection' },
+              { title: 'Composite Evals', href: '/docs/evaluation/concepts/composite-evals' },
+              { title: 'Versioning', href: '/docs/evaluation/concepts/versioning' },
               { title: 'Judge Models', href: '/docs/evaluation/concepts/judge-models' },
               { title: 'Eval Results', href: '/docs/evaluation/concepts/eval-results' },
+              { title: 'MCP Connectors in Evaluation', href: '/docs/evaluation/concepts/mcp-connectors' },
             ]
           },
           {
@@ -305,6 +310,10 @@ export const tabNavigation: NavTab[] = [
               { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
               { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
               { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
+              { title: 'Test Playground', href: '/docs/evaluation/features/test-playground' },
+              { title: 'Ground Truth', href: '/docs/evaluation/features/ground-truth' },
+              { title: 'Error Localization', href: '/docs/evaluation/features/error-localization' },
+              { title: 'Configure MCP Connectors for an Eval', href: '/docs/evaluation/features/mcp-connectors' },
               { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
               { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
               { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
@@ -846,6 +855,7 @@ export const tabNavigation: NavTab[] = [
             icon: 'check-double',
             items: [
               { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
+              { title: 'Score Support Replies Against Live CRM Data Using MCP Connectors', href: '/docs/cookbook/evaluation/eval-with-mcp-connectors' },
             ]
           },
           {
