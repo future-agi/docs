@@ -846,6 +846,14 @@ export const tabNavigation: NavTab[] = [
             icon: 'check-double',
             items: [
               { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
+              { title: 'Running Continuous Evals in Production Without Blowing Your Token Budget', href: '/docs/cookbook/observe/continuous-evals-budget' },
+            ]
+          },
+          {
+            title: 'Security',
+            icon: 'shield',
+            items: [
+              { title: 'Simulating Prompt Injection, Jailbreak, and Social Engineering Attacks Against Your Agent', href: '/docs/cookbook/security/simulate-adversarial-attacks' },
             ]
           },
           {
