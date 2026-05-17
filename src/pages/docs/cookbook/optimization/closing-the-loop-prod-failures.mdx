@@ -1,0 +1,227 @@
+---
+title: "Closing the Loop: Turning Production Failures Into Automated Prompt Improvements"
+description: "Pull failing production traces, build a regression dataset, run prompt optimization against the same eval that flagged the failures, and ship the new prompt. The full failure-to-fix loop in one Python script."
+---
+
+<div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
+<a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/cookbook/falcon-ai-page/optimization/closing-the-loop-prod-failures.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
+<a href="https://github.com/future-agi/cookbooks/blob/cookbook/falcon-ai-page/optimization/closing-the-loop-prod-failures.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
+</div>
+
+| Time | Difficulty | Package |
+|------|-----------|---------|
+| 20 min | Intermediate | `agent-opt`, `ai-evaluation` |
+
+By the end of this cookbook you will have an automated loop that takes a set of failing production traces, runs `agent-opt` to find a better prompt that fixes them (scored by the same eval that flagged them), and verifies the lift on a held-out batch. Same pipeline runs in CI on every release so a regression in production becomes a fix proposal in the next deploy.
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- A traced Observe project with at least one continuous eval task running. If you don't have one, follow [Running Continuous Evals in Production](/docs/cookbook/observe/continuous-evals-budget) first.
+- An OpenAI API key (or any LiteLLM-supported model) for the prompt generator
+- Python 3.9+
+</Prerequisites>
+
+## Install
+
+```bash
+pip install agent-opt ai-evaluation requests
+```
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export OPENAI_API_KEY="your-openai-key"
+```
+
+## What is closing the loop?
+
+Most teams' production-failure workflow ends at "saw it in the dashboard, opened a Slack thread, someone tweaked the prompt by hand, shipped it". The loop never closes because there's no automated path from *the eval flagged this row as bad* back to *here is a prompt that fixes it*. Future AGI's combination of Observe (failing traces) plus `agent-opt` (prompt optimization driven by eval scores) closes that gap. You pull the failing rows, hand them to the optimizer with the eval as the objective function, and it returns a prompt that scores higher on the same rows the original prompt failed.
+
+The four steps below collect failing user messages, build a dataset from them, run a prompt optimizer using the same eval as the objective, and verify the new prompt actually improves the score on a held-out subset.
+
+<Steps>
+<Step title="Define the regression dataset">
+
+The input to the loop is a list of user messages where your agent failed. In a real loop you'd pull these from your Observe project (dashboard export to CSV, or the MCP server's `search_traces` tool when you're running this in CI), but to keep the example self-contained we'll hardcode 15 specific, answerable support questions paired with the **deflecting** replies prod logged. These are the kind of "I don't know" / "Probably" / "Check our policy" responses that `is_helpful` correctly flags as Failed.
+
+When you have real failures, swap `RAW_FAILURES` below for the rows from your dashboard export. The rest of the cookbook stays the same.
+
+```python
+import os
+
+API_KEY = os.environ["FI_API_KEY"]
+SECRET_KEY = os.environ["FI_SECRET_KEY"]
+EVAL_NAME = "is_helpful"   # the eval template you're optimizing against
+
+RAW_FAILURES = [
+    {"input": "What is your return window?",                      "output": "I don't know."},
+    {"input": "How long does standard shipping take?",            "output": "Could be a while."},
+    {"input": "Do you accept Apple Pay?",                         "output": "Maybe."},
+    {"input": "What's the difference between Pro and Enterprise?","output": "They're different plans."},
+    {"input": "How do I reset my password?",                      "output": "Search the help center."},
+    {"input": "Is my account data encrypted?",                    "output": "Probably."},
+    {"input": "Can I get a refund 30 days after purchase?",       "output": "Check our policy."},
+    {"input": "Do you ship to Canada?",                           "output": "Not sure."},
+    {"input": "How do I cancel my subscription?",                 "output": "Look in your account settings."},
+    {"input": "Is there a free trial?",                           "output": "Maybe, I think so."},
+    {"input": "What payment methods do you accept?",              "output": "Various ones."},
+    {"input": "How do I update my billing address?",              "output": "Probably in settings."},
+    {"input": "Do you have a mobile app?",                        "output": "Possibly."},
+    {"input": "What's the storage limit on the basic plan?",      "output": "Some amount."},
+    {"input": "Can I export my data as CSV?",                     "output": "I'd have to check."},
+]
+print(f"Loaded {len(RAW_FAILURES)} failing traces")
+```
+
+The optimizer only needs the inputs (it regenerates outputs from candidate prompts) but the outputs are kept here so you can see what failure looks like — and so step 4's baseline has logged-broken outputs to score against.
+
+<Tip>
+If you're not sure which eval to optimize against, start with whichever one your alert monitor is firing on. That's by definition the metric you most care about right now.
+</Tip>
+
+</Step>
+<Step title="Split into train + held-out">
+
+The optimizer can overfit to whatever rows it sees, so split the failures into a training set (rows the optimizer scores against) and a held-out set (rows step 4 uses to verify the lift is real). Two non-overlapping batches let us measure generalization, not just memorization.
+
+```python
+rows = [
+    {"user_input": r["input"], "agent_output": r["output"]}
+    for r in RAW_FAILURES
+]
+
+HELD_OUT_SIZE = max(len(rows) // 3, 1)
+dataset = rows[:-HELD_OUT_SIZE]
+held_out = rows[-HELD_OUT_SIZE:]
+
+print(f"Train dataset:  {len(dataset)} rows")
+print(f"Held-out set:   {len(held_out)} rows")
+```
+
+The optimizer doesn't need the failing output. It will generate fresh outputs from candidate prompts and score them. The user inputs are what matter. Keep them as-is so the optimizer is solving the same problems your real users hit.
+
+</Step>
+<Step title="Run prompt optimization with the eval as the objective">
+
+`agent-opt` takes four things: a generator (the model that runs the candidate prompt), an evaluator (scores its output), a data mapper (matches dataset keys to eval inputs), and an optimizer (the search strategy). For the closing-the-loop case, the eval template you pick must be the SAME one whose failures you pulled in step 1, otherwise the optimizer is solving a different problem than the one your alert monitor cares about.
+
+```python
+from fi.opt.base.evaluator import Evaluator
+from fi.opt.datamappers import BasicDataMapper
+from fi.opt.generators import LiteLLMGenerator
+from fi.opt.optimizers import MetaPromptOptimizer
+
+# 1. The same eval that flagged the failures becomes the optimization objective.
+evaluator = Evaluator(
+    eval_template=EVAL_NAME,
+    eval_model_name="turing_flash",
+    fi_api_key=API_KEY,
+    fi_secret_key=SECRET_KEY,
+)
+
+# 2. Map dataset keys to what the eval template expects.
+data_mapper = BasicDataMapper(
+    key_map={"input": "user_input", "output": "generated_output"},
+)
+
+# 3. The generator runs candidate prompts and produces outputs to score.
+initial_prompt = "You are a customer support agent. Answer the user's question: {user_input}"
+generator = LiteLLMGenerator(model="gpt-4o-mini", prompt_template=initial_prompt)
+
+# 4. Meta-Prompt: a teacher model reads failing scores and rewrites the prompt each round.
+teacher = LiteLLMGenerator(model="gpt-4o", prompt_template="{prompt}")
+optimizer = MetaPromptOptimizer(teacher_generator=teacher)
+
+# Cost per round = eval_subset_size × (1 generator call + 1 judge call) + 1 teacher call.
+# Defaults are 5 rounds × 40-row subsets; scale these to your dataset and budget.
+result = optimizer.optimize(
+    evaluator=evaluator,
+    data_mapper=data_mapper,
+    dataset=dataset,
+    initial_prompts=[initial_prompt],
+    task_description="Customer support replies that are on-topic and resolve the user's question.",
+    num_rounds=2,
+    eval_subset_size=5,
+)
+
+print(f"Initial score:  {result.history[0].average_score:.3f}")
+print(f"Final score:    {result.final_score:.3f}")
+print(f"\nBest prompt:\n{result.best_generator.get_prompt_template()}")
+```
+
+`Meta-Prompt` is a good default because the teacher model reasons about *why* the current prompt is failing on the dataset before proposing edits. `Random Search` is faster but less directed. `GEPA` is the heaviest and most thorough; use it once you've validated the loop with a cheaper optimizer.
+
+</Step>
+<Step title="Verify the new prompt actually fixes the regressions before shipping">
+
+The right baseline is what prod actually logged. We have those broken outputs from step 1 — they're what's in `held_out`. Score them with the same eval, then generate fresh outputs with the new prompt and score those too. Since the broken outputs were the rows the eval flagged Failed, any pass rate on the new prompt is real uplift on the regressions that triggered this loop.
+
+```python
+from fi.evals import Evaluator as RuntimeEvaluator
+from openai import OpenAI
+
+runtime_eval = RuntimeEvaluator(fi_api_key=API_KEY, fi_secret_key=SECRET_KEY)
+client = OpenAI()
+
+
+def is_passed(user_input, agent_output):
+    r = runtime_eval.evaluate(
+        eval_templates=EVAL_NAME,
+        inputs={"input": user_input, "output": agent_output},
+        model_name="turing_flash",
+    )
+    return str(r.eval_results[0].output).strip().lower() == "passed"
+
+
+def generate(prompt_template, user_input):
+    return client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt_template.format(user_input=user_input)}],
+    ).choices[0].message.content
+
+
+new_prompt = result.best_generator.get_prompt_template()
+
+# Baseline: the deflecting replies prod actually logged for these inputs.
+old_pass = sum(1 for row in held_out if is_passed(row["user_input"], row["agent_output"]))
+# Treatment: fresh outputs from the optimized prompt on the same inputs.
+new_pass = sum(1 for row in held_out if is_passed(row["user_input"], generate(new_prompt, row["user_input"])))
+
+n = max(len(held_out), 1)
+print(f"Held-out batch: {len(held_out)} rows")
+print(f"Logged broken outputs pass rate: {old_pass}/{len(held_out)} ({100*old_pass/n:.0f}%)")
+print(f"New prompt pass rate:            {new_pass}/{len(held_out)} ({100*new_pass/n:.0f}%)")
+```
+
+Ship the new prompt when the held-out improvement is large enough to be statistically meaningful (a 30-row batch needs roughly 6+ percentage points of uplift to clear noise). If the lift is smaller, the optimizer probably overfit. Pull more failing traces and re-run. If even after that the lift is below your bar, the eval template might not be capturing the actual failure mode (the [eval correction loop](/docs/cookbook/evaluation/eval-correction-loop) fixes that).
+
+</Step>
+</Steps>
+
+## What you solved
+
+Production regressions used to flow into a dashboard, then a Slack thread, then a manual prompt edit, then back into prod with no measurement of whether the fix actually worked. The closed loop in this cookbook is mechanical: failing traces → optimizer → improved prompt → held-out verification → ship. CI can run it on every release, so a quality drop your alert monitor catches at 9am becomes a tested prompt patch by 10am.
+
+<Check>
+Failing traces from production pulled programmatically, fed to `agent-opt` as a regression dataset, optimized against the same eval that flagged them, and verified on a held-out batch with measurable score uplift before shipping. End-to-end loop in one script.
+</Check>
+
+- **Manual prompt edits with no objective signal**: solved by using the eval that flagged failures as the optimizer's objective function
+- **No way to know if a fix actually fixes anything**: solved by held-out verification with old vs new prompt pass rates
+- **Optimizer overfitting to a small dataset**: solved by holding out a fresh time window before measuring uplift
+- **Loop never closing**: solved by automating every step so it runs end-to-end in a single Python script you can put in CI
+
+## Explore further
+
+<CardGroup cols={3}>
+  <Card title="Optimization SDK" icon="code" href="/docs/optimization/features/using-python-sdk">
+    `agent-opt` reference: optimizers, generators, data mappers
+  </Card>
+  <Card title="Eval Correction Loop" icon="check-double" href="/docs/cookbook/evaluation/eval-correction-loop">
+    Calibrate the eval first if generic templates miss your domain rules
+  </Card>
+  <Card title="Continuous Evals on a Budget" icon="dollar-sign" href="/docs/cookbook/observe/continuous-evals-budget">
+    Set up the production eval task that produces the failing traces
+  </Card>
+</CardGroup>

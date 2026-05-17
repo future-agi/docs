@@ -846,6 +846,29 @@ export const tabNavigation: NavTab[] = [
             icon: 'check-double',
             items: [
               { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
+              { title: 'Running Continuous Evals in Production Without Blowing Your Token Budget', href: '/docs/cookbook/observe/continuous-evals-budget' },
+            ]
+          },
+          {
+            title: 'Security',
+            icon: 'shield',
+            items: [
+              { title: 'Simulating Prompt Injection, Jailbreak, and Social Engineering Attacks Against Your Agent', href: '/docs/cookbook/security/simulate-adversarial-attacks' },
+            ]
+          },
+          {
+            title: 'Optimization',
+            icon: 'wand-magic-sparkles',
+            items: [
+              { title: 'Closing the Loop: Turning Production Failures Into Automated Prompt Improvements', href: '/docs/cookbook/optimization/closing-the-loop-prod-failures' },
+            ]
+          },
+          {
+            title: 'Voice',
+            icon: 'microphone',
+            items: [
+              { title: 'How to Test, Evaluate, and Improve Vapi Voice Agents With Future AGI Simulate', href: '/docs/cookbook/voice/simulate-vapi' },
+              { title: 'How to Test, Evaluate, and Improve Retell Voice Agents With Future AGI Simulate', href: '/docs/cookbook/voice/simulate-retell' },
             ]
           },
           {
