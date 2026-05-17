@@ -856,6 +856,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Voice',
+            icon: 'microphone',
+            items: [
+              { title: 'How to Test, Evaluate, and Improve Vapi Voice Agents With Future AGI Simulate', href: '/docs/cookbook/voice/simulate-vapi' },
+            ]
+          },
+          {
             title: 'Self-Hosting',
             icon: 'box',
             items: [
