@@ -849,6 +849,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Optimization',
+            icon: 'wand-magic-sparkles',
+            items: [
+              { title: 'Closing the Loop: Turning Production Failures Into Automated Prompt Improvements', href: '/docs/cookbook/optimization/closing-the-loop-prod-failures' },
+            ]
+          },
+          {
             title: 'Self-Hosting',
             icon: 'box',
             items: [
