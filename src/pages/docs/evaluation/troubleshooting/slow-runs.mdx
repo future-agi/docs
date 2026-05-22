@@ -1,0 +1,109 @@
+---
+title: "Eval run is slow"
+description: "Eval batches take much longer than expected. Causes and fixes for slow LLM-as-Judge runs, Agent-mode tool calls, large datasets, and judge model selection."
+---
+
+## Symptom
+
+A dataset eval that should finish in minutes is taking an hour. A 1000-row CI batch is timing out. Or a single LLM-as-Judge call against one row is taking 10+ seconds.
+
+---
+
+## Quick checks
+
+1. How many rows are in the batch? `100` should finish in a few minutes; `10,000` will take longer.
+2. What model is the binding using? `turing_large` is ~3x slower than `turing_flash`.
+3. Is this an Agent eval with connectors or Internet enabled? Each tool call adds a round trip.
+4. Is the eval running synchronously or async? Synchronous batches block on each row.
+5. Is there a model rate limit triggering retries?
+
+---
+
+## Causes and fixes
+
+| Cause | How to confirm | Fix |
+|---|---|---|
+| Wrong model for the scale | Per-row latency from `runtime` field is 1-3s for cloud evals; multiply by row count for total | Switch to `turing_flash` for high-volume runs; reserve `turing_large` for high-stakes / multimodal |
+| Synchronous batching | The SDK call is blocking on each row | Use `is_async=True` and fetch results by `eval_id` later; or apply the eval at the dataset level (UI Add & Run) which queues in parallel |
+| Agent mode tool calls | Each tool call adds 1-3s; an Agent eval averaging 2-3 tool calls per row is ~10x slower than LLM-as-Judge | Switch to `Quick` mode in the Agent dropdown if the row doesn't need tools; trim the connector tool list to only what's needed |
+| Long context | `runtime` > 5s per row on text inputs | Trim context to the relevant section; chunk large documents; use a model with larger context if the trim isn't possible |
+| Multimodal eval on every row | `runtime` > 10s per row; images/audio in inputs | Sample a subset (e.g. 100 rows) instead of all 10,000; pre-resize images |
+| Rate limit retries | Errors mention 429 or "rate limit"; runtime spikes intermittently | Lower batch concurrency; spread runs over time; ask for a higher quota |
+| Network latency | Same eval runs faster locally than in CI | Move the CI runner to a region closer to the FutureAGI region (typically US East) |
+
+---
+
+## Latency expectations
+
+Approximate per-row latency by eval type and model. Use these to set expectations and detect anomalies.
+
+| Eval type | Model | Typical per-row latency |
+|---|---|---|
+| Code (local) | n/a | < 5ms |
+| LLM-as-Judge | `turing_flash` | 0.5-1.5s |
+| LLM-as-Judge | `turing_large` | 2-4s |
+| Agent (Quick mode) | `turing_flash` | 1-3s |
+| Agent (Auto mode, 1-2 tool calls) | `turing_flash` | 4-8s |
+| Agent (Auto mode, 1-2 tool calls) | `turing_large` | 8-15s |
+| Agent (Agent mode, 3+ tool calls) | `turing_large` | 15-40s |
+| Multimodal (image input) | `turing_large` | 5-10s |
+| Audio (long clip) | `turing_large` | 10-30s |
+
+If your `runtime` is more than 2x the typical, look at the row's input size and the model's recent error rate.
+
+---
+
+## Diagnostic: profile a small batch
+
+Run 20 rows and look at runtime distribution.
+
+```python
+from fi.evals import evaluate
+import statistics
+
+rows = your_test_rows[:20]
+results = [
+    evaluate("your_template_name", model="turing_flash", **row)
+    for row in rows
+]
+
+runtimes = [r.latency_ms / 1000 for r in results]
+print(f"min={min(runtimes):.1f}s")
+print(f"median={statistics.median(runtimes):.1f}s")
+print(f"max={max(runtimes):.1f}s")
+print(f"p95={sorted(runtimes)[int(len(runtimes)*0.95)]:.1f}s")
+```
+
+If p95 is more than 3x the median, a few outlier rows are dragging the batch. Find them by sorting results by runtime; their inputs are usually too long or contain media that's slow to fetch.
+
+---
+
+## Scaling strategies
+
+| Batch size | Recommended approach |
+|---|---|
+| < 100 rows | Synchronous via SDK or UI is fine |
+| 100 – 1,000 rows | Async via SDK (`is_async=True`) or UI Add & Run which queues in parallel |
+| 1,000 – 10,000 rows | Async; sample a stratified subset for fast feedback; full run for nightly |
+| > 10,000 rows | Async; partition by category/date; sample for CI; full run on schedule |
+
+For CI specifically, score a fixed regression set of 30-100 rows. The goal is fast feedback on PRs, not full-corpus accuracy.
+
+---
+
+## Prevent recurrence
+
+- Default new bindings to `turing_flash`; promote to `turing_large` only when accuracy demands it.
+- Cap Agent eval `Mode` to `Quick` for high-volume use cases; reserve `Auto`/`Agent` for diagnostic deep dives.
+- Limit connector tools to the ones the criteria actually needs.
+- Trim context columns to the relevant section before evaluation.
+- Use a stratified sample for CI gates instead of the full dataset.
+
+---
+
+## Next steps
+
+- [Judge models](/docs/evaluation/concepts/judge-models): pick the right model for cost / accuracy / latency.
+- [Eval types](/docs/evaluation/concepts/eval-types): how Agent / LLM-as-Judge / Code compare on cost.
+- [Run evals with the Python SDK](/docs/evaluation/run/python-sdk): async patterns.
+- [Data injection](/docs/evaluation/concepts/data-injection): trim what the judge sees to speed it up.

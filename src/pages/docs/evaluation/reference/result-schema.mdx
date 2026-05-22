@@ -1,0 +1,169 @@
+---
+title: "Eval result schema"
+description: "The exact fields an eval returns: output, score, reason, runtime, model. What each field contains across Pass/fail, Scoring, and Choices output types, and how to read async results."
+---
+
+## About
+
+Every eval run returns the same top-level fields per row, span, simulation call, or SDK input: the **verdict** (`output` on API, `score` + `passed` on SDK), a **reason** (plain-language explanation), how long it took (`runtime` in seconds on API, `latency_ms` in milliseconds on SDK), the **model** (which judge produced the verdict), and an **eval_id** for later retrieval.
+
+The shape of the verdict is the only field that changes, it depends on the eval's [output type](/docs/evaluation/concepts/output-types).
+
+---
+
+## Top-level fields
+
+| Field | Type | Description |
+|---|---|---|
+| `output` (API/UI) / `score` + `passed` (SDK) | varies | The verdict. API returns `output` (string or object). SDK returns `score` (float 0-1) plus `passed` (bool). Shape of the object verdict depends on output type (see below). |
+| `reason` | string | Plain-language explanation. Empty for Code evals that don't return a reason. |
+| `runtime` (API) / `latency_ms` (SDK) | float | How long the eval took for this row. API returns seconds, SDK returns milliseconds. |
+| `model` | string | The judge model that produced the verdict. `null` for Code evals. |
+| `status` (SDK) / `evalStatus` (async poll) | string | SDK sync: `"completed"` or `"error"`. Async poll: `"pending"`, `"running"`, or `"completed"`. |
+| `eval_id` | string (UUID) | Unique identifier. Used to fetch results in async runs. |
+| `eval_name` | string | The eval template's name (e.g. `toxicity`, `groundedness`). |
+
+---
+
+## Value shape by output type
+
+### Pass/fail
+
+```json
+{
+  "eval_id": "9c1a...",
+  "eval_name": "toxicity",
+  "output": "Passed",
+  "score": 1.0,
+  "reason": "The response is professional with no harmful content.",
+  "runtime": 0.84,
+  "model": "turing_flash"
+}
+```
+
+The API returns `output` as the string `"Passed"` or `"Failed"`. `score` is `1.0` for pass, `0.0` for fail. The SDK additionally exposes a `passed` boolean on the result object.
+
+### Scoring
+
+```json
+{
+  "eval_id": "9c1a...",
+  "eval_name": "groundedness",
+  "output": { "choice": "Mostly grounded", "score": 0.7 },
+  "score": 0.7,
+  "reason": "The response cites the source for dates but adds an unrelated detail.",
+  "runtime": 1.42,
+  "model": "turing_large"
+}
+```
+
+`output.choice` is the label the judge picked from the choice set. `output.score` is the numeric value you assigned to that label (0-1 in 0.1 increments). On the SDK, `passed` is computed by comparing `score` to the template's pass threshold.
+
+### Choices
+
+Single-choice:
+
+```json
+{
+  "eval_id": "9c1a...",
+  "eval_name": "tone",
+  "output": { "choice": "Formal", "score": 1.0 },
+  "score": 1.0,
+  "reason": "The response uses complete sentences and avoids contractions.",
+  "runtime": 0.91,
+  "model": "turing_flash"
+}
+```
+
+Multi-choice (when the template's `multi_choice: true`):
+
+```json
+{
+  "eval_id": "9c1a...",
+  "eval_name": "intent",
+  "output": { "choice": ["Friendly", "Concise"], "score": 1.0 },
+  "score": 1.0,
+  "reason": "The response is warm and brief.",
+  "runtime": 0.88,
+  "model": "turing_flash"
+}
+```
+
+`output.score` for Choices reflects the verdict mark on the chosen label: Pass = 1.0, Neutral = 0.5, Fail = 0.0. For multi-choice, the score is computed across chosen labels.
+
+---
+
+## Where results are stored
+
+| Surface | Where the result lives |
+|---|---|
+| Dataset | New column on the dataset, one cell per row. Optional second column for the reason. |
+| Trace project | Eval log on the span, trace, or session. Visible on span detail and in trace charts. |
+| Simulation | On the call execution. Visible in call detail and run summary. |
+| Experiment | A new column per variant in the experiment grid. |
+| Test playground | Returned in the response. Not persisted. |
+| SDK | Returned to the caller. For async runs, returned via `eval_id` once the run completes. |
+
+---
+
+## Async result retrieval
+
+For long-running runs (large datasets, CI, batch), `Evaluator.evaluate()` accepts `is_async=True` and returns an `eval_id` immediately. The result is fetched later with `get_eval_result(eval_id)`.
+
+```python
+import os
+from fi.evals import Evaluator
+
+evaluator = Evaluator(
+    fi_api_key=os.environ["FI_API_KEY"],
+    fi_secret_key=os.environ["FI_SECRET_KEY"],
+)
+
+result = evaluator.evaluate(
+    eval_templates="toxicity",
+    inputs={"output": "..."},
+    model_name="turing_flash",
+    is_async=True,
+)
+eval_id = result.eval_results[0].eval_id
+
+# Poll later (or via REST: GET /sdk/api/v1/new-eval/?eval_id=...)
+poll = evaluator.get_eval_result(eval_id)
+inner = poll.get("result", {})
+if isinstance(inner, dict) and inner.get("eval_status") == "completed":
+    eval_data = inner["result"]
+    print(eval_data["output"], eval_data["reason"])
+```
+
+<Note>
+`is_async=True` is only available on `Evaluator.evaluate()`, not on the standalone `evaluate()` function. See the [async batch eval cookbook](/docs/cookbook/quickstart/async-batch-eval) for the polling pattern.
+</Note>
+
+While the run is in progress, `eval_status` is `"pending"` or `"running"`. Once complete it flips to `"completed"`.
+
+<Note>
+A status of `"error"` (SDK) means the eval itself errored. A verdict `output` of `"Failed"` means the eval ran successfully and the row didn't pass. Two different fields, two different fixes.
+</Note>
+
+---
+
+## Aggregate fields
+
+When an eval runs across more than one row, the platform computes aggregates that appear in dataset summaries, trace eval charts, and experiment comparison views.
+
+| Output type | Aggregate |
+|---|---|
+| Pass/fail | Pass rate (percentage of rows that passed) |
+| Scoring | Average score; pass rate against the template threshold; distribution across labels |
+| Choices | Distribution across labels (single-choice) or label co-occurrence (multi-choice) |
+
+For composite evals, the aggregate is computed using the [aggregation function](/docs/evaluation/concepts/composite-evals#the-five-aggregation-functions) set on the template.
+
+---
+
+## Next steps
+
+- [Output types](/docs/evaluation/concepts/output-types): the three output types and what each one returns per row.
+- [Evaluator input schema](/docs/evaluation/reference/input-schema): the required input keys per eval template.
+- [Score types reference](/docs/evaluation/reference/score-types): how scores and choice values map to verdicts and pass/fail.
+- [Eval results](/docs/evaluation/concepts/eval-results): conceptual overview of what a result is and where it lives.

@@ -1,0 +1,128 @@
+---
+title: "CI eval gate failed"
+description: "Troubleshoot a failing eval gate in a CI/CD pipeline. Auth errors, threshold misses, judge variance, missing dataset, and version pin drift."
+---
+
+## Symptom
+
+Your CI job that runs evals fails. Common failure surfaces:
+
+- GitHub Actions / GitLab CI step exits non-zero
+- The PR check shows `eval-pipeline: failed`
+- The PR comment from the eval workflow says scores dropped below threshold
+- The job dies with an authentication or rate-limit error before any eval runs
+
+---
+
+## Quick checks
+
+1. Read the job log, does it say "auth error", "rate limit", "below threshold", or something else?
+2. Did the PR change the system prompt, model, dataset, or eval template? Any of those legitimately affects scores.
+3. Did the eval template version change since the last passing run?
+4. Are `FI_API_KEY` and `FI_SECRET_KEY` set as CI secrets and exposed to the eval step?
+5. What's the threshold the job is gating on? Is it set tight enough to flap on judge variance?
+
+---
+
+## Causes and fixes
+
+| Cause | How to confirm | Fix |
+|---|---|---|
+| Missing or wrong API keys in CI | Error message: "401 Unauthorized" or "authentication failed" | Add `FI_API_KEY` and `FI_SECRET_KEY` as repository / org secrets; expose them as env vars in the workflow step |
+| Threshold gates on noisy score | Last several runs flap between pass/fail without code changes | Raise the threshold band; allow a delta (e.g. "fail only if score drops more than 0.05") |
+| Real quality regression | Score genuinely dropped because of the PR change | The eval is doing its job; either fix the change or accept the new baseline |
+| Template version was promoted between runs | The binding now uses a newer version with different criteria | Pin the binding to a specific template version; don't rely on default |
+| Judge model swapped | Model field in result differs from prior run | Set model explicitly in the eval call; don't let it inherit from template |
+| Dataset path / ID wrong | Job log says "dataset not found" | Verify dataset ID; for CI, prefer a stable dataset name pinned in the script |
+| Network timeout to FutureAGI | Sporadic failures, not consistent | Increase job timeout; retry the step; check FutureAGI status page |
+| Rate limit on judge model | Error mentions 429 | Reduce CI batch size; throttle requests; ask for a higher quota |
+| CI runner has no Python or missing package | `ModuleNotFoundError: No module named 'fi'` | Add `pip install ai-evaluation` to the workflow step before the eval call |
+
+---
+
+## Diagnostic: reproduce locally
+
+The fastest debug path is to run the same eval script outside CI.
+
+```bash
+# Use the same env vars CI uses
+export FI_API_KEY="<paste from secrets>"
+export FI_SECRET_KEY="<paste from secrets>"
+
+# Run the same script the CI step runs
+python scripts/evaluate_pipeline.py
+```
+
+If it passes locally but fails in CI, the issue is environmental (auth, network, runner). If it fails locally too, the issue is in the script or the data.
+
+---
+
+## Diagnostic: check the PR comment
+
+If your workflow posts a PR comment with per-eval scores (recommended pattern from [Run evals in CI/CD](/docs/evaluation/run/cicd)), the comment shows which specific eval failed and by how much. That tells you whether to:
+
+- **Fix the PR** (a real regression, the change broke quality)
+- **Adjust the threshold** (flapping on noise, see judge variance below)
+- **Update the baseline** (intentional behavior change, re-baseline expected scores)
+
+---
+
+## Stabilize a flaky gate
+
+If the gate flaps without code changes, it's measuring noise. Pick from these:
+
+| Approach | Tradeoff |
+|---|---|
+| Raise threshold (e.g. 0.7 → 0.8) | Fewer false fails; misses smaller real regressions |
+| Lower threshold (e.g. 0.7 → 0.5) | Same fewer false fails, but accepts lower quality |
+| Switch to a "delta" gate ("fail only if drop > 0.05 vs prior run") | Best for small datasets; catches regressions without flapping on noise |
+| Use a Code eval where possible | Zero variance; deterministic |
+| Add ground truth to the LLM judge | Stabilizes verdicts; modest implementation cost |
+| Average across N runs of the same row | Slower; more cost; reliable |
+| Increase the regression dataset size | More signal, less noise; only works if you have rows to add |
+
+For LLM-as-Judge gates specifically, see [Judge output is inconsistent](/docs/evaluation/troubleshooting/judge-variance) for the full set of stabilization techniques.
+
+---
+
+## Common GitHub Actions setup
+
+A working baseline that handles the most common failure modes:
+
+```yaml
+- name: Run eval pipeline
+  env:
+    FI_API_KEY: ${{ secrets.FI_API_KEY }}
+    FI_SECRET_KEY: ${{ secrets.FI_SECRET_KEY }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  run: |
+    pip install ai-evaluation openai
+    python scripts/evaluate_pipeline.py
+  timeout-minutes: 15
+```
+
+Key points:
+- Secrets are passed as env vars, not echoed
+- `pip install` is in the run step so dependencies are explicit
+- `timeout-minutes` prevents hung judge calls from blocking forever
+
+See the [CI/CD cookbook](/docs/cookbook/quickstart/cicd-eval-pipeline) for an end-to-end example with PR commenting.
+
+---
+
+## Prevent recurrence
+
+- Always pin template versions in CI bindings. Default promotion to a new version should never silently affect CI.
+- Set the judge model explicitly in every eval call.
+- Add a smoke-test step before the main eval that confirms auth, env, and one successful eval call.
+- Post a PR comment with per-eval scores so failures are immediately actionable.
+- Re-baseline thresholds after a major prompt or model change, not silently in CI config.
+
+---
+
+## Next steps
+
+- [Run evals in CI/CD](/docs/evaluation/run/cicd): the full how-to for setting up a pipeline.
+- [CI/CD eval pipeline cookbook](/docs/cookbook/quickstart/cicd-eval-pipeline): end-to-end GitHub Actions example.
+- [Judge output is inconsistent](/docs/evaluation/troubleshooting/judge-variance): stabilize the judge so gates stop flapping.
+- [Scores changed unexpectedly](/docs/evaluation/troubleshooting/score-drift): if the score dropped without a PR change.

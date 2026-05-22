@@ -345,6 +345,24 @@ export const tabNavigation: NavTab[] = [
               { title: 'Audio', href: '/docs/evaluation/builtin/categories/audio' },
             ]
           },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Eval result schema', href: '/docs/evaluation/reference/result-schema' },
+              { title: 'Evaluator input schema', href: '/docs/evaluation/reference/input-schema' },
+              { title: 'Score types', href: '/docs/evaluation/reference/score-types' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Scores changed unexpectedly', href: '/docs/evaluation/troubleshooting/score-drift' },
+              { title: 'Judge output is inconsistent', href: '/docs/evaluation/troubleshooting/judge-variance' },
+              { title: 'Eval run is slow', href: '/docs/evaluation/troubleshooting/slow-runs' },
+              { title: "Dataset fields don't match", href: '/docs/evaluation/troubleshooting/mapping' },
+              { title: 'CI eval gate failed', href: '/docs/evaluation/troubleshooting/ci-failures' },
+            ]
+          },
         ]
       },
       {
