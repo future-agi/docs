@@ -289,34 +289,60 @@ export const tabNavigation: NavTab[] = [
         icon: 'chart',
         items: [
           { title: 'Overview', href: '/docs/evaluation' },
+          { title: 'Quickstart', href: '/docs/quickstart/evals' },
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Evaluation', href: '/docs/evaluation/concepts/understanding-evaluation' },
               { title: 'Eval Types', href: '/docs/evaluation/concepts/eval-types' },
               { title: 'Eval Templates', href: '/docs/evaluation/concepts/eval-templates' },
               { title: 'Output Types', href: '/docs/evaluation/concepts/output-types' },
-              { title: 'Data Injection', href: '/docs/evaluation/concepts/data-injection' },
-              { title: 'Composite Evals', href: '/docs/evaluation/concepts/composite-evals' },
-              { title: 'Versioning', href: '/docs/evaluation/concepts/versioning' },
               { title: 'Judge Models', href: '/docs/evaluation/concepts/judge-models' },
               { title: 'Eval Results', href: '/docs/evaluation/concepts/eval-results' },
+              { title: 'Composite Evals', href: '/docs/evaluation/concepts/composite-evals' },
+              { title: 'Versioning', href: '/docs/evaluation/concepts/versioning' },
+              { title: 'Data Injection', href: '/docs/evaluation/concepts/data-injection' },
               { title: 'MCP Connectors in Evaluation', href: '/docs/evaluation/concepts/mcp-connectors' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Run evals',
             items: [
-              { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
-              { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
-              { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
-              { title: 'Test Playground', href: '/docs/evaluation/features/test-playground' },
-              { title: 'Ground Truth', href: '/docs/evaluation/features/ground-truth' },
-              { title: 'Error Localization', href: '/docs/evaluation/features/error-localization' },
-              { title: 'Configure MCP Connectors for an Eval', href: '/docs/evaluation/features/mcp-connectors' },
-              { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
-              { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
-              { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
+              { title: 'Run evals in the UI', href: '/docs/evaluation/run/in-the-ui' },
+              { title: 'Run evals with the Python SDK', href: '/docs/evaluation/run/python-sdk' },
+              { title: 'Run evals with TypeScript', href: '/docs/evaluation/run/typescript-sdk' },
+              { title: 'Run evals with the API', href: '/docs/evaluation/run/api' },
+              { title: 'Run evals in CI/CD', href: '/docs/evaluation/run/cicd' },
+            ]
+          },
+          {
+            title: 'Build evals',
+            items: [
+              { title: 'Create custom evals', href: '/docs/evaluation/build/custom' },
+              { title: 'Test playground', href: '/docs/evaluation/build/test-playground' },
+              { title: 'Ground truth', href: '/docs/evaluation/build/ground-truth' },
+              { title: 'Error localization', href: '/docs/evaluation/build/error-localization' },
+              { title: 'Configure MCP connectors', href: '/docs/evaluation/build/mcp-connectors' },
+            ]
+          },
+          {
+            title: 'Judge models',
+            items: [
+              { title: 'FutureAGI models', href: '/docs/evaluation/judge-models/futureagi' },
+              { title: 'Use custom models', href: '/docs/evaluation/judge-models/custom' },
+            ]
+          },
+          {
+            title: 'Evaluator catalog',
+            items: [
+              { title: 'All evaluators', href: '/docs/evaluation/builtin' },
+              { title: 'RAG & retrieval', href: '/docs/evaluation/builtin/categories/rag' },
+              { title: 'Agent & conversation', href: '/docs/evaluation/builtin/categories/agent' },
+              { title: 'Safety & policy', href: '/docs/evaluation/builtin/categories/safety' },
+              { title: 'Text quality & NLP metrics', href: '/docs/evaluation/builtin/categories/text' },
+              { title: 'Format & validation', href: '/docs/evaluation/builtin/categories/format' },
+              { title: 'Code', href: '/docs/evaluation/builtin/categories/code' },
+              { title: 'Multimodal', href: '/docs/evaluation/builtin/categories/multimodal' },
+              { title: 'Audio', href: '/docs/evaluation/builtin/categories/audio' },
             ]
           },
         ]
