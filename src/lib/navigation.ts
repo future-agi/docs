@@ -348,7 +348,7 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Observability',
+        group: 'traceAI',
         icon: 'eye',
         items: [
           { title: 'Overview', href: '/docs/observe' },
@@ -358,6 +358,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
               { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
               { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
+              { title: 'Sessions and Users', href: '/docs/tracing/concepts/sessions-and-users' },
               { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
               { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
             ]
@@ -395,7 +396,24 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Integration',
+            title: 'Reference',
+            items: [
+              { title: 'Trace Filter Syntax', href: '/docs/observe/reference/trace-filter-syntax' },
+              { title: 'Dashboard Metric Definitions', href: '/docs/observe/reference/dashboard-metric-definitions' },
+              { title: 'Trace Export and Endpoints', href: '/docs/observe/reference/export-formats' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'No traces appear', href: '/docs/observe/troubleshooting/no-traces-appearing' },
+              { title: 'Missing spans or attributes', href: '/docs/observe/troubleshooting/missing-attributes' },
+              { title: 'Dashboard numbers look wrong', href: '/docs/observe/troubleshooting/dashboard-numbers-look-wrong' },
+              { title: 'An alert did not fire', href: '/docs/observe/troubleshooting/alerts-did-not-fire' },
+            ]
+          },
+          {
+            title: 'Framework integrations',
             items: [
               { title: 'Overview', href: '/docs/tracing/auto' },
               {
