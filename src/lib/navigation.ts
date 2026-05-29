@@ -427,7 +427,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'DSPy', href: '/docs/tracing/auto/dspy' },
                   { title: 'OpenAI Agents', href: '/docs/tracing/auto/openai_agents' },
                   { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
-                  { title: 'Pydantic AI', href: '/docs/integrations/traceai/pydantic_ai' },
+                  { title: 'Pydantic AI', href: '/docs/tracing/auto/pydantic_ai' },
                   { title: 'Instructor', href: '/docs/tracing/auto/instructor' },
                   { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
                   { title: 'Guardrails', href: '/docs/tracing/auto/guardrails' },
