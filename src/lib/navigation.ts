@@ -1287,6 +1287,34 @@ function matchesPath(items: NavItem[], normalizedPath: string): boolean {
   return false;
 }
 
+// Walk nav items and return the first href found that starts with `prefix + '/'`.
+// Used to make breadcrumb segments clickable when no page exists at the
+// intermediate URL (e.g., `/docs/quickstart` has no page but child pages exist
+// under `/docs/quickstart/*`).
+function findFirstHrefUnder(items: NavItem[], prefix: string): string | undefined {
+  for (const item of items) {
+    if (item.href && item.href !== prefix && item.href.startsWith(prefix + '/')) {
+      return item.href;
+    }
+    if (item.items) {
+      const found = findFirstHrefUnder(item.items, prefix);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+export function getFirstChildHrefForPath(partialPath: string): string | undefined {
+  const prefix = partialPath.replace(/\/$/, '');
+  for (const tab of tabNavigation) {
+    for (const group of tab.groups) {
+      const found = findFirstHrefUnder(group.items, prefix);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 // Find the active group within the Docs tab based on current path
 export function getActiveGroup(currentPath: string): NavGroup | undefined {
   const docsTab = tabNavigation[0]; // Docs tab
