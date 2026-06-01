@@ -443,6 +443,12 @@ export const tabNavigation: NavTab[] = [
                 ]
               },
               {
+                title: 'Vector Databases',
+                items: [
+                  { title: 'ChromaDB', href: '/docs/tracing/auto/chromadb' },
+                ]
+              },
+              {
                 title: 'Java',
                 items: [
                   { title: 'Overview', href: '/docs/tracing/auto/java' },
@@ -672,6 +678,12 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'LiveKit', href: '/docs/integrations/traceai/livekit' },
               { title: 'Pipecat', href: '/docs/integrations/traceai/pipecat' },
+            ]
+          },
+          {
+            title: 'Vector Databases',
+            items: [
+              { title: 'ChromaDB', href: '/docs/integrations/traceai/chromadb' },
             ]
           },
           {
