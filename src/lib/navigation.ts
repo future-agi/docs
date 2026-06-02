@@ -1015,6 +1015,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Bulk Delete Eval Tasks', href: '/docs/api/eval-tasks/bulk-delete-eval-tasks' },
               { title: 'Pause Eval Task', href: '/docs/api/eval-tasks/pause-eval-task' },
               { title: 'Unpause Eval Task', href: '/docs/api/eval-tasks/unpause-eval-task' },
+              { title: 'Eval Task Aggregations', href: '/docs/api/eval-tasks/eval-task-aggregations' },
             ]
           },
           {
