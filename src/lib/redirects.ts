@@ -1,6 +1,7 @@
 // Auto-generated redirect map: old Mintlify URLs → new docs URLs
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
+  '/docs/observe/getting-started': '/docs/observe',
   '/docs/observe/features/annotation-queue-using-sdk': '/docs/annotations/sdk/annotation-queue-using-sdk',
   '/docs/observe/voice/set-up': '/docs/observe/features/voice',
   '/docs/quickstart/installation': '/docs/installation',

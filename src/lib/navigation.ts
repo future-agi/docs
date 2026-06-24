@@ -351,14 +351,8 @@ export const tabNavigation: NavTab[] = [
         group: 'Observe',
         icon: 'eye',
         items: [
-          { title: 'Overview', href: '/docs/observe' },
-          {
-            title: 'Getting Started',
-            href: '/docs/observe/getting-started',
-            items: [
-              { title: 'Quick start', href: '/docs/observe/quickstart' },
-            ]
-          },
+          { title: 'Get started', href: '/docs/observe' },
+          { title: 'Quick start', href: '/docs/observe/quickstart' },
           {
             title: 'Concepts',
             items: [
@@ -407,7 +401,7 @@ export const tabNavigation: NavTab[] = [
         group: 'traceAI',
         icon: 'code',
         items: [
-          { title: 'Overview', href: '/docs/traceai' },
+          { title: 'Get started', href: '/docs/traceai' },
           { title: 'Quick start', href: '/docs/traceai/quickstart' },
           {
             title: 'Concepts',
