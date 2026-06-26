@@ -44,7 +44,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Send your first trace', href: '/docs/get-started/send-your-first-trace' },
               { title: 'Route your first LLM request', href: '/docs/get-started/route-your-first-llm-request' },
-              { title: 'Add your first agent definition', href: '/docs/get-started/add-your-first-agent-definition' },
+              { title: 'Connect no code agents', href: '/docs/get-started/connect-no-code-agents' },
               { title: 'Create your first prompt', href: '/docs/get-started/create-your-first-prompt' },
             ]
           },
@@ -60,11 +60,13 @@ export const tabNavigation: NavTab[] = [
             title: 'Self-Hosting',
             items: [
               { title: 'Overview', href: '/docs/self-hosting' },
-              { title: 'Requirements', href: '/docs/self-hosting/requirements' },
-              { title: 'Installation', href: '/docs/self-hosting/installation' },
-              { title: 'Troubleshooting', href: '/docs/self-hosting/troubleshooting' },
-              { title: 'FAQs', href: '/docs/self-hosting/faqs' },
-              { title: 'Support', href: '/docs/self-hosting/support' },
+              { title: 'System requirements', href: '/docs/self-hosting/requirements' },
+              { title: 'Environment variables', href: '/docs/self-hosting/environment' },
+              { title: 'Configuration', href: '/docs/self-hosting/configuration' },
+              { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
+              { title: 'Production', href: '/docs/self-hosting/production' },
+              { title: 'User management', href: '/docs/self-hosting/user-management' },
+              { title: 'Troubleshooting and FAQs', href: '/docs/self-hosting/troubleshooting' },
             ]
           },
         ]
