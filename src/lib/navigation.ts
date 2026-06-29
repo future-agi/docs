@@ -38,39 +38,35 @@ export const tabNavigation: NavTab[] = [
         group: 'Get Started',
         icon: 'rocket',
         items: [
-          { title: 'Introduction', href: '/docs' },
+          { title: 'Overview', href: '/docs' },
+          {
+            title: 'Bring your data in',
+            items: [
+              { title: 'Send your first trace', href: '/docs/get-started/send-your-first-trace' },
+              { title: 'Route your first LLM request', href: '/docs/get-started/route-your-first-llm-request' },
+              { title: 'Connect no code agents', href: '/docs/get-started/connect-no-code-agents' },
+              { title: 'Create your first prompt', href: '/docs/get-started/create-your-first-prompt' },
+            ]
+          },
+          {
+            title: 'Migrate',
+            items: [
+              { title: 'Migrate from Langfuse', href: '/docs/get-started/migrate/langfuse' },
+              { title: 'Migrate from LangSmith', badge: 'Coming soon' },
+              { title: 'Migrate from Arize', badge: 'Coming soon' },
+            ]
+          },
           {
             title: 'Self-Hosting',
-            badge: 'New',
             items: [
               { title: 'Overview', href: '/docs/self-hosting' },
-              { title: 'Requirements', href: '/docs/self-hosting/requirements' },
+              { title: 'System requirements', href: '/docs/self-hosting/requirements' },
+              { title: 'Environment variables', href: '/docs/self-hosting/environment' },
+              { title: 'Configuration', href: '/docs/self-hosting/configuration' },
               { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
-              { title: 'Environment Variables', href: '/docs/self-hosting/environment' },
-              { title: 'System Configuration', href: '/docs/self-hosting/configuration' },
-              { title: 'User Management', href: '/docs/self-hosting/user-management' },
               { title: 'Production', href: '/docs/self-hosting/production' },
-              { title: 'Troubleshooting', href: '/docs/self-hosting/troubleshooting' },
-            ]
-          },
-          {
-            title: 'Quickstart',
-            icon: 'rocket',
-            href: '/docs',
-            items: [
-              { title: 'Create Prompts', href: '/docs/quickstart/prompts' },
-              { title: 'Generate Synthetic Data', href: '/docs/quickstart/generate-synthetic-data' },
-              { title: 'Running Evals in Simulation', href: '/docs/quickstart/running-evals-in-simulation' },
-              { title: 'Agent Command Center', href: '/docs/quickstart/command-center-gateway' },
-              { title: 'Setup Observability', href: '/docs/quickstart/setup-observability' },
-              { title: 'Annotations', href: '/docs/quickstart/annotations' },
-              { title: 'Setup MCP Server', href: '/docs/quickstart/setup-mcp-server' },
-            ]
-          },
-          {
-            title: 'Release Notes',
-            items: [
-              { title: 'Release Notes', href: '/docs/release-notes' },
+              { title: 'User management', href: '/docs/self-hosting/user-management' },
+              { title: 'Troubleshooting and FAQs', href: '/docs/self-hosting/troubleshooting' },
             ]
           },
         ]
