@@ -363,6 +363,11 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Guides',
             items: [
+              { title: 'Navigating through the dashboard', href: '/docs/observe/guides/navigating-through-the-dashboard' },
+              { title: 'Setup evals in observe', href: '/docs/observe/guides/setup-evals-in-observe' },
+              { title: 'Setup alerts for your project', href: '/docs/observe/guides/setup-alerts-for-your-project' },
+              { title: 'Using Filters', href: '/docs/observe/guides/using-filters' },
+              { title: 'Saving a view', href: '/docs/observe/guides/saving-a-view' },
               { title: 'Explore sessions & users', href: '/docs/observe/features/session' },
             ]
           },
