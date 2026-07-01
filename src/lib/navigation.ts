@@ -351,11 +351,12 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
-              { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
-              { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
-              { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
-              { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
+              { title: 'Spans', href: '/docs/observe/concepts/spans' },
+              { title: 'Traces', href: '/docs/observe/concepts/traces' },
+              { title: 'Sessions', href: '/docs/observe/concepts/sessions' },
+              { title: 'Users', href: '/docs/observe/concepts/users' },
+              { title: 'Voice observability', href: '/docs/observe/concepts/voice-observability' },
+              { title: 'Observability model', href: '/docs/observe/concepts/observability-model' },
             ]
           },
           {
