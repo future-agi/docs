@@ -69,6 +69,12 @@ export const tabNavigation: NavTab[] = [
               { title: 'Troubleshooting and FAQs', href: '/docs/self-hosting/troubleshooting' },
             ]
           },
+          {
+            title: 'Release notes',
+            items: [
+              { title: "What's new", href: '/docs/release-notes' },
+            ]
+          },
         ]
       },
       {
@@ -84,11 +90,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create a Graph', href: '/docs/agent-playground/features/create-graph' },
-              { title: 'Build a Workflow', href: '/docs/agent-playground/features/build-workflow' },
-              { title: 'Run & Monitor', href: '/docs/agent-playground/features/run-and-monitor' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -105,16 +109,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Labels', href: '/docs/annotations/features/labels' },
-              { title: 'Queues', href: '/docs/annotations/features/queues' },
-              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
-              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
-              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
-              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
-              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
-              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
+              { title: 'Coming soon' },
             ]
           },
           {
@@ -142,63 +139,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              {
-                title: 'Providers',
-                items: [
-                  { title: 'Supported providers', href: '/docs/command-center/features/providers' },
-                  { title: 'Self-hosted models', href: '/docs/command-center/features/self-hosted-models' },
-                ]
-              },
-              {
-                title: 'API Reference',
-                items: [
-                  { title: 'Endpoints overview', href: '/docs/command-center/api/endpoints' },
-                  { title: 'Chat completions', href: '/docs/command-center/api/chat' },
-                  { title: 'Embeddings & reranking', href: '/docs/command-center/api/embeddings' },
-                  { title: 'Media endpoints', href: '/docs/command-center/api/media' },
-                  { title: 'Assistants API', href: '/docs/command-center/api/assistants' },
-                  { title: 'Files & vector stores', href: '/docs/command-center/api/files' },
-                  { title: 'Async & batch', href: '/docs/command-center/api/async-batch' },
-                  { title: 'Request & response headers', href: '/docs/command-center/api/headers' },
-                ]
-              },
-              {
-                title: 'Routing',
-                items: [
-                  { title: 'Routing & reliability', href: '/docs/command-center/features/routing' },
-                ]
-              },
-              {
-                title: 'Safety & Policy',
-                items: [
-                  { title: 'Guardrails', href: '/docs/command-center/features/guardrails' },
-                ]
-              },
-              {
-                title: 'Performance',
-                items: [
-                  { title: 'Caching', href: '/docs/command-center/features/caching' },
-                  { title: 'Rate limiting', href: '/docs/command-center/features/rate-limiting' },
-                ]
-              },
-              {
-                title: 'Cost & Observability',
-                items: [
-                  { title: 'Cost tracking', href: '/docs/command-center/features/cost-tracking' },
-                  { title: 'Observability', href: '/docs/command-center/features/observability' },
-                  { title: 'Shadow experiments', href: '/docs/command-center/features/shadow-experiments' },
-                  { title: 'Webhooks', href: '/docs/command-center/features/webhooks' },
-                  { title: 'Custom Properties', href: '/docs/command-center/features/custom-properties' },
-                ]
-              },
-              {
-                title: 'Agentic',
-                items: [
-                  { title: 'MCP & A2A', href: '/docs/command-center/features/mcp-a2a' },
-                ]
-              },
+              { title: 'Coming soon' },
             ]
           },
           {
@@ -211,13 +154,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Deployment',
             items: [
               { title: 'Self-hosted', href: '/docs/command-center/deployment/self-hosted' },
-            ]
-          },
-          {
-            title: 'Guides',
-            items: [
-              { title: 'Error handling', href: '/docs/command-center/guides/errors' },
-              { title: 'Troubleshooting', href: '/docs/command-center/guides/troubleshooting' },
             ]
           },
         ]
@@ -237,14 +173,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
-              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
-              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
-              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
-              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
-              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -264,18 +195,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'The Feed', href: '/docs/error-feed/features/the-feed' },
-              { title: 'Issue Overview', href: '/docs/error-feed/features/issue-overview' },
-              { title: 'Traces', href: '/docs/error-feed/features/traces' },
-              { title: 'State Graph', href: '/docs/error-feed/features/state-graph' },
-              { title: 'Trends', href: '/docs/error-feed/features/trends' },
-              { title: 'Metadata Panel', href: '/docs/error-feed/features/metadata-panel' },
-              { title: 'Triage Workflow', href: '/docs/error-feed/features/triage-workflow' },
-              { title: 'Deep Analysis', href: '/docs/error-feed/features/deep-analysis' },
-              { title: 'Linear Integration', href: '/docs/error-feed/features/linear-integration' },
-              { title: 'Sampling', href: '/docs/error-feed/features/sampling' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -296,14 +218,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
-              { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
-              { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
-              { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
-              { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
-              { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -314,11 +231,9 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/falcon-ai' },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
-              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
-              { title: 'MCP Connectors', href: '/docs/falcon-ai/features/mcp-connectors' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -335,10 +250,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
-              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -348,38 +262,34 @@ export const tabNavigation: NavTab[] = [
         icon: 'eye',
         items: [
           { title: 'Get started', href: '/docs/observe' },
-          { title: 'Quick start', href: '/docs/observe/quickstart' },
+          { title: 'Quickstart', href: '/docs/observe/quickstart' },
           {
             title: 'Concepts',
             items: [
-              { title: 'Observability model', href: '/docs/observe/concepts/observability-model' },
-              { title: 'Traces', href: '/docs/observe/concepts/traces' },
               { title: 'Spans', href: '/docs/observe/concepts/spans' },
-              { title: 'Sessions and users', href: '/docs/observe/concepts/sessions-and-users' },
-              { title: 'OpenTelemetry', href: '/docs/observe/concepts/otel' },
-              { title: 'traceAI SDK', href: '/docs/observe/concepts/traceai' },
+              { title: 'Traces', href: '/docs/observe/concepts/traces' },
+              { title: 'Sessions', href: '/docs/observe/concepts/sessions' },
+              { title: 'Users', href: '/docs/observe/concepts/users' },
+              { title: 'Alerts', href: '/docs/observe/concepts/alerts' },
+              { title: 'Voice observability', href: '/docs/observe/concepts/voice' },
+              { title: 'Observability model', href: '/docs/observe/concepts/observability-model' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Trace explorer', href: '/docs/observe/features/llm-tracing' },
-              { title: 'Sessions', href: '/docs/observe/features/session' },
-              { title: 'Users', href: '/docs/observe/features/users' },
-              { title: 'Tags', href: '/docs/observe/features/tags' },
-              { title: 'Dashboards', href: '/docs/observe/features/dashboard' },
-              { title: 'Alerts and monitors', href: '/docs/observe/features/alerts' },
-              { title: 'Trace evals', href: '/docs/observe/features/evals' },
-              { title: 'Voice observability', href: '/docs/observe/features/voice' },
-              { title: 'Manual tracing', href: '/docs/traceai/manual-instrumentation/set-up-tracing' },
+              { title: 'Explore sessions & users', href: '/docs/observe/features/session' },
             ]
           },
           {
             title: 'Reference',
             items: [
+              { title: 'Span types', href: '/docs/observe/reference/span-types' },
               { title: 'Filter syntax', href: '/docs/observe/reference/trace-filter-syntax' },
               { title: 'Dashboard metrics', href: '/docs/observe/reference/dashboard-metric-definitions' },
               { title: 'Export and endpoints', href: '/docs/observe/reference/export-formats' },
+              { title: 'traceAI SDK', href: '/docs/observe/concepts/traceai' },
+              { title: 'OpenTelemetry', href: '/docs/observe/concepts/otel' },
             ]
           },
           {
@@ -528,10 +438,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
-              { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -550,14 +459,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
-              { title: 'Create from Existing Template', href: '/docs/prompt/features/create-from-template' },
-              { title: 'Create with AI', href: '/docs/prompt/features/create-with-ai' },
-              { title: 'Prompt Workbench Using SDK', href: '/docs/prompt/features/sdk' },
-              { title: 'Linked Traces', href: '/docs/prompt/features/linked-traces' },
-              { title: 'Manage Folders', href: '/docs/prompt/features/folders' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -574,9 +478,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Run Protect via SDK', href: '/docs/protect/features/run-protect' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -594,11 +498,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
-              { title: 'Evals', href: '/docs/prototype/features/evals' },
-              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
+              { title: 'Coming soon' },
             ]
           },
         ]
@@ -642,21 +544,9 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
-              { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
-              {
-                title: 'Replay',
-                items: [
-                  { title: 'Chat Replay', href: '/docs/simulation/features/observe-to-simulate' },
-                  { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
-                ]
-              },
-              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'View Results', href: '/docs/simulation/features/view-results' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              { title: 'Coming soon' },
             ]
           },
         ]
