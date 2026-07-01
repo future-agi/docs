@@ -374,11 +374,26 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Reference',
             items: [
+              {
+                title: 'Span types',
+                items: [
+                  { title: 'Overview', href: '/docs/observe/reference/span-types' },
+                  { title: 'LLM', href: '/docs/observe/reference/span-types/llm' },
+                  { title: 'Tool', href: '/docs/observe/reference/span-types/tool' },
+                  { title: 'Retriever', href: '/docs/observe/reference/span-types/retriever' },
+                  { title: 'Embedding', href: '/docs/observe/reference/span-types/embedding' },
+                  { title: 'Reranker', href: '/docs/observe/reference/span-types/reranker' },
+                  { title: 'Agent', href: '/docs/observe/reference/span-types/agent' },
+                  { title: 'Chain', href: '/docs/observe/reference/span-types/chain' },
+                  { title: 'Guardrail', href: '/docs/observe/reference/span-types/guardrail' },
+                  { title: 'Evaluator', href: '/docs/observe/reference/span-types/evaluator' },
+                ]
+              },
               { title: 'Filter syntax', href: '/docs/observe/reference/trace-filter-syntax' },
-              { title: 'Dashboard metrics', href: '/docs/observe/reference/dashboard-metric-definitions' },
-              { title: 'Export and endpoints', href: '/docs/observe/reference/export-formats' },
-              { title: 'traceAI SDK', href: '/docs/observe/concepts/traceai' },
-              { title: 'OpenTelemetry', href: '/docs/observe/concepts/otel' },
+              { title: 'Filter metrics', href: '/docs/observe/reference/filter-metrics' },
+              { title: 'Span attributes', href: '/docs/observe/reference/span-attributes' },
+              { title: 'Project sampling rate', href: '/docs/observe/reference/project-sampling-rate' },
+              { title: 'traceAI', href: '/docs/observe/concepts/traceai' },
             ]
           },
           {
