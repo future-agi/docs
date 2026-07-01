@@ -69,6 +69,12 @@ export const tabNavigation: NavTab[] = [
               { title: 'Troubleshooting and FAQs', href: '/docs/self-hosting/troubleshooting' },
             ]
           },
+          {
+            title: 'Release notes',
+            items: [
+              { title: "What's new", href: '/docs/release-notes' },
+            ]
+          },
         ]
       },
       {
@@ -347,21 +353,21 @@ export const tabNavigation: NavTab[] = [
         group: 'Observability',
         icon: 'eye',
         items: [
-          { title: 'Overview', href: '/docs/observe' },
+          { title: 'Get Started', href: '/docs/observe' },
+          { title: 'Quickstart', href: '/docs/observe/quickstart' },
           {
             title: 'Concepts',
             items: [
               { title: 'Understanding Observability', href: '/docs/tracing/concepts' },
-              { title: 'What are Traces?', href: '/docs/tracing/concepts/traces' },
-              { title: 'What are Spans?', href: '/docs/tracing/concepts/spans' },
-              { title: 'What is OpenTelemetry?', href: '/docs/tracing/concepts/otel' },
-              { title: 'What is traceAI?', href: '/docs/tracing/concepts/traceai' },
+              { title: 'Spans', href: '/docs/observe/concepts/spans' },
+              { title: 'Traces', href: '/docs/observe/concepts/traces' },
+              { title: 'OpenTelemetry', href: '/docs/tracing/concepts/otel' },
+              { title: 'traceAI', href: '/docs/tracing/concepts/traceai' },
             ]
           },
           {
             title: 'Features',
             items: [
-              { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
               { title: 'Run Evals on Traces', href: '/docs/observe/features/evals' },
               { title: 'Sessions', href: '/docs/observe/features/session' },
               { title: 'Users', href: '/docs/observe/features/users' },

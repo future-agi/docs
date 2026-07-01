@@ -22,6 +22,7 @@ const COMPONENT_MAP = {
   CopyButton: '@docs/CopyButton.astro',
   Expandable: '@docs/Expandable.astro',
   Icon: '@docs/Icon.astro',
+  Mermaid: '@docs/Mermaid.astro',
   Note: '@docs/Note.astro',
   ParamField: '@docs/ParamField.astro',
   Prerequisites: '@docs/Prerequisites.astro',
