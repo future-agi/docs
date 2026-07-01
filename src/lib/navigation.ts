@@ -347,7 +347,8 @@ export const tabNavigation: NavTab[] = [
         group: 'Observability',
         icon: 'eye',
         items: [
-          { title: 'Overview', href: '/docs/observe' },
+          { title: 'Get started', href: '/docs/observe' },
+          { title: 'Quickstart', href: '/docs/observe/quickstart' },
           {
             title: 'Concepts',
             items: [
@@ -360,106 +361,28 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Set Up Observability', href: '/docs/observe/features/quickstart' },
-              { title: 'Run Evals on Traces', href: '/docs/observe/features/evals' },
-              { title: 'Sessions', href: '/docs/observe/features/session' },
-              { title: 'Users', href: '/docs/observe/features/users' },
-              { title: 'Alerts & Monitors', href: '/docs/observe/features/alerts' },
-              { title: 'Voice Observability', href: '/docs/observe/features/voice' },
-              { title: 'Dashboards', href: '/docs/observe/features/dashboard' },
-              {
-                title: 'Manual Tracing',
-                items: [
-                  { title: 'Set Up Tracing', href: '/docs/observe/features/manual-tracing/set-up-tracing' },
-                  { title: 'Instrument with traceAI Helpers', href: '/docs/observe/features/manual-tracing/instrument-with-traceai-helpers' },
-                  { title: 'Get Current Tracer and Span', href: '/docs/observe/features/manual-tracing/get-current-span-context' },
-                  { title: 'Enriching Spans with Attributes, Metadata, and Tags', href: '/docs/observe/features/manual-tracing/add-attributes-metadata-tags' },
-                  { title: 'Logging Prompt Templates & Variables', href: '/docs/observe/features/manual-tracing/log-prompt-templates' },
-                  { title: 'Events, Exceptions, and Status', href: '/docs/observe/features/manual-tracing/add-events-exceptions-status' },
-                  { title: 'Set Session ID and User ID', href: '/docs/observe/features/manual-tracing/set-session-user-id' },
-                  { title: 'Tool Spans Creation', href: '/docs/observe/features/manual-tracing/create-tool-spans' },
-                  { title: 'Mask Span Attributes', href: '/docs/observe/features/manual-tracing/mask-span-attributes' },
-                  { title: 'Advanced Tracing (OTEL)', href: '/docs/observe/features/manual-tracing/advanced-tracing-examples' },
-                  { title: 'FI Semantic Conventions', href: '/docs/observe/features/manual-tracing/semantic-conventions' },
-                  { title: 'In-line Evaluations', href: '/docs/observe/features/manual-tracing/in-line-evals' },
-                  { title: 'Adding Annotations to your Spans', href: '/docs/observe/features/manual-tracing/annotating-using-api' },
-                  { title: 'Langfuse Integration', href: '/docs/observe/features/manual-tracing/langfuse-integration' },
-                ]
-              },
+              { title: 'Explore sessions & users', href: '/docs/observe/features/session' },
             ]
           },
           {
-            title: 'Integration',
+            title: 'Reference',
             items: [
-              { title: 'Overview', href: '/docs/tracing/auto' },
-              {
-                title: 'LLM Providers',
-                items: [
-                  { title: 'OpenAI', href: '/docs/tracing/auto/openai' },
-                  { title: 'Anthropic', href: '/docs/tracing/auto/anthropic' },
-                  { title: 'AWS Bedrock', href: '/docs/tracing/auto/bedrock' },
-                  { title: 'Vertex AI', href: '/docs/tracing/auto/vertexai' },
-                  { title: 'Google GenAI', href: '/docs/tracing/auto/google_genai' },
-                  { title: 'Google ADK', href: '/docs/tracing/auto/google_adk' },
-                  { title: 'Groq', href: '/docs/tracing/auto/groq' },
-                  { title: 'MistralAI', href: '/docs/tracing/auto/mistralai' },
-                  { title: 'Together AI', href: '/docs/tracing/auto/togetherai' },
-                  { title: 'Ollama', href: '/docs/tracing/auto/ollama' },
-                  { title: 'Portkey', href: '/docs/tracing/auto/portkey' },
-                ]
-              },
-              {
-                title: 'Frameworks & Agents',
-                items: [
-                  { title: 'LangChain', href: '/docs/tracing/auto/langchain' },
-                  { title: 'LangGraph', href: '/docs/tracing/auto/langgraph' },
-                  { title: 'LlamaIndex', href: '/docs/tracing/auto/llamaindex' },
-                  { title: 'LlamaIndex Workflows', href: '/docs/tracing/auto/llamaindex-workflows' },
-                  { title: 'LiteLLM', href: '/docs/tracing/auto/litellm' },
-                  { title: 'CrewAI', href: '/docs/tracing/auto/crewai' },
-                  { title: 'AutoGen', href: '/docs/tracing/auto/autogen' },
-                  { title: 'Haystack', href: '/docs/tracing/auto/haystack' },
-                  { title: 'DSPy', href: '/docs/tracing/auto/dspy' },
-                  { title: 'OpenAI Agents', href: '/docs/tracing/auto/openai_agents' },
-                  { title: 'Smol Agents', href: '/docs/tracing/auto/smol_agents' },
-                  { title: 'Instructor', href: '/docs/tracing/auto/instructor' },
-                  { title: 'PromptFlow', href: '/docs/tracing/auto/promptflow' },
-                  { title: 'Guardrails', href: '/docs/tracing/auto/guardrails' },
-                  { title: 'MCP', href: '/docs/tracing/auto/mcp' },
-                  { title: 'Mastra', href: '/docs/tracing/auto/mastra' },
-                  { title: 'Vercel AI SDK', href: '/docs/tracing/auto/vercel' },
-                ]
-              },
-              {
-                title: 'Voice & Realtime',
-                items: [
-                  { title: 'LiveKit', href: '/docs/tracing/auto/livekit' },
-                  { title: 'Pipecat', href: '/docs/tracing/auto/pipecat' },
-                ]
-              },
-              {
-                title: 'Java',
-                items: [
-                  { title: 'Overview', href: '/docs/tracing/auto/java' },
-                  { title: 'Spring Boot', href: '/docs/tracing/auto/spring-boot' },
-                  { title: 'OpenAI', href: '/docs/tracing/auto/java/openai' },
-                  { title: 'Anthropic', href: '/docs/tracing/auto/java/anthropic' },
-                  { title: 'AWS Bedrock', href: '/docs/tracing/auto/java/bedrock' },
-                  { title: 'Cohere', href: '/docs/tracing/auto/java/cohere' },
-                  { title: 'Pinecone', href: '/docs/tracing/auto/java/pinecone' },
-                  { title: 'LLM Providers', href: '/docs/tracing/auto/java/llm-providers' },
-                  { title: 'Vector Databases', href: '/docs/tracing/auto/java/vector-databases' },
-                  { title: 'Frameworks', href: '/docs/tracing/auto/java/frameworks' },
-                ]
-              },
-              {
-                title: 'Other',
-                items: [
-                  { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
-                ]
-              },
+              { title: 'Filter syntax', href: '/docs/observe/reference/trace-filter-syntax' },
+              { title: 'Dashboard metrics', href: '/docs/observe/reference/dashboard-metric-definitions' },
+              { title: 'Export and endpoints', href: '/docs/observe/reference/export-formats' },
+              { title: 'traceAI SDK', href: '/docs/observe/concepts/traceai' },
+              { title: 'OpenTelemetry', href: '/docs/observe/concepts/otel' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'No traces appear', href: '/docs/observe/troubleshooting/no-traces-appearing' },
+              { title: 'Spans and attributes', href: '/docs/observe/troubleshooting/missing-attributes' },
+              { title: 'Dashboard numbers', href: '/docs/observe/troubleshooting/dashboard-numbers-look-wrong' },
+              { title: 'Alerts not firing', href: '/docs/observe/troubleshooting/alerts-did-not-fire' },
             ]
           },
         ]
