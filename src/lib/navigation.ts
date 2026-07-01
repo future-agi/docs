@@ -271,7 +271,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Sessions', href: '/docs/observe/concepts/sessions' },
               { title: 'Users', href: '/docs/observe/concepts/users' },
               { title: 'Alerts', href: '/docs/observe/concepts/alerts' },
-              { title: 'Voice observability', href: '/docs/observe/concepts/voice' },
+              { title: 'Voice observability', href: '/docs/observe/concepts/voice-observability' },
               { title: 'Observability model', href: '/docs/observe/concepts/observability-model' },
             ]
           },
