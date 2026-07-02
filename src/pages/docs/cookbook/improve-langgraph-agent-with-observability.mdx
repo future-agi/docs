@@ -1,0 +1,251 @@
+---
+title: "Improving a LangGraph agent via observability"
+description: "Instrument a LangGraph support agent with Future AGI, score it with an Observe Eval Task, find the turn that fails, fix it from the eval signal, and prove the gain."
+---
+
+<TLDR>
+Build a multi-turn LangGraph support agent, instrument it with [traceAI](/docs/observe/concepts/traceai) so every conversation lands in [Observe](/docs/observe) grouped by [session](/docs/observe/concepts/sessions) and [user](/docs/observe/concepts/users), score it with an Observe [Eval Task](/docs/observe/features/evals), then read the scores to find *where* it fails, fix that one thing in your code, and watch the number move.
+</TLDR>
+
+| Time | Difficulty | Cost |
+|------|------------|------|
+| 30-40 min | Intermediate | ~$1 in model calls |
+
+The loop you'll run:
+
+<Mermaid chart={`%%{init: {'themeVariables': {'fontSize': '20px'}}}%%
+flowchart TD
+  accTitle: The improvement loop
+  accDescr: Build the agent, instrument it with traceAI, score it with an Observe Eval Task, diagnose the failing turn, fix the prompt, then confirm the gain and hold it with an alert and a saved view.
+  A["Build the agent"] --> B["Instrument with traceAI"]
+  B --> C["Score with an Eval Task"]
+  C --> D["Diagnose the failing turn"]
+  D --> E["Fix the prompt, re-run"]
+  E --> F["Confirm the gain, then alert"]`} />
+
+<Prerequisites>
+- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- An `OPENAI_API_KEY`
+- Python 3.11
+</Prerequisites>
+
+## Install
+
+```bash
+pip install fi-instrumentation-otel traceAI-langchain langgraph langchain-openai langchain-core
+```
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+## Tutorial
+
+<Steps>
+
+<Step title="Build the support agent">
+
+Real support answers are only as good as the policy behind them. Keep the knowledge base inline so the recipe runs with no external data, then wire a prebuilt LangGraph ReAct agent over it with two tools. The `search_help_center` tool stashes what it retrieved so you can score grounding later.
+
+```python
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
+
+POLICIES = [
+    "Refunds: Orders can be refunded within 30 days of delivery. Items marked 'final sale' "
+    "are not refundable. Refunds return to the original payment method in 5-7 business days.",
+    "Shipping: Standard shipping takes 3-5 business days. Express takes 1-2. We ship to the US and Canada only.",
+    "Account: Customers can reset a password from the login page. Support cannot see or change a password.",
+    "Returns: To return an item, start a return from the Orders page to get a prepaid label. "
+    "Returns must be shipped within 14 days of approval.",
+]
+
+store = InMemoryVectorStore.from_texts(POLICIES, OpenAIEmbeddings())
+retriever = store.as_retriever(search_kwargs={"k": 2})
+
+last_context = {"text": ""}  # holds the policy retrieved this turn, for scoring
+
+@tool
+def search_help_center(query: str) -> str:
+    """Search the help center for relevant policy text."""
+    docs = retriever.invoke(query)
+    last_context["text"] = "\n\n".join(d.page_content for d in docs)
+    return last_context["text"]
+
+@tool
+def lookup_order(order_id: str) -> str:
+    """Look up the status of an order by its ID."""
+    return f"Order {order_id}: delivered on 2026-06-20, standard shipping."
+
+SYSTEM_PROMPT = "You are a helpful customer-support agent. Use the tools to answer."
+
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+agent = create_react_agent(llm, tools=[search_help_center, lookup_order], prompt=SYSTEM_PROMPT)
+```
+
+<Note>
+The `SYSTEM_PROMPT` is deliberately weak. It is the thing you'll fix later, once the evals tell you to.
+</Note>
+
+</Step>
+
+<Step title="Instrument it and group by session and user">
+
+Register tracing against an **Observe** project and turn on auto-instrumentation. The same `LangChainInstrumentor` captures LangGraph, there is no separate instrumentor. Wrap each turn in `using_session` (the conversation) and `using_user` (the customer), and in one span record the three fields an eval will need: the question, the answer, and the retrieved policy.
+
+```python
+from fi_instrumentation import register, using_session, using_user, FITracer
+from fi_instrumentation.fi_types import ProjectType
+from traceai_langchain import LangChainInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="support-agent",
+    set_global_tracer_provider=True,
+)
+LangChainInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = FITracer(trace_provider.get_tracer(__name__))
+
+def support_turn(session_id: str, user_id: str, question: str) -> str:
+    with using_session(session_id), using_user(user_id):
+        with tracer.start_as_current_span("support_turn") as span:
+            result = agent.invoke({"messages": [{"role": "user", "content": question}]})
+            answer = result["messages"][-1].content
+            span.set_attribute("raw.input", question)
+            span.set_attribute("raw.output", answer)
+            span.set_attribute("raw.context", last_context["text"])  # retrieved policy
+            return answer
+
+# two customers, five turns between them
+CONVERSATIONS = [
+    ("chat_1001", "cust_42", [
+        "How long do refunds take?",
+        "My order was a final sale, can I still get a refund?",
+        "Can you look up order A-3391?",
+    ]),
+    ("chat_1002", "cust_77", [
+        "What shipping options do you have?",
+        "Can you change my password for me?",
+    ]),
+]
+
+for sid, uid, questions in CONVERSATIONS:
+    for q in questions:
+        print(support_turn(sid, uid, q))
+
+trace_provider.force_flush()  # BatchSpanProcessor buffers up to 5s; flush before a short script exits
+```
+
+**You should see** five answers in the terminal, and within a few seconds, in **Observe > Traces > `support-agent`**, two sessions: `chat_1001` holding three traces for user `cust_42`, and `chat_1002` holding two for `cust_77`. The final-sale refund turn is the one to watch.
+
+<Warning>
+No trace? It is almost always order or flush. `register()` and `.instrument()` must run **before** the agent call, and `force_flush()` must run before the process exits.
+</Warning>
+
+</Step>
+
+<Step title="Score it with an Eval Task">
+
+You won't score answers from the SDK. You configure evals **in the platform** as an Eval Task, so they run on your traces and the whole team sees the same scores. The turn span already carries `raw.input`, `raw.output`, and `raw.context`, so the task has clean attributes to map to.
+
+In Observe, create an **Eval Task** on the `support-agent` project and pick three evals, chosen so a low score points at a *specific* component:
+
+- **Context Relevance** — did retrieval fetch the right policy? · map `input` → `raw.input`, `context` → `raw.context`
+- **Context Adherence** — did the answer stay grounded in it? · map `output` → `raw.output`, `context` → `raw.context`
+- **Completeness** — did the answer fully address the question? · map `input` → `raw.input`, `output` → `raw.output`
+
+Run it as **Historical** over the five turns you just sent.
+
+<Note>
+This step only covers what to pick for this agent. The click-by-click, creating the task, choosing Historical or Continuous, setting sampling, and mapping eval inputs to span attributes, lives in the [Setup evals](/docs/observe/guides/setup-evals) how-to guide in the Observe docs.
+</Note>
+
+**You should see** three scores per trace. Read them as a baseline (illustrative shape, your numbers will differ):
+
+| Turn | Context Relevance | Context Adherence | Completeness |
+|---|---|---|---|
+| "How long do refunds take?" | 0.91 | 0.88 | 0.86 |
+| "Final sale, still refundable?" | 0.87 | **0.41** | 0.55 |
+| "Look up order A-3391" | 0.93 | 0.90 | 0.84 |
+| "What shipping options do you have?" | 0.90 | 0.85 | 0.83 |
+| "Can you change my password for me?" | 0.88 | 0.82 | 0.80 |
+
+</Step>
+
+<Step title="Diagnose the failing turn">
+
+Don't guess, read the pattern. Filter the trace explorer to the low-scoring slice:
+
+```text
+scores.context_adherence < 0.8 AND fi.span.kind = LLM
+```
+
+The final-sale turn surfaces, and its scores are the whole story: retrieval is fine (Context Relevance 0.87), grounding is not (Context Adherence 0.41). The right policy was in front of the model and it answered against it anyway. That points at one layer, and only one. To replay the customer's whole conversation around the bad turn, scope the table with `user.id = 'cust_42'` and open the session.
+
+| Eval signal | Deduction | Where the fix lives |
+|---|---|---|
+| Context Relevance low | wrong policy retrieved | retrieval: chunking, query, `k`, reranker, filters |
+| Relevance ok, **Adherence low** | model ignores good context | **the prompt** |
+| Completeness low | partial answer | prompt, or retrieve more context |
+
+</Step>
+
+<Step title="Fix it from the eval signal">
+
+Relevance is fine and Adherence is low, so the fix is the **prompt**, not the retriever. Constrain the agent to the retrieved policy and give it an out:
+
+```python
+SYSTEM_PROMPT = (
+    "You are a customer-support agent. Answer ONLY from the policy text returned by "
+    "search_help_center. Quote the specific rule you used. If the retrieved policy does "
+    "not cover the question, say you are not certain and offer to escalate, rather than guessing."
+)
+
+agent = create_react_agent(llm, tools=[search_help_center, lookup_order], prompt=SYSTEM_PROMPT)
+```
+
+Re-run the same five turns to send fresh traces, then run the Eval Task again. This is the whole point: a code change you deduced from a score, verified by the same eval, with nothing exported and no separate tool.
+
+**You should see** the final-sale turn move (illustrative):
+
+| Turn | Context Adherence | Completeness |
+|---|---|---|
+| "Final sale, still refundable?" | 0.41 → **0.86** | 0.55 → **0.82** |
+
+The agent now says final-sale items are not refundable and cites the refund policy, instead of inventing a refund path.
+
+</Step>
+
+<Step title="Confirm the gain, then hold it">
+
+You're done when all three are true: the final-sale answer refuses a refund and cites the policy; the `support-agent` project shows the moved Context Adherence score; and you can say *why* it moved (the retriever was never the problem, the prompt was).
+
+A fix you can't monitor will silently regress on the next prompt tweak. Lock it in:
+
+- **Alert:** an [Evaluation-metric alert](/docs/observe/guides/setup-alerts) on `context_adherence`, operator *Less than*, static `0.8`. Observe pings you before a customer does.
+- **Saved view:** save the `scores.context_adherence < 0.8` filter as a reusable "Ungrounded answers" view. See the [Views](/docs/observe/guides/explore-dashboard/views) guide.
+- **Regression set:** the turns that scored low are your best test cases, harvest them so the next change has to clear them.
+
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No trace in Observe | `register()`/`.instrument()` ran after the agent call, or the script exited before flush | Register and instrument first; call `trace_provider.force_flush()` before exit |
+| Session or user filters return nothing | The turn ran outside the `using_session` / `using_user` context | Keep the agent call inside `with using_session(...), using_user(...)` |
+| Eval Task finished but no scores | The task ran Historical before the traces existed, or sampling or filters excluded them | Re-run after sending traces; widen the date range; raise the sampling rate |
+| Eval reports a missing input | The turn span didn't set `raw.input` / `raw.output` / `raw.context`, or the mapping points elsewhere | Set the three attributes; map each eval input to them (Context Adherence needs `context` + `output`) |
+| Alert never fires | Wrong metric or project type | Use an Evaluation-metric alert on `context_adherence`; monitors work only on `observe` projects |
+| Context Relevance is the low one, not Adherence | The failure is retrieval, not the prompt | Fix the retriever (chunking, `k`, filters), not the prompt |
+
+## Where to go next
+
+You improved this agent by hand: you read the eval and changed the prompt. To close the loop *automatically*, so the agent's prompt improves without you touching it, feed the same scores into optimization in [Improve a prompt automatically](/docs/cookbook/quickstart/prompt-optimization).

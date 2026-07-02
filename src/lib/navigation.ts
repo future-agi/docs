@@ -830,7 +830,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Observability',
             icon: 'eye',
             items: [
-              { title: 'Implement Observability', href: '/docs/cookbook/observability' },
+              { title: 'Improving a LangGraph agent via observability', href: '/docs/cookbook/improve-langgraph-agent-with-observability' },
               { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/text-to-sql' },
             ]
           },

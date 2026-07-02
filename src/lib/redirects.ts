@@ -1,6 +1,7 @@
 // Auto-generated redirect map: old Mintlify URLs → new docs URLs
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
+  '/docs/cookbook/observability': '/docs/cookbook/improve-langgraph-agent-with-observability',
   '/docs/observe/features/annotation-queue-using-sdk': '/docs/annotations/sdk/annotation-queue-using-sdk',
   '/docs/observe/voice/set-up': '/docs/observe/features/voice',
   '/docs/quickstart/installation': '/docs/installation',
@@ -77,7 +78,7 @@ export const redirectMap: Record<string, string> = {
   '/cookbook/cookbook5/How-to-build-and-incrementally-improve-RAG-applications-in-Langchain': '/docs/cookbook/rag-langchain',
   '/cookbook/cookbook6/How-to-evaluate-RAG-Applications': '/docs/cookbook/evaluate-rag',
   '/cookbook/cookbook7/Creating-Trustworthy-RAGs-for-Chatbots': '/docs/cookbook/trustworthy-rag',
-  '/cookbook/cookbook8/How-To-Implement-Observability': '/docs/cookbook/observability',
+  '/cookbook/cookbook8/How-To-Implement-Observability': '/docs/cookbook/improve-langgraph-agent-with-observability',
   '/cookbook/cookbook9/How-To-Decrease-RAG-Hallucination': '/docs/cookbook/decrease-hallucination',
   '/cookbook/integrations/mongodb': '/docs/cookbook/mongodb',
   '/cookbook/optimization/basic-prompt-optimization': '/docs/cookbook/basic-optimization',
