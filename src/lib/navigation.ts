@@ -69,6 +69,12 @@ export const tabNavigation: NavTab[] = [
               { title: 'Troubleshooting and FAQs', href: '/docs/self-hosting/troubleshooting' },
             ]
           },
+          {
+            title: 'Release notes',
+            items: [
+              { title: "What's new", href: '/docs/release-notes' },
+            ]
+          },
         ]
       },
       {
