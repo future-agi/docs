@@ -347,7 +347,7 @@ export const tabNavigation: NavTab[] = [
         group: 'Observability',
         icon: 'eye',
         items: [
-          { title: 'Get started', href: '/docs/observe' },
+          { title: 'Overview', href: '/docs/observe' },
           { title: 'Quickstart', href: '/docs/observe/quickstart' },
           {
             title: 'Concepts',
@@ -363,36 +363,24 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Guides',
             items: [
-              { title: 'Navigating through the dashboard', href: '/docs/observe/guides/navigating-through-the-dashboard' },
-              { title: 'Setup evals in observe', href: '/docs/observe/guides/setup-evals-in-observe' },
-              { title: 'Setup alerts for your project', href: '/docs/observe/guides/setup-alerts-for-your-project' },
-              { title: 'Using Filters', href: '/docs/observe/guides/using-filters' },
-              { title: 'Saving a view', href: '/docs/observe/guides/saving-a-view' },
+              {
+                title: 'Explore dashboard',
+                items: [
+                  { title: 'Overview', href: '/docs/observe/guides/explore-dashboard' },
+                  { title: 'Filters', href: '/docs/observe/guides/explore-dashboard/filters' },
+                  { title: 'Views', href: '/docs/observe/guides/explore-dashboard/views' },
+                  { title: 'Display options', href: '/docs/observe/guides/explore-dashboard/display-options' },
+                ]
+              },
+              { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
+              { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
               { title: 'Explore sessions & users', href: '/docs/observe/features/session' },
             ]
           },
           {
             title: 'Reference',
             items: [
-              {
-                title: 'Span types',
-                items: [
-                  { title: 'Overview', href: '/docs/observe/reference/span-types' },
-                  { title: 'LLM', href: '/docs/observe/reference/span-types/llm' },
-                  { title: 'Tool', href: '/docs/observe/reference/span-types/tool' },
-                  { title: 'Retriever', href: '/docs/observe/reference/span-types/retriever' },
-                  { title: 'Embedding', href: '/docs/observe/reference/span-types/embedding' },
-                  { title: 'Reranker', href: '/docs/observe/reference/span-types/reranker' },
-                  { title: 'Agent', href: '/docs/observe/reference/span-types/agent' },
-                  { title: 'Chain', href: '/docs/observe/reference/span-types/chain' },
-                  { title: 'Guardrail', href: '/docs/observe/reference/span-types/guardrail' },
-                  { title: 'Evaluator', href: '/docs/observe/reference/span-types/evaluator' },
-                ]
-              },
-              { title: 'Filter syntax', href: '/docs/observe/reference/trace-filter-syntax' },
-              { title: 'Filter metrics', href: '/docs/observe/reference/filter-metrics' },
-              { title: 'Span attributes', href: '/docs/observe/reference/span-attributes' },
-              { title: 'Project sampling rate', href: '/docs/observe/reference/project-sampling-rate' },
+              { title: 'Filters', href: '/docs/observe/reference/filters' },
               { title: 'traceAI', href: '/docs/observe/concepts/traceai' },
             ]
           },
