@@ -72,6 +72,7 @@ export const tabNavigation: NavTab[] = [
               {
                 title: 'Production',
                 items: [
+                  { title: 'Overview', href: '/docs/self-hosting/production' },
                   { title: 'Checklist', href: '/docs/self-hosting/production/checklist' },
                   { title: 'Security & TLS', href: '/docs/self-hosting/production/security-tls' },
                   { title: 'Backups & restore', href: '/docs/self-hosting/production/backups-restore' },
