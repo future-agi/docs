@@ -62,12 +62,26 @@ export const tabNavigation: NavTab[] = [
               { title: 'Overview', href: '/docs/self-hosting' },
               { title: 'Requirements', href: '/docs/self-hosting/requirements' },
               { title: 'Installation', href: '/docs/self-hosting/installation' },
-              { title: 'Environment variables', href: '/docs/self-hosting/environment' },
-              { title: 'Configuration', href: '/docs/self-hosting/configuration' },
-              { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
-              { title: 'Production', href: '/docs/self-hosting/production' },
-              { title: 'User management', href: '/docs/self-hosting/user-management' },
-              { title: 'Troubleshooting and FAQs', href: '/docs/self-hosting/troubleshooting' },
+              {
+                title: 'Configuration',
+                items: [
+                  { title: 'Environment variables', href: '/docs/self-hosting/environment' },
+                  { title: 'System configuration', href: '/docs/self-hosting/configuration' },
+                ]
+              },
+              {
+                title: 'Production',
+                items: [
+                  { title: 'Overview', href: '/docs/self-hosting/production' },
+                  { title: 'Checklist', href: '/docs/self-hosting/production/checklist' },
+                  { title: 'Security & TLS', href: '/docs/self-hosting/production/security-tls' },
+                  { title: 'Backups & restore', href: '/docs/self-hosting/production/backups-restore' },
+                  { title: 'Monitoring', href: '/docs/self-hosting/production/monitoring' },
+                  { title: 'Upgrades & rollback', href: '/docs/self-hosting/production/upgrades-rollback' },
+                ]
+              },
+              { title: 'Troubleshooting & FAQs', href: '/docs/self-hosting/troubleshooting' },
+              { title: 'Support', href: '/docs/self-hosting/support' },
             ]
           },
         ]
