@@ -61,7 +61,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Overview', href: '/docs/self-hosting' },
               { title: 'Requirements', href: '/docs/self-hosting/requirements' },
-              { title: 'Install', href: '/docs/self-hosting/install' },
+              { title: 'Installation', href: '/docs/self-hosting/installation' },
               { title: 'Environment variables', href: '/docs/self-hosting/environment' },
               { title: 'Configuration', href: '/docs/self-hosting/configuration' },
               { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
