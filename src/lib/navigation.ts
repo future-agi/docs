@@ -66,7 +66,7 @@ export const tabNavigation: NavTab[] = [
                 title: 'Configuration',
                 items: [
                   { title: 'Environment variables', href: '/docs/self-hosting/configuration/environment' },
-                  { title: 'System configuration', href: '/docs/self-hosting/configuration' },
+                  { title: 'System configuration', href: '/docs/self-hosting/configuration/system' },
                 ]
               },
               {
