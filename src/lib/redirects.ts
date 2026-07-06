@@ -306,4 +306,5 @@ export const redirectMap: Record<string, string> = {
   '/sdk-reference/python-sdk-client': '/docs/sdk',
   '/sdk-reference/testcase': '/docs/sdk/testcase',
   '/sdk-reference/tracing': '/docs/sdk/tracing',
+  '/docs/self-hosting/environment': '/docs/self-hosting/configuration/environment',
 };
