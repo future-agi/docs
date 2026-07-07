@@ -19,6 +19,9 @@ export const redirectMap: Record<string, string> = {
   '/docs/cookbook/observability': '/docs/cookbook/observe-langgraph-agent-and-obtain-insights',
   '/docs/cookbook/improve-langgraph-agent-with-observability': '/docs/cookbook/observe-langgraph-agent-and-obtain-insights',
   '/docs/observe/features/annotation-queue-using-sdk': '/docs/annotations/sdk/annotation-queue-using-sdk',
+  // SDK pages restructured: sdk/tracing.mdx flat page → sdk/tracing/ folder (index still serves /docs/sdk/tracing); annotation-queues moved under Annotations
+  '/docs/sdk/tracing': '/docs/sdk/tracing/set-up-tracing',
+  '/docs/sdk/annotation-queues': '/docs/annotations/sdk/annotation-queue-using-sdk',
   '/docs/observe/voice/set-up': '/docs/observe/features/voice',
   '/docs/quickstart/installation': '/docs/installation',
   '/docs/observability': '/docs/tracing/auto',
