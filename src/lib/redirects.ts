@@ -157,7 +157,7 @@ export const redirectMap: Record<string, string> = {
   '/future-agi/get-started/evaluation/create-custom-evals': '/docs/evaluation/features/custom',
   '/future-agi/get-started/evaluation/evaluate-ci-cd-pipeline': '/docs/evaluation/features/cicd',
   '/future-agi/get-started/evaluation/evaluate-patterns': '/docs/evaluation/features/evaluate',
-  '/future-agi/get-started/evaluation/future-agi-models': '/docs/evaluation/features/futureagi-models',
+  '/future-agi/get-started/evaluation/future-agi-models': '/docs/evaluation/concepts/judge-models',
   '/future-agi/get-started/evaluation/running-your-first-eval': '/docs/evaluation/features/evaluate',
   '/future-agi/get-started/evaluation/use-custom-models': '/docs/evaluation/features/custom-models',
   '/future-agi/get-started/knowledge-base/concept': '/docs/knowledge-base/concepts/concept',
