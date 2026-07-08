@@ -295,21 +295,54 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'Understanding Evaluation', href: '/docs/evaluation/concepts/understanding-evaluation' },
-              { title: 'Eval Types', href: '/docs/evaluation/concepts/eval-types' },
-              { title: 'Eval Templates', href: '/docs/evaluation/concepts/eval-templates' },
-              { title: 'Judge Models', href: '/docs/evaluation/concepts/judge-models' },
-              { title: 'Eval Results', href: '/docs/evaluation/concepts/eval-results' },
+              { title: 'Eval types', href: '/docs/evaluation/concepts/eval-types' },
+              { title: 'Eval templates & versions', href: '/docs/evaluation/concepts/eval-templates' },
+              { title: 'Judge models', href: '/docs/evaluation/concepts/judge-models' },
+              { title: 'Context', href: '/docs/evaluation/concepts/context' },
+              { title: 'Connectors', href: '/docs/evaluation/concepts/connectors' },
+              { title: 'Output types', href: '/docs/evaluation/concepts/output-types' },
+              { title: 'Error localization', href: '/docs/evaluation/concepts/error-localization' },
+              { title: 'Guardrails', href: '/docs/evaluation/concepts/guardrails' },
+              { title: 'Composite evals', href: '/docs/evaluation/concepts/composite-evals' },
+              { title: 'Feedback', href: '/docs/evaluation/concepts/feedback' },
+              { title: 'Ground truth', href: '/docs/evaluation/concepts/ground-truth' },
             ]
           },
           {
-            title: 'Features',
+            title: 'How to guides',
             items: [
-              { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
-              { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
-              { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
-              { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
-              { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
-              { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
+              { title: 'Running Evaluations', href: '/docs/evaluation/features/evaluate' },
+              {
+                title: 'Explore playground',
+                items: [
+                  { title: 'Overview', href: '/docs/evaluation/guides/explore-playground' },
+                  { title: 'Test an eval', href: '/docs/evaluation/guides/explore-playground/test-an-eval' },
+                  { title: 'Usage & analytics', href: '/docs/evaluation/guides/explore-playground/usage-analytics' },
+                  { title: 'Eval logs', href: '/docs/evaluation/guides/explore-playground/eval-logs' },
+                ]
+              },
+              { title: 'Create a custom eval', href: '/docs/evaluation/features/custom' },
+              { title: 'Build a composite evals', href: '/docs/evaluation/guides/composite-evals' },
+              { title: 'Set up guardrails', href: '/docs/evaluation/guides/guardrails' },
+              { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
+              { title: 'Collect feedback', href: '/docs/evaluation/guides/feedback' },
+              { title: 'Configure connectors', href: '/docs/evaluation/guides/connectors' },
+              { title: 'Use custom models', href: '/docs/evaluation/features/custom-models' },
+              { title: 'Evaluate in CI/CD', href: '/docs/evaluation/features/cicd' },
+            ]
+          },
+          {
+            title: 'References',
+            items: [
+              { title: 'Built-in evals', href: '/docs/evaluation/builtin' },
+              { title: 'Output types & scoring', href: '/docs/evaluation/reference/output-types' },
+              { title: 'SDK & API', href: '/docs/evaluation/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Evaluation FAQ & fixes', href: '/docs/evaluation/troubleshooting' },
             ]
           },
         ]
