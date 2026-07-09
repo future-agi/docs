@@ -60,13 +60,28 @@ export const tabNavigation: NavTab[] = [
             title: 'Self-Hosting',
             items: [
               { title: 'Overview', href: '/docs/self-hosting' },
-              { title: 'System requirements', href: '/docs/self-hosting/requirements' },
-              { title: 'Environment variables', href: '/docs/self-hosting/environment' },
-              { title: 'Configuration', href: '/docs/self-hosting/configuration' },
-              { title: 'Docker Compose', href: '/docs/self-hosting/docker-compose' },
-              { title: 'Production', href: '/docs/self-hosting/production' },
-              { title: 'User management', href: '/docs/self-hosting/user-management' },
-              { title: 'Troubleshooting and FAQs', href: '/docs/self-hosting/troubleshooting' },
+              { title: 'Requirements', href: '/docs/self-hosting/requirements' },
+              { title: 'Installation', href: '/docs/self-hosting/installation' },
+              {
+                title: 'Configuration',
+                items: [
+                  { title: 'System configuration', href: '/docs/self-hosting/configuration/system' },
+                  { title: 'Environment variables', href: '/docs/self-hosting/configuration/environment' },
+                ]
+              },
+              {
+                title: 'Production',
+                items: [
+                  { title: 'Overview', href: '/docs/self-hosting/production' },
+                  { title: 'Checklist', href: '/docs/self-hosting/production/checklist' },
+                  { title: 'Security & TLS', href: '/docs/self-hosting/production/security-tls' },
+                  { title: 'Backups & restore', href: '/docs/self-hosting/production/backups-restore' },
+                  { title: 'Monitoring', href: '/docs/self-hosting/production/monitoring' },
+                  { title: 'Upgrades & rollback', href: '/docs/self-hosting/production/upgrades-rollback' },
+                ]
+              },
+              { title: 'Troubleshooting & FAQs', href: '/docs/self-hosting/troubleshooting' },
+              { title: 'Support', href: '/docs/self-hosting/support' },
             ]
           },
           {
@@ -413,7 +428,6 @@ export const tabNavigation: NavTab[] = [
               },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
-              { title: 'Explore sessions & users', href: '/docs/observe/features/session' },
             ]
           },
           {
@@ -857,7 +871,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Observability',
             icon: 'eye',
             items: [
-              { title: 'Improving a LangGraph agent via observability', href: '/docs/cookbook/improve-langgraph-agent-with-observability' },
+              { title: 'Observing a LangGraph agent and obtaining insights', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
               { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/text-to-sql' },
             ]
           },
@@ -908,50 +922,142 @@ export const tabNavigation: NavTab[] = [
     href: '/docs/sdk',
     groups: [
       {
-        group: 'SDK Reference',
+        group: 'SDK Overview',
+        icon: 'code',
         items: [
           { title: 'SDK Overview', href: '/docs/sdk' },
           {
-            title: 'AI Evaluation',
+            title: 'List of SDKs',
             items: [
-              { title: 'Overview', href: '/docs/sdk/evals' },
-              { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
-              { title: 'Distributed Evaluator', href: '/docs/sdk/evals/distributed' },
-              { title: 'AutoEval', href: '/docs/sdk/evals/autoeval' },
-              { title: 'Guardrails', href: '/docs/sdk/evals/guardrails-module' },
-              { title: 'Local & Hybrid', href: '/docs/sdk/evals/local' },
-              { title: 'OpenTelemetry', href: '/docs/sdk/evals/otel' },
-              { title: 'Code Security', href: '/docs/sdk/evals/code-security' },
-              {
-                title: 'Metrics Reference',
-                items: [
-                  { title: 'Overview', href: '/docs/sdk/evals/metrics' },
-                  { title: 'String & Similarity', href: '/docs/sdk/evals/metrics/string' },
-                  { title: 'JSON & Structured', href: '/docs/sdk/evals/metrics/json' },
-                  { title: 'Hallucination', href: '/docs/sdk/evals/metrics/hallucination' },
-                  { title: 'RAG', href: '/docs/sdk/evals/metrics/rag' },
-                  { title: 'Agents & Functions', href: '/docs/sdk/evals/metrics/agents' },
-                  { title: 'Guardrails', href: '/docs/sdk/evals/metrics/guardrails' },
-                ]
-              },
-              { title: 'Cloud Evals', href: '/docs/sdk/evals/cloud-evals' },
-              { title: 'LLM-as-Judge', href: '/docs/sdk/evals/llm-judge' },
-              { title: 'Streaming', href: '/docs/sdk/evals/streaming' },
-              { title: 'Feedback Loops', href: '/docs/sdk/evals/feedback' },
+              { title: 'Evaluation', href: '/docs/sdk/list/evaluation' },
+              { title: 'TraceAI', href: '/docs/sdk/list/traceai' },
+              { title: 'Core SDKs', href: '/docs/sdk/list/core' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Evaluation',
+        icon: 'chart',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/evals' },
+          { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
+          { title: 'AutoEval', href: '/docs/sdk/evals/autoeval' },
+          { title: 'LLM-as-Judge', href: '/docs/sdk/evals/llm-judge' },
+          { title: 'Guardrails', href: '/docs/sdk/evals/guardrails-module' },
+          { title: 'Local & Hybrid', href: '/docs/sdk/evals/local' },
+          { title: 'Distributed Evaluator', href: '/docs/sdk/evals/distributed' },
+          { title: 'Streaming', href: '/docs/sdk/evals/streaming' },
+          { title: 'Cloud Evals', href: '/docs/sdk/evals/cloud-evals' },
+          { title: 'Feedback Loops', href: '/docs/sdk/evals/feedback' },
+          { title: 'Code Security', href: '/docs/sdk/evals/code-security' },
+          { title: 'OpenTelemetry', href: '/docs/sdk/evals/otel' },
+          {
+            title: 'Metrics Reference',
+            items: [
+              { title: 'Overview', href: '/docs/sdk/evals/metrics' },
+              { title: 'String & Similarity', href: '/docs/sdk/evals/metrics/string' },
+              { title: 'JSON & Structured', href: '/docs/sdk/evals/metrics/json' },
+              { title: 'Hallucination', href: '/docs/sdk/evals/metrics/hallucination' },
+              { title: 'RAG', href: '/docs/sdk/evals/metrics/rag' },
+              { title: 'Agents & Functions', href: '/docs/sdk/evals/metrics/agents' },
+              { title: 'Guardrails', href: '/docs/sdk/evals/metrics/guardrails' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'traceAI',
+        icon: 'eye',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/tracing' },
+          {
+            title: 'How-to guides',
+            items: [
+              { title: 'Set up tracing', href: '/docs/sdk/tracing/set-up-tracing' },
+              { title: 'Instrument with helpers', href: '/docs/sdk/tracing/instrument-with-traceai-helpers' },
+              { title: 'Set session & user IDs', href: '/docs/sdk/tracing/set-session-user-id' },
+              { title: 'Attributes, metadata & tags', href: '/docs/sdk/tracing/add-attributes-metadata-tags' },
+              { title: 'Log prompt templates', href: '/docs/sdk/tracing/log-prompt-templates' },
+              { title: 'Events, exceptions & status', href: '/docs/sdk/tracing/add-events-exceptions-status' },
+              { title: 'Mask attributes', href: '/docs/sdk/tracing/mask-span-attributes' },
+              { title: 'Create tool spans', href: '/docs/sdk/tracing/create-tool-spans' },
+              { title: 'Get span context', href: '/docs/sdk/tracing/get-current-span-context' },
+              { title: 'In-line evals', href: '/docs/sdk/tracing/in-line-evals' },
+              { title: 'Annotate via API', href: '/docs/sdk/tracing/annotating-using-api' },
+              { title: 'Advanced examples', href: '/docs/sdk/tracing/advanced-tracing-examples' },
+              { title: 'Langfuse integration', href: '/docs/sdk/tracing/langfuse-integration' },
             ]
           },
           {
-            title: 'Core SDK',
+            title: 'Reference',
             items: [
-              { title: 'Datasets', href: '/docs/sdk/datasets' },
-              { title: 'Tracing', href: '/docs/sdk/tracing' },
-              { title: 'Protect', href: '/docs/sdk/protect' },
-              { title: 'Knowledge Base', href: '/docs/sdk/knowledgebase' },
-              { title: 'Annotation Queues', href: '/docs/sdk/annotation-queues' },
-              { title: 'Prompt Optimization', href: '/docs/sdk/optimization' },
-              { title: 'Simulation Testing', href: '/docs/sdk/simulate' },
+              { title: 'register()', href: '/docs/sdk/tracing/register' },
+              { title: 'FITracer & custom spans', href: '/docs/sdk/tracing/fitracer' },
+              { title: 'Context helpers', href: '/docs/sdk/tracing/context-helpers' },
+              { title: 'TraceConfig', href: '/docs/sdk/tracing/trace-config' },
+              { title: 'EvalTags', href: '/docs/sdk/tracing/eval-tags' },
+              { title: 'Instrumentors', href: '/docs/sdk/tracing/instrumentors' },
+              { title: 'Environment variables', href: '/docs/sdk/tracing/environment-variables' },
+              { title: 'Semantic conventions', href: '/docs/sdk/tracing/semantic-conventions' },
             ]
           },
+        ]
+      },
+      {
+        group: 'Simulation',
+        icon: 'play',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/simulate' },
+        ]
+      },
+      {
+        group: 'Datasets',
+        icon: 'table',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/datasets' },
+        ]
+      },
+      {
+        group: 'Prompt Optimization',
+        icon: 'gauge',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/optimization' },
+        ]
+      },
+      {
+        group: 'Annotation Queues',
+        icon: 'pen',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/annotation-queues' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Labels', href: '/docs/sdk/annotation-queues/labels' },
+              { title: 'Queue management', href: '/docs/sdk/annotation-queues/queues' },
+              { title: 'Queue lifecycle', href: '/docs/sdk/annotation-queues/lifecycle' },
+              { title: 'Queue items', href: '/docs/sdk/annotation-queues/items' },
+              { title: 'Annotations', href: '/docs/sdk/annotation-queues/annotations' },
+              { title: 'Scores', href: '/docs/sdk/annotation-queues/scores' },
+              { title: 'Progress & analytics', href: '/docs/sdk/annotation-queues/analytics' },
+              { title: 'Export', href: '/docs/sdk/annotation-queues/export' },
+              { title: 'Data models', href: '/docs/sdk/annotation-queues/data-models' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Knowledge Base',
+        icon: 'brain',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/knowledgebase' },
+        ]
+      },
+      {
+        group: 'Protect',
+        icon: 'shield',
+        items: [
+          { title: 'Overview', href: '/docs/sdk/protect' },
         ]
       }
     ]
