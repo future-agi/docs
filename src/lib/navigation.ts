@@ -311,7 +311,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'How to guides',
             items: [
-              { title: 'Running Evaluations', href: '/docs/evaluation/features/evaluate' },
+              { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
               {
                 title: 'Explore playground',
                 items: [
@@ -321,14 +321,14 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Eval logs', href: '/docs/evaluation/guides/explore-playground/eval-logs' },
                 ]
               },
-              { title: 'Create a custom eval', href: '/docs/evaluation/features/custom' },
+              { title: 'Create a custom eval', href: '/docs/evaluation/guides/custom-evals' },
               { title: 'Build a composite evals', href: '/docs/evaluation/guides/composite-evals' },
               { title: 'Set up guardrails', href: '/docs/evaluation/guides/guardrails' },
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
               { title: 'Collect feedback', href: '/docs/evaluation/guides/feedback' },
               { title: 'Configure connectors', href: '/docs/evaluation/guides/connectors' },
-              { title: 'Use custom models', href: '/docs/evaluation/features/custom-models' },
-              { title: 'Evaluate in CI/CD', href: '/docs/evaluation/features/cicd' },
+              { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
+              { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
             ]
           },
           {
