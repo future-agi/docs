@@ -313,7 +313,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Eval types', href: '/docs/evaluation/concepts/eval-types' },
               { title: 'Eval templates & versions', href: '/docs/evaluation/concepts/eval-templates' },
               { title: 'Judge models', href: '/docs/evaluation/concepts/judge-models' },
-              { title: 'Context', href: '/docs/evaluation/concepts/context' },
               { title: 'Connectors', href: '/docs/evaluation/concepts/connectors' },
               { title: 'Output types', href: '/docs/evaluation/concepts/output-types' },
               { title: 'Error localization', href: '/docs/evaluation/concepts/error-localization' },
