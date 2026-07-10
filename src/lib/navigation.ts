@@ -348,7 +348,6 @@ export const tabNavigation: NavTab[] = [
             title: 'References',
             items: [
               { title: 'Built-in evals', href: '/docs/evaluation/builtin' },
-              { title: 'Output types & scoring', href: '/docs/evaluation/reference/output-types' },
               { title: 'SDK & API', href: '/docs/evaluation/reference/sdk-api' },
             ]
           },
