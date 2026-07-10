@@ -322,40 +322,14 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Guides',
+            title: 'Features',
             items: [
-              { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
-              {
-                title: 'Explore playground',
-                items: [
-                  { title: 'Overview', href: '/docs/evaluation/guides/explore-playground' },
-                  { title: 'Test an eval', href: '/docs/evaluation/guides/explore-playground/test-an-eval' },
-                  { title: 'Usage & analytics', href: '/docs/evaluation/guides/explore-playground/usage-analytics' },
-                  { title: 'Eval logs', href: '/docs/evaluation/guides/explore-playground/eval-logs' },
-                ]
-              },
-              { title: 'Create a custom eval', href: '/docs/evaluation/guides/custom-evals' },
-              { title: 'Build a composite evals', href: '/docs/evaluation/guides/composite-evals' },
-              { title: 'Set up guardrails', href: '/docs/evaluation/guides/guardrails' },
-              { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
-              { title: 'Collect feedback', href: '/docs/evaluation/guides/feedback' },
-              { title: 'Using Connectors', href: '/docs/evaluation/guides/using-connectors' },
-              { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
-              { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
-            ]
-          },
-          {
-            title: 'References',
-            items: [
-              { title: 'Built-in evals', href: '/docs/evaluation/builtin' },
-              { title: 'Output types & scoring', href: '/docs/evaluation/reference/output-types' },
-              { title: 'SDK & API', href: '/docs/evaluation/reference/sdk-api' },
-            ]
-          },
-          {
-            title: 'Troubleshooting',
-            items: [
-              { title: 'Evaluation FAQ & fixes', href: '/docs/evaluation/troubleshooting' },
+              { title: 'Built-in Evals', href: '/docs/evaluation/builtin' },
+              { title: 'Evaluate via Platform & SDK', href: '/docs/evaluation/features/evaluate' },
+              { title: 'Create Custom Evals', href: '/docs/evaluation/features/custom' },
+              { title: 'Use Custom Models', href: '/docs/evaluation/features/custom-models' },
+              { title: 'Future AGI Models', href: '/docs/evaluation/features/futureagi-models' },
+              { title: 'Evaluate CI/CD Pipeline', href: '/docs/evaluation/features/cicd' },
             ]
           },
         ]
