@@ -310,10 +310,15 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'Understanding Evaluation', href: '/docs/evaluation/concepts/understanding-evaluation' },
-              { title: 'Eval Types', href: '/docs/evaluation/concepts/eval-types' },
-              { title: 'Eval Templates', href: '/docs/evaluation/concepts/eval-templates' },
-              { title: 'Judge Models', href: '/docs/evaluation/concepts/judge-models' },
-              { title: 'Eval Results', href: '/docs/evaluation/concepts/eval-results' },
+              { title: 'Eval types', href: '/docs/evaluation/concepts/eval-types' },
+              { title: 'Eval templates & versions', href: '/docs/evaluation/concepts/eval-templates' },
+              { title: 'Evaluator models', href: '/docs/evaluation/concepts/evaluator-models' },
+              { title: 'Output types', href: '/docs/evaluation/concepts/output-types' },
+              { title: 'Error localization', href: '/docs/evaluation/concepts/error-localization' },
+              { title: 'Guardrails', href: '/docs/evaluation/concepts/guardrails' },
+              { title: 'Composite evals', href: '/docs/evaluation/concepts/composite-evals' },
+              { title: 'Feedback', href: '/docs/evaluation/concepts/feedback' },
+              { title: 'Ground truth', href: '/docs/evaluation/concepts/ground-truth' },
             ]
           },
           {
