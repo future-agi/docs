@@ -323,7 +323,7 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'How to guides',
+            title: 'Guides',
             items: [
               { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
               {
