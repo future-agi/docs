@@ -313,7 +313,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Eval types', href: '/docs/evaluation/concepts/eval-types' },
               { title: 'Eval templates & versions', href: '/docs/evaluation/concepts/eval-templates' },
               { title: 'Evaluator models', href: '/docs/evaluation/concepts/evaluator-models' },
-              { title: 'Connectors', href: '/docs/evaluation/concepts/connectors' },
               { title: 'Output types', href: '/docs/evaluation/concepts/output-types' },
               { title: 'Error localization', href: '/docs/evaluation/concepts/error-localization' },
               { title: 'Guardrails', href: '/docs/evaluation/concepts/guardrails' },
@@ -340,7 +339,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Set up guardrails', href: '/docs/evaluation/guides/guardrails' },
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
               { title: 'Collect feedback', href: '/docs/evaluation/guides/feedback' },
-              { title: 'Configure connectors', href: '/docs/evaluation/guides/connectors' },
+              { title: 'Using Connectors', href: '/docs/evaluation/guides/using-connectors' },
               { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
               { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
             ]
