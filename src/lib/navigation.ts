@@ -312,7 +312,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Understanding Evaluation', href: '/docs/evaluation/concepts/understanding-evaluation' },
               { title: 'Eval types', href: '/docs/evaluation/concepts/eval-types' },
               { title: 'Eval templates & versions', href: '/docs/evaluation/concepts/eval-templates' },
-              { title: 'Judge models', href: '/docs/evaluation/concepts/judge-models' },
+              { title: 'Evaluator models', href: '/docs/evaluation/concepts/evaluator-models' },
               { title: 'Connectors', href: '/docs/evaluation/concepts/connectors' },
               { title: 'Output types', href: '/docs/evaluation/concepts/output-types' },
               { title: 'Error localization', href: '/docs/evaluation/concepts/error-localization' },
@@ -323,7 +323,7 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'How to guides',
+            title: 'Guides',
             items: [
               { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
               {
