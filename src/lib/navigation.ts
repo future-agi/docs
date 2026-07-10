@@ -606,6 +606,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Haystack', href: '/docs/integrations/traceai/haystack' },
               { title: 'DSPy', href: '/docs/integrations/traceai/dspy' },
               { title: 'OpenAI Agents', href: '/docs/integrations/traceai/openai_agents' },
+              { title: 'Pydantic AI', href: '/docs/integrations/traceai/pydantic-ai' },
               { title: 'Smol Agents', href: '/docs/integrations/traceai/smol_agents' },
               { title: 'Instructor', href: '/docs/integrations/traceai/instructor' },
               { title: 'PromptFlow', href: '/docs/integrations/traceai/promptflow' },
