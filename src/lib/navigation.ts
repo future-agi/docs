@@ -313,7 +313,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Eval types', href: '/docs/evaluation/concepts/eval-types' },
               { title: 'Eval templates & versions', href: '/docs/evaluation/concepts/eval-templates' },
               { title: 'Evaluator models', href: '/docs/evaluation/concepts/evaluator-models' },
-              { title: 'Output types', href: '/docs/evaluation/concepts/output-types' },
               { title: 'Error localization', href: '/docs/evaluation/concepts/error-localization' },
               { title: 'Guardrails', href: '/docs/evaluation/concepts/guardrails' },
               { title: 'Composite evals', href: '/docs/evaluation/concepts/composite-evals' },
@@ -348,6 +347,7 @@ export const tabNavigation: NavTab[] = [
             title: 'References',
             items: [
               { title: 'Built-in evals', href: '/docs/evaluation/builtin' },
+              { title: 'Output types & scoring', href: '/docs/evaluation/reference/output-types' },
               { title: 'SDK & API', href: '/docs/evaluation/reference/sdk-api' },
             ]
           },
