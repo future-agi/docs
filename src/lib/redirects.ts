@@ -29,6 +29,8 @@ export const redirectMap: Record<string, string> = {
   '/docs/tracing/auto-overview': '/docs/tracing/auto',
   '/docs/evaluation/builtin/eval-context-retrieval': '/docs/evaluation/builtin',
   '/docs/evaluation/features/groups': '/docs/evaluation',
+  '/docs/evaluation/concepts/output-types': '/docs/evaluation/reference/output-types',
+  '/docs/evaluation/concepts/eval-results': '/docs/evaluation/reference/output-types',
   '/docs/optimization/optimizers/overview': '/docs/optimization',
   '/docs/dataset/add-annotations': '/docs/dataset/features/annotate',
   '/docs/knowledge-base/concept': '/docs/knowledge-base/concepts/concept',
