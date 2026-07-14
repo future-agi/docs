@@ -704,10 +704,13 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Agent Definition', href: '/docs/simulation/concepts/agent-definition' },
+              { title: 'Understanding Simulation', href: '/docs/simulation/concepts/understanding-simulation' },
+              { title: 'Agent Definitions & Versions', href: '/docs/simulation/concepts/agent-definitions' },
               { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
               { title: 'Personas', href: '/docs/simulation/concepts/personas' },
-              { title: 'Global Nodes', href: '/docs/simulation/concepts/global-nodes' },
+              { title: 'Runs & Results', href: '/docs/simulation/concepts/runs-and-results' },
+              { title: 'Replay', href: '/docs/simulation/concepts/replay' },
+              { title: 'Optimization', href: '/docs/simulation/concepts/optimization' },
             ]
           },
           {
