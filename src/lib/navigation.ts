@@ -541,35 +541,64 @@ export const tabNavigation: NavTab[] = [
         group: 'Simulation',
         icon: 'play',
         items: [
-          { title: 'Overview', href: '/docs/simulation' },
+          {
+            title: 'Simulation',
+            items: [
+              { title: 'Overview', href: '/docs/simulation' },
+            ]
+          },
           {
             title: 'Concepts',
             items: [
               { title: 'Understanding Simulation', href: '/docs/simulation/concepts/understanding-simulation' },
-              { title: 'Agent Definitions & Versions', href: '/docs/simulation/concepts/agent-definitions' },
+              { title: 'Agent definitions & versions', href: '/docs/simulation/concepts/agent-definitions' },
               { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
               { title: 'Personas', href: '/docs/simulation/concepts/personas' },
-              { title: 'Runs & Results', href: '/docs/simulation/concepts/runs-and-results' },
+              { title: 'Runs & results', href: '/docs/simulation/concepts/runs-and-results' },
               { title: 'Replay', href: '/docs/simulation/concepts/replay' },
               { title: 'Optimization', href: '/docs/simulation/concepts/optimization' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
-              { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
+              { title: 'Connect your agent', href: '/docs/simulation/guides/connect-your-agent' },
+              { title: 'Create scenarios', href: '/docs/simulation/guides/create-scenarios' },
+              { title: 'Explore scenarios', href: '/docs/simulation/guides/explore-scenarios' },
+              { title: 'Create personas', href: '/docs/simulation/guides/create-personas' },
+              { title: 'Run a voice simulation', href: '/docs/simulation/guides/run-voice-simulation' },
+              { title: 'Run a chat simulation', href: '/docs/simulation/guides/run-chat-simulation' },
+              { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
+              { title: 'Edit evals in a simulation', href: '/docs/simulation/guides/edit-evals' },
+              { title: 'Replay chat sessions', href: '/docs/simulation/guides/replay-chat' },
+              { title: 'Replay voice calls', href: '/docs/simulation/guides/replay-voice' },
+              { title: 'Evaluate tool calls', href: '/docs/simulation/guides/evaluate-tool-calls' },
               {
-                title: 'Replay',
+                title: 'Explore results',
                 items: [
-                  { title: 'Chat Replay', href: '/docs/simulation/features/observe-to-simulate' },
-                  { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
+                  { title: 'Overview', href: '/docs/simulation/guides/explore-results' },
+                  { title: 'Calls & transcripts', href: '/docs/simulation/guides/explore-results/calls-and-transcripts' },
+                  { title: 'Analytics & metrics', href: '/docs/simulation/guides/explore-results/analytics' },
                 ]
               },
-              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'View Results', href: '/docs/simulation/features/view-results' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              { title: 'Fix My Agent', href: '/docs/simulation/guides/fix-my-agent' },
+              { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
+              { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
+            ]
+          },
+          {
+            title: 'References',
+            items: [
+              { title: 'Persona settings', href: '/docs/simulation/reference/persona-settings' },
+              { title: 'Voice providers', href: '/docs/simulation/reference/voice-providers' },
+              { title: 'Call metrics', href: '/docs/simulation/reference/call-metrics' },
+              { title: 'SDK & API', href: '/docs/simulation/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Simulation FAQ & fixes', href: '/docs/simulation/troubleshooting' },
             ]
           },
         ]
