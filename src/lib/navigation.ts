@@ -700,12 +700,7 @@ export const tabNavigation: NavTab[] = [
         group: 'Simulation',
         icon: 'play',
         items: [
-          {
-            title: 'Simulation',
-            items: [
-              { title: 'Overview', href: '/docs/simulation' },
-            ]
-          },
+          { title: 'Overview', href: '/docs/simulation' },
           {
             title: 'Concepts',
             items: [
