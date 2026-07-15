@@ -330,7 +330,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Overview', href: '/docs/evaluation/guides/explore-playground' },
                   { title: 'Test an eval', href: '/docs/evaluation/guides/explore-playground/test-an-eval' },
                   { title: 'Usage & analytics', href: '/docs/evaluation/guides/explore-playground/usage-analytics' },
-                  { title: 'Eval logs', href: '/docs/evaluation/guides/explore-playground/eval-logs' },
                 ]
               },
               { title: 'Create a custom eval', href: '/docs/evaluation/guides/custom-evals' },
