@@ -30,6 +30,11 @@ export const redirectMap: Record<string, string> = {
   '/docs/evaluation/builtin/eval-context-retrieval': '/docs/evaluation/builtin',
   '/docs/evaluation/features/groups': '/docs/evaluation',
   '/docs/evaluation/concepts/output-types': '/docs/evaluation/reference/output-types',
+  // Evaluation features/ pages folded into guides/ (revamp); redirect the retired paths
+  '/docs/evaluation/features/cicd': '/docs/evaluation/guides/cicd',
+  '/docs/evaluation/features/custom': '/docs/evaluation/guides/custom-evals',
+  '/docs/evaluation/features/evaluate': '/docs/evaluation/guides/running-evaluations',
+  '/docs/evaluation/features/futureagi-models': '/docs/evaluation/concepts/evaluator-models',
   '/docs/evaluation/concepts/eval-results': '/docs/evaluation/reference/output-types',
   '/docs/optimization/optimizers/overview': '/docs/optimization',
   '/docs/dataset/add-annotations': '/docs/dataset/features/annotate',
