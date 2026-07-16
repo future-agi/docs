@@ -321,7 +321,7 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Guides',
+            title: 'Features',
             items: [
               { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
               // Hidden until the pages land (currently 404). Re-add when the Explore playground guides ship.
