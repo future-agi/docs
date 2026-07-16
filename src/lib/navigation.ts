@@ -336,7 +336,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Build a composite evals', href: '/docs/evaluation/guides/composite-evals' },
               { title: 'Set up guardrails', href: '/docs/evaluation/guides/guardrails' },
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
-              { title: 'Collect feedback', href: '/docs/evaluation/guides/feedback' },
+              { title: 'Collect feedback', href: '/docs/evaluation/guides/collect-feedback' },
               { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
               { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
               { title: 'Advanced usage', href: '/docs/evaluation/guides/advanced-usage' },
