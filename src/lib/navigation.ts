@@ -327,7 +327,7 @@ export const tabNavigation: NavTab[] = [
               {
                 title: 'Explore playground',
                 items: [
-                  { title: 'Overview', href: '/docs/evaluation/guides/explore-playground' },
+                  { title: 'The Evaluations page', href: '/docs/evaluation/guides/explore-playground' },
                   { title: 'Test an eval', href: '/docs/evaluation/guides/explore-playground/test-an-eval' },
                   { title: 'Usage & analytics', href: '/docs/evaluation/guides/explore-playground/usage-analytics' },
                 ]
