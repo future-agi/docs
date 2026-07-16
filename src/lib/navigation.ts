@@ -321,13 +321,13 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Guides',
+            title: 'Features',
             items: [
               { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
               {
                 title: 'Explore playground',
                 items: [
-                  { title: 'Overview', href: '/docs/evaluation/guides/explore-playground' },
+                  { title: 'The Evaluations page', href: '/docs/evaluation/guides/explore-playground' },
                   { title: 'Test an eval', href: '/docs/evaluation/guides/explore-playground/test-an-eval' },
                   { title: 'Usage & analytics', href: '/docs/evaluation/guides/explore-playground/usage-analytics' },
                 ]
@@ -337,15 +337,150 @@ export const tabNavigation: NavTab[] = [
               { title: 'Set up guardrails', href: '/docs/evaluation/guides/guardrails' },
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
               { title: 'Collect feedback', href: '/docs/evaluation/guides/feedback' },
-              { title: 'Using Connectors', href: '/docs/evaluation/guides/using-connectors' },
               { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
               { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
+              { title: 'Advanced usage', href: '/docs/evaluation/guides/advanced-usage' },
             ]
           },
           {
             title: 'References',
             items: [
-              { title: 'Built-in evals', href: '/docs/evaluation/builtin' },
+              {
+                title: 'Built-in evals',
+                items: [
+                  { title: 'Overview', href: '/docs/evaluation/builtin' },
+                  {
+                    title: 'RAG & retrieval',
+                    items: [
+                      { title: 'Context Adherence', href: '/docs/evaluation/builtin/context-adherence' },
+                      { title: 'Context Relevance', href: '/docs/evaluation/builtin/context-relevance' },
+                      { title: 'Completeness', href: '/docs/evaluation/builtin/completeness' },
+                      { title: 'Chunk Attribution', href: '/docs/evaluation/builtin/chunk-attribution' },
+                      { title: 'Chunk Utilization', href: '/docs/evaluation/builtin/chunk-utilization' },
+                      { title: 'Groundedness', href: '/docs/evaluation/builtin/groundedness' },
+                      { title: 'Detect Hallucination', href: '/docs/evaluation/builtin/detect-hallucination' },
+                      { title: 'Eval Ranking', href: '/docs/evaluation/builtin/eval-ranking' },
+                      { title: 'Recall@K', href: '/docs/evaluation/builtin/recall-at-k' },
+                      { title: 'Precision@K', href: '/docs/evaluation/builtin/precision-at-k' },
+                      { title: 'NDCG@K', href: '/docs/evaluation/builtin/ndcg-at-k' },
+                      { title: 'MRR', href: '/docs/evaluation/builtin/mrr' },
+                      { title: 'Hit Rate', href: '/docs/evaluation/builtin/hit-rate' },
+                      { title: 'Retrieval Metrics', href: '/docs/evaluation/builtin/retrieval-metrics' },
+                    ]
+                  },
+                  {
+                    title: 'Safety & compliance',
+                    items: [
+                      { title: 'PII Detection', href: '/docs/evaluation/builtin/pii' },
+                      { title: 'Toxicity', href: '/docs/evaluation/builtin/toxicity' },
+                      { title: 'Sexist', href: '/docs/evaluation/builtin/sexist' },
+                      { title: 'Prompt Injection', href: '/docs/evaluation/builtin/prompt-injection' },
+                      { title: 'Data Privacy Compliance', href: '/docs/evaluation/builtin/data-privacy' },
+                      { title: 'Cultural Sensitivity', href: '/docs/evaluation/builtin/cultural-sensitivity' },
+                      { title: 'Bias Detection', href: '/docs/evaluation/builtin/bias-detection' },
+                      { title: 'No Racial Bias', href: '/docs/evaluation/builtin/no-racial-bias' },
+                      { title: 'No Gender Bias', href: '/docs/evaluation/builtin/no-gender-bias' },
+                      { title: 'No Age Bias', href: '/docs/evaluation/builtin/no-age-bias' },
+                      { title: 'Answer Refusal', href: '/docs/evaluation/builtin/answer-refusal' },
+                      { title: 'No Harmful Therapeutic Guidance', href: '/docs/evaluation/builtin/no-harmful-therapeutic-guidance' },
+                      { title: 'Clinically Inappropriate Tone', href: '/docs/evaluation/builtin/clinically-inappropriate-tone' },
+                      { title: 'Is Harmful Advice', href: '/docs/evaluation/builtin/is-harmful-advice' },
+                    ]
+                  },
+                  {
+                    title: 'Conversation & agents',
+                    items: [
+                      { title: 'Conversation Coherence', href: '/docs/evaluation/builtin/conversation-coherence' },
+                      { title: 'Conversation Resolution', href: '/docs/evaluation/builtin/conversation-resolution' },
+                      { title: 'Evaluate Function Calling', href: '/docs/evaluation/builtin/llm-function-calling' },
+                      { title: 'Task Completion', href: '/docs/evaluation/builtin/task-completion' },
+                      { title: 'Customer Agent: Loop Detection', href: '/docs/evaluation/builtin/customer-agent-loop-detection' },
+                      { title: 'Customer Agent: Context Retention', href: '/docs/evaluation/builtin/customer-agent-context-retention' },
+                      { title: 'Customer Agent: Query Handling', href: '/docs/evaluation/builtin/customer-agent-query-handling' },
+                      { title: 'Customer Agent: Termination Handling', href: '/docs/evaluation/builtin/customer-agent-termination-handling' },
+                      { title: 'Customer Agent: Interruption Handling', href: '/docs/evaluation/builtin/customer-agent-interruption-handling' },
+                      { title: 'Customer Agent: Conversation Quality', href: '/docs/evaluation/builtin/customer-agent-conversation-quality' },
+                      { title: 'Customer Agent: Objection Handling', href: '/docs/evaluation/builtin/customer-agent-objection-handling' },
+                      { title: 'Customer Agent: Language Handling', href: '/docs/evaluation/builtin/customer-agent-language-handling' },
+                      { title: 'Customer Agent: Human Escalation', href: '/docs/evaluation/builtin/customer-agent-human-escalation' },
+                      { title: 'Customer Agent: Clarification Seeking', href: '/docs/evaluation/builtin/customer-agent-clarification-seeking' },
+                      { title: 'Customer Agent: Prompt Conformance', href: '/docs/evaluation/builtin/customer-agent-prompt-conformance' },
+                      { title: 'Customer Agent: Task Completion', href: '/docs/evaluation/builtin/customer-agent-task-completion' },
+                      { title: 'Conversation Hallucination', href: '/docs/evaluation/builtin/conversation-hallucination' },
+                      { title: 'Tool Call Accuracy', href: '/docs/evaluation/builtin/tool-call-accuracy' },
+                      { title: 'Trajectory Match', href: '/docs/evaluation/builtin/trajectory-match' },
+                      { title: 'Step Count', href: '/docs/evaluation/builtin/step-count' },
+                    ]
+                  },
+                  {
+                    title: 'Output quality & format',
+                    items: [
+                      { title: 'Tone', href: '/docs/evaluation/builtin/tone' },
+                      { title: 'Instruction Adherence', href: '/docs/evaluation/builtin/instruction-adherence' },
+                      { title: 'Summary Quality', href: '/docs/evaluation/builtin/summary-quality' },
+                      { title: 'Translation Accuracy', href: '/docs/evaluation/builtin/translation-accuracy' },
+                      { title: 'No LLM Reference', href: '/docs/evaluation/builtin/no-llm-reference' },
+                      { title: 'No Apologies', href: '/docs/evaluation/builtin/no-apologies' },
+                      { title: 'Is Polite', href: '/docs/evaluation/builtin/is-polite' },
+                      { title: 'Is Concise', href: '/docs/evaluation/builtin/is-concise' },
+                      { title: 'Is Helpful', href: '/docs/evaluation/builtin/is-helpful' },
+                      { title: 'Is Good Summary', href: '/docs/evaluation/builtin/is-good-summary' },
+                      { title: 'Is Informal Tone', href: '/docs/evaluation/builtin/is-informal-tone' },
+                      { title: 'Contains Code', href: '/docs/evaluation/builtin/is-code' },
+                      { title: 'Text to SQL', href: '/docs/evaluation/builtin/text-to-sql' },
+                      { title: 'Is JSON', href: '/docs/evaluation/builtin/is-json' },
+                      { title: 'One Line', href: '/docs/evaluation/builtin/contain-evals' },
+                      { title: 'Contains Valid Link', href: '/docs/evaluation/builtin/contains-valid-link' },
+                      { title: 'Is Email', href: '/docs/evaluation/builtin/is-email' },
+                      { title: 'No Invalid Links', href: '/docs/evaluation/builtin/no-invalid-links' },
+                      { title: 'Is Refusal', href: '/docs/evaluation/builtin/is-refusal' },
+                      { title: 'Code & Output Validation Checks', href: '/docs/evaluation/builtin/code-output-validation-checks' },
+                    ]
+                  },
+                  {
+                    title: 'Reference & similarity',
+                    items: [
+                      { title: 'Fuzzy Match', href: '/docs/evaluation/builtin/fuzzy-match' },
+                      { title: 'Ground Truth Match', href: '/docs/evaluation/builtin/ground-truth-match' },
+                      { title: 'BLEU Score', href: '/docs/evaluation/builtin/bleu' },
+                      { title: 'ROUGE Score', href: '/docs/evaluation/builtin/rouge' },
+                      { title: 'Levenshtein Similarity', href: '/docs/evaluation/builtin/lavenshtein-similarity' },
+                      { title: 'Numeric Similarity', href: '/docs/evaluation/builtin/numeric-similarity' },
+                      { title: 'Embedding Similarity', href: '/docs/evaluation/builtin/embedding-similarity' },
+                      { title: 'Semantic List Contains', href: '/docs/evaluation/builtin/semantic-list-contains' },
+                      { title: 'Similarity & Image-Quality Metrics', href: '/docs/evaluation/builtin/similarity-image-quality-metrics' },
+                    ]
+                  },
+                  {
+                    title: 'Audio & voice',
+                    items: [
+                      { title: 'Audio Transcription (ASR/STT)', href: '/docs/evaluation/builtin/audio-transcription' },
+                      { title: 'Audio Quality', href: '/docs/evaluation/builtin/audio-quality' },
+                      { title: 'TTS Accuracy', href: '/docs/evaluation/builtin/tts-accuracy' },
+                      { title: 'Audio & ASR Metrics', href: '/docs/evaluation/builtin/audio-asr-metrics' },
+                      { title: 'Dead Air Detection', href: '/docs/evaluation/builtin/dead-air-detection' },
+                    ]
+                  },
+                  {
+                    title: 'Image & document',
+                    items: [
+                      { title: 'Caption Hallucination', href: '/docs/evaluation/builtin/caption-hallucination' },
+                      { title: 'Synthetic Image Evaluator', href: '/docs/evaluation/builtin/synthetic-image-evaluator' },
+                      { title: 'OCR Evaluation', href: '/docs/evaluation/builtin/ocr-evaluation' },
+                      { title: 'FID Score', href: '/docs/evaluation/builtin/fid-score' },
+                      { title: 'CLIP Score', href: '/docs/evaluation/builtin/clip-score' },
+                      { title: 'Image Instruction Adherence', href: '/docs/evaluation/builtin/image-instruction-adherence' },
+                    ]
+                  },
+                  {
+                    title: 'Statistical & NLP metrics',
+                    items: [
+                      { title: 'Statistical & Classification Metrics', href: '/docs/evaluation/builtin/statistical-classification-metrics' },
+                      { title: 'NLP & Text Metrics', href: '/docs/evaluation/builtin/nlp-text-metrics' },
+                    ]
+                  },
+                ]
+              },
               { title: 'Output types & scoring', href: '/docs/evaluation/reference/output-types' },
               { title: 'SDK & API', href: '/docs/evaluation/reference/sdk-api' },
             ]

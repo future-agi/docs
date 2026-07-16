@@ -3,11 +3,11 @@ title: "Evaluate in CI/CD"
 description: "Run Future AGI evaluations in your CI/CD pipeline to assess model performance on every pull request and keep quality checks consistent before deployment."
 ---
 
-## About
-
 CI/CD evaluation brings quality checks into your existing development workflow. Every time code changes, your eval suite runs automatically, scores your AI outputs against the templates you define, and tracks results by version.
 
 This catches regressions before they ship and gives your team a versioned history of how AI quality changes over time. You can compare any two versions side by side to see exactly where things improved or dropped.
+
+Future AGI never triggers or runs your pipeline. You call the SDK from your own CI, so the evals run wherever your code already builds.
 
 ---
 
@@ -25,16 +25,6 @@ This catches regressions before they ship and gives your team a versioned histor
 - A Future AGI account with API key and secret key
 - A CI system that can run Python (GitHub Actions, GitLab CI, Jenkins, or any runner with Python and network access)
 - The `ai-evaluation` package (`pip install ai-evaluation>=0.1.7`)
-
-### Required packages
-
-```txt
-pandas
-requests
-tabulate
-ai-evaluation>=0.1.7
-python-dotenv
-```
 
 ### Required secrets
 
@@ -56,11 +46,280 @@ Set these as environment variables or in your CI's secret store. Do not commit t
 
 ---
 
-## Core SDK Functions
+## Set up the pipeline
 
-The pipeline uses two SDK functions: `evaluate_pipeline` to submit an eval run tagged to a version, and `get_pipeline_results` to retrieve and compare results across versions.
+Set this up once. On every pull request, GitHub Actions installs the SDK, runs your eval suite, tags the results with a version, and posts a comparison table back to the PR.
 
-### Initialize the Evaluator
+<Note>
+This walkthrough is GitHub Actions specific: the workflow file, `PAT_GITHUB`, and the `post_github_comment` function all use GitHub's API. The `evaluate_pipeline` and `get_pipeline_results` calls are identical on any runner, so to use GitLab CI, Jenkins, or another system, keep the eval script and swap `post_github_comment` (and the workflow file) for your platform's equivalent.
+</Note>
+
+<Steps>
+  <Step title="Add the requirements file">
+    Create `requirements.txt` with the packages the eval script needs:
+
+    ```txt
+    pandas
+    requests
+    tabulate
+    ai-evaluation>=0.1.7
+    python-dotenv
+    ```
+  </Step>
+
+  <Step title="Write the evaluation script">
+    Create `evaluate_pipeline.py`. It submits your eval suite tagged to a version, polls for completion, formats the results as a markdown table, and posts them back to the PR. Customize the `eval_data` list with your own templates, models, and inputs.
+
+    ```python
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    import os
+    import json
+    import time
+    import requests
+    import pandas as pd
+    from fi.evals import Evaluator
+
+    # Define your evaluation data - CUSTOMIZE THIS SECTION
+    eval_data = [
+        {
+            "eval_template": "tone",
+            "model_name": "turing_large",
+            "inputs": {
+                "output": [
+                    "This product is amazing!",
+                    "I am very disappointed with the service."
+                ]
+            }
+        },
+        {
+            "eval_template": "groundedness",
+            "model_name": "turing_large",
+            "inputs": {
+                "input": [
+                    "What is the capital of France?",
+                    "Who wrote Hamlet?"
+                ],
+                "context": [
+                    "France is a country in Western Europe. Its capital and largest city is Paris, situated on the Seine river.",
+                    "Hamlet is a tragedy written by William Shakespeare around 1600 and is one of his best-known plays."
+                ],
+                "output": [
+                    "The capital of France is Paris.",
+                    "William Shakespeare wrote Hamlet."
+                ]
+            }
+        }
+    ]
+
+    def post_github_comment(content):
+        """Posts a comment to a GitHub pull request."""
+        repo = os.getenv("REPO_NAME")
+        pr_number = os.getenv("PR_NUMBER")
+        token = os.getenv("GITHUB_TOKEN")
+
+        if not all([repo, pr_number, token]):
+            print("Missing GitHub details. Skipping comment.")
+            return
+
+        url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        data = {"body": content}
+
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+
+        if response.status_code == 201:
+            print("Successfully posted comment to PR.")
+        else:
+            print(f"Failed to post comment. Status code: {response.status_code}")
+
+    def poll_for_completion(evaluator, project_name, current_version,
+                            comparison_versions_str="", max_wait_time=600,
+                            poll_interval=30):
+        """Polls for evaluation completion by fetching all versions."""
+        start_time = time.time()
+
+        comparison_versions = []
+        if comparison_versions_str:
+            comparison_versions = [v.strip() for v in comparison_versions_str.split(',') if v.strip()]
+
+        all_versions = list(set([current_version] + comparison_versions))
+
+        while time.time() - start_time < max_wait_time:
+            elapsed_time = int(time.time() - start_time)
+            print(f"Polling for results (elapsed: {elapsed_time}s/{max_wait_time}s)...")
+
+            try:
+                result = evaluator.get_pipeline_results(
+                    project_name=project_name,
+                    versions=all_versions
+                )
+
+                if result.get('status'):
+                    api_result = result.get('result', {})
+                    status = api_result.get('status', 'unknown')
+                    evaluation_runs = api_result.get('evaluation_runs', [])
+
+                    if status == 'completed':
+                        print(f"All requested versions are complete.")
+                        return evaluation_runs
+                    elif status in ['failed', 'error', 'cancelled']:
+                        print(f"Evaluation failed with status: {status}")
+                        return None
+            except Exception as e:
+                print(f"Error polling for results: {e}")
+
+            time.sleep(poll_interval)
+
+        print(f"Timeout after {max_wait_time} seconds")
+        return None
+
+    def format_results(evaluation_runs, current_version):
+        """Formats results into a markdown comparison table."""
+        if not evaluation_runs:
+            return "No evaluation results found."
+
+        version_data = {run.get('version'): run.get('results_summary', {})
+                        for run in evaluation_runs}
+
+        # Collect all metrics
+        all_metrics = set()
+        for run in evaluation_runs:
+            for key, value in run.get('results_summary', {}).items():
+                if isinstance(value, dict):
+                    for sub_key in value.keys():
+                        all_metrics.add(f"{key}_{sub_key}")
+                else:
+                    all_metrics.add(key)
+
+        comparison_data = []
+        for metric in sorted(all_metrics):
+            row = {'Metric': metric.replace('_', ' ').title()}
+            for version in sorted(version_data.keys()):
+                results = version_data[version]
+                value = results.get(metric, 'N/A')
+                if isinstance(value, float):
+                    formatted = f"{value:.2f}".rstrip('0').rstrip('.')
+                else:
+                    formatted = str(value)
+                label = f"{version} {'(current)' if version == current_version else ''}"
+                row[label] = formatted
+            comparison_data.append(row)
+
+        df = pd.DataFrame(comparison_data)
+        return f"**Current Version:** {current_version}\n\n### Metrics Comparison\n\n{df.to_markdown(index=False)}\n"
+
+    def main():
+        project_name = os.getenv("PROJECT_NAME", "Voice Agent")
+        version = os.getenv("VERSION", "v0.1.0")
+        comparison_versions = os.getenv("COMPARISON_VERSIONS", "")
+
+        try:
+            evaluator = Evaluator(
+                fi_api_key=os.getenv("FI_API_KEY"),
+                fi_secret_key=os.getenv("FI_SECRET_KEY")
+            )
+        except Exception as e:
+            post_github_comment(f"## Evaluation Failed\n\n**Reason:** Failed to initialize evaluator: {e}")
+            return
+
+        try:
+            result = evaluator.evaluate_pipeline(
+                project_name=project_name,
+                version=version,
+                eval_data=eval_data
+            )
+            if not result.get('status'):
+                post_github_comment(f"## Evaluation Failed\n\n**Reason:** {result}")
+                return
+        except Exception as e:
+            post_github_comment(f"## Evaluation Failed\n\n**Reason:** Error submitting evaluation: {e}")
+            return
+
+        all_runs = poll_for_completion(evaluator, project_name, version, comparison_versions)
+
+        if not all_runs:
+            post_github_comment("## Evaluation Failed\n\n**Reason:** Timed out or failed during processing")
+            return
+
+        comment_body = format_results(all_runs, version)
+        post_github_comment(comment_body)
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </Step>
+
+  <Step title="Add the GitHub Actions workflow">
+    Create `.github/workflows/evaluation.yml` to run the script on every PR against `main`:
+
+    ```yaml
+    name: Run Evaluation on PR
+
+    on:
+      pull_request:
+        branches:
+          - main
+
+    jobs:
+      evaluate:
+        runs-on: ubuntu-latest
+        permissions:
+          pull-requests: write
+        steps:
+          - name: Check out repository code
+            uses: actions/checkout@v4
+            with:
+              token: ${{ secrets.PAT_GITHUB }}
+
+          - name: Set up Python
+            uses: actions/setup-python@v5
+            with:
+              python-version: '3.10'
+
+          - name: Install dependencies
+            run: pip install -r requirements.txt
+
+          - name: Run evaluation script
+            run: python evaluate_pipeline.py
+            env:
+              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              PR_NUMBER: ${{ github.event.number }}
+              REPO_NAME: ${{ github.repository }}
+              FI_API_KEY: ${{ secrets.FI_API_KEY }}
+              FI_SECRET_KEY: ${{ secrets.FI_SECRET_KEY }}
+              PROJECT_NAME: ${{ vars.PROJECT_NAME || 'Voice Agent' }}
+              VERSION: ${{ vars.VERSION || 'v0.1.0' }}
+              COMPARISON_VERSIONS: ${{ vars.COMPARISON_VERSIONS || '' }}
+    ```
+
+    <Note>
+    **Critical:** You must specify `pull-requests: write` in your workflow permissions. Without this, the action cannot post comments on your PR.
+    </Note>
+  </Step>
+
+  <Step title="Set the required secrets and variables">
+    In your repository settings, add the [secrets and variables](#prerequisites) the workflow reads: `FI_API_KEY`, `FI_SECRET_KEY`, and `PAT_GITHUB` as secrets, and `PROJECT_NAME`, `VERSION`, and `COMPARISON_VERSIONS` as repository variables. Never commit them to the repo.
+  </Step>
+
+  <Step title="Open a pull request and read the results">
+    Open a PR against your target branch. The workflow runs automatically and posts a comment with the current version identifier and a metrics comparison table across versions.
+
+    <img src="/images/eval_ci_cd.png" alt="A GitHub pull request comment posted by the workflow, showing the current version and a metrics comparison table across versions." style={{ borderRadius: '5px' }} />
+
+    *The workflow posts the current version and a per-version metrics comparison table back to the PR*
+  </Step>
+</Steps>
+
+---
+
+## How the SDK calls work
+
+The pipeline uses two `Evaluator` methods: `evaluate_pipeline` submits an eval run tagged to a version, and `get_pipeline_results` retrieves and compares results across versions. Initialize the evaluator with your keys first:
 
 ```python
 from fi.evals import Evaluator
@@ -71,44 +330,9 @@ evaluator = Evaluator(
 )
 ```
 
-### Define Evaluation Data
+### evaluate_pipeline
 
-Structure a list of eval configs. Each has an **eval_template**, **model_name**, and **inputs** (keys mapped to lists of values). For more on templates and inputs, see [Running your first eval](/docs/evaluation).
-
-```python
-eval_data = [
-    {
-        "eval_template": "tone",
-        "model_name": "turing_large",
-        "inputs": {
-            "input": [
-                "This product is amazing!",
-                "I am very disappointed with the service."
-            ]
-        }
-    },
-    {
-        "eval_template": "groundedness",
-        "model_name": "turing_large",
-        "inputs": {
-            "input": [
-                "What is the capital of France?",
-                "Who wrote Hamlet?"
-            ],
-            "context": [
-                "What is the capital of France?",
-                "Who wrote Hamlet?"
-            ],
-            "output": [
-                "The capital of France is Paris.",
-                "William Shakespeare wrote Hamlet."
-            ]
-        }
-    }
-]
-```
-
-### Submit Evaluation Pipeline
+Submits a list of eval configs tagged to a version. Each config has an `eval_template`, a `model_name`, and `inputs` (keys mapped to lists of values). For more on templates and inputs, see [Running Evaluations](/docs/evaluation/guides/running-evaluations).
 
 ```python
 result = evaluator.evaluate_pipeline(
@@ -124,7 +348,9 @@ result = evaluator.evaluate_pipeline(
 | `version` | Version tag for this run (e.g. branch name or commit SHA) |
 | `eval_data` | List of evaluation configurations (template, model, inputs) |
 
-### Retrieve Results
+### get_pipeline_results
+
+Retrieves results for one or more versions so you can compare them side by side.
 
 ```python
 result = evaluator.get_pipeline_results(
@@ -140,253 +366,6 @@ result = evaluator.get_pipeline_results(
 
 ---
 
-## Full GitHub Actions Implementation
-
-### Workflow File
-
-Create `.github/workflows/evaluation.yml`:
-
-```yaml
-name: Run Evaluation on PR
-
-on:
-  pull_request:
-    branches:
-      - main
-
-jobs:
-  evaluate:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.PAT_GITHUB }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run evaluation script
-        run: python evaluate_pipeline.py
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.number }}
-          REPO_NAME: ${{ github.repository }}
-          FI_API_KEY: ${{ secrets.FI_API_KEY }}
-          FI_SECRET_KEY: ${{ secrets.FI_SECRET_KEY }}
-          PROJECT_NAME: ${{ vars.PROJECT_NAME || 'Voice Agent' }}
-          VERSION: ${{ vars.VERSION || 'v0.1.0' }}
-          COMPARISON_VERSIONS: ${{ vars.COMPARISON_VERSIONS || '' }}
-```
-
-<Note>
-**Critical:** You must specify `pull-requests: write` in your workflow permissions. Without this, the action cannot post comments on your PR.
-</Note>
-
-### Evaluation Script
-
-Create `evaluate_pipeline.py`:
-
-```python
-from dotenv import load_dotenv
-load_dotenv()
-
-import os
-import json
-import time
-import requests
-import pandas as pd
-from fi.evals import Evaluator
-
-# Define your evaluation data - CUSTOMIZE THIS SECTION
-eval_data = [
-    {
-        "eval_template": "tone",
-        "model_name": "turing_large",
-        "inputs": {
-            "input": [
-                "This product is amazing!",
-                "I am very disappointed with the service."
-            ]
-        }
-    },
-    {
-        "eval_template": "groundedness",
-        "model_name": "turing_large",
-        "inputs": {
-            "input": [
-                "What is the capital of France?",
-                "Who wrote Hamlet?"
-            ],
-            "context": [
-                "What is the capital of France?",
-                "Who wrote Hamlet?"
-            ],
-            "output": [
-                "The capital of France is Paris.",
-                "William Shakespeare wrote Hamlet."
-            ]
-        }
-    }
-]
-
-def post_github_comment(content):
-    """Posts a comment to a GitHub pull request."""
-    repo = os.getenv("REPO_NAME")
-    pr_number = os.getenv("PR_NUMBER")
-    token = os.getenv("GITHUB_TOKEN")
-
-    if not all([repo, pr_number, token]):
-        print("Missing GitHub details. Skipping comment.")
-        return
-
-    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    data = {"body": content}
-
-    response = requests.post(url, headers=headers, data=json.dumps(data))
-
-    if response.status_code == 201:
-        print("Successfully posted comment to PR.")
-    else:
-        print(f"Failed to post comment. Status code: {response.status_code}")
-
-def poll_for_completion(evaluator, project_name, current_version,
-                        comparison_versions_str="", max_wait_time=600,
-                        poll_interval=30):
-    """Polls for evaluation completion by fetching all versions."""
-    start_time = time.time()
-
-    comparison_versions = []
-    if comparison_versions_str:
-        comparison_versions = [v.strip() for v in comparison_versions_str.split(',') if v.strip()]
-
-    all_versions = list(set([current_version] + comparison_versions))
-
-    while time.time() - start_time < max_wait_time:
-        elapsed_time = int(time.time() - start_time)
-        print(f"Polling for results (elapsed: {elapsed_time}s/{max_wait_time}s)...")
-
-        try:
-            result = evaluator.get_pipeline_results(
-                project_name=project_name,
-                versions=all_versions
-            )
-
-            if result.get('status'):
-                api_result = result.get('result', {})
-                status = api_result.get('status', 'unknown')
-                evaluation_runs = api_result.get('evaluation_runs', [])
-
-                if status == 'completed':
-                    print(f"All requested versions are complete.")
-                    return evaluation_runs
-                elif status in ['failed', 'error', 'cancelled']:
-                    print(f"Evaluation failed with status: {status}")
-                    return None
-        except Exception as e:
-            print(f"Error polling for results: {e}")
-
-        time.sleep(poll_interval)
-
-    print(f"Timeout after {max_wait_time} seconds")
-    return None
-
-def format_results(evaluation_runs, current_version):
-    """Formats results into a markdown comparison table."""
-    if not evaluation_runs:
-        return "No evaluation results found."
-
-    version_data = {run.get('version'): run.get('results_summary', {})
-                    for run in evaluation_runs}
-
-    # Collect all metrics
-    all_metrics = set()
-    for run in evaluation_runs:
-        for key, value in run.get('results_summary', {}).items():
-            if isinstance(value, dict):
-                for sub_key in value.keys():
-                    all_metrics.add(f"{key}_{sub_key}")
-            else:
-                all_metrics.add(key)
-
-    comparison_data = []
-    for metric in sorted(all_metrics):
-        row = {'Metric': metric.replace('_', ' ').title()}
-        for version in sorted(version_data.keys()):
-            results = version_data[version]
-            value = results.get(metric, 'N/A')
-            if isinstance(value, float):
-                formatted = f"{value:.2f}".rstrip('0').rstrip('.')
-            else:
-                formatted = str(value)
-            label = f"{version} {'(current)' if version == current_version else ''}"
-            row[label] = formatted
-        comparison_data.append(row)
-
-    df = pd.DataFrame(comparison_data)
-    return f"**Current Version:** {current_version}\n\n### Metrics Comparison\n\n{df.to_markdown(index=False)}\n"
-
-def main():
-    project_name = os.getenv("PROJECT_NAME", "Voice Agent")
-    version = os.getenv("VERSION", "v0.1.0")
-    comparison_versions = os.getenv("COMPARISON_VERSIONS", "")
-
-    try:
-        evaluator = Evaluator(
-            fi_api_key=os.getenv("FI_API_KEY"),
-            fi_secret_key=os.getenv("FI_SECRET_KEY")
-        )
-    except Exception as e:
-        post_github_comment(f"## Evaluation Failed\n\n**Reason:** Failed to initialize evaluator: {e}")
-        return
-
-    try:
-        result = evaluator.evaluate_pipeline(
-            project_name=project_name,
-            version=version,
-            eval_data=eval_data
-        )
-        if not result.get('status'):
-            post_github_comment(f"## Evaluation Failed\n\n**Reason:** {result}")
-            return
-    except Exception as e:
-        post_github_comment(f"## Evaluation Failed\n\n**Reason:** Error submitting evaluation: {e}")
-        return
-
-    all_runs = poll_for_completion(evaluator, project_name, version, comparison_versions)
-
-    if not all_runs:
-        post_github_comment("## Evaluation Failed\n\n**Reason:** Timed out or failed during processing")
-        return
-
-    comment_body = format_results(all_runs, version)
-    post_github_comment(comment_body)
-
-if __name__ == "__main__":
-    main()
-```
-
----
-
-## Expected Output
-
-The workflow posts a comment on your PR with the current version identifier and a metrics comparison table across versions.
-
-![Evaluation CI/CD Pipeline](/images/eval_ci_cd.png)
-
----
-
 ## Troubleshooting
 
 | Issue | Solution |
@@ -398,17 +377,17 @@ The workflow posts a comment on your PR with the current version identifier and 
 
 ---
 
-## Next Steps
+## Dive deeper
 
 <CardGroup cols={2}>
   <Card title="Evaluate via Platform & SDK" icon="play" href="/docs/evaluation/guides/running-evaluations">
-    Run a single eval from the UI or SDK.
+    Run a single eval from the UI or SDK
   </Card>
   <Card title="Create custom evals" icon="wand-magic-sparkles" href="/docs/evaluation/guides/custom-evals">
-    Define eval templates to use in your pipeline.
+    Define eval templates to use in your pipeline
   </Card>
   <Card title="Eval groups" icon="table-rows" href="/docs/evaluation">
-    Run multiple evals together as a group.
+    Run multiple evals together as a group
   </Card>
   <Card title="Use custom models" icon="database" href="/docs/evaluation/guides/custom-models">
     Bring your own LLM for evaluations
