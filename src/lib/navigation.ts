@@ -321,7 +321,7 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
               { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
               { title: 'Create a custom eval', href: '/docs/evaluation/guides/custom-evals' },
