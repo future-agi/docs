@@ -324,23 +324,9 @@ export const tabNavigation: NavTab[] = [
             title: 'Features',
             items: [
               { title: 'Running Evaluations', href: '/docs/evaluation/guides/running-evaluations' },
-              // Hidden until the pages land (currently 404). Re-add when the Explore playground guides ship.
-              // {
-              //   title: 'Explore playground',
-              //   items: [
-              //     { title: 'Overview', href: '/docs/evaluation/guides/explore-playground' },
-              //     { title: 'Test an eval', href: '/docs/evaluation/guides/explore-playground/test-an-eval' },
-              //     { title: 'Usage & analytics', href: '/docs/evaluation/guides/explore-playground/usage-analytics' },
-              //     { title: 'Eval logs', href: '/docs/evaluation/guides/explore-playground/eval-logs' },
-              //   ]
-              // },
               { title: 'Create a custom eval', href: '/docs/evaluation/guides/custom-evals' },
               { title: 'Build a composite evals', href: '/docs/evaluation/guides/composite-evals' },
-              // Hidden until the page lands (currently 404). Re-add when the guide ships.
-              // { title: 'Set up guardrails', href: '/docs/evaluation/guides/guardrails' },
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
-              // Hidden until the page lands (currently 404). Re-add when the guide ships.
-              // { title: 'Collect feedback', href: '/docs/evaluation/guides/feedback' },
               { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
               { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
               { title: 'Advanced usage', href: '/docs/evaluation/guides/advanced-usage' },
