@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { transform, insert } from "./changelog-from-release.mjs";
+import { transform, insert, escapeMdx } from "./changelog-from-release.mjs";
 
 const RELEASE_BODY = `## [2.1.0](https://github.com/future-agi/future-agi/compare/v2.0.0...v2.1.0) (2026-08-01)
 
@@ -46,4 +46,24 @@ test("insert places section after marker and preserves the rest", () => {
 
 test("insert throws when marker missing", () => {
   assert.throws(() => insert("no marker here", "x"), /marker not found/);
+});
+
+test("transform escapes MDX-significant characters in release body content", () => {
+  const body = `### Features
+
+* **render:** wrap output in <Tag> and interpolate {expr} safely
+
+### ⚠ BREAKING CHANGES
+
+* **api:** <Config> now takes {options} instead of positional args
+`;
+  const s = transform("v3.0.0", body, new Date("2026-09-01T00:00:00Z"));
+  assert.match(s, /&lt;Tag>/);
+  assert.match(s, /&#123;expr&#125;/);
+  assert.match(s, /&lt;Config>/);
+  assert.match(s, /&#123;options&#125;/);
+  assert.doesNotMatch(s, /<Tag>/);
+  assert.doesNotMatch(s, /\{expr\}/);
+  assert.doesNotMatch(s, /<Config>/);
+  assert.doesNotMatch(s, /\{options\}/);
 });

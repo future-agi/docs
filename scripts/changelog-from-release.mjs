@@ -5,6 +5,17 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
 const MARKER = "{/* changelog:insert-below — automation inserts new releases here; do not remove */}";
+
+// Escape characters that are syntactically significant in MDX ({/} for JSX
+// expressions, < for JSX tags) so release-body content can't break the build.
+export function escapeMdx(text) {
+  return text
+    .replace(/</g, "&lt;")
+    .replace(/\{/g, "&#123;")
+    .replace(/\}/g, "&#125;");
+}
+
+// Must stay in lockstep with the visible changelog-sections in future-agi/future-agi release-please-config.json — a visible section missing here is silently dropped from the docs page.
 const SECTION_MAP = new Map([
   ["Features", "New Features"],
   ["Bug Fixes", "Bug Fixes"],
@@ -29,8 +40,8 @@ export function transform(version, body, now = new Date()) {
       if (currentMapped) out.push(`### ${currentMapped}`, "");
       continue;
     }
-    if (inBreaking && line.trim().startsWith("*")) breaking.push(line.replace(/^\s*\*/, "-"));
-    else if (currentMapped && line.trim().startsWith("*")) out.push(line.replace(/^\s*\*/, "-"));
+    if (inBreaking && line.trim().startsWith("*")) breaking.push(escapeMdx(line.replace(/^\s*\*/, "-")));
+    else if (currentMapped && line.trim().startsWith("*")) out.push(escapeMdx(line.replace(/^\s*\*/, "-")));
     else if (currentMapped && line.trim() === "") {
       if (out[out.length - 1] !== "") out.push("");
     }
