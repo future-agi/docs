@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { transform, insert, escapeMdx } from "./changelog-from-release.mjs";
 
-const RELEASE_BODY = `## [2.1.0](https://github.com/future-agi/future-agi/compare/v2.0.0...v2.1.0) (2026-08-01)
+const RELEASE_BODY = `## [1.23.1](https://github.com/future-agi/future-agi/compare/v1.23.0...v1.23.1) (2026-08-01)
 
 ### ⚠ BREAKING CHANGES
 
@@ -17,30 +17,45 @@ const RELEASE_BODY = `## [2.1.0](https://github.com/future-agi/future-agi/compar
 
 * **tracer:** off-by-one in span pagination ([#903](https://github.com/future-agi/future-agi/pull/903))
 
+### Performance Improvements
+
+* **eval-task:** batch ClickHouse reads ([#907](https://github.com/future-agi/future-agi/pull/907))
+
 ### Chores
 
 * bump deps ([#900](https://github.com/future-agi/future-agi/pull/900))
 `;
 
-test("transform maps release-please sections to changelog sections", () => {
-  const s = transform("v2.1.0", RELEASE_BODY, new Date("2026-08-01T00:00:00Z"));
-  assert.match(s, /^## v2\.1\.0 - August 2026/m);
-  assert.match(s, /^### New Features/m);
+test("transform emits release-notes page format with merged buckets", () => {
+  const s = transform("v1.23.1", RELEASE_BODY, new Date("2026-08-01T00:00:00Z"));
+  assert.match(s, /^## v1\.23\.1 \(2026-08-01\)/m);
+  assert.match(s, /class="mb-12 pb-8 border-b/);
+  assert.match(s, /text-lg font-semibold">Features<\/div>/);
   assert.match(s, /session-level trace grouping/);
-  assert.match(s, /^### Bug Fixes/m);
-  assert.match(s, /^### Breaking Changes/m);
+  // Bug Fixes AND Performance Improvements merge into Bugs/Improvements
+  assert.match(s, /text-lg font-semibold">Bugs\/Improvements<\/div>/);
+  assert.match(s, /off-by-one in span pagination/);
+  assert.match(s, /batch ClickHouse reads/);
+  assert.match(s, /text-lg font-semibold">Breaking Changes<\/div>/);
   assert.match(s, /remove deprecated \/v1\/eval endpoint/);
   assert.doesNotMatch(s, /Chores/);
   assert.doesNotMatch(s, /bump deps/);
-  assert.match(s, /---\s*$/);
+  assert.match(s, /<\/div>\s*$/);
 });
 
-test("insert places section after marker and preserves the rest", () => {
-  const changelog = `intro\n\n{/* changelog:insert-below — automation inserts new releases here; do not remove */}\n\n## v2.0.0 - July 2026\nold entry\n`;
-  const out = insert(changelog, "## v2.1.0 - August 2026\nnew\n\n---");
-  const iMarker = out.indexOf("changelog:insert-below");
-  const iNew = out.indexOf("## v2.1.0");
-  const iOld = out.indexOf("## v2.0.0");
+test("transform omits empty subsections", () => {
+  const s = transform("v1.23.2", "### Bug Fixes\n\n* **ui:** fix button\n", new Date("2026-08-02T00:00:00Z"));
+  assert.doesNotMatch(s, />Features</);
+  assert.doesNotMatch(s, />Breaking Changes</);
+  assert.match(s, />Bugs\/Improvements</);
+});
+
+test("insert places section after marker, above existing weekly entries", () => {
+  const page = `---\ntitle: "x"\n---\n\n{/* release-notes:insert-below — automation inserts new releases here; do not remove */}\n\n## Week of 2026-06-18\nold entry\n`;
+  const out = insert(page, "## v1.23.1 (2026-08-01)\nnew\n</div>");
+  const iMarker = out.indexOf("release-notes:insert-below");
+  const iNew = out.indexOf("## v1.23.1");
+  const iOld = out.indexOf("## Week of 2026-06-18");
   assert.ok(iMarker < iNew && iNew < iOld);
 });
 
@@ -48,22 +63,12 @@ test("insert throws when marker missing", () => {
   assert.throws(() => insert("no marker here", "x"), /marker not found/);
 });
 
-test("transform escapes MDX-significant characters in release body content", () => {
-  const body = `### Features
-
-* **render:** wrap output in <Tag> and interpolate {expr} safely
-
-### ⚠ BREAKING CHANGES
-
-* **api:** <Config> now takes {options} instead of positional args
-`;
-  const s = transform("v3.0.0", body, new Date("2026-09-01T00:00:00Z"));
+test("MDX-significant characters in release bullets are escaped", () => {
+  const body = "### Bug Fixes\n\n* **gateway:** handle <Tag> and {expr} in payloads\n";
+  const s = transform("v1.23.3", body, new Date("2026-08-03T00:00:00Z"));
   assert.match(s, /&lt;Tag>/);
   assert.match(s, /&#123;expr&#125;/);
-  assert.match(s, /&lt;Config>/);
-  assert.match(s, /&#123;options&#125;/);
   assert.doesNotMatch(s, /<Tag>/);
   assert.doesNotMatch(s, /\{expr\}/);
-  assert.doesNotMatch(s, /<Config>/);
-  assert.doesNotMatch(s, /\{options\}/);
+  assert.equal(escapeMdx("<a>{b}"), "&lt;a>&#123;b&#125;");
 });
