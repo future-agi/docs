@@ -743,7 +743,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'References',
             items: [
-              { title: 'Persona settings', href: '/docs/simulation/reference/persona-settings' },
+              { title: 'Built-in personas', href: '/docs/simulation/reference/built-in-personas' },
               { title: 'Voice providers', href: '/docs/simulation/reference/voice-providers' },
               { title: 'Call metrics', href: '/docs/simulation/reference/call-metrics' },
               { title: 'SDK & API', href: '/docs/simulation/reference/sdk-api' },
