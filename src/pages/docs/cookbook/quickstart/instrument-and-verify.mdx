@@ -1,0 +1,517 @@
+---
+title: "Instrument an Existing App and Verify It End to End"
+description: "Add tracing to an app that has none, then prove it worked. Six steps and ten machine-checked gates that either pass or name what is missing."
+---
+
+<TLDR>
+Adding tracing is the easy half. Knowing it worked is the half that gets skipped, because a trace that arrives looking fine can still be missing cost, sessions, users, or half its spans. This guide adds tracing to an app that has none, then runs `fi_verify.py`, which checks ten gates against the spans your app really produced and exits 0 or names the gate that failed.
+</TLDR>
+
+| Time | Difficulty | Languages |
+|------|-----------|-----------|
+| 45 min | Intermediate | Python |
+
+<Prerequisites>
+- FutureAGI account: [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- Python 3.10 or newer
+- An app that makes at least one real LLM call, with an entry point you can run once
+</Prerequisites>
+
+## The Problem
+
+You instrumented an app, a trace showed up, and you called it done. Then someone asks what last month cost per customer, and the answer is not there.
+
+The failures below all produce a trace list that looks populated:
+
+- **Cost and token columns are empty.** Nothing computes cost for you. It is a number you send.
+- **One request appears as three traces.** A thread hand-off, a stream, or a job with no entry point split it, and each piece looks like a valid trace on its own.
+- **Sessions and users are blank**, so conversations do not group and per-customer spend cannot be read.
+- **Evals report nothing**, which looks identical to an eval that found no problems.
+- **Nothing arrives at all**, and the client stays healthy because the collector refused the batch quietly.
+
+Reading the dashboard cannot separate these from a correct integration. That is the actual problem: verification by eyeball.
+
+## The Solution: Six Steps and Ten Gates
+
+Six steps, each closing named gates, and one checker that decides the result. `fi_verify.py` reads a local capture of your spans for nine of the gates, and two delivery receipts for the tenth, because a local capture says nothing about whether anything reached the collector.
+
+It exits `0`, or it prints the gate that failed and why.
+
+| Gate | Holds when | Step |
+|---|---|---|
+| G1 | the keys and route are accepted, and the collector took the real batch | 1 |
+| G2 | `project_name` and `project_type` are on the resource | 2 |
+| G3 | one request is one trace, one root, no orphans | 2 |
+| G6 | one `session.id`, identical across the trace | 3 |
+| G7 | `user.id` is present | 3 |
+| G4 | every span is typed, and at least one is an LLM span | 4 |
+| G5 | prompt and completion on every LLM span | 4 |
+| G8 | the model name is on every LLM span | 4 |
+| G9 | tokens and cost, rolled up onto the root | 4 |
+| G10 | no credential in any span attribute | 4 |
+
+## Architecture
+
+Everything new lands in one directory. Existing files get a dependency, some configuration, one call at the entry point, and one around the model call.
+
+```
+your-repo/
+├── observability/futureagi/
+│   ├── setup.py               # provider, exporter, instrumentor      G1 G2
+│   ├── fi_verify.py           # the checker, downloaded in Step 1     all ten
+│   ├── futureagi_spans.py     # the attribute helpers                 G4 G5 G10
+│   └── futureagi_rollup.py    # per-span cost, summed onto the root   G8 G9
+├── app/main.py                # + one scope at the entry point        G3 G6 G7
+├── requirements.txt           # + fi-instrumentation-otel
+└── .gitignore                 # + .fi_verify/
+
+  one request  ──►  CHAIN root                        G3  one root, no orphans
+                    ├── LLM   gpt-4o-mini             G4  typed
+                    │         input.value/output      G5  content
+                    │         gen_ai.request.model    G8  model
+                    │         usage.*_tokens          G9  tokens
+                    └── TOOL  lookup_price            G4  typed
+
+                    root carries the sum              G9  cost on the root
+                    every span carries the scope      G6  G7
+```
+
+If this repository ships as a package, put `observability/futureagi/` under your own package root instead of the top level.
+
+## Get the Checker
+
+One file, no dependency beyond the OpenTelemetry SDK. Download it into the directory above before Step 1, because Step 1 runs it.
+
+```bash
+mkdir -p observability/futureagi
+curl -fsSL https://docs.futureagi.com/fi_verify.py -o observability/futureagi/fi_verify.py
+```
+
+Confirm your copy:
+
+```bash
+shasum -a 256 observability/futureagi/fi_verify.py
+# 9b331742bc4143a46ae22ee0e8a1c8487d70cc242f689491cc20ca94a336ecd0
+```
+
+<Note>
+Nothing substitutes for this file. A checker that skips G1 reports success on keys the collector refused, because every other gate reads a local capture that a broken integration still writes perfectly.
+</Note>
+
+## Step 1: Prove the Keys Before Writing Code That Depends on Them
+
+Three values: `FI_API_KEY` and `FI_SECRET_KEY` from the console, and `FI_PROJECT_NAME`, the name this app appears under. Tracing never needs your model provider key.
+
+```bash
+export FI_API_KEY="your-fi-api-key"
+export FI_SECRET_KEY="your-fi-secret-key"
+export FI_PROJECT_NAME="my-app"
+
+python observability/futureagi/fi_verify.py preflight
+```
+
+`preflight` sends one real span, then three deliberately broken variants. If any broken variant is accepted, nothing is proven and it fails.
+
+| Answer | Means |
+|---|---|
+| `200` | keys, route and payload all valid. Go to Step 2 |
+| `401 authentication failed` | the keys arrived and were refused: wrong keys, or keys from another environment |
+| `401 missing credentials` | the `X-Api-Key` and `X-Secret-Key` headers never arrived: unset, or a proxy strips them |
+| `400 no project_name` | keys fine, payload not. It belongs on the resource, not the span |
+| `404` | wrong path. It ends `/tracer/v1/traces`, with no trailing slash |
+
+<Note>
+You can start before the keys arrive. They usually sit with whoever owns the account rather than the engineer integrating, so ask for `FI_API_KEY` and `FI_SECRET_KEY` by name and say they belong in the environment. Every other step is built meanwhile, and only this gate waits.
+</Note>
+
+## Step 2: One Request Has to Arrive as One Tree
+
+Tokens, cost and latency roll up to the root, and both the trace list and every trace-scoped eval read the root. A request that arrives in pieces makes all three wrong, so get the shape right before anything else.
+
+### Three things break a trace into pieces
+
+**A thread hand-off, a pool, a background task.** Copy the context in the caller and run the work inside it: `c = contextvars.copy_context()`, then `c.run(fn, ...)` in the worker. Captured on the far side it captures nothing, and `attach` alone restores the parent while dropping the Step 3 scope. Nothing crosses a message broker, so inject the W3C `traceparent` into the message and extract it in the task. [Distributed tracing](/docs/cookbook/quickstart/distributed-tracing) covers that case in full.
+
+**A stream or generator.** The first chunk nests and the rest do not, so open the model span inside the generator and close it in a `finally`.
+
+**No entry point at all**: a job, a consumer, a CLI, a frozen runtime like Lambda. The most common of the three. Open a `CHAIN` root by hand and flush before returning, because a batch sends on a timer and the sandbox freezes first.
+
+### Pick Your Route
+
+<Tabs>
+<Tab title="FutureAGI SDK">
+
+```bash
+pip install fi-instrumentation-otel      # not fi-instrumentation. Python 3.10+
+pip install traceai-openai               # one per framework in use: -anthropic, -langchain,
+                                         # -llamaindex, -crewai, -litellm, -bedrock, -mcp, ...
+```
+
+```python
+# observability/futureagi/setup.py
+import os, sys
+from opentelemetry import trace
+from fi_instrumentation import FITracer, register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # for fi_verify
+
+# Import this once at process start, AFTER whatever loads your .env and before any model
+# call. Imported earlier the keys are not there yet, and only G1 says so.
+tracer_provider = None
+tracer = trace.get_tracer(__name__)   # a no-op tracer, so no key means no spans, not a crash
+
+if os.getenv("FI_API_KEY") and os.getenv("FI_SECRET_KEY"):
+    tracer_provider = register(
+        project_name=os.getenv("FI_PROJECT_NAME", "my-app"),
+        project_type=ProjectType.OBSERVE,
+        set_global_tracer_provider=True,
+    )
+    OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+    # FITracer, not get_tracer(): a plain Tracer drops session.id and user.id, failing G6 and G7
+    tracer = FITracer(tracer_provider.get_tracer(__name__))
+    if os.getenv("FI_VERIFY") == "1":
+        import fi_verify; fi_verify.attach(tracer_provider)
+```
+
+`register()` puts `project_name` and `project_type` on the resource for you, which is G2.
+
+</Tab>
+<Tab title="OpenTelemetry">
+
+```bash
+pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+```
+
+```python
+# observability/futureagi/setup.py
+import os, sys, contextvars
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider, SpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # for fi_verify
+
+# Import this AFTER whatever loads your .env, or the keys are not there yet and only G1 says so.
+# On the RESOURCE: without it the collector answers 400 and the client still looks healthy
+resource = Resource.create({"project_name": os.getenv("FI_PROJECT_NAME", "my-app"),
+                            "project_type": "observe"})
+provider = TracerProvider(resource=resource)
+
+if os.getenv("FI_API_KEY") and os.getenv("FI_SECRET_KEY"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
+        endpoint="https://api.futureagi.com/tracer/v1/traces",
+        headers={"X-Api-Key": os.getenv("FI_API_KEY"),
+                 "X-Secret-Key": os.getenv("FI_SECRET_KEY")})))
+
+# Step 3 sets this once at the edge; every span picks it up here, so no call site remembers it
+_scope = contextvars.ContextVar("fi_scope", default={})
+
+class FiScope(SpanProcessor):     # the base class no-ops the other three methods
+    def on_start(self, span, parent_context=None):
+        for k, v in _scope.get().items(): span.set_attribute(k, v)
+
+provider.add_span_processor(FiScope())
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
+
+if os.getenv("FI_VERIFY") == "1":
+    import fi_verify; fi_verify.attach(provider)
+```
+
+The three standard variables, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_RESOURCE_ATTRIBUTES`, are an alternative to the module above.
+
+</Tab>
+</Tabs>
+
+## Step 3: One Scope at the Edge Carries Session and User
+
+A session groups traces into a conversation you can read in order, and a user id lets you read cost and quality per customer. One scope, opened where the request enters, so every span inside inherits it.
+
+<Tabs>
+<Tab title="FutureAGI SDK">
+
+```python
+# your entry point: the scope outside, the root inside
+from fi_instrumentation import using_attributes
+from observability.futureagi.setup import tracer
+
+# The scope goes OUTSIDE the root. Opened within it, it reaches the children and misses
+# the root itself, and G6 and G7 read every span in the trace.
+def handle(message):                # an HTTP route, a consumer, a job, a CLI run
+    with using_attributes(session_id=conversation_id, user_id=account_id,
+                          tags=["prod"], metadata={"tenant": tenant}):
+        with tracer.start_as_current_span("orders.reprice") as root:
+            root.set_attribute("gen_ai.span.kind", "CHAIN")
+            root.set_attribute("input.value", message.body)
+            answer = run_the_work(message)      # every model call nests under this
+            root.set_attribute("output.value", answer)
+            return answer
+```
+
+</Tab>
+<Tab title="OpenTelemetry">
+
+```python
+# your entry point: the scope outside, the root inside
+from observability.futureagi.setup import tracer, _scope
+
+# Set here and nowhere else. FiScope copies it onto every span in the request, root included.
+def handle(message):                # an HTTP route, a consumer, a job, a CLI run
+    token = _scope.set({"session.id": conversation_id, "user.id": account_id})
+    try:
+        with tracer.start_as_current_span("orders.reprice") as root:
+            root.set_attribute("gen_ai.span.kind", "CHAIN")
+            root.set_attribute("input.value", message.body)
+            answer = run_the_work(message)      # every model call nests under this
+            root.set_attribute("output.value", answer)
+            return answer
+    finally:
+        _scope.reset(token)
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+Three mistakes leave both fields empty. A new id on every span is worse than no session at all, because it looks correct. A scope opened inside the root reaches the children and misses the root, and both gates read every span. A scope lost at a thread or stream boundary is empty on exactly the spans that used to be orphans, which means Step 2 is not finished. Use an internal account id, never an email.
+</Note>
+
+## Step 4: A Field Is Empty Because the Attribute Behind It Was Never Sent
+
+None of these are filled in for you on our side, cost included. Five of the ten gates depend on this step.
+
+| Field that stays empty | Attribute that fills it | Written by |
+|---|---|---|
+| the span typed in the tree | `gen_ai.span.kind` | you, every span |
+| prompt and completion, every eval binding | `input.value`, `output.value` | instrumentor or you |
+| tokens and cost in the trace list | `gen_ai.usage.input_tokens`, `.output_tokens`, `gen_ai.cost.total` on the root | you |
+| model and provider filters | `gen_ai.request.model`, `gen_ai.provider.name` | instrumentor, except on a stream |
+| session grouping, user analytics | `session.id`, `user.id` | you, at the edge |
+
+The instrumentor writes every LLM key for the calls it wraps. The root, a local `TOOL` or `RETRIEVER` span, and cost all fall outside it. A hand-rolled client has no instrumentor at all, so its LLM span is written the same way, by hand, with the model, the messages and the counts taken off the response object.
+
+The kind is the bare name in capitals: `CHAIN` for the root, `LLM` for one model call, then ten more listed in the [instrumentor reference](/docs/tracing/auto).
+
+### Cost is not calculated for you. You send it.
+
+From the token counts and the published rate, onto the root, which is what the trace list reads. It is billed per LLM span as each one ends and added up there, because an ended span is read-only and cannot carry the number itself.
+
+Rates come from the environment, so a price change is configuration rather than a release:
+
+```bash
+export FI_MODEL_RATES='{"gpt-4o-mini": [0.15, 0.60]}'   # {"<model>": [in, out]} per 1M
+```
+
+<Warning>
+A streamed call is missing two of these. Pass `stream_options={"include_usage": True}` and the token counts arrive on the final chunk (G9); without it the provider sends none at all. The model name never arrives either, and the instrumentor's span is never current in your code, so it has to be set as the span opens (G8). Off a stream both arrive on their own.
+</Warning>
+
+<Tabs>
+<Tab title="FutureAGI SDK">
+
+```python
+# observability/futureagi/futureagi_spans.py
+from contextlib import contextmanager
+from observability.futureagi.futureagi_rollup import MODEL
+
+@contextmanager               # wrap the client call. The instrumentor writes the rest
+def llm_call(model):
+    t = MODEL.set(model)
+    try: yield
+    finally: MODEL.reset(t)
+
+# a local TOOL or RETRIEVER span, and the root: three lines each
+with tracer.start_as_current_span("lookup_price") as span:
+    span.set_attribute("gen_ai.span.kind", "TOOL")
+    span.set_attribute("gen_ai.tool.name", "lookup_price")
+    span.set_attribute("output.value", json.dumps(catalogue.price(sku)))
+```
+
+```python
+# observability/futureagi/futureagi_rollup.py
+import json, os, contextvars
+from opentelemetry import context as otel_context
+from opentelemetry.sdk.trace import SpanProcessor
+from observability.futureagi.setup import tracer_provider as P   # None until the keys are set
+
+RATES = json.loads(os.getenv("FI_MODEL_RATES", "{}"))   # {"<model>": [in, out]} per 1M
+MODEL = contextvars.ContextVar("fi_model", default=None)   # what llm_call is about to call
+RUN = otel_context.create_key("fi_run")     # rides the OpenTelemetry context, so a copied
+M = "gen_ai.request.model"                  # context carries it over a thread hand-off too.
+T = ["gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens",
+     "gen_ai.usage.total_tokens", "gen_ai.cost.total"]
+
+class RollUp(SpanProcessor):
+    def on_start(self, span, parent_context=None):   # the instrumentor never leaves its LLM
+        if MODEL.get(): span.set_attribute(M, MODEL.get())   # span current in your code, so
+    def on_end(self, span):                          # the name goes on as the span opens
+        run, a = otel_context.get_value(RUN), span.attributes or {}
+        if run is not None and T[0] in a:      # tokens land on LLM spans, which end first
+            i, o = RATES.get(a.get(M), [0, 0])            # the only place a cost is
+            a = dict(a, **{T[3]: (a[T[0]] * i + a.get(T[1], 0) * o) / 1e6})   # ever computed
+        for k in T: run[k] = run.get(k, 0) + a.get(k, 0)
+
+# register() leaves _default_processor set, and the first add_span_processor call on that
+# provider discards the exporter it installed. Clearing it first is what keeps delivery.
+if P: P._default_processor = False; P.add_span_processor(RollUp())
+```
+
+</Tab>
+<Tab title="OpenTelemetry">
+
+```python
+# observability/futureagi/futureagi_spans.py
+# Every key comes from here. One module, so a name can be misspelled only once.
+import json
+from contextlib import contextmanager
+
+def _set(span, attrs):              # None is never written: an empty attribute
+    for k, v in attrs.items():      # reads as a missing one
+        if v is not None: span.set_attribute(k, v if isinstance(v, (str, bool, int, float))
+                                             else json.dumps(v, default=str))
+
+@contextmanager
+def span_of(t, name, kind, opening, alias=None):    # one shape for all twelve kinds
+    with t.start_as_current_span(name) as span:
+        _set(span, {"gen_ai.span.kind": kind, **opening})
+        yield lambda out=None, extra=None: _set(span, {"output.value": out, **(extra or {}),
+                                                       **({alias: out} if alias else {})})
+```
+
+```python
+# observability/futureagi/futureagi_rollup.py
+import json, os
+from opentelemetry import context as otel_context
+from opentelemetry.sdk.trace import SpanProcessor
+from observability.futureagi.setup import provider as P   # the provider Step 2 built
+
+RATES = json.loads(os.getenv("FI_MODEL_RATES", "{}"))   # {"<model>": [in, out]} per 1M
+RUN = otel_context.create_key("fi_run")     # rides the OpenTelemetry context, so a copied
+M = "gen_ai.request.model"                  # context carries it over a thread hand-off too.
+T = ["gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens",
+     "gen_ai.usage.total_tokens", "gen_ai.cost.total"]
+
+class RollUp(SpanProcessor):
+    def on_end(self, span):        # the base class no-ops the other three methods
+        run, a = otel_context.get_value(RUN), span.attributes or {}
+        if run is not None and T[0] in a:      # tokens land on LLM spans, which end first
+            i, o = RATES.get(a.get(M), [0, 0])            # the only place a cost is
+            a = dict(a, **{T[3]: (a[T[0]] * i + a.get(T[1], 0) * o) / 1e6})   # ever computed
+            for k in T: run[k] = run.get(k, 0) + a.get(k, 0)
+
+P.add_span_processor(RollUp())
+```
+
+</Tab>
+</Tabs>
+
+The roll-up needs a per-request accumulator, opened at the entry point rather than inside the module above:
+
+```python
+# your entry point, around the root from Step 3
+run = {k: 0 for k in T}          # mutated in place, so a copied context shares it
+token = otel_context.attach(otel_context.set_value(RUN, run))
+try:
+    with tracer.start_as_current_span("orders.reprice") as root:
+        answer = plan_and_run(order_id)
+        run[T[2]] = run.get(T[2]) or run.get(T[0], 0) + run.get(T[1], 0)   # only if the
+        for k in T: root.set_attribute(k, run.get(k, 0))              # provider sent none
+finally:
+    otel_context.detach(token)
+```
+
+A reasoning model bills for tokens in neither bucket, so carry the total the provider sent rather than adding the two up. Clip `input.value` at 8000 characters and redact it for G10: a serialised config object and a prompt that already carries a key are the two ways a credential reaches a span.
+
+## Step 5: Run It, and Run It Again After Every Change
+
+Three commands. It exits `0`, or it names the gate that failed and why.
+
+```bash
+printf '\n.fi_verify/\n' >> .gitignore     # echo would join the last line
+export FI_VERIFY=1
+
+python observability/futureagi/fi_verify.py preflight   # keys, route, three broken controls
+python -m your_app                                      # one real request, your entry point
+python observability/futureagi/fi_verify.py check       # ten gates: receipts, then spans
+```
+
+A passing run:
+
+```
+  PASS  G1   preflight ok, delivery ok
+  PASS  G2   project_name='my-app' project_type='observe'
+  PASS  G3   7 spans, 1 trace(s), 1 root(s), 0 orphan(s)
+  PASS  G4   3 LLM span(s), 0 untyped
+  PASS  G5   prompt and completion on every LLM span
+  PASS  G6   session.id=['c-4182']
+  PASS  G7   user.id=['acct-993']
+  PASS  G8   model on every LLM span
+  PASS  G9   tokens and cost on LLM spans, rolled up onto the root; root cost=0.0002694
+  PASS  G10  no credential in any span attribute
+
+  Future AGI integrated
+  GREEN LIGHT achieved
+```
+
+Nine gates read the local capture in `.fi_verify/spans.jsonl`. G1 reads two receipts written during the run, because a capture says nothing about whether anything arrived. If the same gate fails twice for the same reason, the problem is outside your codebase.
+
+## Step 6: Bind Evals to Attributes the Trace Now Carries
+
+An eval can only grade what it is bound to, and you bind every variable yourself. One with nothing bound reports nothing, which looks the same as one that found no problems.
+
+Evals are configured in the console, never in application code. Binding is manual per eval task: a scope, a template, then each variable pointed at an attribute path in your own data.
+
+- Anything reading the request binds at **Traces** scope against the root, where `input.value` is the real question. On an instrumented LLM span it holds only the first message, and the full turn is under `gen_ai.input.messages.*`.
+- Output-only evals bind at **Spans** scope to `output.value`, which G5 already proved is there.
+
+Read your own attributes out of `.fi_verify/spans.jsonl` first, then pick from the [eval catalogue](/docs/evaluation/builtin) and attach them with [Setup evals](/docs/observe/guides/setup-evals).
+
+## If Your App Is Not Python
+
+The listings translate line for line, and everything reaches the same endpoint over plain OpenTelemetry. Carry across:
+
+- Both headers, `X-Api-Key` and `X-Secret-Key`, on `https://api.futureagi.com/tracer/v1/traces`
+- `project_name` and `project_type` on the **resource**, not the span
+- One root per unit of work
+- The scope from Step 3, set at the edge
+- The Step 4 attribute keys, byte for byte
+- The roll-up, because cost is never computed server side
+
+Spring Boot also needs `management.tracing.sampling.probability=1.0`. First-party SDKs and the full framework list are in the [instrumentor reference](/docs/tracing/auto).
+
+## Checklist
+
+Before you ship:
+
+- [ ] `preflight` returns `200` and refuses all three broken variants
+- [ ] `project_name` and `project_type` are on the resource, not the span
+- [ ] One request produces one trace with one root and no orphans
+- [ ] `session.id` and `user.id` are on every span, including the root
+- [ ] Every span carries `gen_ai.span.kind`, and at least one is `LLM`
+- [ ] `input.value` and `output.value` are on every LLM span
+- [ ] `gen_ai.request.model` is on every LLM span, streamed calls included
+- [ ] Token counts on the LLM spans and `gen_ai.cost.total` on the root, greater than zero
+- [ ] `.fi_verify/` is in `.gitignore` and no credential appears in any span attribute
+- [ ] `fi_verify.py check` exits `0`
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="No traces appear" icon="triangle-exclamation" href="/docs/observe/troubleshooting/no-traces-appearing">
+    Diagnose an app that runs clean but sends nothing
+  </Card>
+  <Card title="Distributed Tracing" icon="share-nodes" href="/docs/cookbook/quickstart/distributed-tracing">
+    Keep one trace across a service boundary
+  </Card>
+  <Card title="Auto-Instrumentation" icon="plug" href="/docs/tracing/auto">
+    Setup guides for every supported framework
+  </Card>
+  <Card title="Setup evals" icon="gauge" href="/docs/observe/guides/setup-evals">
+    Attach the evals from Step 6 to your traces
+  </Card>
+</CardGroup>

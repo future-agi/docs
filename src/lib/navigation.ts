@@ -885,6 +885,7 @@ export const tabNavigation: NavTab[] = [
               {
                 title: 'Observability',
                 items: [
+                  { title: 'Instrument an Existing App and Verify It End to End', href: '/docs/cookbook/quickstart/instrument-and-verify' },
                   { title: 'Manual Tracing: Add Custom Spans to Any Application', href: '/docs/cookbook/quickstart/manual-tracing' },
                   { title: 'Session-Based Observability for Multi-Turn Conversations', href: '/docs/cookbook/quickstart/session-observability' },
                   { title: 'Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds', href: '/docs/cookbook/quickstart/monitoring-alerts' },
