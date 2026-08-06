@@ -720,13 +720,29 @@ export const tabNavigation: NavTab[] = [
               { title: 'Create scenarios', href: '/docs/simulation/guides/create-scenarios' },
               { title: 'Explore scenarios', href: '/docs/simulation/guides/explore-scenarios' },
               { title: 'Create personas', href: '/docs/simulation/guides/create-personas' },
-              { title: 'Run a voice simulation', href: '/docs/simulation/guides/run-voice-simulation' },
-              { title: 'Run a chat simulation', href: '/docs/simulation/guides/run-chat-simulation' },
-              { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
-              { title: 'Edit evals in a simulation', href: '/docs/simulation/guides/edit-evals' },
-              { title: 'Replay chat sessions', href: '/docs/simulation/guides/replay-chat' },
-              { title: 'Replay voice calls', href: '/docs/simulation/guides/replay-voice' },
-              { title: 'Evaluate tool calls', href: '/docs/simulation/guides/evaluate-tool-calls' },
+              {
+                title: 'Running simulations',
+                items: [
+                  { title: 'Create a simulation', href: '/docs/simulation/guides/create-simulation' },
+                  { title: 'Run a voice simulation', href: '/docs/simulation/guides/run-voice-simulation' },
+                  { title: 'Run a chat simulation', href: '/docs/simulation/guides/run-chat-simulation' },
+                  { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
+                ]
+              },
+              {
+                title: 'Evaluations in simulation',
+                items: [
+                  { title: 'Edit evals in a simulation', href: '/docs/simulation/guides/edit-evals' },
+                  { title: 'Evaluate tool calls', href: '/docs/simulation/guides/evaluate-tool-calls' },
+                ]
+              },
+              {
+                title: 'Replay simulations',
+                items: [
+                  { title: 'Replay chat sessions', href: '/docs/simulation/guides/replay-chat' },
+                  { title: 'Replay voice calls', href: '/docs/simulation/guides/replay-voice' },
+                ]
+              },
               {
                 title: 'Explore results',
                 items: [
@@ -736,8 +752,13 @@ export const tabNavigation: NavTab[] = [
                 ]
               },
               { title: 'Fix My Agent', href: '/docs/simulation/guides/fix-my-agent' },
-              { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
-              { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
+              {
+                title: 'Optimize using simulate',
+                items: [
+                  { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
+                  { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
+                ]
+              },
             ]
           },
           {
