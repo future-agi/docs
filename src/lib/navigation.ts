@@ -718,7 +718,15 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Connect your agent', href: '/docs/simulation/guides/connect-your-agent' },
               { title: 'Create scenarios', href: '/docs/simulation/guides/create-scenarios' },
-              { title: 'Explore scenarios', href: '/docs/simulation/guides/explore-scenarios' },
+              {
+                title: 'Explore scenarios',
+                items: [
+                  { title: 'Overview', href: '/docs/simulation/guides/explore-scenarios' },
+                  { title: 'Explore scenario graph', href: '/docs/simulation/guides/explore-scenarios/scenario-graph' },
+                  { title: 'Add rows', href: '/docs/simulation/guides/explore-scenarios/add-rows' },
+                  { title: 'Add columns', href: '/docs/simulation/guides/explore-scenarios/add-columns' },
+                ]
+              },
               { title: 'Create personas', href: '/docs/simulation/guides/create-personas' },
               {
                 title: 'Running simulations',
