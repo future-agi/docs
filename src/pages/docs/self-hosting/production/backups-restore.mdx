@@ -5,20 +5,22 @@ description: "Back up and restore the data stores behind a self-hosted instance"
 
 A self-hosted instance keeps state in a few stores: Postgres for application data, ClickHouse for the observability records (spans and traces), and MinIO for object storage. Those three are the ones to back up. Redis is a cache (sign-ins, locks, rate limits, pub/sub), so it rebuilds on its own. RabbitMQ holds the task queue: losing it drops in-flight background jobs, so drain it before planned downtime rather than backing it up.
 
+If you've already moved to [managed data stores](/docs/self-hosting/production/checklist#move-to-managed-data-stores), your provider's backup tooling replaces everything below.
+
 ## The named volumes
 
 The compose project name is `futureagi`, so every volume is prefixed `futureagi_`:
 
-| Volume | Holds |
-|---|---|
-| `futureagi_postgres-data` | Postgres application data |
-| `futureagi_clickhouse-data` | ClickHouse spans and traces |
-| `futureagi_minio-data` | MinIO objects |
-| `futureagi_rabbitmq-data` | RabbitMQ task queue |
-| `futureagi_redis-data` | Redis cache (rebuildable) |
-| `futureagi_peerdb-catalog-data` | PeerDB replication catalog |
-| `futureagi_peerdb-minio-data` | PeerDB staging objects |
-| `futureagi_fi-collector-data` | Spans the collector couldn't write to ClickHouse |
+| Volume | Holds | Back up? |
+|---|---|---|
+| `futureagi_postgres-data` | Postgres application data | Yes |
+| `futureagi_clickhouse-data` | ClickHouse spans and traces | Yes |
+| `futureagi_minio-data` | MinIO objects | Yes |
+| `futureagi_fi-collector-data` | Spans the collector couldn't write to ClickHouse | Don't delete it |
+| `futureagi_rabbitmq-data` | RabbitMQ task queue | No, drain instead |
+| `futureagi_redis-data` | Redis cache | No, rebuildable |
+| `futureagi_peerdb-catalog-data` | PeerDB replication catalog | No, rebuilt by re-running init |
+| `futureagi_peerdb-minio-data` | PeerDB staging objects | No, transient |
 
 <Note>
 `futureagi_fi-collector-data` is a dead-letter queue, not a cache. It holds spans that failed to reach ClickHouse, usually while ClickHouse was briefly down, and they're replayed once it's back. Deleting the volume drops that telemetry for good, so don't prune it with the rebuildable ones.
@@ -26,7 +28,7 @@ The compose project name is `futureagi`, so every volume is prefixed `futureagi_
 
 ## Postgres
 
-Postgres holds the application data, so back it up on a schedule. Use the custom format, and pass `-T` so `docker compose exec` doesn't allocate a TTY and mangle the binary dump:
+Postgres holds the application data, so back it up on a schedule. Use the custom format, and pass `-T` so `docker compose exec` doesn't allocate a TTY and mangle the binary dump. Stop the backend and workers before restoring, since `--clean` drops objects the running app may be holding open:
 
 ```bash
 # Backup
@@ -42,10 +44,18 @@ docker compose exec -T postgres \
 
 ## ClickHouse
 
-ClickHouse is not just a replica anymore. Since the CH25 cutover (`CH25_DROP_LEGACY_CDC_CHAIN` defaults to `true`), the fi-collector writes `spans` straight to ClickHouse and Django dual-writes `traces`. PeerDB only rebuilds the tables it mirrors from Postgres, so if you lose ClickHouse the observability data does **not** come back from a PeerDB re-init. Back it up on its own:
+ClickHouse holds data that exists nowhere else. The fi-collector writes `spans` straight into it and Django dual-writes `traces`, so neither is recoverable from Postgres. Back it up on its own schedule:
 
-```sql
-BACKUP DATABASE default TO S3('s3://your-bucket/ch-backup/', 'KEY', 'SECRET');
+```bash
+docker compose exec -T clickhouse clickhouse-client --query \
+  "BACKUP DATABASE default TO S3('s3://your-bucket/ch-backup/', 'KEY', 'SECRET')"
+```
+
+Restore the same way, with the path of the backup you took:
+
+```bash
+docker compose exec -T clickhouse clickhouse-client --query \
+  "RESTORE DATABASE default FROM S3('s3://your-bucket/ch-backup/', 'KEY', 'SECRET')"
 ```
 
 <Warning>
@@ -59,10 +69,10 @@ Mirror the MinIO bucket to S3 with the MinIO client:
 ```bash
 mc alias set local http://localhost:9005 futureagi <MINIO_ROOT_PASSWORD>
 mc alias set s3 https://s3.amazonaws.com <AWS_KEY> <AWS_SECRET>
-mc mirror local/ s3/your-bucket/
-```
 
-If you've already moved to [managed data stores](/docs/self-hosting/production/checklist), your provider's own backup tooling replaces these commands.
+mc mirror local/ s3/your-bucket/     # back up
+mc mirror s3/your-bucket/ local/     # restore
+```
 
 ## Dive deeper
 
