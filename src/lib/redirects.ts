@@ -9,6 +9,23 @@ export const redirectMap: Record<string, string> = {
   '/docs/prototype/features/evals': '/docs/evaluation/builtin',
   '/docs/prototype/features/choose-winner': '/docs/evaluation',
   '/docs/cookbook/quickstart/prototype-llm-app': '/docs/cookbook/quickstart/experimentation-compare-prompts',
+  // Error Feed revamp: Concepts/Features replaced by Concepts/Guides/Reference/Troubleshooting.
+  // NOTE /docs/error-feed/features/sampling is linked from inside the product
+  // (frontend ConfigureProject.jsx), so that redirect must not be removed.
+  '/docs/error-feed/concepts/how-it-works': '/docs/error-feed/concepts/understanding-error-feed',
+  '/docs/error-feed/concepts/taxonomy': '/docs/error-feed/reference/error-taxonomy',
+  '/docs/error-feed/concepts/scoring': '/docs/error-feed/concepts/trace-error-analysis',
+  '/docs/error-feed/features/sampling': '/docs/error-feed/guides/turn-on-error-feed',
+  '/docs/error-feed/features/the-feed': '/docs/error-feed/guides/triage-issues',
+  '/docs/error-feed/features/triage-workflow': '/docs/error-feed/guides/triage-issues',
+  '/docs/error-feed/features/issue-overview': '/docs/error-feed/guides/investigate-an-issue',
+  '/docs/error-feed/features/traces': '/docs/error-feed/guides/investigate-an-issue',
+  '/docs/error-feed/features/state-graph': '/docs/error-feed/guides/investigate-an-issue',
+  '/docs/error-feed/features/trends': '/docs/error-feed/guides/investigate-an-issue',
+  '/docs/error-feed/features/metadata-panel': '/docs/error-feed/guides/investigate-an-issue',
+  '/docs/error-feed/features/deep-analysis': '/docs/error-feed/guides/run-root-cause-analysis',
+  '/docs/error-feed/features/linear-integration': '/docs/error-feed/guides/create-linear-issue',
+  '/docs/error-feed/taxonomy': '/docs/error-feed/reference/error-taxonomy',
 
   // Manual-instrumentation pages moved from Observe features into the traceAI SDK section
   '/docs/observe/features/manual-tracing/set-up-tracing': '/docs/sdk/tracing/set-up-tracing',
@@ -280,7 +297,7 @@ export const redirectMap: Record<string, string> = {
   '/integrations/vertexai': '/docs/integrations/traceai/vertexai',
   '/product/agent-compass/overview': '/docs/error-feed',
   '/product/agent-compass/quickstart': '/docs/error-feed',
-  '/product/agent-compass/taxonomy': '/docs/error-feed/concepts/taxonomy',
+  '/product/agent-compass/taxonomy': '/docs/error-feed/reference/error-taxonomy',
   '/docs/cookbook/quickstart/agent-compass-debug': '/docs/error-feed',
   '/product/annotations/concepts/labels': '/docs/annotations/features/labels',
   '/product/annotations/concepts/queues': '/docs/annotations/features/queues',

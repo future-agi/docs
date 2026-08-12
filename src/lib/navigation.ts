@@ -280,25 +280,34 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'How It Works', href: '/docs/error-feed/concepts/how-it-works' },
-              { title: 'Error Taxonomy', href: '/docs/error-feed/concepts/taxonomy' },
-              { title: 'Scoring', href: '/docs/error-feed/concepts/scoring' },
-              { title: 'Severity and Status', href: '/docs/error-feed/concepts/severity-and-status' },
+              { title: 'Understanding Error Feed', href: '/docs/error-feed/concepts/understanding-error-feed' },
+              { title: 'Severity & Status', href: '/docs/error-feed/concepts/severity-and-status' },
+              { title: 'Trace error analysis', href: '/docs/error-feed/concepts/trace-error-analysis' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'The Feed', href: '/docs/error-feed/features/the-feed' },
-              { title: 'Issue Overview', href: '/docs/error-feed/features/issue-overview' },
-              { title: 'Traces', href: '/docs/error-feed/features/traces' },
-              { title: 'State Graph', href: '/docs/error-feed/features/state-graph' },
-              { title: 'Trends', href: '/docs/error-feed/features/trends' },
-              { title: 'Metadata Panel', href: '/docs/error-feed/features/metadata-panel' },
-              { title: 'Triage Workflow', href: '/docs/error-feed/features/triage-workflow' },
-              { title: 'Deep Analysis', href: '/docs/error-feed/features/deep-analysis' },
-              { title: 'Linear Integration', href: '/docs/error-feed/features/linear-integration' },
-              { title: 'Sampling', href: '/docs/error-feed/features/sampling' },
+              { title: 'Turn on Error Feed', href: '/docs/error-feed/guides/turn-on-error-feed' },
+              { title: 'Triage issues', href: '/docs/error-feed/guides/triage-issues' },
+              { title: 'Investigate an issue', href: '/docs/error-feed/guides/investigate-an-issue' },
+              { title: 'Run a root cause analysis', href: '/docs/error-feed/guides/run-root-cause-analysis' },
+              { title: 'Create a Linear issue', href: '/docs/error-feed/guides/create-linear-issue' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Issue fields & filters', href: '/docs/error-feed/reference/issue-fields' },
+              { title: 'Error taxonomy', href: '/docs/error-feed/reference/error-taxonomy' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'No issues in the feed', href: '/docs/error-feed/troubleshooting/no-issues-in-the-feed' },
+              { title: 'Issue counts look wrong', href: '/docs/error-feed/troubleshooting/issue-counts-look-wrong' },
+              { title: "Analysis doesn't finish", href: '/docs/error-feed/troubleshooting/analysis-does-not-finish' },
             ]
           },
         ]
