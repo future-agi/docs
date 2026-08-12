@@ -303,7 +303,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add columns', href: '/docs/dataset/guides/add-columns' },
               { title: 'Run a prompt on every row', href: '/docs/dataset/guides/run-a-prompt-on-every-row' },
               { title: 'Run an experiment', href: '/docs/dataset/guides/run-an-experiment' },
-              { title: 'Annotate rows', href: '/docs/dataset/guides/annotate-rows' },
               { title: 'Manage datasets', href: '/docs/dataset/guides/manage-datasets' },
             ]
           },
