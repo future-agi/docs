@@ -1,0 +1,218 @@
+---
+title: "Optimize from the SDK"
+description: "Run prompt optimization from a Python script with agent-opt, for automation or working outside the platform UI."
+---
+
+This guide runs one optimization job from Python end to end: install `agent-opt`, set your Future AGI keys, build a dataset, configure an Evaluator and a BasicDataMapper, construct an optimizer, define a starting prompt, and read back the result.
+
+## Install and authenticate
+
+Install the library with `pip install agent-opt`. It calls the Future AGI platform to score prompts, so set `FI_API_KEY` and `FI_SECRET_KEY`, [your Future AGI API keys](/docs/admin-settings/api-keys). Your optimizer also calls an LLM to generate and refine prompts, through LiteLLM rather than the Future AGI platform, so set that provider's API key too (for example, `OPENAI_API_KEY` for an OpenAI model). Set all three as environment variables before you run anything:
+
+```bash
+pip install agent-opt
+export FI_API_KEY="your_api_key"
+export FI_SECRET_KEY="your_secret_key"
+export OPENAI_API_KEY="your_provider_key"  # whichever provider your optimizer's LLM uses
+```
+
+You can also pass `fi_api_key` and `fi_secret_key` straight into the `Evaluator` you construct next, if you'd rather not rely on the environment.
+
+## Define the prompt
+
+This guide optimizes a one-sentence summarization prompt:
+
+```python
+summary_prompt = "Summarize the following article in one sentence: {article}"
+```
+
+## Build the dataset
+
+The dataset is a plain list of dicts. Each dict is one example the optimizer evaluates the prompt against. Every dict needs a key for each placeholder in your prompt template, since the generator fills the prompt straight from the row, so every row below needs an `article` key to match the `{article}` placeholder above:
+
+```python
+dataset = [
+    {
+        "article": "The James Webb Space Telescope has captured its clearest images yet of a distant exoplanet's atmosphere, revealing traces of carbon dioxide and methane.",
+        "target_summary": "JWST detected carbon dioxide and methane in a distant exoplanet's atmosphere.",
+    },
+    {
+        "article": "Researchers have discovered a new enzyme that breaks down PET plastic at room temperature, far faster than any previously known enzyme.",
+        "target_summary": "A newly discovered enzyme breaks down PET plastic much faster than before.",
+    },
+    # ... more rows
+]
+```
+
+The two rows above are enough to sanity-check the code path; a real run wants closer to dozens of rows, so the score the optimizer settles on reflects more than a couple of examples.
+
+`target_summary` above isn't a prompt placeholder; it's a reference value kept for your own comparison. Any keys like it are yours to keep.
+
+## Configure the Evaluator and the DataMapper
+
+The `Evaluator` scores every generated output, either with one of Future AGI's eval templates run against a chosen model (platform mode) or with your own local `metric` object. This guide uses platform mode, which takes `eval_template` and `eval_model_name`; it picks up `FI_API_KEY` and `FI_SECRET_KEY` from the environment you set earlier, so you don't need to pass them again here:
+
+```python
+from fi.opt.base.evaluator import Evaluator
+
+evaluator = Evaluator(
+    eval_template="summary_quality",
+    eval_model_name="turing_flash",
+)
+```
+
+`eval_template` is one of Future AGI's [built-in eval templates](/docs/evaluation/builtin) and `eval_model_name` is one of the [evaluator models](/docs/evaluation/concepts/evaluator-models) that can run it; `summary_quality` and `turing_flash` above are just this example's choices. For scoring with your own heuristic or LLM-judge code instead, construct `Evaluator` with a local `metric` object in place of `eval_template` and `eval_model_name`; see the [SDK reference](/docs/optimization/reference/sdk-api) for its full constructor.
+
+The `BasicDataMapper` connects your dataset's keys to the keys the eval template expects, through a `key_map` dict. Map the eval's `input` to whichever dataset field holds the source text, and map its `output` to the literal string `"generated_output"`, which the optimizer fills in with whatever the prompt produces at each iteration:
+
+```python
+from fi.opt.datamappers import BasicDataMapper
+
+data_mapper = BasicDataMapper(
+    key_map={"input": "article", "output": "generated_output"}
+)
+```
+
+The `key_map` above only maps `article` and the generated output, so `target_summary` isn't passed to the evaluator in this example.
+
+## Construct an optimizer
+
+Six optimizers ship with the library:
+
+- [Random Search](/docs/optimization/reference/optimizers/random-search)
+- [Bayesian Search](/docs/optimization/reference/optimizers/bayesian-search)
+- [Meta-Prompt](/docs/optimization/reference/optimizers/meta-prompt)
+- [ProTeGi](/docs/optimization/reference/optimizers/protegi)
+- [GEPA](/docs/optimization/reference/optimizers/gepa)
+- [PromptWizard](/docs/optimization/reference/optimizers/promptwizard)
+
+Each has its own constructor and its own reference page; see [Choosing an optimizer](/docs/optimization/concepts/choosing-an-optimizer) for how they compare. This guide continues with `GEPAOptimizer`, the widest and most expensive of the six searches; picking it is a matter of budget, not task type, so treat it as this example's choice rather than a summarization-specific recommendation. It takes a `reflection_model` for analyzing failures and a `generator_model` for producing the outputs being scored, both LiteLLM-routed models like the one mentioned in Install and authenticate above:
+
+```python
+from fi.opt.optimizers import GEPAOptimizer
+
+optimizer = GEPAOptimizer(
+    reflection_model="gpt-4-turbo",
+    generator_model="gpt-4o-mini",
+)
+```
+
+If you'd rather start with the simplest baseline, Random Search's reference page has the equivalent `optimize` call.
+
+## Run the optimization
+
+Every optimizer's `optimize` call takes the `evaluator`, `data_mapper`, and `dataset` you just built, plus arguments specific to that optimizer. GEPA also asks for `initial_prompts`, the `summary_prompt` you defined in Define the prompt above wrapped in a list, and `max_metric_calls`, a budget that caps the run at that many evaluator calls total. Other optimizers take other arguments in place of these; check the optimizer's own reference page for its exact call.
+
+```python
+result = optimizer.optimize(
+    evaluator=evaluator,
+    data_mapper=data_mapper,
+    dataset=dataset,
+    initial_prompts=[summary_prompt],
+    max_metric_calls=150,
+)
+```
+
+How long this takes depends on your dataset size, your model's latency, and `max_metric_calls`; start with a smaller budget while you're testing your setup, then raise it for a real run.
+
+### What can go wrong
+
+- A missing `FI_API_KEY` or `FI_SECRET_KEY` fails immediately when you construct the `Evaluator`, before `optimize` even starts
+- A missing or wrong provider key (`OPENAI_API_KEY` or whichever your model needs) doesn't stop generation or raise an error there: the generator swallows the exception and returns an empty string, which then gets scored normally, so the run keeps going while outputs come back empty and scores drop. That's the generator model only; a bad provider key for GEPA's `reflection_model` call is not caught the same way and does kill the run
+- A `key_map` that points to a field your dataset rows don't have is silently dropped, not an error; if scores look off, double-check that your `key_map` values match your dataset's actual keys
+
+## Read the result
+
+The returned `result` is an `OptimizationResult`:
+
+| Field | What it holds |
+|---|---|
+| `result.final_score` | The best score reached |
+| `result.best_generator.get_prompt_template()` | The winning prompt |
+| `result.history` | A list of entries, each with the `prompt` tried, its `average_score`, and the `individual_results` behind that score |
+
+`OptimizationResult` also carries `early_stopped`, `stop_reason`, `total_iterations`, and `total_evaluations`; see the [SDK reference](/docs/optimization/reference/sdk-api) for what each holds.
+
+Printing `result.final_score` and looping over `result.history` looks something like:
+
+```python
+print(f"Final score: {result.final_score:.4f}")
+
+for i, iteration in enumerate(result.history):
+    print(f"Round {i + 1}: {iteration.average_score:.4f}")
+```
+
+To use the winning prompt outside this script, take `result.best_generator.get_prompt_template()` and save it, or paste it directly into the application or platform prompt you optimized it for.
+
+## Full example
+
+This assumes the environment variables from Install and authenticate above are already exported.
+
+```python
+from fi.opt.base.evaluator import Evaluator
+from fi.opt.datamappers import BasicDataMapper
+from fi.opt.optimizers import GEPAOptimizer
+
+# 1. Dataset: each row is one example the optimizer scores the prompt against
+dataset = [
+    {
+        "article": "The James Webb Space Telescope has captured its clearest images yet of a distant exoplanet's atmosphere, revealing traces of carbon dioxide and methane.",
+        "target_summary": "JWST detected carbon dioxide and methane in a distant exoplanet's atmosphere.",
+    },
+    {
+        "article": "Researchers have discovered a new enzyme that breaks down PET plastic at room temperature, far faster than any previously known enzyme.",
+        "target_summary": "A newly discovered enzyme breaks down PET plastic much faster than before.",
+    },
+    # ... more rows
+]
+
+# 2. Prompt: the starting instruction GEPA will iteratively rewrite
+summary_prompt = "Summarize the following article in one sentence: {article}"
+
+# 3. Evaluator: scores each generated summary with the summary_quality template
+evaluator = Evaluator(
+    eval_template="summary_quality",
+    eval_model_name="turing_flash",
+)
+
+# 4. DataMapper: connects the dataset's keys to the eval's expected keys
+data_mapper = BasicDataMapper(
+    key_map={"input": "article", "output": "generated_output"}
+)
+
+# 5. Optimizer: GEPA evolves the prompt using a reflection model
+optimizer = GEPAOptimizer(
+    reflection_model="gpt-4-turbo",
+    generator_model="gpt-4o-mini",
+)
+
+# 6. Run
+result = optimizer.optimize(
+    evaluator=evaluator,
+    data_mapper=data_mapper,
+    dataset=dataset,
+    initial_prompts=[summary_prompt],
+    max_metric_calls=150,
+)
+
+# 7. Read the result
+print(f"Final score: {result.final_score:.4f}")
+print(f"Best prompt:\n{result.best_generator.get_prompt_template()}")
+
+for i, iteration in enumerate(result.history):
+    print(f"Round {i + 1}: {iteration.average_score:.4f}")
+```
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="SDK Reference" icon="code" href="/docs/optimization/reference/sdk-api">
+    The full optimization module: every class, method, and return field
+  </Card>
+  <Card title="Choosing an optimizer" icon="chart-line" href="/docs/optimization/concepts/choosing-an-optimizer">
+    How the optimizers compare and when to reach for each one
+  </Card>
+  <Card title="Run an optimization" icon="compass" href="/docs/optimization/guides/run-an-optimization">
+    Run the same kind of job from the UI instead of a script
+  </Card>
+</CardGroup>
