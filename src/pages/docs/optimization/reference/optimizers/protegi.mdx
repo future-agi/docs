@@ -1,0 +1,136 @@
+---
+title: "ProTeGi"
+description: "Parameters, defaults, and a runnable example for the ProTeGi optimizer."
+---
+
+## When to use ProTeGi
+
+Use this when a prompt is mostly right but has known, specific failure patterns, and you want several candidate fixes explored in parallel rather than one rewrite committed to at a time.
+
+ProTeGi reads the rows that scored badly, turns them into textual criticism, and applies targeted edits to the prompt. Each piece of criticism is called a **gradient**. The model that writes the gradients and the revised prompts is the **teacher model**, passed to the `teacher_generator` argument on the constructor, separately from the tuning parameters in the table below. ProTeGi keeps several revised candidates alive at once across rounds rather than committing to a single rewrite.
+
+## Parameters
+
+| Parameter | Set in | On-screen label | Default | Description |
+|---|---|---|---|---|
+| `beam_size` | `ProTeGi()` | Beam size | Required in the UI; 3 in the SDK | Number of top-scoring candidate prompts kept alive each round |
+| `num_gradients` | `ProTeGi()` | Number of gradients | Required in the UI; 4 in the SDK | Number of textual critiques generated from the failed rows |
+| `errors_per_gradient` | `ProTeGi()` | Errors per gradient | Required in the UI; 4 in the SDK | Number of failed rows shown to the teacher model per critique |
+| `prompts_per_gradient` | `ProTeGi()` | Prompts per gradient | Required in the UI; 1 in the SDK | Number of revised prompts generated per critique |
+| `num_rounds` | `optimize()` | Number of Rounds | Required in the UI; 3 in the SDK | Number of rounds of critique and revision |
+| `teacher_generator` | `ProTeGi()` | - | Required | Teacher model that writes the gradients and revised prompts (not a tuning parameter) |
+| `initial_prompts` | `optimize()` | - | Required | Starting prompt(s) ProTeGi refines (not a tuning parameter) |
+
+The On-screen label column maps each SDK parameter to its field in the [platform UI](/docs/optimization/guides/run-an-optimization), where all five tuning parameters are required and none are prefilled. The Default column's SDK values apply only when you build a `ProTeGi()` call yourself and leave the argument out. `evaluator`, `data_mapper`, and `dataset`, also passed to `optimize()` in the example below, are shared by every optimizer and covered in the [SDK reference](/docs/sdk/optimization), so they're left out of this table.
+
+Within a round, `num_gradients`, `errors_per_gradient`, and `prompts_per_gradient` multiply: each gradient draws on `errors_per_gradient` failed rows and produces `prompts_per_gradient` revised prompts, and the round's candidate count scales with `beam_size x num_gradients x prompts_per_gradient`. Raising any of them scales up that round's work, and `num_rounds` repeats it again each round.
+
+- If a run is too slow, lower `prompts_per_gradient` or `errors_per_gradient` first
+- If a run is too shallow, raise `num_gradients` or `num_rounds`
+- `beam_size` doesn't add work in round 1, since that round only expands the starting prompt(s); from round 2 on, expansion loops over the whole beam, so raising `beam_size` multiplies every later round's work by the same amount
+
+## Usage
+
+Before running this example:
+
+- Install the SDK: `pip install agent-opt`
+- Get an `FI_API_KEY` and `FI_SECRET_KEY` pair (see [API keys](/docs/admin-settings/api-keys) for where to get them). Pass them as environment variables or, as below, directly into `Evaluator`
+- Need a dataset to score against? See [Optimize from the SDK](/docs/optimization/guides/optimize-from-the-sdk) for how to build one like the one used below
+
+This example builds a starting prompt, tunes it against a small dataset over `num_rounds` rounds of critique and revision, and reads back the winning prompt and its score.
+
+```python
+from fi.opt.optimizers import ProTeGi  # the class is ProTeGi, not ProTeGiOptimizer
+from fi.opt.generators import LiteLLMGenerator
+from fi.opt.datamappers import BasicDataMapper
+from fi.opt.base.evaluator import Evaluator
+
+# Dataset: a plain list of dicts, one per example the optimizer scores the prompt against
+dataset = [
+    {
+        "article": "The James Webb Space Telescope has captured its clearest images yet of a distant exoplanet's atmosphere, revealing traces of carbon dioxide and methane.",
+        "target_summary": "JWST detected carbon dioxide and methane in a distant exoplanet's atmosphere.",
+    },
+    {
+        "article": "Researchers have discovered a new enzyme that breaks down PET plastic at room temperature, far faster than any previously known enzyme.",
+        "target_summary": "A newly discovered enzyme breaks down PET plastic much faster than before.",
+    },
+    # ... more rows
+]
+
+# Teacher model that writes the gradients and revised prompts.
+# Its prompt_template is filled with ProTeGi's own critique and
+# revision instructions at runtime, so it should just pass them
+# through: set it to "{prompt}" regardless of your task. Your
+# starting prompt goes in initial_prompts on optimize() below,
+# not here.
+teacher_generator = LiteLLMGenerator(
+    model="gpt-4o-mini",
+    prompt_template="{prompt}"
+)
+
+# Evaluator that scores each revised candidate
+evaluator = Evaluator(
+    eval_template="summary_quality",
+    eval_model_name="turing_flash",
+    fi_api_key="your_key",
+    fi_secret_key="your_secret"
+)
+
+# Maps generator output and dataset fields to what the evaluator expects.
+# "generated_output" is the generator's fixed output key; "article" is
+# the dataset field from this example and should match your own data.
+data_mapper = BasicDataMapper(
+    key_map={"input": "article", "output": "generated_output"}
+)
+
+# beam_size, num_gradients, errors_per_gradient, and prompts_per_gradient
+# here match the defaults in the table above and can be omitted; shown so
+# they're easy to change.
+optimizer = ProTeGi(
+    teacher_generator=teacher_generator,
+    beam_size=4,
+    num_gradients=4,
+    errors_per_gradient=4,
+    prompts_per_gradient=1
+)
+
+# initial_prompts holds the starting prompt(s) ProTeGi refines.
+# num_rounds also matches the default in the table above and can be omitted.
+result = optimizer.optimize(
+    evaluator=evaluator,
+    data_mapper=data_mapper,
+    dataset=dataset,
+    initial_prompts=["Summarize this article: {article}"],
+    num_rounds=3
+)
+
+print(f"Final score: {result.final_score:.4f}")
+print(f"Best prompt:\n{result.best_generator.get_prompt_template()}")
+```
+
+`eval_template` and `eval_model_name` are real built-in names; see [eval templates](/docs/evaluation/concepts/eval-templates) and [evaluator models](/docs/evaluation/concepts/evaluator-models) for the full lists.
+
+A successful run prints something like:
+
+```
+Final score: 0.8532
+Best prompt:
+Summarize this article in 2-3 sentences, covering the main finding and its significance: {article}
+```
+
+The exact score and wording vary by run. If it errors instead, check that `key_map` in `data_mapper` matches your dataset's field names, that `eval_template` is a valid template name, and that the keys line up with what the evaluator expects.
+
+## Keep exploring
+
+<CardGroup cols={3}>
+  <Card title="Optimize from the SDK" icon="code" href="/docs/optimization/guides/optimize-from-the-sdk">
+    Install agent-opt, set your keys, and build the dataset this example needs
+  </Card>
+  <Card title="Understanding Optimization" icon="brain" href="/docs/optimization/concepts/understanding-optimization">
+    How optimizers, prompts, and runs fit together
+  </Card>
+  <Card title="Bayesian Search" icon="chart-line" href="/docs/optimization/reference/optimizers/bayesian-search">
+    A learning-based optimizer for few-shot prompt tuning
+  </Card>
+</CardGroup>
