@@ -1,6 +1,9 @@
 // Auto-generated redirect map: old Mintlify URLs → new docs URLs
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
+  // admin-settings.mdx was removed; it collided with admin-settings/index.mdx on the
+  // same route. index.mdx still serves /docs/admin-settings, so this never fires.
+  '/docs/admin-settings': '/docs/admin-settings/api-keys',
   // Manual-instrumentation pages moved from Observe features into the traceAI SDK section
   '/docs/observe/features/manual-tracing/set-up-tracing': '/docs/sdk/tracing/set-up-tracing',
   '/docs/observe/features/manual-tracing/instrument-with-traceai-helpers': '/docs/sdk/tracing/instrument-with-traceai-helpers',
