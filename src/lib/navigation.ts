@@ -806,28 +806,84 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Agent Definition', href: '/docs/simulation/concepts/agent-definition' },
+              { title: 'Understanding Simulation', href: '/docs/simulation/concepts/understanding-simulation' },
+              { title: 'Agent definitions & versions', href: '/docs/simulation/concepts/agent-definitions' },
               { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
               { title: 'Personas', href: '/docs/simulation/concepts/personas' },
-              { title: 'Global Nodes', href: '/docs/simulation/concepts/global-nodes' },
+              { title: 'Runs & results', href: '/docs/simulation/concepts/runs-and-results' },
+              { title: 'Replay', href: '/docs/simulation/concepts/replay' },
+              { title: 'Optimization', href: '/docs/simulation/concepts/optimization' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
-              { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
+              { title: 'Connect your agent', href: '/docs/simulation/guides/connect-your-agent' },
+              { title: 'Create scenarios', href: '/docs/simulation/guides/create-scenarios' },
+              { title: 'Create personas', href: '/docs/simulation/guides/create-personas' },
               {
-                title: 'Replay',
+                title: 'Explore scenarios',
                 items: [
-                  { title: 'Chat Replay', href: '/docs/simulation/features/observe-to-simulate' },
-                  { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
+                  { title: 'Overview', href: '/docs/simulation/guides/explore-scenarios' },
+                  { title: 'Explore scenario graph', href: '/docs/simulation/guides/explore-scenarios/scenario-graph' },
+                  { title: 'Add rows', href: '/docs/simulation/guides/explore-scenarios/add-rows' },
+                  { title: 'Add columns', href: '/docs/simulation/guides/explore-scenarios/add-columns' },
                 ]
               },
-              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'View Results', href: '/docs/simulation/features/view-results' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              {
+                title: 'Running simulations',
+                items: [
+                  { title: 'Create a simulation', href: '/docs/simulation/guides/create-simulation' },
+                  { title: 'Run a voice simulation', href: '/docs/simulation/guides/run-voice-simulation' },
+                  { title: 'Run a chat simulation', href: '/docs/simulation/guides/run-chat-simulation' },
+                  { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
+                ]
+              },
+              {
+                title: 'Evaluations in simulation',
+                items: [
+                  { title: 'Edit evals in a simulation', href: '/docs/simulation/guides/edit-evals' },
+                  { title: 'Evaluate tool calls', href: '/docs/simulation/guides/evaluate-tool-calls' },
+                ]
+              },
+              {
+                title: 'Replay simulations',
+                items: [
+                  { title: 'Replay chat sessions', href: '/docs/simulation/guides/replay-chat' },
+                  { title: 'Replay voice calls', href: '/docs/simulation/guides/replay-voice' },
+                ]
+              },
+              {
+                title: 'Explore results',
+                items: [
+                  { title: 'Overview', href: '/docs/simulation/guides/explore-results' },
+                  { title: 'Calls & transcripts', href: '/docs/simulation/guides/explore-results/calls-and-transcripts' },
+                  { title: 'Analytics & metrics', href: '/docs/simulation/guides/explore-results/analytics' },
+                ]
+              },
+              { title: 'Fix My Agent', href: '/docs/simulation/guides/fix-my-agent' },
+              {
+                title: 'Optimize using simulate',
+                items: [
+                  { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
+                  { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'References',
+            items: [
+              { title: 'Built-in personas', href: '/docs/simulation/reference/built-in-personas' },
+              { title: 'Voice providers', href: '/docs/simulation/reference/voice-providers' },
+              { title: 'Call metrics', href: '/docs/simulation/reference/call-metrics' },
+              { title: 'SDK & API', href: '/docs/simulation/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Simulation FAQ & fixes', href: '/docs/simulation/troubleshooting' },
             ]
           },
         ]
