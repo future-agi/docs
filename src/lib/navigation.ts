@@ -653,28 +653,6 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Prototype',
-        icon: 'flask',
-        items: [
-          { title: 'Overview', href: '/docs/prototype' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Understanding Prototype', href: '/docs/prototype/concepts/understanding-prototype' },
-              { title: 'Versions and Runs', href: '/docs/prototype/concepts/versions-and-runs' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
-              { title: 'Evals', href: '/docs/prototype/features/evals' },
-              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
-            ]
-          },
-        ]
-      },
-      {
         group: 'Resources',
         icon: 'book',
         items: [
@@ -881,7 +859,6 @@ export const tabNavigation: NavTab[] = [
                 title: 'Prompt',
                 items: [
                   { title: 'Prompt Versioning: Create, Label, and Serve Prompt Versions', href: '/docs/cookbook/quickstart/prompt-versioning' },
-                  { title: 'Prototype and Iterate on LLM Applications', href: '/docs/cookbook/quickstart/prototype-llm-app' },
                 ]
               },
               {

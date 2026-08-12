@@ -1,6 +1,15 @@
 // Auto-generated redirect map: old Mintlify URLs → new docs URLs
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
+  // Prototype was deprecated and removed from the dashboard; its pages now point at Evaluation
+  '/docs/prototype': '/docs/evaluation',
+  '/docs/prototype/concepts/understanding-prototype': '/docs/evaluation',
+  '/docs/prototype/concepts/versions-and-runs': '/docs/evaluation',
+  '/docs/prototype/features/set-up-prototype': '/docs/evaluation/guides/running-evaluations',
+  '/docs/prototype/features/evals': '/docs/evaluation/builtin',
+  '/docs/prototype/features/choose-winner': '/docs/evaluation',
+  '/docs/cookbook/quickstart/prototype-llm-app': '/docs/cookbook/quickstart/experimentation-compare-prompts',
+
   // Manual-instrumentation pages moved from Observe features into the traceAI SDK section
   '/docs/observe/features/manual-tracing/set-up-tracing': '/docs/sdk/tracing/set-up-tracing',
   '/docs/observe/features/manual-tracing/instrument-with-traceai-helpers': '/docs/sdk/tracing/instrument-with-traceai-helpers',
@@ -218,10 +227,10 @@ export const redirectMap: Record<string, string> = {
   '/future-agi/get-started/protect/concept': '/docs/protect/concepts/concept',
   '/future-agi/get-started/protect/how-to': '/docs/protect/features/run-protect',
   '/future-agi/get-started/protect/overview': '/docs/protect',
-  '/future-agi/get-started/prototype/evals': '/docs/prototype/features/evals',
-  '/future-agi/get-started/prototype/overview': '/docs/prototype',
+  '/future-agi/get-started/prototype/evals': '/docs/evaluation/builtin',
+  '/future-agi/get-started/prototype/overview': '/docs/evaluation',
   '/future-agi/get-started/prototype/quickstart': '/docs/observe/features/quickstart',
-  '/future-agi/get-started/prototype/winner': '/docs/prototype/features/choose-winner',
+  '/future-agi/get-started/prototype/winner': '/docs/evaluation',
   '/future-agi/products/observability/auto-instrumentation/overview': '/docs/tracing/auto',
   '/future-agi/products/observability/concept/core-components': '/docs/tracing/concepts',
   '/future-agi/products/observability/concept/otel': '/docs/tracing/concepts/otel',
