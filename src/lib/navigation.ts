@@ -107,11 +107,32 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create a Graph', href: '/docs/agent-playground/features/create-graph' },
-              { title: 'Build a Workflow', href: '/docs/agent-playground/features/build-workflow' },
-              { title: 'Run & Monitor', href: '/docs/agent-playground/features/run-and-monitor' },
+              { title: 'Create an agent', href: '/docs/agent-playground/guides/create-agent' },
+              {
+                title: 'Build a workflow',
+                items: [
+                  { title: 'Overview', href: '/docs/agent-playground/guides/build-workflow' },
+                  { title: 'Configure an LLM Prompt node', href: '/docs/agent-playground/guides/build-workflow/configure-an-llm-prompt-node' },
+                  { title: 'Configure an Agent node', href: '/docs/agent-playground/guides/build-workflow/configure-an-agent-node' },
+                  { title: 'Set input variables', href: '/docs/agent-playground/guides/build-workflow/set-input-variables' },
+                ]
+              },
+              { title: 'Run an agent', href: '/docs/agent-playground/guides/run-an-agent' },
+              { title: 'Manage versions', href: '/docs/agent-playground/guides/manage-versions' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Limits & rules', href: '/docs/agent-playground/reference/limits-and-rules' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Agent Playground FAQ & fixes', href: '/docs/agent-playground/troubleshooting' },
             ]
           },
         ]
@@ -124,28 +145,44 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
+              { title: 'Understanding Annotation', href: '/docs/annotations/concepts/understanding-annotation' },
+              { title: 'Labels', href: '/docs/annotations/concepts/labels' },
+              { title: 'Queues & Items', href: '/docs/annotations/concepts/queues-and-items' },
               { title: 'Scores', href: '/docs/annotations/concepts/scores' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Labels', href: '/docs/annotations/features/labels' },
-              { title: 'Queues', href: '/docs/annotations/features/queues' },
-              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
-              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
-              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
-              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
-              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
-              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
+              { title: 'Create a label', href: '/docs/annotations/guides/create-label' },
+              { title: 'Create a queue', href: '/docs/annotations/guides/create-queue' },
+              {
+                title: 'Explore a queue',
+                items: [
+                  { title: 'Overview', href: '/docs/annotations/guides/explore-queue' },
+                  { title: 'Add items', href: '/docs/annotations/guides/explore-queue/add-items' },
+                  { title: 'Track progress & agreement', href: '/docs/annotations/guides/explore-queue/progress-and-agreement' },
+                  { title: 'Automate item intake', href: '/docs/annotations/guides/explore-queue/automate-item-intake' },
+                ]
+              },
+              { title: 'Annotate items', href: '/docs/annotations/guides/annotate-items' },
+              { title: 'Review submissions', href: '/docs/annotations/guides/review-submissions' },
+              { title: 'Annotate without a queue', href: '/docs/annotations/guides/annotate-without-a-queue' },
+              { title: 'Export annotations', href: '/docs/annotations/guides/export-annotations' },
             ]
           },
           {
-            title: 'SDK',
+            title: 'Reference',
             items: [
-              { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
-              { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
-              { title: 'Annotation Queue Using SDK', href: '/docs/annotations/sdk/annotation-queue-using-sdk' },
+              { title: 'Label types & values', href: '/docs/annotations/reference/label-types-and-values' },
+              { title: 'Queue settings & limits', href: '/docs/annotations/reference/queue-settings-and-limits' },
+              { title: 'SDK & API', href: '/docs/annotations/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Annotation FAQ & fixes', href: '/docs/annotations/troubleshooting' },
             ]
           },
         ]
@@ -253,21 +290,34 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Datasets', href: '/docs/dataset/concept/understanding-dataset' },
-              { title: 'Static Columns', href: '/docs/dataset/concept/static-column' },
-              { title: 'Dynamic Columns', href: '/docs/dataset/concept/dynamic-column' },
-              { title: 'Synthetic Data', href: '/docs/dataset/concept/synthetic-data' },
+              { title: 'Understanding Datasets', href: '/docs/dataset/concepts/understanding-datasets' },
+              { title: 'Static & Dynamic Columns', href: '/docs/dataset/concepts/static-and-dynamic-columns' },
+              { title: 'Synthetic Data', href: '/docs/dataset/concepts/synthetic-data' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
-              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
-              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
-              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
-              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
-              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
+              { title: 'Create a dataset', href: '/docs/dataset/guides/create-a-dataset' },
+              { title: 'Add rows', href: '/docs/dataset/guides/add-rows' },
+              { title: 'Add columns', href: '/docs/dataset/guides/add-columns' },
+              { title: 'Run a prompt on every row', href: '/docs/dataset/guides/run-a-prompt-on-every-row' },
+              { title: 'Run an experiment', href: '/docs/dataset/guides/run-an-experiment' },
+              { title: 'Annotate rows', href: '/docs/dataset/guides/annotate-rows' },
+              { title: 'Manage datasets', href: '/docs/dataset/guides/manage-datasets' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Limits & Data Types', href: '/docs/dataset/reference/limits-and-data-types' },
+              { title: 'Dynamic column methods', href: '/docs/dataset/reference/dynamic-column-methods' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Dataset FAQ & fixes', href: '/docs/dataset/troubleshooting' },
             ]
           },
         ]
@@ -510,11 +560,22 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/falcon-ai' },
           {
-            title: 'Features',
+            title: 'Concepts',
             items: [
-              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
-              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
-              { title: 'MCP Connectors', href: '/docs/falcon-ai/features/mcp-connectors' },
+              { title: 'Understanding Falcon AI', href: '/docs/falcon-ai/concepts/understanding-falcon-ai' },
+              { title: 'Skills', href: '/docs/falcon-ai/concepts/skills' },
+              { title: 'MCP Connectors', href: '/docs/falcon-ai/concepts/mcp-connectors' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Chat with Falcon AI', href: '/docs/falcon-ai/guides/chat-with-falcon-ai' },
+              { title: 'Manage conversations', href: '/docs/falcon-ai/guides/manage-conversations' },
+              { title: 'Create a skill', href: '/docs/falcon-ai/guides/create-skill' },
+              { title: 'Connect an MCP server', href: '/docs/falcon-ai/guides/connect-mcp-server' },
+              { title: 'Choose connector tools', href: '/docs/falcon-ai/guides/choose-connector-tools' },
+              { title: 'Use the MCP Server in your IDE', href: '/docs/falcon-ai/guides/use-the-mcp-server' },
             ]
           },
         ]
@@ -527,14 +588,15 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Knowledge Base', href: '/docs/knowledge-base/concepts/concept' },
+              { title: 'Understanding Knowledge Base', href: '/docs/knowledge-base/concepts/understanding-knowledge-base' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
-              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
+              { title: 'Create a knowledge base', href: '/docs/knowledge-base/guides/create-knowledge-base' },
+              { title: 'Update a knowledge base', href: '/docs/knowledge-base/guides/update-knowledge-base' },
+              { title: 'Manage with the SDK', href: '/docs/knowledge-base/guides/manage-with-the-sdk' },
             ]
           },
         ]
@@ -598,20 +660,40 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Optimization', href: '/docs/optimization/concepts/concept' },
-              { title: 'Bayesian Search', href: '/docs/optimization/optimizers/bayesian-search' },
-              { title: 'Meta-Prompt', href: '/docs/optimization/optimizers/meta-prompt' },
-              { title: 'ProTeGi', href: '/docs/optimization/optimizers/protegi' },
-              { title: 'PromptWizard', href: '/docs/optimization/optimizers/promptwizard' },
-              { title: 'GEPA', href: '/docs/optimization/optimizers/gepa' },
-              { title: 'Random Search', href: '/docs/optimization/optimizers/random-search' },
+              { title: 'Understanding optimization', href: '/docs/optimization/concepts/understanding-optimization' },
+              { title: 'Choosing an optimizer', href: '/docs/optimization/concepts/choosing-an-optimizer' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
-              { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
+              { title: 'Run an optimization', href: '/docs/optimization/guides/run-an-optimization' },
+              { title: 'Read optimization results', href: '/docs/optimization/guides/read-optimization-results' },
+              { title: 'Optimize from the SDK', href: '/docs/optimization/guides/optimize-from-the-sdk' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              {
+                title: 'Optimizers',
+                items: [
+                  { title: 'Overview', href: '/docs/optimization/reference/optimizers' },
+                  { title: 'Random Search', href: '/docs/optimization/reference/optimizers/random-search' },
+                  { title: 'Bayesian Search', href: '/docs/optimization/reference/optimizers/bayesian-search' },
+                  { title: 'ProTeGi', href: '/docs/optimization/reference/optimizers/protegi' },
+                  { title: 'Meta-Prompt', href: '/docs/optimization/reference/optimizers/meta-prompt' },
+                  { title: 'PromptWizard', href: '/docs/optimization/reference/optimizers/promptwizard' },
+                  { title: 'GEPA', href: '/docs/optimization/reference/optimizers/gepa' },
+                ]
+              },
+              { title: 'SDK & API', href: '/docs/optimization/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Optimization FAQ & fixes', href: '/docs/optimization/troubleshooting' },
             ]
           },
         ]
@@ -624,20 +706,33 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Prompt Engineering', href: '/docs/prompt/concepts/prompt-engineering' },
               { title: 'Understanding Prompts', href: '/docs/prompt/concepts/understanding-prompts' },
-              { title: 'Versions and Labels', href: '/docs/prompt/concepts/versions-and-labels' },
+              { title: 'Versions & Labels', href: '/docs/prompt/concepts/versions-and-labels' },
+              { title: 'Prompt Engineering', href: '/docs/prompt/concepts/prompt-engineering' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
-              { title: 'Create from Existing Template', href: '/docs/prompt/features/create-from-template' },
-              { title: 'Create with AI', href: '/docs/prompt/features/create-with-ai' },
-              { title: 'Prompt Workbench Using SDK', href: '/docs/prompt/features/sdk' },
-              { title: 'Linked Traces', href: '/docs/prompt/features/linked-traces' },
-              { title: 'Manage Folders', href: '/docs/prompt/features/folders' },
+              { title: 'Create a prompt', href: '/docs/prompt/guides/create-a-prompt' },
+              { title: 'Run a prompt', href: '/docs/prompt/guides/run-a-prompt' },
+              { title: 'Commit & compare versions', href: '/docs/prompt/guides/commit-and-compare-versions' },
+              { title: 'Evaluate prompt outputs', href: '/docs/prompt/guides/evaluate-prompt-outputs' },
+              { title: 'Track prompt performance', href: '/docs/prompt/guides/track-prompt-performance' },
+              { title: 'Organize prompts in folders', href: '/docs/prompt/guides/organize-prompts-in-folders' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Model configuration', href: '/docs/prompt/reference/model-configuration' },
+              { title: 'SDK & API', href: '/docs/prompt/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Prompt FAQ & fixes', href: '/docs/prompt/troubleshooting' },
             ]
           },
         ]
@@ -650,13 +745,31 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Use Cases', href: '/docs/protect/concepts/concept' },
+              { title: 'Understanding Protect', href: '/docs/protect/concepts/understanding-protect' },
+              { title: 'Guardrail pipeline', href: '/docs/protect/concepts/guardrail-pipeline' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Run Protect via SDK', href: '/docs/protect/features/run-protect' },
+              { title: 'Turn on a guardrail', href: '/docs/protect/guides/turn-on-a-guardrail' },
+              { title: 'Test a guardrail', href: '/docs/protect/guides/test-a-guardrail' },
+              { title: 'Review guardrail activity', href: '/docs/protect/guides/review-guardrail-activity' },
+              { title: 'Run Protect from the SDK', href: '/docs/protect/guides/run-protect-from-the-sdk' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Guardrail checks', href: '/docs/protect/reference/guardrail-checks' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Guardrail changes not taking effect', href: '/docs/protect/troubleshooting/guardrail-changes-not-taking-effect' },
+              { title: 'Guardrail fires on the wrong requests', href: '/docs/protect/troubleshooting/guardrail-fires-on-the-wrong-requests' },
+              { title: 'Protect SDK rejects an input', href: '/docs/protect/troubleshooting/protect-sdk-rejects-an-input' },
             ]
           },
         ]
