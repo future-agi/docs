@@ -746,7 +746,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'Understanding Protect', href: '/docs/protect/concepts/understanding-protect' },
-              { title: 'Guardrail pipeline', href: '/docs/protect/concepts/guardrail-pipeline' },
             ]
           },
           {

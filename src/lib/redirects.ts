@@ -409,6 +409,7 @@ export const redirectMap: Record<string, string> = {
   '/docs/prompt/features/linked-traces': '/docs/prompt/guides/track-prompt-performance',
   '/docs/prompt/features/sdk': '/docs/prompt/reference/sdk-api',
   '/docs/protect/concepts/concept': '/docs/protect/concepts/understanding-protect',
+  '/docs/protect/concepts/guardrail-pipeline': '/docs/protect/concepts/understanding-protect',
   '/docs/protect/features/run-protect': '/docs/protect/guides/run-protect-from-the-sdk',
   '/docs/quickstart/setup-mcp-server': '/docs/falcon-ai/guides/use-the-mcp-server',
 };
