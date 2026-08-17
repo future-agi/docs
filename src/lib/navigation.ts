@@ -773,7 +773,7 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Resources',
+        group: 'RBAC',
         icon: 'book',
         items: [
           { title: 'Admin & Settings', href: '/docs/admin-settings' },
@@ -788,11 +788,9 @@ export const tabNavigation: NavTab[] = [
               { title: 'AI Providers', href: '/docs/admin-settings/ai-providers' },
               { title: 'Integrations', href: '/docs/admin-settings/integrations' },
               { title: 'Usage Summary', href: '/docs/admin-settings/usage-summary' },
-              { title: 'Billing & Pricing', href: '/docs/admin-settings/billing-pricing' },
             ]
           },
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
-          { title: 'Installation', href: '/docs/installation' },
           { title: 'FAQ', href: '/docs/faq' },
         ]
       },

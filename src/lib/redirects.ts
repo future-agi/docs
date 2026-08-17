@@ -49,7 +49,11 @@ export const redirectMap: Record<string, string> = {
   '/docs/sdk/tracing': '/docs/sdk/tracing/set-up-tracing',
   '/docs/sdk/annotation-queues': '/docs/annotations/reference/sdk-api',
   '/docs/observe/voice/set-up': '/docs/observe/features/voice',
-  '/docs/quickstart/installation': '/docs/installation',
+  '/docs/quickstart/installation': '/docs/sdk',
+  // installation.mdx deleted: it duplicated /docs/sdk, which already carries the package table
+  '/docs/installation': '/docs/sdk',
+  // billing-pricing.mdx deleted as legacy
+  '/docs/admin-settings/billing-pricing': '/docs/admin-settings',
   '/docs/observability': '/docs/tracing/auto',
   '/docs/tracing': '/docs/tracing/auto',
   '/docs/tracing/auto-overview': '/docs/tracing/auto',
