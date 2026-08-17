@@ -791,6 +791,16 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
+          {
+            title: 'Billing',
+            items: [
+              { title: 'Overview', href: '/docs/billing' },
+              { title: 'What you are billed for', href: '/docs/billing/concepts/what-you-are-billed-for' },
+              { title: 'Pricing', href: '/docs/billing/reference/pricing' },
+              { title: 'Manage your plan', href: '/docs/billing/guides/manage-your-plan' },
+              { title: 'Control spend', href: '/docs/billing/guides/control-spend' },
+            ]
+          },
           { title: 'FAQ', href: '/docs/faq' },
         ]
       },
