@@ -1,10 +1,27 @@
 ---
 title: "Inline Evals in Tracing: Score LLM Responses as Generated"
-description: "Attach quality scores directly to production traces and see faithfulness, toxicity, and custom evals alongside every LLM call in Future AGI Tracing."
+slug: "inline-evals-tracing"
+description: "Attach quality scores directly to production traces and see groundedness and toxicity scores alongside every LLM call in Future AGI Tracing."
+date: "2026-08-18"
+author: "futureagi-engineering"
+products:
+  - "traceAI"
+  - "fi.evals"
+frameworks:
+  - "OpenAI"
+difficulty: "intermediate"
+time-to-complete: "15 minutes"
+tags:
+  - "agent-observability"
+  - "evaluation"
+  - "quickstart"
+canonical: "https://docs.futureagi.com/docs/cookbook/quickstart/inline-evals-tracing"
+code-repo-url: "https://github.com/future-agi/cookbooks/blob/main/quickstart/inline-evals-tracing.ipynb"
+page-type: "cookbook"
 ---
 
 <TLDR>
-Attach quality scores directly to production traces so you can see faithfulness, toxicity, and custom evals alongside every LLM call in FutureAGI Tracing.
+By the end, the `answer-question` span carries a `groundedness_check` score, filterable in the trace grid, alongside toxicity and instruction-adherence checks attached to other spans in the same run.
 </TLDR>
 
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
@@ -17,9 +34,10 @@ Attach quality scores directly to production traces so you can see faithfulness,
 | 15 min | Intermediate | `fi-instrumentation-otel`, `ai-evaluation` |
 
 <Prerequisites>
-- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
+- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- Python 3.9+
+- OpenAI API key (for the LLM calls in this tutorial)
+- Python 3.11
 </Prerequisites>
 
 ## Install
@@ -35,6 +53,10 @@ export OPENAI_API_KEY="your-openai-api-key"
 ```
 
 ## Tutorial
+
+<Note>
+This cookbook covers inline SDK evals: scores computed in your own code path with `evaluator.evaluate(trace_eval=True)`, attached to the span you're currently inside. For evals the platform runs automatically on spans as they're ingested, with no code change, configure a platform Eval Task instead: see [Configure evals on an Observe project](/docs/observe/guides/setup-evals).
+</Note>
 
 <Steps>
 <Step title="Set up tracing and the Evaluator">
@@ -65,17 +87,22 @@ client = openai.OpenAI()
 tracer = FITracer(trace_provider.get_tracer(__name__))
 ```
 
+This step produces no visible output. It only wires up the tracer and evaluator. Call `OpenAIInstrumentor().instrument()` before creating the OpenAI client or making any calls, otherwise those calls trace without input/output attributes.
+
 </Step>
 <Step title="Attach an eval to a span with trace_eval=True">
 
-Inside a span context, call `evaluator.evaluate()` with `trace_eval=True`. The eval result is automatically attached to the active span; no manual attribute setting needed.
+Inside a span context, call `evaluator.evaluate()` with `trace_eval=True`. The eval result is automatically attached to the active span: no manual attribute setting needed.
+
+The first attempt below retrieves the wrong policy chunk on purpose, a common RAG failure, so you can see what a failed groundedness score looks like before fixing it.
 
 ```python
-question = "What is the capital of France?"
-context  = "France is a country in Western Europe. Its capital and largest city is Paris."
+question = "What's the refund window for a final sale item?"
+
+# Wrong chunk came back from retrieval: shipping info, not refund policy
+context = "Standard shipping takes 3-5 business days within the continental US. Expedited orders arrive in 1-2 business days for an additional fee."
 
 with tracer.start_as_current_span("answer-question") as span:
-    # Log the raw input and output on the span
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -103,28 +130,61 @@ with tracer.start_as_current_span("answer-question") as span:
 
 print(f"Answer: {answer}")
 
-# Flush spans before the script exits — BatchSpanProcessor buffers for up to 5 seconds
+# Flush spans before the script exits. BatchSpanProcessor buffers for up to 5 seconds
 trace_provider.force_flush()
 ```
 
-In the dashboard, click the `answer-question` span to expand its detail panel. Switch to the **Evals** tab in the bottom section — you will see a row for `groundedness_check` with its score (Passed/Failed). Hover over the score to see the reasoning.
+In the dashboard, click the `answer-question` span to expand its detail panel, then switch to the **Evals** tab in the bottom section. You will see a row for `groundedness_check` scored Failed (illustrative, captured from a run against the mismatched chunk above), with reasoning that the answer states a refund window not present in the context.
 
-<video
-  autoPlay
-  muted
-  loop
-  playsInline
-  className="w-full rounded-xl shadow-lg"
-  src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/inline-evals-tracing/step-2-attach-eval-to-span.mp4"
-/>
+Fix the retrieval, not the eval: swap in the chunk that actually answers the question and re-run.
+
+```python
+context = "Orders can be refunded within 30 days of delivery if the item is unused and in original packaging. Final sale items are not eligible for refunds. Approved refunds are issued to the original payment method within 5-7 business days."
+
+with tracer.start_as_current_span("answer-question") as span:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": f"Answer using only this context:\n{context}"},
+            {"role": "user",   "content": question},
+        ],
+    )
+    answer = response.choices[0].message.content
+
+    span.set_attribute("raw.input",  question)
+    span.set_attribute("raw.output", answer)
+
+    evaluator.evaluate(
+        eval_templates="groundedness",
+        inputs={
+            "input":   question,
+            "output":  answer,
+            "context": context,
+        },
+        model_name="turing_large",
+        custom_eval_name="groundedness_check",
+        trace_eval=True,
+    )
+
+print(f"Answer: {answer}")
+trace_provider.force_flush()
+```
+
+This second `answer-question` span shows `groundedness_check` scored Passed, same eval, same question, corrected context.
+
+<video autoPlay muted loop playsInline width="100%" style={{borderRadius: "8px"}}>
+  <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/inline-evals-tracing/step-2-attach-eval-to-span.mp4" type="video/mp4" />
+</video>
+
+*Expanding the `answer-question` span's Evals tab to see the `groundedness_check` score and its reasoning.*
 
 </Step>
 <Step title="Run multiple evals on the same span">
 
-Call `evaluator.evaluate()` multiple times within the same span - each call attaches a separate named eval result.
+Call `evaluator.evaluate()` multiple times within the same span: each call attaches a separate named eval result.
 
 ```python
-user_input = "Explain quantum entanglement briefly."
+user_input = "The customer says their refund hasn't arrived after 10 days. Draft a short, polite reply explaining our 5-7 business day refund window and the next step."
 
 with tracer.start_as_current_span("explain-concept") as span:
     response = client.chat.completions.create(
@@ -153,18 +213,27 @@ with tracer.start_as_current_span("explain-concept") as span:
         custom_eval_name="instruction_check",
         trace_eval=True,
     )
+
+print(f"Answer: {answer}")
+
+# Flush spans before the script exits. BatchSpanProcessor buffers for up to 5 seconds
+trace_provider.force_flush()
 ```
 
-Both `toxicity_check` and `instruction_check` appear as separate entries on the span.
+You should see the print statement resolve with the drafted reply, and both `toxicity_check` and `instruction_check` appear as separate entries on the `explain-concept` span's Evals tab.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/inline-evals-tracing/step-3-multiple-evals.png" alt="Multiple evals attached to a single span" style={{ borderRadius: '5px' }} />
+
+*The `explain-concept` span's Evals tab with `toxicity_check` and `instruction_check` listed as separate rows.*
 
 <Tip>
-`turing_small` balances speed and accuracy; it's a good default for inline evals. Use `turing_flash` if you need the lowest possible latency at high volume, or `turing_large` for maximum accuracy (it also supports audio and PDF inputs).
+`turing_flash` is a fast default for inline evals. Use `turing_large` for maximum accuracy (it also supports image and audio inputs).
 </Tip>
 
 </Step>
 <Step title="Inline evals on a full RAG pipeline">
 
-A realistic example: trace the full pipeline (retrieval + generation) and attach a faithfulness eval to the generation span.
+A realistic example: trace the full pipeline (retrieval and generation) and attach a groundedness eval to the generation span.
 
 ```python
 from fi_instrumentation import using_user, using_session
@@ -172,8 +241,8 @@ from fi_instrumentation import using_user, using_session
 def retrieve_docs(query: str) -> list[str]:
     # Simulate vector DB retrieval
     return [
-        "The Eiffel Tower is located in Paris, France.",
-        "It was built between 1887 and 1889 by Gustave Eiffel.",
+        "Orders can be refunded within 30 days of delivery if the item is unused and in original packaging.",
+        "Approved refunds are issued to the original payment method within 5-7 business days.",
     ]
 
 
@@ -217,7 +286,7 @@ def answer_question(question: str, user_id: str, session_id: str) -> str:
 
 
 result = answer_question(
-    question="When was the Eiffel Tower built?",
+    question="What's your refund window and how do I get my money back?",
     user_id="user-abc123",
     session_id="session-xyz789",
 )
@@ -226,9 +295,11 @@ print(result)
 trace_provider.force_flush()
 ```
 
-In Tracing, the trace tree shows `rag-pipeline` → `retrieval` + `generation`, with the groundedness score visible on the `generation` span.
+In Tracing, the trace tree shows `rag-pipeline` with `retrieval` and `generation` as children, with the groundedness score visible on the `generation` span.
 
-<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/inline-evals-tracing/step-3-multiple-evals.png" alt="Multiple evals attached to a single span" />
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/inline-evals-tracing/step-4-rag-pipeline.png" alt="RAG pipeline trace with inline groundedness eval" style={{ borderRadius: '5px' }} />
+
+*The `rag-pipeline` trace tree with the `groundedness_check` score attached to the `generation` span.*
 
 </Step>
 <Step title="View and filter by eval scores in the dashboard">
@@ -241,33 +312,25 @@ Once traces are flowing with inline evals, each eval appears as a column under t
 4. Click any cell value in an eval column to open a quick filter popover for that specific score
 5. Click a trace row → expand the span detail → switch to the **Evals** tab to see the score and hover for reasoning
 
-<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/inline-evals-tracing/step-4-rag-pipeline.png" alt="RAG pipeline trace with inline groundedness eval" />
+You should see the `my-rag-app` trace grid with eval columns populated for every span that ran `evaluator.evaluate(trace_eval=True)`.
+
+<img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/inline-evals-tracing/step-5-dashboard-filtering.png" alt="Trace grid in the my-rag-app project filtered to groundedness_check equals Failed" style={{ borderRadius: '5px' }} />
+
+*The `my-rag-app` trace grid with the `groundedness_check` and `toxicity_check` columns populated, filtered to Failed rows.*
+
 </Step>
 </Steps>
 
-## What you built
+## Troubleshooting
 
-<Check>
-You can now attach inline quality evaluations to any traced LLM span and monitor scores in the FutureAGI Tracing dashboard.
-</Check>
+| Symptom | Cause | Fix |
+|---|---|---|
+| Eval score never shows up on the span | `force_flush()` wasn't called before the process exited; `BatchSpanProcessor` buffers spans for up to 5 seconds | Call `trace_provider.force_flush()` before the script exits, or keep the process alive long enough for the batch to flush |
+| `evaluator.evaluate()` raises an authentication error | `FI_API_KEY` or `FI_SECRET_KEY` is missing, blank, or copied from the wrong project | Re-export both keys from [Get your API keys](/docs/admin-settings) and confirm they belong to the project you're tracing into |
+| Span has no `raw.input` / `raw.output` and the eval scores it incorrectly | `OpenAIInstrumentor().instrument()` was called after the OpenAI client was created, or not called at all | Call `instrument()` immediately after `register()`, before creating `openai.OpenAI()` |
+| Eval result attached to the wrong span, or not attached at all | `evaluator.evaluate(trace_eval=True)` was called outside the `with tracer.start_as_current_span(...)` block, after the span already closed | Keep the `evaluate()` call inside the same `with` block as the LLM call it's scoring |
+| Eval column doesn't appear in the dashboard filter list | No trace has landed yet with that `custom_eval_name`, or the name has a typo that doesn't match across calls | Wait for a trace to finish ingesting (usually a few seconds), and check `custom_eval_name` spelling matches exactly everywhere it's used |
+| `ImportError` on `fi.evals`, `fi_instrumentation`, or `traceai_openai` | Only some of the four required packages are installed | Reinstall with the exact line from Install: `pip install fi-instrumentation-otel traceai-openai ai-evaluation openai` |
+| Same trace appears twice in the dashboard | `register()` was called more than once in the same process (common when re-running a notebook cell) | Call `register()` once per process; restart the kernel or guard the call so it only runs on first import |
 
-- Initialized `FITracer` and `Evaluator` for inline eval support
-- Attached a groundedness eval directly to a span using `trace_eval=True`
-- Ran multiple evals (toxicity, prompt instruction adherence) on a single span simultaneously
-- Traced a full RAG pipeline with user/session context and a faithfulness score on the generation span
-- Used Tracing filters and alerts to monitor quality thresholds in production
-
-<CardGroup cols={4}>
-  <Card title="Manual Tracing" icon="eye" href="/docs/cookbook/quickstart/manual-tracing">
-    Custom spans and attributes
-  </Card>
-  <Card title="Running Your First Eval" icon="chart-line" href="/docs/cookbook/quickstart/first-eval">
-    Built-in eval metrics
-  </Card>
-  <Card title="Error Feed" icon="compass" href="/docs/error-feed">
-    Debug failure patterns
-  </Card>
-  <Card title="Session-Based Observability" icon="users" href="/docs/cookbook/quickstart/session-observability">
-    Multi-turn session context
-  </Card>
-</CardGroup>
+Session-Based Observability covers tagging spans with `user_id` and `session_id` so multi-turn conversations group into a single filterable unit: [Session-Based Observability](/docs/cookbook/quickstart/session-observability).
