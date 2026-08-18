@@ -790,7 +790,19 @@ export const tabNavigation: NavTab[] = [
               { title: 'Usage Summary', href: '/docs/admin-settings/usage-summary' },
             ]
           },
-          { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
+          {
+            title: 'Roles & Permissions',
+            items: [
+              { title: 'Overview', href: '/docs/roles-and-permissions' },
+              { title: 'Organizations & workspaces', href: '/docs/roles-and-permissions/concepts/organizations-and-workspaces' },
+              { title: 'How the two roles combine', href: '/docs/roles-and-permissions/concepts/how-roles-combine' },
+              { title: 'Permission reference', href: '/docs/roles-and-permissions/reference/permissions' },
+              { title: 'Set up your team', href: '/docs/roles-and-permissions/guides/set-up-your-team' },
+              { title: 'Add, change and remove people', href: '/docs/roles-and-permissions/guides/manage-people' },
+              { title: 'Share outside your organization', href: '/docs/roles-and-permissions/guides/share-outside-your-organization' },
+              { title: 'FAQ & fixes', href: '/docs/roles-and-permissions/troubleshooting' },
+            ]
+          },
           {
             title: 'Billing',
             items: [
