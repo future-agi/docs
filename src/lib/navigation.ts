@@ -790,7 +790,14 @@ export const tabNavigation: NavTab[] = [
               { title: 'Usage Summary', href: '/docs/admin-settings/usage-summary' },
             ]
           },
-          { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
+          {
+            title: 'Roles & Permissions',
+            items: [
+              { title: 'Overview', href: '/docs/roles-and-permissions' },
+              { title: 'Manage access', href: '/docs/roles-and-permissions/guides/manage-access' },
+              { title: 'Permission reference', href: '/docs/roles-and-permissions/reference/permissions' },
+            ]
+          },
           {
             title: 'Billing',
             items: [
