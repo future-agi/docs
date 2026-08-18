@@ -773,7 +773,7 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Resources',
+        group: 'RBAC',
         icon: 'book',
         items: [
           { title: 'Admin & Settings', href: '/docs/admin-settings' },
@@ -788,11 +788,19 @@ export const tabNavigation: NavTab[] = [
               { title: 'AI Providers', href: '/docs/admin-settings/ai-providers' },
               { title: 'Integrations', href: '/docs/admin-settings/integrations' },
               { title: 'Usage Summary', href: '/docs/admin-settings/usage-summary' },
-              { title: 'Billing & Pricing', href: '/docs/admin-settings/billing-pricing' },
             ]
           },
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
-          { title: 'Installation', href: '/docs/installation' },
+          {
+            title: 'Billing',
+            items: [
+              { title: 'Overview', href: '/docs/billing' },
+              { title: 'What you are billed for', href: '/docs/billing/concepts/what-you-are-billed-for' },
+              { title: 'Pricing', href: '/docs/billing/reference/pricing' },
+              { title: 'Manage your plan', href: '/docs/billing/guides/manage-your-plan' },
+              { title: 'Control spend', href: '/docs/billing/guides/control-spend' },
+            ]
+          },
           { title: 'FAQ', href: '/docs/faq' },
         ]
       },
