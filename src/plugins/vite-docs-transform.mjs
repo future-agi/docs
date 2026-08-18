@@ -25,6 +25,7 @@ const COMPONENT_MAP = {
   Mermaid: '@docs/Mermaid.astro',
   Note: '@docs/Note.astro',
   ParamField: '@docs/ParamField.astro',
+  PricingCalculator: '@docs/PricingCalculator.astro',
   Prerequisites: '@docs/Prerequisites.astro',
   ResponseField: '@docs/ResponseField.astro',
   Step: '@docs/Step.astro',

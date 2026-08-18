@@ -148,8 +148,39 @@ function stripFrontmatterAndImports(content: string): string {
   // Remove frontmatter
   let result = content.replace(/^---[\s\S]*?---\s*/, '');
 
-  // Remove import statements
+  // Park fenced code so the prose rules below can't edit sample code
+  const fences: string[] = [];
+  result = result.replace(/```[\s\S]*?```/g, (block) => {
+    fences.push(block);
+    return `%%FENCE${fences.length - 1}%%`;
+  });
+
+  // Remove MDX import statements
   result = result.replace(/^import\s+.*$/gm, '');
+
+  // Keep the method and path before ApiPlayground is stripped as self-closing
+  result = result.replace(/<ApiPlayground\b([^>]*?)\/>/g, (_m, attrs: string) => {
+    const method = attrs.match(/method=["']([^"']+)["']/)?.[1];
+    const endpoint = attrs.match(/endpoint=["']([^"']+)["']/)?.[1];
+    if (!method || !endpoint) return '';
+    const baseUrl = attrs.match(/baseUrl=["']([^"']+)["']/)?.[1] ?? '';
+    return `\n\`${method.toUpperCase()} ${baseUrl}${endpoint}\`\n`;
+  });
+
+  // Render ParamField / ResponseField as named rows; the strip below drops attributes
+  result = result.replace(
+    /<(ParamField|ResponseField)\b([^>]*?)>/g,
+    (_m, _tag: string, attrs: string) => {
+      const name = attrs.match(/(?:name|path|query|header|body)=["']([^"']+)["']/)?.[1];
+      if (!name) return '';
+      const type = attrs.match(/type=["']([^"']+)["']/)?.[1];
+      const meta = [type, /\brequired\b/.test(attrs) ? 'required' : null]
+        .filter(Boolean)
+        .join(', ');
+      return `\n- \`${name}\`${meta ? ` (${meta})` : ''} — `;
+    },
+  );
+  result = result.replace(/<\/(?:ParamField|ResponseField)>/g, '');
 
   // Iteratively strip JSX tags (handles nesting)
   let prev = '';
@@ -168,8 +199,13 @@ function stripFrontmatterAndImports(content: string): string {
   // Remove leftover standalone opening tags (unclosed)
   result = result.replace(/<[A-Z]\w*[^>]*>/g, '');
 
+  // Pull each parameter's description up onto its own row
+  result = result.replace(/ — \s*\n\s+/g, ' — ');
+
   // Clean up excessive blank lines
   result = result.replace(/\n{3,}/g, '\n\n');
+
+  result = result.replace(/%%FENCE(\d+)%%/g, (_m, i: string) => fences[Number(i)]);
 
   return result.trim();
 }
