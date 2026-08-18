@@ -6,7 +6,7 @@
  * Default base branch: dev
  */
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 
 const baseBranch = process.argv[2] || 'dev';
 
@@ -48,6 +48,14 @@ function fileToPath(file) {
     .replace(/\/index$/, '') || '/';
 }
 
+// A deleted file needs no redirect when its route is still served by another
+// page file (e.g. deleting foo.mdx while foo/index.mdx exists)
+function routeStillServed(urlPath) {
+  const base = `src/pages${urlPath === '/' ? '' : urlPath}`;
+  return ['.mdx', '.astro', '.md', '/index.mdx', '/index.astro', '/index.md']
+    .some(suffix => existsSync(`${base}${suffix}`));
+}
+
 // Load redirects map
 const redirectsRaw = readFileSync('src/lib/redirects.ts', 'utf-8');
 const redirectEntries = [...redirectsRaw.matchAll(/["']([^"']+)["']:\s*["']([^"']+)["']/g)];
@@ -57,6 +65,10 @@ const redirectMap = new Set(redirectEntries.map(([, from]) => from));
 const missing = [];
 for (const file of deletedPages) {
   const urlPath = fileToPath(file);
+  if (routeStillServed(urlPath)) {
+    console.log(`  ${urlPath} still served by another page file, no redirect needed. ✓`);
+    continue;
+  }
   if (!redirectMap.has(urlPath)) {
     missing.push({ file, urlPath });
   }
