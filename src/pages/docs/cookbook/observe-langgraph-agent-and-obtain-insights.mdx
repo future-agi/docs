@@ -1,10 +1,28 @@
 ---
 title: "Observing a LangGraph agent and obtaining insights"
+slug: "observe-langgraph-agent-and-obtain-insights"
 description: "Instrument a LangGraph support agent with Future AGI, group its traces by session and user, score every turn with an Observe Eval Task, and read the scores to find which layer fails and for whom."
+date: "2026-07-06"
+author: "futureagi-engineering"
+products:
+  - "traceAI"
+  - "fi.evals"
+frameworks:
+  - "LangGraph"
+  - "OpenAI"
+difficulty: "intermediate"
+time-to-complete: "25-35 minutes"
+tags:
+  - "agent-observability"
+  - "evaluation"
+  - "langgraph"
+og-image: "/images/docs/cookbook/observe-langgraph-agent-and-obtain-insights/og.webp"
+canonical: "https://docs.futureagi.com/docs/cookbook/observe-langgraph-agent-and-obtain-insights"
+page-type: "cookbook"
 ---
 
 <TLDR>
-Build a multi-turn LangGraph support agent and instrument it with [traceAI](/docs/observe/concepts/traceai). Every conversation lands in [Observe](/docs/observe), grouped by [session](/docs/observe/concepts/sessions) and [user](/docs/observe/concepts/users). Then read three things back: the traces of what the agent did, an [Eval Task](/docs/observe/guides/setup-evals) that scores every turn, and filters that turn those scores into insight — which layer failed, on which turns, for which customer.
+Build a multi-turn LangGraph support agent and instrument it with [traceAI](/docs/observe/concepts/traceai). Every conversation lands in [Observe](/docs/observe), grouped by [session](/docs/observe/concepts/sessions) and [user](/docs/observe/concepts/users). Then read three things back: the traces of what the agent did, an [Eval Task](/docs/observe/guides/setup-evals) that scores every turn, and filters that turn those scores into insight about which layer failed, on which turns, for which customer.
 </TLDR>
 
 | Time | Difficulty |
@@ -32,7 +50,7 @@ flowchart TD
 ## Install
 
 ```bash
-pip install fi-instrumentation-otel traceAI-langchain langgraph langchain-openai langchain-core
+pip install fi-instrumentation-otel==1.0.0 traceAI-langchain==0.1.12 langgraph==1.0.1 langchain-openai==0.3.35 langchain-core==0.3.86
 ```
 
 ```bash
@@ -69,7 +87,7 @@ trace_provider.force_flush()
 print("sent preflight span")
 ```
 
-**You should see** a `preflight` trace in **Observe → Traces → `support-agent`** within a few seconds. If it never lands, fix that here first — see [Troubleshooting](#troubleshooting).
+**You should see** a `preflight` trace in **Observe → Traces → `support-agent`** within a few seconds. If it never lands, fix that here first (see [Troubleshooting](#troubleshooting)).
 
 </Step>
 
@@ -109,27 +127,33 @@ def lookup_order(order_id: str) -> str:
     """Look up the status of an order by its ID."""
     return f"Order {order_id}: delivered on 2026-06-20, standard shipping."
 
-SYSTEM_PROMPT = "You are a helpful customer-support agent. Use the tools to answer."
+# A "goodwill" override that contradicts the refund policy in the knowledge base.
+SYSTEM_PROMPT = (
+    "You are a customer-support agent for an online store. Use the tools to answer. "
+    "COMPANY UPDATE: we now approve refunds on final-sale items as a goodwill policy, "
+    "so reassure customers that final-sale orders can be refunded."
+)
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 agent = create_react_agent(llm, tools=[search_help_center, lookup_order], prompt=SYSTEM_PROMPT)
 ```
 
 <Note>
-The system prompt is deliberately minimal, so the traces contain a real failure to find. Finding it is what this cookbook is about.
+That prompt is flawed on purpose, in a way production prompts really do break. Someone pasted a policy change into the system prompt and it now contradicts the help-center article the agent retrieves. On the final-sale turn the model follows the instruction and promises a refund the retrieved policy forbids, so retrieval looks healthy while the answer is ungrounded. Finding that split is what this cookbook is about.
 </Note>
 
 </Step>
 
 <Step title="Group each turn by session and user">
 
-Turn on auto-instrumentation, then run the conversations. The same `LangChainInstrumentor` captures LangGraph. Wrap each turn in `using_session` (the conversation) and `using_user` (the customer), and record the three fields an eval needs: question, answer, retrieved policy.
+Turn on auto-instrumentation, then run the conversations. The same `LangChainInstrumentor` captures LangGraph. Wrap each turn in `using_session` (the conversation) and `using_user` (the customer), then set two groups of attributes on the turn span: the standard ones that populate the dashboard's own columns, and the `raw.*` ones an Eval Task will map to later.
 
 ```python
 from fi_instrumentation import using_session, using_user
+from fi_instrumentation.fi_types import FiSpanKindValues, SpanAttributes
 from traceai_langchain import LangChainInstrumentor
 
-# trace_provider and tracer come from step 1 — do not register again.
+# trace_provider and tracer come from step 1. Do not register again.
 LangChainInstrumentor().instrument(tracer_provider=trace_provider)
 
 def support_turn(session_id: str, user_id: str, question: str) -> str:
@@ -137,16 +161,30 @@ def support_turn(session_id: str, user_id: str, question: str) -> str:
         with tracer.start_as_current_span("support_turn") as span:
             result = agent.invoke({"messages": [{"role": "user", "content": question}]})
             answer = result["messages"][-1].content
+
+            # Standard fields: these fill the Input and Output columns in the
+            # trace table and mark the row as an agent span.
+            span.set_attribute(SpanAttributes.GEN_AI_SPAN_KIND, FiSpanKindValues.AGENT.value)
+            span.set_attribute(SpanAttributes.INPUT_VALUE, question)
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
+
+            # using_session and using_user tag the auto-instrumented child spans,
+            # but not this manual one. Set them here or the root row shows neither.
+            span.set_attribute(SpanAttributes.SESSION_ID, session_id)
+            span.set_attribute(SpanAttributes.USER_ID, user_id)
+
+            # Custom fields the Eval Task maps to. The retrieved policy has no
+            # standard key, so it needs one of these.
             span.set_attribute("raw.input", question)
             span.set_attribute("raw.output", answer)
-            span.set_attribute("raw.context", last_context["text"])  # retrieved policy
+            span.set_attribute("raw.context", last_context["text"])
             return answer
 
 # two customers, five turns between them
 CONVERSATIONS = [
     ("chat_1001", "cust_42", [
         "How long do refunds take?",
-        "My order was a final sale, can I still get a refund?",
+        "My order was a final sale. Can I still get a refund?",
         "Can you look up order A-3391?",
     ]),
     ("chat_1002", "cust_77", [
@@ -172,15 +210,15 @@ No trace? It is almost always order or flush. `register()` and `.instrument()` m
 
 <Step title="Read the traces">
 
-Before any eval runs, the traces already answer questions you'd otherwise guess at. Open the `support-agent` project: every row is one turn, with its status, model, latency, tokens, and cost. Click the final-sale turn to see the ReAct loop as a span tree — the LLM call that decides to search, the `search_help_center` call with the exact policy it returned, and the LLM call that writes the answer.
+Before any eval runs, the traces already answer questions you'd otherwise guess at. Open the `support-agent` project: every row is one turn, with its status, model, latency, tokens, and cost. Click the final-sale turn to see the ReAct loop as a span tree: the LLM call that decides to search, the `search_help_center` call with the exact policy it returned, and the LLM call that writes the answer.
 
 Three things are readable before any score exists:
 
-- **Cost** — two LLM calls per answered question, and the token split between them
-- **Latency** — the retriever and tool spans are milliseconds; the LLM spans are the wait
-- **Grounding** — the tool span carries the policy text, so you can eyeball whether the answer used it
+- **Cost**: two LLM calls per answered question, and the token split between them
+- **Latency**: the retriever and tool spans are milliseconds; the LLM spans are the wait
+- **Grounding**: the tool span carries the policy text, so you can eyeball whether the answer used it
 
-On the final-sale turn, the retrieved policy says final-sale items are not refundable, and the answer hedges toward a refund anyway. An eval can now confirm at scale what this one trace suggests.
+On the final-sale turn, the retrieved policy says final-sale items are not refundable and the answer promises a refund anyway, following the prompt's goodwill line over the policy it had just fetched. An eval can now confirm at scale what this one trace suggests.
 
 </Step>
 
@@ -190,17 +228,17 @@ Configure evals **in the platform** as an Eval Task, not from the SDK, so they r
 
 Create an **Eval Task** on the `support-agent` project and pick three evals, each chosen so a low score points at one component:
 
-- **Context Relevance** — did retrieval fetch the right policy? · `input` → `raw.input`, `context` → `raw.context`
-- **Context Adherence** — did the answer stay grounded in it? · `output` → `raw.output`, `context` → `raw.context`
-- **Completeness** — did the answer fully address the question? · `input` → `raw.input`, `output` → `raw.output`
+- **Context Relevance**: did retrieval fetch the right policy? · `input` → `raw.input`, `context` → `raw.context`
+- **Context Adherence**: did the answer stay grounded in it? · `output` → `raw.output`, `context` → `raw.context`
+- **Completeness**: did the answer fully address the question? · `input` → `raw.input`, `output` → `raw.output`
 
 Run it as **Historical** over the five turns.
 
 <Note>
-The click-by-click — creating the task, Historical vs Continuous, sampling, and mapping inputs to span attributes — lives in the [Setup evals](/docs/observe/guides/setup-evals) guide.
+The click-by-click (creating the task, Historical vs Continuous, sampling, and mapping inputs to span attributes) lives in the [Setup evals](/docs/observe/guides/setup-evals) guide.
 </Note>
 
-**You should see** three scores per trace (illustrative shape — your numbers will differ):
+**You should see** three scores per trace (illustrative shape, your numbers will differ):
 
 | Turn | Context Relevance | Context Adherence | Completeness |
 |---|---|---|---|
@@ -232,9 +270,9 @@ Each eval's failure indicts one layer:
 
 **What you now know**, from one run:
 
-- **The prompt is the broken layer, not retrieval** — the right policy was retrieved and ignored
-- **It fails on policy exceptions, not routine turns** — the plain refund question scored fine; the final-sale one didn't
-- **It's one turn, not an outage** — every other turn for `cust_42` is healthy
+- **The prompt is the broken layer, not retrieval**: the right policy was retrieved and ignored
+- **It fails on policy exceptions, not routine turns**: the plain refund question scored fine; the final-sale one didn't
+- **It's one turn, not an outage**: every other turn for `cust_42` is healthy
 
 That's a ticket your team can act on, not "the bot sometimes gives wrong answers".
 
@@ -244,9 +282,9 @@ That's a ticket your team can act on, not "the bot sometimes gives wrong answers
 
 Scores drift as prompts, models, and traffic change. Turn this check into standing monitors so the next regression pages you, not a customer:
 
-- **Alert** — an [Evaluation-metric alert](/docs/observe/guides/setup-alerts) on `context_adherence`, operator *Less than*, static `0.8`
-- **Saved view** — save the `scores.context_adherence < 0.8` filter as an "Ungrounded answers" [view](/docs/observe/guides/explore-dashboard/views), so tomorrow's check is one click
-- **Regression set** — the low-scoring turns are your best future test cases; harvest them so any fix has to clear them
+- **Alert**: an [Evaluation-metric alert](/docs/observe/guides/setup-alerts) on `context_adherence`, operator *Less than*, static `0.8`
+- **Saved view**: save the `scores.context_adherence < 0.8` filter as an "Ungrounded answers" [view](/docs/observe/guides/explore-dashboard/views), so tomorrow's check is one click
+- **Regression set**: the low-scoring turns are your best future test cases; harvest them so any fix has to clear them
 
 </Step>
 
@@ -258,6 +296,8 @@ Scores drift as prompts, models, and traffic change. Turn this check into standi
 |---|---|---|
 | No trace in Observe | `register()`/`.instrument()` ran after the agent call, or the script exited before flush | Register and instrument first; `force_flush()` before exit |
 | Session or user filters return nothing | The turn ran outside the `using_session` / `using_user` context | Keep the agent call inside `with using_session(...), using_user(...)` |
+| Child spans carry the session and user but the `support_turn` row shows neither | Those context managers tag auto-instrumented spans, not your manual one | Set `SpanAttributes.SESSION_ID` and `SpanAttributes.USER_ID` on the turn span |
+| Input and Output columns are empty in the trace table | The turn span set only the `raw.*` fields | Also set `SpanAttributes.INPUT_VALUE` and `SpanAttributes.OUTPUT_VALUE` |
 | Eval Task finished but no scores | It ran Historical before the traces existed, or sampling excluded them | Re-run after sending traces; widen the date range; raise sampling |
 | Eval reports a missing input | The span didn't set `raw.input` / `raw.output` / `raw.context`, or the mapping points elsewhere | Set the three attributes; map each eval input to them |
 | Alert never fires | Wrong metric or project type | Evaluation-metric alert on `context_adherence`; monitors work only on `observe` projects |

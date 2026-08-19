@@ -12,6 +12,7 @@ export interface NavItem {
   icon?: string;
   badge?: string;
   items?: NavItem[];  // For nested groups
+  collapsible?: boolean;  // Opt-in: render a top-level item-with-children as a collapsible folder instead of a static sub-heading
 }
 
 export interface NavGroup {
@@ -998,216 +999,161 @@ export const tabNavigation: NavTab[] = [
     href: '/docs/cookbook',
     groups: [
       {
-        group: 'Cookbooks',
+        group: 'Get Started',
+        icon: 'rocket',
         items: [
           { title: 'Overview', href: '/docs/cookbook' },
+          { title: 'Your First Evaluation', href: '/docs/cookbook/quickstart/first-eval' },
+          { title: 'Dataset Management', href: '/docs/cookbook/quickstart/dataset-management' },
+          { title: 'Dataset SDK Batch Eval', href: '/docs/cookbook/quickstart/batch-eval' },
+          { title: 'Evaluator SDK Basics', href: '/docs/cookbook/using-futureagi-evals' },
+          { title: 'Datasets with the SDK', href: '/docs/cookbook/using-futureagi-dataset' },
+          { title: 'Knowledge Base SDK', href: '/docs/cookbook/using-futureagi-kb' },
+          { title: 'Protect Rules SDK', href: '/docs/cookbook/using-futureagi-protect' },
+          { title: 'Self-Hosted Docker Compose', href: '/docs/cookbook/self-hosting/docker-compose-quickstart' },
           {
-            title: 'Quickstart',
-            icon: 'rocket',
+            title: 'Production & CI/CD',
             items: [
-              {
-                title: 'Evaluation',
-                items: [
-                  { title: 'Running Your First Eval', href: '/docs/cookbook/quickstart/first-eval' },
-                  { title: 'Custom Eval Metrics: Write Your Own Evaluation Criteria', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
-                  { title: 'Hallucination Detection with Faithfulness & Groundedness', href: '/docs/cookbook/quickstart/hallucination-detection' },
-                  { title: 'RAG Pipeline Evaluation: Debug Retrieval vs Generation', href: '/docs/cookbook/quickstart/rag-evaluation' },
-                  { title: 'Multimodal Evaluation: Images, Audio, and PDF', href: '/docs/cookbook/quickstart/multimodal-eval' },
-                  { title: 'Tone, Toxicity, and Bias Detection Evals', href: '/docs/cookbook/quickstart/tone-toxicity-bias-eval' },
-                  { title: 'Evaluate Customer Agent Conversations', href: '/docs/cookbook/quickstart/conversation-eval' },
-                  { title: 'Dataset SDK: Upload, Evaluate, and Download Results', href: '/docs/cookbook/quickstart/batch-eval' },
-                  { title: 'Async Evaluations for Large-Scale Testing', href: '/docs/cookbook/quickstart/async-batch-eval' },
-                  { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
-                ]
-              },
-              {
-                title: 'Simulation',
-                items: [
-                  { title: 'Chat Simulation: Run Multi-Persona Conversations via SDK', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
-                  { title: 'Voice Simulation: Define Agents, Personas, and Run Call Tests', href: '/docs/cookbook/quickstart/voice-simulation' },
-                  { title: 'Tool-Calling Agent Simulation with Tracing', href: '/docs/cookbook/quickstart/tool-calling-simulation' },
-                  { title: 'Simulate from the Prompt Workbench', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
-                ]
-              },
-              {
-                title: 'Dataset',
-                items: [
-                  { title: 'Create and Manage Datasets from the Dashboard', href: '/docs/cookbook/quickstart/dataset-management' },
-                  { title: 'Synthetic Data Generation: Create Test Datasets from a Schema', href: '/docs/cookbook/quickstart/synthetic-data-generation' },
-                  { title: 'Annotate Datasets with Human-in-the-Loop Workflows', href: '/docs/cookbook/quickstart/dataset-annotation' },
-                  { title: 'Import Datasets from Hugging Face', href: '/docs/cookbook/quickstart/huggingface-dataset-import' },
-                  { title: 'Dynamic Dataset Columns: Enrich Rows with AI-Generated Data', href: '/docs/cookbook/quickstart/dynamic-dataset-columns' },
-                ]
-              },
-              {
-                title: 'Prompt',
-                items: [
-                  { title: 'Prompt Versioning: Create, Label, and Serve Prompt Versions', href: '/docs/cookbook/quickstart/prompt-versioning' },
-                ]
-              },
-              {
-                title: 'Observability',
-                items: [
-                  { title: 'Manual Tracing: Add Custom Spans to Any Application', href: '/docs/cookbook/quickstart/manual-tracing' },
-                  { title: 'Session-Based Observability for Multi-Turn Conversations', href: '/docs/cookbook/quickstart/session-observability' },
-                  { title: 'Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds', href: '/docs/cookbook/quickstart/monitoring-alerts' },
-                  { title: 'Inline Evals in Tracing: Score Every Response as It\'s Generated', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
-                  { title: 'Distributed Tracing: Connect Spans Across Services', href: '/docs/cookbook/quickstart/distributed-tracing' },
-                ]
-              },
-              {
-                title: 'Optimization',
-                items: [
-                  { title: 'Prompt Optimization: Improve a Prompt Automatically', href: '/docs/cookbook/quickstart/prompt-optimization' },
-                  { title: 'Compare Optimization Strategies: ProTeGi, GEPA, and PromptWizard', href: '/docs/cookbook/quickstart/compare-optimizers' },
-                  { title: 'Dataset Optimization: Improve Prompts Directly in Your Dataset', href: '/docs/cookbook/quickstart/dataset-optimization' },
-                ]
-              },
-              {
-                title: 'Protect',
-                items: [
-                  { title: 'Protect: Add Safety Guardrails to LLM Outputs', href: '/docs/cookbook/quickstart/protect-guardrails' },
-                ]
-              },
-              {
-                title: 'Knowledge Base',
-                items: [
-                  { title: 'Knowledge Base: Upload Documents and Query with the SDK', href: '/docs/cookbook/quickstart/knowledge-base' },
-                ]
-              },
-              {
-                title: 'Experimentation',
-                items: [
-                  { title: 'Experimentation: Compare Prompts and Models on a Dataset', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
-                  { title: 'Evaluation-Driven Development: Score Every Prompt Change Before Shipping', href: '/docs/cookbook/quickstart/eval-driven-dev' },
-                  { title: 'CI/CD Eval Pipeline: Automate Quality Gates in GitHub Actions', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
-                ]
-              },
-            ]
-          },
-          {
-            title: 'Use Cases',
-            icon: 'flask',
-            items: [
-              { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
-              { title: 'Monitor LLM Quality in Production and Catch Regressions', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
-            ]
-          },
-          {
-            title: 'Falcon AI',
-            icon: 'rocket',
-            items: [
-              { title: 'End-to-End with Falcon AI: Trace → Debug → Evaluate → Dataset → Fix in One Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
-              { title: 'Context-Aware Trace Debugging with Falcon AI', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
-              { title: 'Building Golden Datasets from Production Traces with Falcon AI', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
-            ]
-          },
-          {
-            title: 'Agent Command Center',
-            icon: 'server',
-            items: [
-              { title: 'Cut LLM Costs 80% With Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
-            ]
-          },
-          {
-            title: 'MCP Server',
-            icon: 'plug',
-            items: [
-              { title: 'Debug LLM Traces From Your IDE Using Natural Language MCP Queries', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
-            ]
-          },
-          {
-            title: 'Evaluation',
-            icon: 'check-double',
-            items: [
-              { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
-            ]
-          },
-          {
-            title: 'Self-Hosting',
-            icon: 'box',
-            items: [
-              { title: 'Deploy the Full Open-Source AI Stack Locally With Docker Compose in 5 Minutes', href: '/docs/cookbook/self-hosting/docker-compose-quickstart' },
-            ]
-          },
-          {
-            title: 'Getting Started',
-            icon: 'zap',
-            items: [
-              { title: 'Using FutureAGI Evals', href: '/docs/cookbook/using-futureagi-evals' },
-              { title: 'Using FutureAGI Protect', href: '/docs/cookbook/using-futureagi-protect' },
-              { title: 'Using FutureAGI Dataset', href: '/docs/cookbook/using-futureagi-dataset' },
-              { title: 'Using FutureAGI KB', href: '/docs/cookbook/using-futureagi-kb' },
-            ]
-          },
-          {
-            title: 'Integrations',
-            icon: 'plug',
-            items: [
-              { title: 'Portkey Integration', href: '/docs/cookbook/portkey-integration' },
-              { title: 'LangChain/LangGraph', href: '/docs/cookbook/langchain-langgraph' },
-              { title: 'LlamaIndex PDF RAG', href: '/docs/cookbook/llamaindex-pdf-rag' },
-              { title: 'CrewAI Research Team', href: '/docs/cookbook/crewai-research-team' },
-              { title: 'MongoDB', href: '/docs/cookbook/mongodb' },
-            ]
-          },
-          {
-            title: 'Evaluation',
-            icon: 'chart',
-            items: [
-              { title: 'Meeting Summarization', href: '/docs/cookbook/meeting-summarization' },
-              { title: 'AI SDR Evaluation', href: '/docs/cookbook/ai-sdr' },
-              { title: 'AI Agents Evaluation', href: '/docs/cookbook/ai-agents' },
-              { title: 'Image Evaluation', href: '/docs/cookbook/image-evaluation' },
-            ]
-          },
-          {
-            title: 'Observability',
-            icon: 'eye',
-            items: [
-              { title: 'Observing a LangGraph agent and obtaining insights', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
-              { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/text-to-sql' },
-            ]
-          },
-          {
-            title: 'RAG',
-            icon: 'search',
-            items: [
-              { title: 'RAG with LangChain', href: '/docs/cookbook/rag-langchain' },
-              { title: 'Evaluate RAG Apps', href: '/docs/cookbook/evaluate-rag' },
-              { title: 'Trustworthy RAG Chatbots', href: '/docs/cookbook/trustworthy-rag' },
-              { title: 'Decrease RAG Hallucination', href: '/docs/cookbook/decrease-hallucination' },
-            ]
-          },
-          {
-            title: 'Optimization',
-            icon: 'gauge',
-            items: [
-              { title: 'End-to-End Prompt Optimization', href: '/docs/cookbook/end-to-end-optimization' },
-              { title: 'Basic Prompt Optimization', href: '/docs/cookbook/basic-optimization' },
-              { title: 'GEPA Optimization', href: '/docs/cookbook/gepa-optimization' },
-              { title: 'Eval Metrics for Optimization', href: '/docs/cookbook/eval-metrics-optimization' },
-              { title: 'Compare Strategies', href: '/docs/cookbook/compare-optimization' },
-              { title: 'Import Datasets', href: '/docs/cookbook/import-datasets' },
-            ]
-          },
-          {
-            title: 'Simulate',
-            icon: 'play',
-            items: [
-              { title: 'Chat Simulation with Fix My Agent', href: '/docs/cookbook/chat-simulation-fix-agent' },
-              { title: 'Simulate SDK Demo', href: '/docs/cookbook/simulate-sdk' },
-            ]
-          },
-          {
-            title: 'Error Feed',
-            icon: 'compass',
-            items: [
-              { title: 'Error Feed with Google ADK', href: '/docs/cookbook/error-feed/google-adk-multi-agent' },
+              { title: 'Monitoring and Alerts', href: '/docs/cookbook/quickstart/monitoring-alerts' },
+              { title: 'Production Quality Monitoring', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
+              { title: 'Protect Safety Guardrails', href: '/docs/cookbook/quickstart/protect-guardrails' },
+              { title: 'CI/CD Eval Pipeline', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
+              { title: 'Evaluation-Driven Development', href: '/docs/cookbook/quickstart/eval-driven-dev' },
             ]
           },
         ]
-      }
+      },
+      {
+        group: 'Use Cases',
+        icon: 'flask',
+        items: [
+          { title: 'Overview', href: '/docs/cookbook/use-cases' },
+          {
+            title: 'Chat & Support Agents',
+            collapsible: true,
+            items: [
+              { title: 'Multi-Turn Conversation Eval', href: '/docs/cookbook/quickstart/conversation-eval' },
+              { title: 'Session-Based Observability', href: '/docs/cookbook/quickstart/session-observability' },
+              { title: 'LangGraph Agent Observability', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
+              { title: 'Chat Simulation with Personas', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
+              { title: 'Chat Simulation & Fix My Agent', href: '/docs/cookbook/chat-simulation-fix-agent' },
+              { title: 'Prompt Workbench Simulation', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
+              { title: 'End-to-End Agent Testing', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
+            ]
+          },
+          {
+            title: 'RAG & Document Q&A',
+            collapsible: true,
+            items: [
+              { title: 'RAG Evaluation', href: '/docs/cookbook/quickstart/rag-evaluation' },
+              { title: 'Hallucination Detection', href: '/docs/cookbook/quickstart/hallucination-detection' },
+              { title: 'Evaluating RAG Applications', href: '/docs/cookbook/evaluate-rag' },
+              { title: 'RAG Chatbot Trustworthiness', href: '/docs/cookbook/trustworthy-rag' },
+              { title: 'Decrease RAG Hallucinations', href: '/docs/cookbook/decrease-hallucination' },
+              { title: 'LangChain RAG Evaluation', href: '/docs/cookbook/rag-langchain' },
+              { title: 'LlamaIndex PDF RAG Chatbot', href: '/docs/cookbook/llamaindex-pdf-rag' },
+              { title: 'MongoDB Atlas RAG Chatbot', href: '/docs/cookbook/mongodb' },
+              { title: 'Knowledge Base', href: '/docs/cookbook/quickstart/knowledge-base' },
+            ]
+          },
+          {
+            title: 'Voice Agents',
+            collapsible: true,
+            items: [
+              { title: 'Voice Simulation', href: '/docs/cookbook/quickstart/voice-simulation' },
+              { title: 'Voice Agent Simulate SDK', href: '/docs/cookbook/simulate-sdk' },
+            ]
+          },
+          {
+            title: 'Multi-Agent & Tool Use',
+            collapsible: true,
+            items: [
+              { title: 'CrewAI Research Team', href: '/docs/cookbook/crewai-research-team' },
+              { title: 'Google ADK Error Feed', href: '/docs/cookbook/error-feed/google-adk-multi-agent' },
+              { title: 'Tool-Calling Agent Simulation', href: '/docs/cookbook/quickstart/tool-calling-simulation' },
+              { title: 'Agent Function Calling Eval', href: '/docs/cookbook/ai-agents' },
+              { title: 'LangChain & LangGraph Observability', href: '/docs/cookbook/langchain-langgraph' },
+            ]
+          },
+          {
+            title: 'Content & Multimodal',
+            collapsible: true,
+            items: [
+              { title: 'Meeting Summarization Eval', href: '/docs/cookbook/meeting-summarization' },
+              { title: 'AI SDR Outreach Eval', href: '/docs/cookbook/ai-sdr' },
+              { title: 'Image Evaluation', href: '/docs/cookbook/image-evaluation' },
+              { title: 'Multimodal Evaluation', href: '/docs/cookbook/quickstart/multimodal-eval' },
+              { title: 'Tone, Toxicity & Bias Evals', href: '/docs/cookbook/quickstart/tone-toxicity-bias-eval' },
+            ]
+          },
+          {
+            title: 'Text-to-SQL',
+            collapsible: true,
+            items: [
+              { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
+              { title: 'Text-to-SQL Agent', href: '/docs/cookbook/text-to-sql' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Platform',
+        icon: 'server',
+        items: [
+          { title: 'Overview', href: '/docs/cookbook/platform' },
+          {
+            title: 'Tracing & Debugging',
+            collapsible: true,
+            items: [
+              { title: 'Manual Tracing', href: '/docs/cookbook/quickstart/manual-tracing' },
+              { title: 'Distributed Tracing', href: '/docs/cookbook/quickstart/distributed-tracing' },
+              { title: 'Inline Evals in Tracing', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
+              { title: 'Portkey Integration', href: '/docs/cookbook/portkey-integration' },
+              { title: 'Debug Traces from IDE', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
+              { title: 'Falcon AI Trace Debugging', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
+              { title: 'Falcon AI End-to-End Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
+            ]
+          },
+          {
+            title: 'Evaluation Workflows',
+            collapsible: true,
+            items: [
+              { title: 'Custom Eval Metrics', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
+              { title: 'Async & Batch Evaluations', href: '/docs/cookbook/quickstart/async-batch-eval' },
+              { title: 'Eval Correction Loop', href: '/docs/cookbook/evaluation/eval-correction-loop' },
+              { title: 'Eval Metrics for Optimization', href: '/docs/cookbook/eval-metrics-optimization' },
+              { title: 'Comparing Prompts and Models', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
+            ]
+          },
+          {
+            title: 'Datasets',
+            collapsible: true,
+            items: [
+              { title: 'Synthetic Data Generation', href: '/docs/cookbook/quickstart/synthetic-data-generation' },
+              { title: 'Dynamic Dataset Columns', href: '/docs/cookbook/quickstart/dynamic-dataset-columns' },
+              { title: 'Hugging Face Dataset Import', href: '/docs/cookbook/quickstart/huggingface-dataset-import' },
+              { title: 'Dataset Annotation', href: '/docs/cookbook/quickstart/dataset-annotation' },
+              { title: 'Golden Datasets from Traces', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
+            ]
+          },
+          {
+            title: 'Prompts & Optimization',
+            collapsible: true,
+            items: [
+              { title: 'Prompt Versioning', href: '/docs/cookbook/quickstart/prompt-versioning' },
+              { title: 'Prompt Optimization', href: '/docs/cookbook/quickstart/prompt-optimization' },
+              { title: 'Basic Prompt Optimization', href: '/docs/cookbook/basic-optimization' },
+              { title: 'End-to-End Prompt Optimization', href: '/docs/cookbook/end-to-end-optimization' },
+              { title: 'GEPA Optimization', href: '/docs/cookbook/gepa-optimization' },
+              { title: 'Dataset Optimization', href: '/docs/cookbook/quickstart/dataset-optimization' },
+              { title: 'Custom Datasets for Optimization', href: '/docs/cookbook/import-datasets' },
+              { title: 'Comparing Prompt Optimizers', href: '/docs/cookbook/quickstart/compare-optimizers' },
+              { title: 'Comparing Optimizers', href: '/docs/cookbook/compare-optimization' },
+              { title: 'Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
+            ]
+          },
+        ]
+      },
     ]
   },
   {
