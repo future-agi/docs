@@ -12,6 +12,7 @@ export interface NavItem {
   icon?: string;
   badge?: string;
   items?: NavItem[];  // For nested groups
+  collapsible?: boolean;  // Opt-in: render a top-level item-with-children as a collapsible folder instead of a static sub-heading
 }
 
 export interface NavGroup {
@@ -67,6 +68,8 @@ export const tabNavigation: NavTab[] = [
                 items: [
                   { title: 'System configuration', href: '/docs/self-hosting/configuration/system' },
                   { title: 'Environment variables', href: '/docs/self-hosting/configuration/environment' },
+                  { title: 'Profiles', href: '/docs/self-hosting/configuration/profiles' },
+                  { title: 'Launch mode', href: '/docs/self-hosting/configuration/launch-mode' },
                 ]
               },
               {
@@ -105,11 +108,32 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create a Graph', href: '/docs/agent-playground/features/create-graph' },
-              { title: 'Build a Workflow', href: '/docs/agent-playground/features/build-workflow' },
-              { title: 'Run & Monitor', href: '/docs/agent-playground/features/run-and-monitor' },
+              { title: 'Create an agent', href: '/docs/agent-playground/guides/create-agent' },
+              {
+                title: 'Build a workflow',
+                items: [
+                  { title: 'Overview', href: '/docs/agent-playground/guides/build-workflow' },
+                  { title: 'Configure an LLM Prompt node', href: '/docs/agent-playground/guides/build-workflow/configure-an-llm-prompt-node' },
+                  { title: 'Configure an Agent node', href: '/docs/agent-playground/guides/build-workflow/configure-an-agent-node' },
+                  { title: 'Set input variables', href: '/docs/agent-playground/guides/build-workflow/set-input-variables' },
+                ]
+              },
+              { title: 'Run an agent', href: '/docs/agent-playground/guides/run-an-agent' },
+              { title: 'Manage versions', href: '/docs/agent-playground/guides/manage-versions' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Limits & rules', href: '/docs/agent-playground/reference/limits-and-rules' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Agent Playground FAQ & fixes', href: '/docs/agent-playground/troubleshooting' },
             ]
           },
         ]
@@ -122,28 +146,44 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
+              { title: 'Understanding Annotation', href: '/docs/annotations/concepts/understanding-annotation' },
+              { title: 'Labels', href: '/docs/annotations/concepts/labels' },
+              { title: 'Queues & Items', href: '/docs/annotations/concepts/queues-and-items' },
               { title: 'Scores', href: '/docs/annotations/concepts/scores' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Labels', href: '/docs/annotations/features/labels' },
-              { title: 'Queues', href: '/docs/annotations/features/queues' },
-              { title: 'Add Items to Queues', href: '/docs/annotations/features/add-items' },
-              { title: 'Annotate Items', href: '/docs/annotations/features/annotate' },
-              { title: 'Inline Annotations', href: '/docs/annotations/features/inline' },
-              { title: 'Analytics & Agreement', href: '/docs/annotations/features/analytics' },
-              { title: 'Export Annotations', href: '/docs/annotations/features/export' },
-              { title: 'Automation Rules', href: '/docs/annotations/features/automation' },
+              { title: 'Create a label', href: '/docs/annotations/guides/create-label' },
+              { title: 'Create a queue', href: '/docs/annotations/guides/create-queue' },
+              {
+                title: 'Explore a queue',
+                items: [
+                  { title: 'Overview', href: '/docs/annotations/guides/explore-queue' },
+                  { title: 'Add items', href: '/docs/annotations/guides/explore-queue/add-items' },
+                  { title: 'Track progress & agreement', href: '/docs/annotations/guides/explore-queue/progress-and-agreement' },
+                  { title: 'Automate item intake', href: '/docs/annotations/guides/explore-queue/automate-item-intake' },
+                ]
+              },
+              { title: 'Annotate items', href: '/docs/annotations/guides/annotate-items' },
+              { title: 'Review submissions', href: '/docs/annotations/guides/review-submissions' },
+              { title: 'Annotate without a queue', href: '/docs/annotations/guides/annotate-without-a-queue' },
+              { title: 'Export annotations', href: '/docs/annotations/guides/export-annotations' },
             ]
           },
           {
-            title: 'SDK',
+            title: 'Reference',
             items: [
-              { title: 'Python SDK', href: '/docs/annotations/sdk/python' },
-              { title: 'JavaScript SDK', href: '/docs/annotations/sdk/javascript' },
-              { title: 'Annotation Queue Using SDK', href: '/docs/annotations/sdk/annotation-queue-using-sdk' },
+              { title: 'Label types & values', href: '/docs/annotations/reference/label-types-and-values' },
+              { title: 'Queue settings & limits', href: '/docs/annotations/reference/queue-settings-and-limits' },
+              { title: 'SDK & API', href: '/docs/annotations/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Annotation FAQ & fixes', href: '/docs/annotations/troubleshooting' },
             ]
           },
         ]
@@ -251,21 +291,33 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Datasets', href: '/docs/dataset/concept/understanding-dataset' },
-              { title: 'Static Columns', href: '/docs/dataset/concept/static-column' },
-              { title: 'Dynamic Columns', href: '/docs/dataset/concept/dynamic-column' },
-              { title: 'Synthetic Data', href: '/docs/dataset/concept/synthetic-data' },
+              { title: 'Understanding Datasets', href: '/docs/dataset/concepts/understanding-datasets' },
+              { title: 'Static & Dynamic Columns', href: '/docs/dataset/concepts/static-and-dynamic-columns' },
+              { title: 'Synthetic Data', href: '/docs/dataset/concepts/synthetic-data' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create New Dataset', href: '/docs/dataset/features/create' },
-              { title: 'Add Rows to Dataset', href: '/docs/dataset/features/add-rows' },
-              { title: 'Add Columns to Dataset', href: '/docs/dataset/features/add-columns' },
-              { title: 'Run Prompt in Dataset', href: '/docs/dataset/features/run-prompt' },
-              { title: 'Experiments in Dataset', href: '/docs/dataset/features/experiments' },
-              { title: 'Add Annotation', href: '/docs/dataset/features/annotate' },
+              { title: 'Create a dataset', href: '/docs/dataset/guides/create-a-dataset' },
+              { title: 'Add rows', href: '/docs/dataset/guides/add-rows' },
+              { title: 'Add columns', href: '/docs/dataset/guides/add-columns' },
+              { title: 'Run a prompt on every row', href: '/docs/dataset/guides/run-a-prompt-on-every-row' },
+              { title: 'Run an experiment', href: '/docs/dataset/guides/run-an-experiment' },
+              { title: 'Manage datasets', href: '/docs/dataset/guides/manage-datasets' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Limits & Data Types', href: '/docs/dataset/reference/limits-and-data-types' },
+              { title: 'Dynamic column methods', href: '/docs/dataset/reference/dynamic-column-methods' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Dataset FAQ & fixes', href: '/docs/dataset/troubleshooting' },
             ]
           },
         ]
@@ -278,25 +330,34 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'How It Works', href: '/docs/error-feed/concepts/how-it-works' },
-              { title: 'Error Taxonomy', href: '/docs/error-feed/concepts/taxonomy' },
-              { title: 'Scoring', href: '/docs/error-feed/concepts/scoring' },
-              { title: 'Severity and Status', href: '/docs/error-feed/concepts/severity-and-status' },
+              { title: 'Understanding Error Feed', href: '/docs/error-feed/concepts/understanding-error-feed' },
+              { title: 'Severity & Status', href: '/docs/error-feed/concepts/severity-and-status' },
+              { title: 'Trace error analysis', href: '/docs/error-feed/concepts/trace-error-analysis' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'The Feed', href: '/docs/error-feed/features/the-feed' },
-              { title: 'Issue Overview', href: '/docs/error-feed/features/issue-overview' },
-              { title: 'Traces', href: '/docs/error-feed/features/traces' },
-              { title: 'State Graph', href: '/docs/error-feed/features/state-graph' },
-              { title: 'Trends', href: '/docs/error-feed/features/trends' },
-              { title: 'Metadata Panel', href: '/docs/error-feed/features/metadata-panel' },
-              { title: 'Triage Workflow', href: '/docs/error-feed/features/triage-workflow' },
-              { title: 'Deep Analysis', href: '/docs/error-feed/features/deep-analysis' },
-              { title: 'Linear Integration', href: '/docs/error-feed/features/linear-integration' },
-              { title: 'Sampling', href: '/docs/error-feed/features/sampling' },
+              { title: 'Turn on Error Feed', href: '/docs/error-feed/guides/turn-on-error-feed' },
+              { title: 'Triage issues', href: '/docs/error-feed/guides/triage-issues' },
+              { title: 'Investigate an issue', href: '/docs/error-feed/guides/investigate-an-issue' },
+              { title: 'Run a root cause analysis', href: '/docs/error-feed/guides/run-root-cause-analysis' },
+              { title: 'Create a Linear issue', href: '/docs/error-feed/guides/create-linear-issue' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Issue fields & filters', href: '/docs/error-feed/reference/issue-fields' },
+              { title: 'Error taxonomy', href: '/docs/error-feed/reference/error-taxonomy' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'No issues in the feed', href: '/docs/error-feed/troubleshooting/no-issues-in-the-feed' },
+              { title: 'Issue counts look wrong', href: '/docs/error-feed/troubleshooting/issue-counts-look-wrong' },
+              { title: "Analysis doesn't finish", href: '/docs/error-feed/troubleshooting/analysis-does-not-finish' },
             ]
           },
         ]
@@ -499,11 +560,22 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/falcon-ai' },
           {
-            title: 'Features',
+            title: 'Concepts',
             items: [
-              { title: 'Using Falcon AI', href: '/docs/falcon-ai/features/chat' },
-              { title: 'Skill Builder', href: '/docs/falcon-ai/features/skills' },
-              { title: 'MCP Connectors', href: '/docs/falcon-ai/features/mcp-connectors' },
+              { title: 'Understanding Falcon AI', href: '/docs/falcon-ai/concepts/understanding-falcon-ai' },
+              { title: 'Skills', href: '/docs/falcon-ai/concepts/skills' },
+              { title: 'MCP Connectors', href: '/docs/falcon-ai/concepts/mcp-connectors' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Chat with Falcon AI', href: '/docs/falcon-ai/guides/chat-with-falcon-ai' },
+              { title: 'Manage conversations', href: '/docs/falcon-ai/guides/manage-conversations' },
+              { title: 'Create a skill', href: '/docs/falcon-ai/guides/create-skill' },
+              { title: 'Connect an MCP server', href: '/docs/falcon-ai/guides/connect-mcp-server' },
+              { title: 'Choose connector tools', href: '/docs/falcon-ai/guides/choose-connector-tools' },
+              { title: 'Use the MCP Server in your IDE', href: '/docs/falcon-ai/guides/use-the-mcp-server' },
             ]
           },
         ]
@@ -516,14 +588,15 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Knowledge Base', href: '/docs/knowledge-base/concepts/concept' },
+              { title: 'Understanding Knowledge Base', href: '/docs/knowledge-base/concepts/understanding-knowledge-base' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create KB Using SDK', href: '/docs/knowledge-base/features/sdk' },
-              { title: 'Create KB Using UI', href: '/docs/knowledge-base/features/ui' },
+              { title: 'Create a knowledge base', href: '/docs/knowledge-base/guides/create-knowledge-base' },
+              { title: 'Update a knowledge base', href: '/docs/knowledge-base/guides/update-knowledge-base' },
+              { title: 'Manage with the SDK', href: '/docs/knowledge-base/guides/manage-with-the-sdk' },
             ]
           },
         ]
@@ -587,20 +660,40 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Understanding Optimization', href: '/docs/optimization/concepts/concept' },
-              { title: 'Bayesian Search', href: '/docs/optimization/optimizers/bayesian-search' },
-              { title: 'Meta-Prompt', href: '/docs/optimization/optimizers/meta-prompt' },
-              { title: 'ProTeGi', href: '/docs/optimization/optimizers/protegi' },
-              { title: 'PromptWizard', href: '/docs/optimization/optimizers/promptwizard' },
-              { title: 'GEPA', href: '/docs/optimization/optimizers/gepa' },
-              { title: 'Random Search', href: '/docs/optimization/optimizers/random-search' },
+              { title: 'Understanding optimization', href: '/docs/optimization/concepts/understanding-optimization' },
+              { title: 'Choosing an optimizer', href: '/docs/optimization/concepts/choosing-an-optimizer' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Using Python SDK', href: '/docs/optimization/features/using-python-sdk' },
-              { title: 'Using Platform', href: '/docs/optimization/features/using-platform' },
+              { title: 'Run an optimization', href: '/docs/optimization/guides/run-an-optimization' },
+              { title: 'Read optimization results', href: '/docs/optimization/guides/read-optimization-results' },
+              { title: 'Optimize from the SDK', href: '/docs/optimization/guides/optimize-from-the-sdk' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              {
+                title: 'Optimizers',
+                items: [
+                  { title: 'Overview', href: '/docs/optimization/reference/optimizers' },
+                  { title: 'Random Search', href: '/docs/optimization/reference/optimizers/random-search' },
+                  { title: 'Bayesian Search', href: '/docs/optimization/reference/optimizers/bayesian-search' },
+                  { title: 'ProTeGi', href: '/docs/optimization/reference/optimizers/protegi' },
+                  { title: 'Meta-Prompt', href: '/docs/optimization/reference/optimizers/meta-prompt' },
+                  { title: 'PromptWizard', href: '/docs/optimization/reference/optimizers/promptwizard' },
+                  { title: 'GEPA', href: '/docs/optimization/reference/optimizers/gepa' },
+                ]
+              },
+              { title: 'SDK & API', href: '/docs/optimization/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Optimization FAQ & fixes', href: '/docs/optimization/troubleshooting' },
             ]
           },
         ]
@@ -613,20 +706,33 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Prompt Engineering', href: '/docs/prompt/concepts/prompt-engineering' },
               { title: 'Understanding Prompts', href: '/docs/prompt/concepts/understanding-prompts' },
-              { title: 'Versions and Labels', href: '/docs/prompt/concepts/versions-and-labels' },
+              { title: 'Versions & Labels', href: '/docs/prompt/concepts/versions-and-labels' },
+              { title: 'Prompt Engineering', href: '/docs/prompt/concepts/prompt-engineering' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Create Prompt from Scratch', href: '/docs/prompt/features/create-from-scratch' },
-              { title: 'Create from Existing Template', href: '/docs/prompt/features/create-from-template' },
-              { title: 'Create with AI', href: '/docs/prompt/features/create-with-ai' },
-              { title: 'Prompt Workbench Using SDK', href: '/docs/prompt/features/sdk' },
-              { title: 'Linked Traces', href: '/docs/prompt/features/linked-traces' },
-              { title: 'Manage Folders', href: '/docs/prompt/features/folders' },
+              { title: 'Create a prompt', href: '/docs/prompt/guides/create-a-prompt' },
+              { title: 'Run a prompt', href: '/docs/prompt/guides/run-a-prompt' },
+              { title: 'Commit & compare versions', href: '/docs/prompt/guides/commit-and-compare-versions' },
+              { title: 'Evaluate prompt outputs', href: '/docs/prompt/guides/evaluate-prompt-outputs' },
+              { title: 'Track prompt performance', href: '/docs/prompt/guides/track-prompt-performance' },
+              { title: 'Organize prompts in folders', href: '/docs/prompt/guides/organize-prompts-in-folders' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Model configuration', href: '/docs/prompt/reference/model-configuration' },
+              { title: 'SDK & API', href: '/docs/prompt/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Prompt FAQ & fixes', href: '/docs/prompt/troubleshooting' },
             ]
           },
         ]
@@ -639,41 +745,36 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Use Cases', href: '/docs/protect/concepts/concept' },
+              { title: 'Understanding Protect', href: '/docs/protect/concepts/understanding-protect' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Run Protect via SDK', href: '/docs/protect/features/run-protect' },
+              { title: 'Turn on a guardrail', href: '/docs/protect/guides/turn-on-a-guardrail' },
+              { title: 'Test a guardrail', href: '/docs/protect/guides/test-a-guardrail' },
+              { title: 'Review guardrail activity', href: '/docs/protect/guides/review-guardrail-activity' },
+              { title: 'Run Protect from the SDK', href: '/docs/protect/guides/run-protect-from-the-sdk' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Guardrail checks', href: '/docs/protect/reference/guardrail-checks' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Guardrail changes not taking effect', href: '/docs/protect/troubleshooting/guardrail-changes-not-taking-effect' },
+              { title: 'Guardrail fires on the wrong requests', href: '/docs/protect/troubleshooting/guardrail-fires-on-the-wrong-requests' },
+              { title: 'Protect SDK rejects an input', href: '/docs/protect/troubleshooting/protect-sdk-rejects-an-input' },
             ]
           },
         ]
       },
       {
-        group: 'Prototype',
-        icon: 'flask',
-        items: [
-          { title: 'Overview', href: '/docs/prototype' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Understanding Prototype', href: '/docs/prototype/concepts/understanding-prototype' },
-              { title: 'Versions and Runs', href: '/docs/prototype/concepts/versions-and-runs' },
-            ]
-          },
-          {
-            title: 'Features',
-            items: [
-              { title: 'Set Up Prototype', href: '/docs/prototype/features/set-up-prototype' },
-              { title: 'Evals', href: '/docs/prototype/features/evals' },
-              { title: 'Choose Winner', href: '/docs/prototype/features/choose-winner' },
-            ]
-          },
-        ]
-      },
-      {
-        group: 'Resources',
+        group: 'RBAC',
         icon: 'book',
         items: [
           { title: 'Admin & Settings', href: '/docs/admin-settings' },
@@ -688,11 +789,19 @@ export const tabNavigation: NavTab[] = [
               { title: 'AI Providers', href: '/docs/admin-settings/ai-providers' },
               { title: 'Integrations', href: '/docs/admin-settings/integrations' },
               { title: 'Usage Summary', href: '/docs/admin-settings/usage-summary' },
-              { title: 'Billing & Pricing', href: '/docs/admin-settings/billing-pricing' },
             ]
           },
           { title: 'Roles & Permissions', href: '/docs/roles-and-permissions' },
-          { title: 'Installation', href: '/docs/installation' },
+          {
+            title: 'Billing',
+            items: [
+              { title: 'Overview', href: '/docs/billing' },
+              { title: 'What you are billed for', href: '/docs/billing/concepts/what-you-are-billed-for' },
+              { title: 'Pricing', href: '/docs/billing/reference/pricing' },
+              { title: 'Manage your plan', href: '/docs/billing/guides/manage-your-plan' },
+              { title: 'Control spend', href: '/docs/billing/guides/control-spend' },
+            ]
+          },
           { title: 'FAQ', href: '/docs/faq' },
         ]
       },
@@ -704,28 +813,84 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Concepts',
             items: [
-              { title: 'Agent Definition', href: '/docs/simulation/concepts/agent-definition' },
+              { title: 'Understanding Simulation', href: '/docs/simulation/concepts/understanding-simulation' },
+              { title: 'Agent definitions & versions', href: '/docs/simulation/concepts/agent-definitions' },
               { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
               { title: 'Personas', href: '/docs/simulation/concepts/personas' },
-              { title: 'Global Nodes', href: '/docs/simulation/concepts/global-nodes' },
+              { title: 'Runs & results', href: '/docs/simulation/concepts/runs-and-results' },
+              { title: 'Replay', href: '/docs/simulation/concepts/replay' },
+              { title: 'Optimization', href: '/docs/simulation/concepts/optimization' },
             ]
           },
           {
-            title: 'Features',
+            title: 'Guides',
             items: [
-              { title: 'Run Voice Simulation', href: '/docs/simulation/features/run-simulation' },
-              { title: 'Chat Simulation Using SDK', href: '/docs/simulation/features/simulation-using-sdk' },
+              { title: 'Connect your agent', href: '/docs/simulation/guides/connect-your-agent' },
+              { title: 'Create scenarios', href: '/docs/simulation/guides/create-scenarios' },
+              { title: 'Create personas', href: '/docs/simulation/guides/create-personas' },
               {
-                title: 'Replay',
+                title: 'Explore scenarios',
                 items: [
-                  { title: 'Chat Replay', href: '/docs/simulation/features/observe-to-simulate' },
-                  { title: 'Voice Replay', href: '/docs/simulation/features/voice-replay' },
+                  { title: 'Overview', href: '/docs/simulation/guides/explore-scenarios' },
+                  { title: 'Explore scenario graph', href: '/docs/simulation/guides/explore-scenarios/scenario-graph' },
+                  { title: 'Add rows', href: '/docs/simulation/guides/explore-scenarios/add-rows' },
+                  { title: 'Add columns', href: '/docs/simulation/guides/explore-scenarios/add-columns' },
                 ]
               },
-              { title: 'Prompt Simulation', href: '/docs/simulation/features/prompt-simulation' },
-              { title: 'Evaluate Tool Calling', href: '/docs/simulation/features/evaluate-tool-calling' },
-              { title: 'View Results', href: '/docs/simulation/features/view-results' },
-              { title: 'Fix My Agent', href: '/docs/simulation/features/fix-my-agent' },
+              {
+                title: 'Running simulations',
+                items: [
+                  { title: 'Create a simulation', href: '/docs/simulation/guides/create-simulation' },
+                  { title: 'Run a voice simulation', href: '/docs/simulation/guides/run-voice-simulation' },
+                  { title: 'Run a chat simulation', href: '/docs/simulation/guides/run-chat-simulation' },
+                  { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
+                ]
+              },
+              {
+                title: 'Evaluations in simulation',
+                items: [
+                  { title: 'Edit evals in a simulation', href: '/docs/simulation/guides/edit-evals' },
+                  { title: 'Evaluate tool calls', href: '/docs/simulation/guides/evaluate-tool-calls' },
+                ]
+              },
+              {
+                title: 'Replay simulations',
+                items: [
+                  { title: 'Replay chat sessions', href: '/docs/simulation/guides/replay-chat' },
+                  { title: 'Replay voice calls', href: '/docs/simulation/guides/replay-voice' },
+                ]
+              },
+              {
+                title: 'Explore results',
+                items: [
+                  { title: 'Overview', href: '/docs/simulation/guides/explore-results' },
+                  { title: 'Calls & transcripts', href: '/docs/simulation/guides/explore-results/calls-and-transcripts' },
+                  { title: 'Analytics & metrics', href: '/docs/simulation/guides/explore-results/analytics' },
+                ]
+              },
+              { title: 'Fix My Agent', href: '/docs/simulation/guides/fix-my-agent' },
+              {
+                title: 'Optimize using simulate',
+                items: [
+                  { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
+                  { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
+                ]
+              },
+            ]
+          },
+          {
+            title: 'References',
+            items: [
+              { title: 'Built-in personas', href: '/docs/simulation/reference/built-in-personas' },
+              { title: 'Voice providers', href: '/docs/simulation/reference/voice-providers' },
+              { title: 'Call metrics', href: '/docs/simulation/reference/call-metrics' },
+              { title: 'SDK & API', href: '/docs/simulation/reference/sdk-api' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Simulation FAQ & fixes', href: '/docs/simulation/troubleshooting' },
             ]
           },
         ]
@@ -834,218 +999,162 @@ export const tabNavigation: NavTab[] = [
     href: '/docs/cookbook',
     groups: [
       {
-        group: 'Cookbooks',
+        group: 'Get Started',
+        icon: 'rocket',
         items: [
           { title: 'Overview', href: '/docs/cookbook' },
+          { title: 'Your First Evaluation', href: '/docs/cookbook/quickstart/first-eval' },
+          { title: 'Dataset Management', href: '/docs/cookbook/quickstart/dataset-management' },
+          { title: 'Dataset SDK Batch Eval', href: '/docs/cookbook/quickstart/batch-eval' },
+          { title: 'Evaluator SDK Basics', href: '/docs/cookbook/using-futureagi-evals' },
+          { title: 'Datasets with the SDK', href: '/docs/cookbook/using-futureagi-dataset' },
+          { title: 'Knowledge Base SDK', href: '/docs/cookbook/using-futureagi-kb' },
+          { title: 'Protect Rules SDK', href: '/docs/cookbook/using-futureagi-protect' },
+          { title: 'Self-Hosted Docker Compose', href: '/docs/cookbook/self-hosting/docker-compose-quickstart' },
           {
-            title: 'Quickstart',
-            icon: 'rocket',
+            title: 'Production & CI/CD',
             items: [
-              {
-                title: 'Evaluation',
-                items: [
-                  { title: 'Running Your First Eval', href: '/docs/cookbook/quickstart/first-eval' },
-                  { title: 'Custom Eval Metrics: Write Your Own Evaluation Criteria', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
-                  { title: 'Hallucination Detection with Faithfulness & Groundedness', href: '/docs/cookbook/quickstart/hallucination-detection' },
-                  { title: 'RAG Pipeline Evaluation: Debug Retrieval vs Generation', href: '/docs/cookbook/quickstart/rag-evaluation' },
-                  { title: 'Multimodal Evaluation: Images, Audio, and PDF', href: '/docs/cookbook/quickstart/multimodal-eval' },
-                  { title: 'Tone, Toxicity, and Bias Detection Evals', href: '/docs/cookbook/quickstart/tone-toxicity-bias-eval' },
-                  { title: 'Evaluate Customer Agent Conversations', href: '/docs/cookbook/quickstart/conversation-eval' },
-                  { title: 'Dataset SDK: Upload, Evaluate, and Download Results', href: '/docs/cookbook/quickstart/batch-eval' },
-                  { title: 'Async Evaluations for Large-Scale Testing', href: '/docs/cookbook/quickstart/async-batch-eval' },
-                  { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
-                ]
-              },
-              {
-                title: 'Simulation',
-                items: [
-                  { title: 'Chat Simulation: Run Multi-Persona Conversations via SDK', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
-                  { title: 'Voice Simulation: Define Agents, Personas, and Run Call Tests', href: '/docs/cookbook/quickstart/voice-simulation' },
-                  { title: 'Tool-Calling Agent Simulation with Tracing', href: '/docs/cookbook/quickstart/tool-calling-simulation' },
-                  { title: 'Simulate from the Prompt Workbench', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
-                ]
-              },
-              {
-                title: 'Dataset',
-                items: [
-                  { title: 'Create and Manage Datasets from the Dashboard', href: '/docs/cookbook/quickstart/dataset-management' },
-                  { title: 'Synthetic Data Generation: Create Test Datasets from a Schema', href: '/docs/cookbook/quickstart/synthetic-data-generation' },
-                  { title: 'Annotate Datasets with Human-in-the-Loop Workflows', href: '/docs/cookbook/quickstart/dataset-annotation' },
-                  { title: 'Import Datasets from Hugging Face', href: '/docs/cookbook/quickstart/huggingface-dataset-import' },
-                  { title: 'Dynamic Dataset Columns: Enrich Rows with AI-Generated Data', href: '/docs/cookbook/quickstart/dynamic-dataset-columns' },
-                ]
-              },
-              {
-                title: 'Prompt',
-                items: [
-                  { title: 'Prompt Versioning: Create, Label, and Serve Prompt Versions', href: '/docs/cookbook/quickstart/prompt-versioning' },
-                  { title: 'Prototype and Iterate on LLM Applications', href: '/docs/cookbook/quickstart/prototype-llm-app' },
-                ]
-              },
-              {
-                title: 'Observability',
-                items: [
-                  { title: 'Instrument an Existing App and Verify It End to End', href: '/docs/cookbook/quickstart/instrument-and-verify' },
-                  { title: 'Manual Tracing: Add Custom Spans to Any Application', href: '/docs/cookbook/quickstart/manual-tracing' },
-                  { title: 'Session-Based Observability for Multi-Turn Conversations', href: '/docs/cookbook/quickstart/session-observability' },
-                  { title: 'Monitoring & Alerts: Track LLM Performance and Set Quality Thresholds', href: '/docs/cookbook/quickstart/monitoring-alerts' },
-                  { title: 'Inline Evals in Tracing: Score Every Response as It\'s Generated', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
-                  { title: 'Distributed Tracing: Connect Spans Across Services', href: '/docs/cookbook/quickstart/distributed-tracing' },
-                ]
-              },
-              {
-                title: 'Optimization',
-                items: [
-                  { title: 'Prompt Optimization: Improve a Prompt Automatically', href: '/docs/cookbook/quickstart/prompt-optimization' },
-                  { title: 'Compare Optimization Strategies: ProTeGi, GEPA, and PromptWizard', href: '/docs/cookbook/quickstart/compare-optimizers' },
-                  { title: 'Dataset Optimization: Improve Prompts Directly in Your Dataset', href: '/docs/cookbook/quickstart/dataset-optimization' },
-                ]
-              },
-              {
-                title: 'Protect',
-                items: [
-                  { title: 'Protect: Add Safety Guardrails to LLM Outputs', href: '/docs/cookbook/quickstart/protect-guardrails' },
-                ]
-              },
-              {
-                title: 'Knowledge Base',
-                items: [
-                  { title: 'Knowledge Base: Upload Documents and Query with the SDK', href: '/docs/cookbook/quickstart/knowledge-base' },
-                ]
-              },
-              {
-                title: 'Experimentation',
-                items: [
-                  { title: 'Experimentation: Compare Prompts and Models on a Dataset', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
-                  { title: 'Evaluation-Driven Development: Score Every Prompt Change Before Shipping', href: '/docs/cookbook/quickstart/eval-driven-dev' },
-                  { title: 'CI/CD Eval Pipeline: Automate Quality Gates in GitHub Actions', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
-                ]
-              },
-            ]
-          },
-          {
-            title: 'Use Cases',
-            icon: 'flask',
-            items: [
-              { title: 'Test and Fix Your Chat Agent with Simulated Conversations', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
-              { title: 'Monitor LLM Quality in Production and Catch Regressions', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
-            ]
-          },
-          {
-            title: 'Falcon AI',
-            icon: 'rocket',
-            items: [
-              { title: 'End-to-End with Falcon AI: Trace → Debug → Evaluate → Dataset → Fix in One Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
-              { title: 'Context-Aware Trace Debugging with Falcon AI', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
-              { title: 'Building Golden Datasets from Production Traces with Falcon AI', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
-            ]
-          },
-          {
-            title: 'Agent Command Center',
-            icon: 'server',
-            items: [
-              { title: 'Cut LLM Costs 80% With Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
-            ]
-          },
-          {
-            title: 'MCP Server',
-            icon: 'plug',
-            items: [
-              { title: 'Debug LLM Traces From Your IDE Using Natural Language MCP Queries', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
-            ]
-          },
-          {
-            title: 'Evaluation',
-            icon: 'check-double',
-            items: [
-              { title: "Building an Eval Correction Loop: Teaching Your Evaluator What 'Good' Means for Your Domain", href: '/docs/cookbook/evaluation/eval-correction-loop' },
-            ]
-          },
-          {
-            title: 'Self-Hosting',
-            icon: 'box',
-            items: [
-              { title: 'Deploy the Full Open-Source AI Stack Locally With Docker Compose in 5 Minutes', href: '/docs/cookbook/self-hosting/docker-compose-quickstart' },
-            ]
-          },
-          {
-            title: 'Getting Started',
-            icon: 'zap',
-            items: [
-              { title: 'Using FutureAGI Evals', href: '/docs/cookbook/using-futureagi-evals' },
-              { title: 'Using FutureAGI Protect', href: '/docs/cookbook/using-futureagi-protect' },
-              { title: 'Using FutureAGI Dataset', href: '/docs/cookbook/using-futureagi-dataset' },
-              { title: 'Using FutureAGI KB', href: '/docs/cookbook/using-futureagi-kb' },
-            ]
-          },
-          {
-            title: 'Integrations',
-            icon: 'plug',
-            items: [
-              { title: 'Portkey Integration', href: '/docs/cookbook/portkey-integration' },
-              { title: 'LangChain/LangGraph', href: '/docs/cookbook/langchain-langgraph' },
-              { title: 'LlamaIndex PDF RAG', href: '/docs/cookbook/llamaindex-pdf-rag' },
-              { title: 'CrewAI Research Team', href: '/docs/cookbook/crewai-research-team' },
-              { title: 'MongoDB', href: '/docs/cookbook/mongodb' },
-            ]
-          },
-          {
-            title: 'Evaluation',
-            icon: 'chart',
-            items: [
-              { title: 'Meeting Summarization', href: '/docs/cookbook/meeting-summarization' },
-              { title: 'AI SDR Evaluation', href: '/docs/cookbook/ai-sdr' },
-              { title: 'AI Agents Evaluation', href: '/docs/cookbook/ai-agents' },
-              { title: 'Image Evaluation', href: '/docs/cookbook/image-evaluation' },
-            ]
-          },
-          {
-            title: 'Observability',
-            icon: 'eye',
-            items: [
-              { title: 'Observing a LangGraph agent and obtaining insights', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
-              { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/text-to-sql' },
-            ]
-          },
-          {
-            title: 'RAG',
-            icon: 'search',
-            items: [
-              { title: 'RAG with LangChain', href: '/docs/cookbook/rag-langchain' },
-              { title: 'Evaluate RAG Apps', href: '/docs/cookbook/evaluate-rag' },
-              { title: 'Trustworthy RAG Chatbots', href: '/docs/cookbook/trustworthy-rag' },
-              { title: 'Decrease RAG Hallucination', href: '/docs/cookbook/decrease-hallucination' },
-            ]
-          },
-          {
-            title: 'Optimization',
-            icon: 'gauge',
-            items: [
-              { title: 'End-to-End Prompt Optimization', href: '/docs/cookbook/end-to-end-optimization' },
-              { title: 'Basic Prompt Optimization', href: '/docs/cookbook/basic-optimization' },
-              { title: 'GEPA Optimization', href: '/docs/cookbook/gepa-optimization' },
-              { title: 'Eval Metrics for Optimization', href: '/docs/cookbook/eval-metrics-optimization' },
-              { title: 'Compare Strategies', href: '/docs/cookbook/compare-optimization' },
-              { title: 'Import Datasets', href: '/docs/cookbook/import-datasets' },
-            ]
-          },
-          {
-            title: 'Simulate',
-            icon: 'play',
-            items: [
-              { title: 'Chat Simulation with Fix My Agent', href: '/docs/cookbook/chat-simulation-fix-agent' },
-              { title: 'Simulate SDK Demo', href: '/docs/cookbook/simulate-sdk' },
-            ]
-          },
-          {
-            title: 'Error Feed',
-            icon: 'compass',
-            items: [
-              { title: 'Error Feed with Google ADK', href: '/docs/cookbook/error-feed/google-adk-multi-agent' },
+              { title: 'Monitoring and Alerts', href: '/docs/cookbook/quickstart/monitoring-alerts' },
+              { title: 'Production Quality Monitoring', href: '/docs/cookbook/use-cases/production-quality-monitoring' },
+              { title: 'Protect Safety Guardrails', href: '/docs/cookbook/quickstart/protect-guardrails' },
+              { title: 'CI/CD Eval Pipeline', href: '/docs/cookbook/quickstart/cicd-eval-pipeline' },
+              { title: 'Evaluation-Driven Development', href: '/docs/cookbook/quickstart/eval-driven-dev' },
             ]
           },
         ]
-      }
+      },
+      {
+        group: 'Use Cases',
+        icon: 'flask',
+        items: [
+          { title: 'Overview', href: '/docs/cookbook/use-cases' },
+          {
+            title: 'Chat & Support Agents',
+            collapsible: true,
+            items: [
+              { title: 'Multi-Turn Conversation Eval', href: '/docs/cookbook/quickstart/conversation-eval' },
+              { title: 'Session-Based Observability', href: '/docs/cookbook/quickstart/session-observability' },
+              { title: 'LangGraph Agent Observability', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
+              { title: 'Chat Simulation with Personas', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
+              { title: 'Chat Simulation & Fix My Agent', href: '/docs/cookbook/chat-simulation-fix-agent' },
+              { title: 'Prompt Workbench Simulation', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
+              { title: 'End-to-End Agent Testing', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
+            ]
+          },
+          {
+            title: 'RAG & Document Q&A',
+            collapsible: true,
+            items: [
+              { title: 'RAG Evaluation', href: '/docs/cookbook/quickstart/rag-evaluation' },
+              { title: 'Hallucination Detection', href: '/docs/cookbook/quickstart/hallucination-detection' },
+              { title: 'Evaluating RAG Applications', href: '/docs/cookbook/evaluate-rag' },
+              { title: 'RAG Chatbot Trustworthiness', href: '/docs/cookbook/trustworthy-rag' },
+              { title: 'Decrease RAG Hallucinations', href: '/docs/cookbook/decrease-hallucination' },
+              { title: 'LangChain RAG Evaluation', href: '/docs/cookbook/rag-langchain' },
+              { title: 'LlamaIndex PDF RAG Chatbot', href: '/docs/cookbook/llamaindex-pdf-rag' },
+              { title: 'MongoDB Atlas RAG Chatbot', href: '/docs/cookbook/mongodb' },
+              { title: 'Knowledge Base', href: '/docs/cookbook/quickstart/knowledge-base' },
+            ]
+          },
+          {
+            title: 'Voice Agents',
+            collapsible: true,
+            items: [
+              { title: 'Voice Simulation', href: '/docs/cookbook/quickstart/voice-simulation' },
+              { title: 'Voice Agent Simulate SDK', href: '/docs/cookbook/simulate-sdk' },
+            ]
+          },
+          {
+            title: 'Multi-Agent & Tool Use',
+            collapsible: true,
+            items: [
+              { title: 'CrewAI Research Team', href: '/docs/cookbook/crewai-research-team' },
+              { title: 'Google ADK Error Feed', href: '/docs/cookbook/error-feed/google-adk-multi-agent' },
+              { title: 'Tool-Calling Agent Simulation', href: '/docs/cookbook/quickstart/tool-calling-simulation' },
+              { title: 'Agent Function Calling Eval', href: '/docs/cookbook/ai-agents' },
+              { title: 'LangChain & LangGraph Observability', href: '/docs/cookbook/langchain-langgraph' },
+            ]
+          },
+          {
+            title: 'Content & Multimodal',
+            collapsible: true,
+            items: [
+              { title: 'Meeting Summarization Eval', href: '/docs/cookbook/meeting-summarization' },
+              { title: 'AI SDR Outreach Eval', href: '/docs/cookbook/ai-sdr' },
+              { title: 'Image Evaluation', href: '/docs/cookbook/image-evaluation' },
+              { title: 'Multimodal Evaluation', href: '/docs/cookbook/quickstart/multimodal-eval' },
+              { title: 'Tone, Toxicity & Bias Evals', href: '/docs/cookbook/quickstart/tone-toxicity-bias-eval' },
+            ]
+          },
+          {
+            title: 'Text-to-SQL',
+            collapsible: true,
+            items: [
+              { title: 'Text-to-SQL Evaluation', href: '/docs/cookbook/quickstart/text-to-sql-eval' },
+              { title: 'Text-to-SQL Agent', href: '/docs/cookbook/text-to-sql' },
+            ]
+          },
+        ]
+      },
+      {
+        group: 'Platform',
+        icon: 'server',
+        items: [
+          { title: 'Overview', href: '/docs/cookbook/platform' },
+          {
+            title: 'Tracing & Debugging',
+            collapsible: true,
+            items: [
+              { title: 'Instrument and Verify', href: '/docs/cookbook/quickstart/instrument-and-verify' },
+              { title: 'Manual Tracing', href: '/docs/cookbook/quickstart/manual-tracing' },
+              { title: 'Distributed Tracing', href: '/docs/cookbook/quickstart/distributed-tracing' },
+              { title: 'Inline Evals in Tracing', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
+              { title: 'Portkey Integration', href: '/docs/cookbook/portkey-integration' },
+              { title: 'Debug Traces from IDE', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
+              { title: 'Falcon AI Trace Debugging', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
+              { title: 'Falcon AI End-to-End Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
+            ]
+          },
+          {
+            title: 'Evaluation Workflows',
+            collapsible: true,
+            items: [
+              { title: 'Custom Eval Metrics', href: '/docs/cookbook/quickstart/custom-eval-metrics' },
+              { title: 'Async & Batch Evaluations', href: '/docs/cookbook/quickstart/async-batch-eval' },
+              { title: 'Eval Correction Loop', href: '/docs/cookbook/evaluation/eval-correction-loop' },
+              { title: 'Eval Metrics for Optimization', href: '/docs/cookbook/eval-metrics-optimization' },
+              { title: 'Comparing Prompts and Models', href: '/docs/cookbook/quickstart/experimentation-compare-prompts' },
+            ]
+          },
+          {
+            title: 'Datasets',
+            collapsible: true,
+            items: [
+              { title: 'Synthetic Data Generation', href: '/docs/cookbook/quickstart/synthetic-data-generation' },
+              { title: 'Dynamic Dataset Columns', href: '/docs/cookbook/quickstart/dynamic-dataset-columns' },
+              { title: 'Hugging Face Dataset Import', href: '/docs/cookbook/quickstart/huggingface-dataset-import' },
+              { title: 'Dataset Annotation', href: '/docs/cookbook/quickstart/dataset-annotation' },
+              { title: 'Golden Datasets from Traces', href: '/docs/cookbook/falcon-ai/eval-datasets-from-traces' },
+            ]
+          },
+          {
+            title: 'Prompts & Optimization',
+            collapsible: true,
+            items: [
+              { title: 'Prompt Versioning', href: '/docs/cookbook/quickstart/prompt-versioning' },
+              { title: 'Prompt Optimization', href: '/docs/cookbook/quickstart/prompt-optimization' },
+              { title: 'Basic Prompt Optimization', href: '/docs/cookbook/basic-optimization' },
+              { title: 'End-to-End Prompt Optimization', href: '/docs/cookbook/end-to-end-optimization' },
+              { title: 'GEPA Optimization', href: '/docs/cookbook/gepa-optimization' },
+              { title: 'Dataset Optimization', href: '/docs/cookbook/quickstart/dataset-optimization' },
+              { title: 'Custom Datasets for Optimization', href: '/docs/cookbook/import-datasets' },
+              { title: 'Comparing Prompt Optimizers', href: '/docs/cookbook/quickstart/compare-optimizers' },
+              { title: 'Comparing Optimizers', href: '/docs/cookbook/compare-optimization' },
+              { title: 'Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
+            ]
+          },
+        ]
+      },
     ]
   },
   {
