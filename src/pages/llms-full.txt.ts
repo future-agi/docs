@@ -148,6 +148,12 @@ function stripFrontmatterAndImports(content: string): string {
   // Remove frontmatter
   let result = content.replace(/^---[\s\S]*?---\s*/, '');
 
+  // Turn Mermaid components into fenced blocks so the diagram source survives
+  // the JSX stripping below
+  result = result.replace(/<Mermaid\s+chart=\{`([\s\S]*?)`\}\s*\/>/g, (_m, chart: string) => {
+    return '\n```mermaid\n' + chart.trim() + '\n```\n';
+  });
+
   // Park fenced code so the prose rules below can't edit sample code
   const fences: string[] = [];
   result = result.replace(/```[\s\S]*?```/g, (block) => {
