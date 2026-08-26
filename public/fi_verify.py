@@ -3,7 +3,7 @@
     python fi_verify.py preflight    closes G1, before any code is touched
     python fi_verify.py check        all ten gates, after one real request
 
-Python 3.10+. No dependency beyond the OpenTelemetry SDK.
+Python 3.11+. No dependency beyond the OpenTelemetry SDK.
 """
 import json, os, sys, time, urllib.error, urllib.request
 
@@ -88,7 +88,8 @@ def preflight():
         out.append(WHY.get(code, "unexpected status; the body above is the collector's."))
         put("preflight", False, {"http": code, "body": body})
         return False, out
-    for label, k, kw in (("wrong key   ", key[:-4] + "0000", {}),
+    flip = "0000" if not key.endswith("0000") else "1111"   # never hand back the real key
+    for label, k, kw in (("wrong key   ", key[:-4] + flip, {}),
                          ("no headers  ", key, {"auth": False}),
                          ("trailing slash", key, {"slash": True})):
         c, b = send(k, secret, project, **kw)
@@ -190,8 +191,11 @@ def check(path=None, require_user=True):
     thin = [s["name"] for s in llm if not (first(s["attrs"], IN) and first(s["attrs"], OUT))]
     nomodel = [s["name"] for s in llm if not first(s["attrs"], MODEL)]
     cost = first(root["attrs"], COST)
-    counted = llm and all(first(s["attrs"], TOKENS) is not None for s in llm)
-    rolled = first(root["attrs"], TOKENS) is not None
+    # We price a span from its model and tokens; a cost you send wins. G9 wants one or the other.
+    ours = [s for s in llm if not isinstance(first(s["attrs"], COST), (int, float))]
+    unpriceable = [s["name"] for s in ours
+                   if not (first(s["attrs"], MODEL) and first(s["attrs"], TOKENS))]
+    both = bool(ours) and isinstance(cost, (int, float)) and cost > 0
     # G1 is read back from two receipts, never assumed. Without it the other nine only say
     # the spans are well formed on this machine, which is not an integration.
     pre, deliver = get("preflight"), get("delivery")
@@ -217,10 +221,12 @@ def check(path=None, require_user=True):
          "user.id=" + str(sorted(map(str, users)))),
         ("G8", bool(llm) and not nomodel,
          "model on every LLM span" if not nomodel else "missing on " + str(nomodel[:3])),
-        # Cost is what the trace list is read for and the one most often missing. It is not
-        # computed for you, and a zero is not a cost, so a zero does not pass.
-        ("G9", bool(counted and rolled and isinstance(cost, (int, float)) and cost > 0),
-         "tokens and cost on LLM spans, rolled up onto the root; root cost=" + str(cost)),
+        ("G9", bool(llm) and not unpriceable,
+         ("no model, no tokens and no cost on " + str(unpriceable[:3]) if unpriceable else
+          "%d LLM span(s): %d priceable from the model and tokens, %d carrying your own cost"
+          % (len(llm), len(ours), len(llm) - len(ours)))
+         + ("; root cost=%s on top: if we price these models, the trace and"
+            " session totals double count" % cost if both else "")),
         ("G10", not leaked, "no credential in any span attribute" if not leaked
          else "CREDENTIAL ON SPAN " + str(leaked)),
     ]
