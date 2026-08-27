@@ -1105,6 +1105,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Tracing & Debugging',
             collapsible: true,
             items: [
+              { title: 'Instrument and Verify', href: '/docs/cookbook/quickstart/instrument-and-verify' },
               { title: 'Manual Tracing', href: '/docs/cookbook/quickstart/manual-tracing' },
               { title: 'Distributed Tracing', href: '/docs/cookbook/quickstart/distributed-tracing' },
               { title: 'Inline Evals in Tracing', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
