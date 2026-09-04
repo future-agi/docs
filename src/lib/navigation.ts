@@ -632,6 +632,7 @@ export const tabNavigation: NavTab[] = [
               },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
+              { title: 'Connect a voice provider', href: '/docs/observe/features/voice' },
             ]
           },
           {
@@ -1106,6 +1107,7 @@ export const tabNavigation: NavTab[] = [
             collapsible: true,
             items: [
               { title: 'Instrument and Verify', href: '/docs/cookbook/quickstart/instrument-and-verify' },
+              { title: 'Instrument and Verify a Voice Agent', href: '/docs/cookbook/quickstart/instrument-and-verify-voice' },
               { title: 'Manual Tracing', href: '/docs/cookbook/quickstart/manual-tracing' },
               { title: 'Distributed Tracing', href: '/docs/cookbook/quickstart/distributed-tracing' },
               { title: 'Inline Evals in Tracing', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
