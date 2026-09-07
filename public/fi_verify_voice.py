@@ -77,7 +77,10 @@ def send(key, secret, project, auth=True, slash=False):
     now = int(time.time())
     attrs = [{"key": "fi.span.kind", "value": {"stringValue": "CONVERSATION"}},
              {"key": "call.duration", "value": {"doubleValue": 1.0}}]
-    span = {"traceId": "4bf92f3577b34da6a3ce929d0e0e4736", "spanId": "00f067aa0ba902b7",
+    # Fresh ids per send. A fixed pair collides with any other probe that reuses it,
+    # and the store replaces on (project, hour, trace_id, span_id): one probe silently
+    # overwrites the other and only one row survives in the project.
+    span = {"traceId": os.urandom(16).hex(), "spanId": os.urandom(8).hex(),
             "name": "futureagi.voice.preflight", "kind": 1, "attributes": attrs,
             "startTimeUnixNano": str(now) + "000000000",
             "endTimeUnixNano": str(now + 1) + "000000000"}
