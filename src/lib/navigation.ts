@@ -632,7 +632,7 @@ export const tabNavigation: NavTab[] = [
               },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
-              { title: 'Connect a voice provider', href: '/docs/observe/features/voice' },
+              { title: 'Voice Observability', href: '/docs/observe/features/voice' },
             ]
           },
           {
