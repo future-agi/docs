@@ -470,6 +470,7 @@ export const tabNavigation: NavTab[] = [
                       { title: 'Conversation Hallucination', href: '/docs/evaluation/builtin/conversation-hallucination' },
                       { title: 'Tool Call Accuracy', href: '/docs/evaluation/builtin/tool-call-accuracy' },
                       { title: 'Trajectory Match', href: '/docs/evaluation/builtin/trajectory-match' },
+                      { title: 'SRE Root Cause Accuracy', href: '/docs/evaluation/builtin/sre-root-cause-accuracy' },
                       { title: 'Step Count', href: '/docs/evaluation/builtin/step-count' },
                     ]
                   },
