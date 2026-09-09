@@ -639,7 +639,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Reference',
             items: [
               { title: 'Filters', href: '/docs/observe/reference/filters' },
-              { title: 'Export & endpoints', href: '/docs/observe/reference/export-formats' },
+              { title: 'Export and endpoints', href: '/docs/observe/reference/export-formats' },
               { title: 'traceAI', href: '/docs/observe/concepts/traceai' },
             ]
           },
