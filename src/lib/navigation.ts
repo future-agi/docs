@@ -648,6 +648,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'No traces appear', href: '/docs/observe/troubleshooting/no-traces-appearing' },
               { title: 'Missing spans or fields', href: '/docs/observe/troubleshooting/missing-attributes' },
+              { title: 'Traces are noisy or incomplete', href: '/docs/observe/troubleshooting/noisy-or-incomplete-traces' },
               { title: 'Dashboard numbers look wrong', href: '/docs/observe/troubleshooting/dashboard-numbers-look-wrong' },
               { title: 'Alerts not firing', href: '/docs/observe/troubleshooting/alerts-did-not-fire' },
             ]
