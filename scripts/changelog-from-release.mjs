@@ -14,7 +14,7 @@ const MARKER = "{/* release-notes:insert-below — automation inserts new releas
 // here is silently dropped from the release-notes page.
 // Maps release-please section -> release-notes subsection (several merge into
 // the page's existing "Bugs/Improvements" bucket).
-const SECTION_MAP = new Map([
+export const SECTION_MAP = new Map([
   ["Features", "Features"],
   ["Bug Fixes", "Bugs/Improvements"],
   ["Performance Improvements", "Bugs/Improvements"],
@@ -36,6 +36,34 @@ export function escapeMdx(text) {
     .replace(/\}/g, "&#125;");
 }
 
+// Internal issue-tracker refs (Linear "TH-1234", JIRA-style "ABC-123") that
+// slip into commit subjects must never reach the public page. Strip them from
+// the visible bullet, whether parenthesised or bare, along with the leftover
+// spacing. Applied before dedup so "(TH-7938)" variants collapse together.
+export function stripInternalRefs(text) {
+  return text
+    .replace(/\s*\((?:[A-Z]{2,}-\d+(?:,\s*)?)+\)/g, "")
+    .replace(/\s+\b[A-Z]{2,}-\d+\b/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trimEnd();
+}
+
+// A dedup key that ignores the things that legitimately differ between the same
+// change landing on multiple commits (its PR/commit trailer, conventional-commit
+// scope, internal ticket, case, whitespace). release-please emits one bullet per
+// commit, so a PR + its backmerge + a cherry-pick produce three identical-looking
+// lines; we keep the first and drop the rest.
+function dedupKey(bullet) {
+  return stripInternalRefs(bullet)
+    .replace(/\s*\(\[[0-9a-f]{6,}\].*?\)\s*$/i, "") // trailing ([sha](url))
+    .replace(/\s*\(\[#\d+\].*?\)\s*$/i, "") //          trailing ([#pr](url))
+    .replace(/^-\s*\*\*[^*]+:\*\*\s*/, "") //           **scope:** prefix
+    .replace(/^-\s*/, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function transform(version, body, now = new Date()) {
   const date = now.toISOString().slice(0, 10);
   const buckets = new Map(SUBSECTION_ORDER.map((k) => [k, []]));
@@ -48,12 +76,18 @@ export function transform(version, body, now = new Date()) {
       continue;
     }
     if (current && line.trim().startsWith("*")) {
-      buckets.get(current).push(escapeMdx(line.replace(/^\s*\*/, "-")));
+      buckets.get(current).push(stripInternalRefs(escapeMdx(line.replace(/^\s*\*/, "-"))));
     }
   }
   const out = [`## ${version} (${date})`, "", WRAPPER_OPEN, ""];
   for (const title of SUBSECTION_ORDER) {
-    const bullets = buckets.get(title);
+    const seen = new Set();
+    const bullets = buckets.get(title).filter((b) => {
+      const k = dedupKey(b);
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
     if (!bullets.length) continue;
     out.push(subsectionHeading(title), "", ...bullets.flatMap((b) => [b, ""]));
   }
@@ -61,9 +95,12 @@ export function transform(version, body, now = new Date()) {
   return out.join("\n");
 }
 
-export function insert(releaseNotes, section) {
+export function insert(releaseNotes, section, version = null) {
   const idx = releaseNotes.indexOf(MARKER);
   if (idx === -1) throw new Error("release-notes marker not found");
+  // repository_dispatch may be retried, and GitHub can redeliver events. Treat
+  // an already-present version as a successful no-op instead of duplicating it.
+  if (version && releaseNotes.includes(`## ${version} (`)) return releaseNotes;
   const insertAt = idx + MARKER.length;
   return releaseNotes.slice(0, insertAt) + "\n\n" + section.trimEnd() + "\n" + releaseNotes.slice(insertAt);
 }
@@ -73,6 +110,6 @@ if (isMain && process.argv.length >= 5) {
   const [, , version, bodyFile, notesFile] = process.argv;
   const body = readFileSync(bodyFile, "utf8");
   const notes = readFileSync(notesFile, "utf8");
-  writeFileSync(notesFile, insert(notes, transform(version, body)));
+  writeFileSync(notesFile, insert(notes, transform(version, body), version));
   console.log(`Inserted ${version} into ${notesFile}`);
 }
