@@ -62,6 +62,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Overview', href: '/docs/self-hosting' },
               { title: 'Requirements', href: '/docs/self-hosting/requirements' },
+              { title: 'Colima on macOS', href: '/docs/self-hosting/colima' },
               { title: 'Installation', href: '/docs/self-hosting/installation' },
               {
                 title: 'Configuration',
