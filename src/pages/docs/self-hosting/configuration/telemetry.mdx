@@ -1,0 +1,117 @@
+---
+title: "Telemetry and outbound connections"
+description: "What a self-hosted Future AGI install sends to Future AGI and to other hosts, what it never sends, and how to turn deployment telemetry off or block it."
+---
+
+## In this page
+
+A self-hosted install makes one kind of call home on its own: deployment telemetry to Future AGI, on by default. An install with an Enterprise licence makes a second: licence activation and a licence heartbeat, which carries the same instance id and usage counts. This page covers what it sends and when, what it never sends, how to turn it off, how to see what your install sent, and every other outbound connection the platform makes. It applies to Standalone, Distributed and Helm. The reference, with the exact payloads, is [docs/telemetry.md](https://github.com/future-agi/future-agi/blob/main/docs/telemetry.md) in the repository.
+
+<TLDR>
+After the first account is created, the install registers once with `api.futureagi.com`, including the email addresses of its owner, admin, staff and superuser accounts, then sends usage counts every 6 hours. It never sends traces, prompts, outputs, datasets or keys. Turn it off with `./bin/install --no-telemetry` or `FUTURE_AGI_TELEMETRY_DISABLED=true`; one minimal registration without email addresses still goes out, so block `api.futureagi.com` to send nothing. The only other connections made by default are litellm's price-list download, the model server's downloads from the Hugging Face Hub, and the assets users' browsers load from public hosts. An Enterprise licence adds its own heartbeat. Every other outside service stays off until you give it a key.
+</TLDR>
+
+## What is sent
+
+**Registration**, once per install. The app registers right after the first account is created, whether through the sign-up page or `python manage.py create_user`, which `./bin/install` runs. The registration contains:
+
+- a random instance id, created on first run and stored in your database, which identifies the install, not a person
+- the version the install runs, and its deployment type: `docker` in both compose files, `kubernetes` under Helm
+- a timestamp
+- the email address and domain of each active account that is an organization owner or admin, or a Django staff or superuser account, most recent login first, at most 500. On a new install that is normally only the first account.
+
+If that attempt fails, a scheduled job retries it. Registration is sent again only if you turn telemetry off or back on, or if the install loses the signing secret it received the first time.
+
+**Heartbeats**, every 6 hours (`FUTURE_AGI_TELEMETRY_INTERVAL_HOURS`) with up to 30 minutes of random delay (`FUTURE_AGI_TELEMETRY_JITTER_SECONDS`). Each heartbeat covers the previous UTC window and holds counts only, across the whole install: active users, traces, spans, projects, evaluations, simulation runs and calls, experiments, gateway requests and datasets. A count that could not be read is sent as `null`, never as zero.
+
+Nothing is sent at startup or on login.
+
+**How it travels.** Each payload is an HTTPS `POST` of JSON to `https://api.futureagi.com` (`FUTURE_AGI_TELEMETRY_URL`), with a 5-second timeout and up to 3 tries. Heartbeats are signed (HMAC-SHA256) with a per-install secret from the registration response. A heartbeat that cannot be delivered waits as a JSON file in `FUTURE_AGI_TELEMETRY_BUFFER_DIR` and goes out on a later run, oldest first; files older than 30 days are deleted. Telemetry failures are logged as warnings and never stop the app, a sign-up or a login.
+
+The receiving server sees the IP address the request comes from, as any HTTPS server does; the payload does not contain it. On Future AGI's side, the receiving service stores registrations and heartbeats and can pass registrations on to Future AGI's own CRM, product-analytics and team-chat tools.
+
+## What is never sent
+
+Prompts, model outputs, trace or span contents and attributes, dataset rows, evaluation inputs or results, API keys, provider keys, passwords, names, organization or project names, and the email addresses of members who are not owners, admins, staff or superusers.
+
+## Turn it off
+
+- **At install:** `./bin/install --no-telemetry` (Windows: `.\bin\install.ps1 -NoTelemetry`) writes `FUTURE_AGI_TELEMETRY_DISABLED=true` to `.env` before anything starts, so even the first account's registration is the minimal one. The installer prints what telemetry sends before it asks for the first account's email.
+- **Standalone or Distributed, after install:** uncomment or add `FUTURE_AGI_TELEMETRY_DISABLED=true` in `.env` (`1`, `yes` and `on` also work), then recreate the containers:
+
+  ```bash
+  docker compose up -d
+  ```
+
+- **Helm:** `config.telemetry=false` in your values sets the variable for the backend, the workers and the bootstrap job. `global.airgap=true` turns telemetry off too, along with the licence heartbeat (unless `license.heartbeat` is `true`), the price-list download and model serving's downloads. See [Configure](/docs/self-hosting/helm#configure).
+
+With telemetry off, no email addresses and no heartbeats are sent, and buffered heartbeats are deleted. One opt-out registration is still sent, so Future AGI can count installs that opted out. It contains only the schema version, instance id, version, deployment type, timestamp and `telemetry_disabled: true`, and is sent again only if you turn telemetry back on and off. Until one gets through, it is attempted at every telemetry run.
+
+To make no connection to Future AGI at all, also block outbound traffic to `api.futureagi.com` (or the host in your `FUTURE_AGI_TELEMETRY_URL`) at your network. The failed attempts are logged as warnings and change nothing else.
+
+## See what your install sent
+
+- On the first telemetry run, each process logs one `deployment_telemetry_disclosure` line saying what it sends, where, and how to turn it off.
+- The last registration payload is kept in your own database. This works for Standalone and Distributed alike:
+
+  ```bash
+  docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -x -c \
+    "SELECT instance_id, registration_kind, registered_at, registration_metadata, last_heartbeat_at FROM deployment_telemetry_state"'
+  ```
+
+- Heartbeats waiting to be delivered are plain JSON files in `FUTURE_AGI_TELEMETRY_BUFFER_DIR`: `/data/telemetry` in Standalone, `/tmp/futureagi-deployment-telemetry` in Distributed.
+
+## Third-party services
+
+Each of these stays off until you set its key, and none is needed to run Future AGI. With no key set, the app makes no request to that service, logs nothing about it above debug level, and never slows down or fails a sign-up or login because of it.
+
+| Service | Turned on by | What it does |
+|---|---|---|
+| HubSpot | `HUBSPOT_API_TOKEN` | Lead sync for Future AGI Cloud. No sign-up creates a HubSpot contact while `ENV_TYPE` is `local`, the Compose default, and accounts created with a password up front, as on the open-source sign-up page or with `create_user`, never do. |
+| Slack | `SLACK_WEBHOOK_CHANNEL`, `ERROR_LOGS_WEBHOOK` | Posts new-user notices and internal alerts to your webhooks. Neither posts while `ENV_TYPE` is `local`. |
+| Mixpanel, PostHog | `MIX_PANEL_TOKEN`, `POSTHOG_API_KEY` | Server-side product analytics |
+| reCAPTCHA | `RECAPTCHA_ENABLED`, `RECAPTCHA_SECRET_KEY` | Checks sign-up, login and token refresh. The published UI images have no site key, so leave it off. |
+| Sentry | `SENTRY_DSN`, plus `SENTRY_ENABLED=true` while `ENV_TYPE` is `local` | Sends error reports to your Sentry project |
+| Mailgun | `MAILGUN_API_KEY` | Sends invites and password resets. Without it, emails are written to the app log. |
+
+The published UI images are built without browser analytics keys (Mixpanel, PostHog, Sentry, Google Tag Manager, ad pixels), so users' browsers send nothing to those services. `USAGE_EVENTS_ENABLED` stays `false` in both compose files and in the chart (`config.usageEvents`): only Future AGI Cloud drains that Redis stream, and turned on anywhere else it grows until it takes the memory Redis needs.
+
+## Other outbound connections
+
+- **Model providers**, SSO providers and integrations are called only when you configure them and use them.
+- **litellm's model price list.** Each API and worker process downloads it from `raw.githubusercontent.com` when it starts. `LITELLM_LOCAL_MODEL_COST_MAP=True` in `.env` uses the list bundled with the image instead, with prices as of the pinned litellm release.
+- **Model downloads from the Hugging Face Hub.** The model server, `serving`, downloads each of its models the first time a feature asks for it. `serving` always runs on Distributed, and runs with the `ml` profile on Standalone and with `serving.enabled` on Helm. Pre-seed its model cache and set `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` to stop the downloads.
+- **The browser UI.** Users' browsers load the UI's fonts from `fonts.googleapis.com` and `fonts.gstatic.com` and its icons from `api.iconify.design` on every page, and a few screens load a code editor, document previews, videos and logos from other public hosts. None of them is Future AGI. docs/telemetry.md lists each host and what an install without it loses.
+- **The Enterprise licence.** With `EE_LICENSE_KEY` set, the app activates the licence with `https://api.futureagi.com` (`FUTURE_AGI_LICENSE_URL`) and sends a licence heartbeat every 24 hours. The heartbeat carries the licence id, the instance id, the version, the deployment type, a timestamp, a nonce and a sequence number, and the same usage counts as a telemetry heartbeat, for the last 24 hours. It is separate from deployment telemetry: `FUTURE_AGI_TELEMETRY_DISABLED` does not stop it, and `FUTURE_AGI_ENTERPRISE_HEARTBEAT_DISABLED=true` does.
+- **The installer.** `./bin/install` pulls images from Docker Hub, and on Distributed also from `ghcr.io` (the MinIO and PeerDB images), or builds the Future AGI images with `--from-source`. When `VITE_HOST_API` names a host other than `localhost` or `127.0.0.1`, it also asks `https://ifconfig.io` (then `https://api.ipify.org`) for the host's public IP address, to print a public URL in its summary. The PowerShell installer never does.
+
+The LLM gateway's OpenTelemetry export, described in [Observability](/docs/command-center/features/observability), sends gateway traces to a collector you choose and is unrelated to deployment telemetry.
+
+## Restricted networks
+
+To run an install with no outbound access, or to keep it from trying to reach outside hosts:
+
+- Set `FUTURE_AGI_TELEMETRY_DISABLED=true`, and block `api.futureagi.com` so the one minimal registration fails harmlessly.
+- Set `LITELLM_LOCAL_MODEL_COST_MAP=True` so no process downloads the price list.
+- Leave the third-party keys above empty.
+- With an Enterprise licence, decide on the licence heartbeat: `FUTURE_AGI_ENTERPRISE_HEARTBEAT_DISABLED=true` stops it.
+- Set `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` so the model server downloads no models, after pre-seeding its model cache.
+- Point LLM features at a model server on your network. One added in the UI on a private address needs `AGENTCC_ALLOW_PRIVATE_PROVIDER_URLS=true`: see [Local and private model servers](/docs/self-hosting/configuration/system#local-and-private-model-servers).
+- Route what must go out through a proxy with `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` in a compose override. On Distributed, list the override in `COMPOSE_FILE`: see [Move to managed data stores](/docs/self-hosting/production/checklist#move-to-managed-data-stores). The LLM gateway does not use a proxy yet.
+- Expect users' browsers to lose the code editor, and with it the writing of code evals, and PDF and Word previews, when they cannot reach the public hosts above.
+
+On Helm, `global.airgap=true` covers telemetry, the licence heartbeat, the price list and model serving's downloads in one value, and `global.imageRegistry` points every image at your mirror. See [Install on Kubernetes with Helm](/docs/self-hosting/helm). docs/telemetry.md has the full list of hosts and settings.
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Telemetry reference" icon="github" href="https://github.com/future-agi/future-agi/blob/main/docs/telemetry.md">
+    The exact payloads, the schedule and every outbound host
+  </Card>
+  <Card title="Environment variables" icon="list-check" href="/docs/self-hosting/configuration/environment">
+    Where `FUTURE_AGI_TELEMETRY_DISABLED` and the other keys go
+  </Card>
+  <Card title="Production checklist" icon="shield" href="/docs/self-hosting/production/checklist">
+    Decide on telemetry with the rest of the production settings
+  </Card>
+</CardGroup>
