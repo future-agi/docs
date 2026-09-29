@@ -70,6 +70,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'First-run setup', href: '/docs/self-hosting/configuration/launch-mode' },
                   { title: 'System configuration', href: '/docs/self-hosting/configuration/system' },
                   { title: 'Environment variables', href: '/docs/self-hosting/configuration/environment' },
+                  { title: 'Configuration reference', href: '/docs/self-hosting/configuration/reference' },
                   { title: 'Profiles', href: '/docs/self-hosting/configuration/profiles' },
                   { title: 'Users & sign-in', href: '/docs/self-hosting/user-management' },
                   { title: 'Telemetry', href: '/docs/self-hosting/configuration/telemetry' },
