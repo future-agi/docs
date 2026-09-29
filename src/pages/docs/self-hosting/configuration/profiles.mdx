@@ -1,129 +1,151 @@
 ---
 title: "Profiles"
-description: "Choosing which of the 31 services your self-hosted instance actually runs"
+description: "Turn on optional services with COMPOSE_PROFILES: model serving and the nsjail code sandbox in Standalone, extra workers and admin UIs in Distributed."
 ---
 
 ## In this page
 
-The self-hosted stack defines 31 services, but a working instance only needs 13 of them. The rest are opt-in: extra Temporal workers, a workflow dashboard, and the replication pipeline that feeds analytics. A **profile** is the tag that decides which group you get, set once in the [`.env` file](/docs/self-hosting/configuration/environment) and read by every `docker compose` command after that.
+A **profile** is a Docker Compose tag on a service that stays off until you ask for it. Name the profile in `COMPOSE_PROFILES` in [`.env`](/docs/self-hosting/configuration/environment), and the next `./bin/install` or `docker compose up -d` starts that service too. Every setup is complete without a profile: they add capabilities, not the core of the app. Standalone and Distributed have their own profiles, and Helm uses chart values instead.
 
 <TLDR>
-An empty `.env` gives you 13 services, which is a complete, usable instance. Three profiles add to that: `workers`, `observability`, and `full`. Name them in `COMPOSE_PROFILES` and their additions stack.
+Standalone runs three containers: `ml` adds model serving and `sandbox` adds the nsjail code executor. Distributed always runs serving and the code executor: `workers`, `observability` and `peerdb` add per-queue workers, the Temporal UI and the PeerDB UI, and `all` adds all of them. Set profiles in `.env`, not only on the command line.
 </TLDR>
 
 <Mermaid chart={`
 %%{init: {"flowchart": {"curve": "linear"}}}%%
 flowchart TD
-    accTitle: Three optional profiles stack on top of the always-on core
-    accDescr: The core stack of 13 services always runs, and the workers, observability and full profiles each add more services on top of it.
-    C["Core stack: 13 services, always on"] -->|"workers"| W["Six per-queue workers"]
-    C -->|"observability"| O["Temporal UI and admin tools"]
-    C -->|"full"| F["Ten PeerDB services"]
+    accTitle: Optional profiles in the two Docker Compose setups
+    accDescr: Standalone's app, postgres and clickhouse gain serving with the ml profile and code-executor with the sandbox profile. Distributed gains per-queue workers with workers, the Temporal UI and admin tools with observability, and the PeerDB UI with peerdb.
+    S["Standalone: app, postgres, clickhouse"] -->|"ml"| SM["serving"]
+    S -->|"sandbox"| SS["code-executor with nsjail"]
+    D["Distributed: one container per service"] -->|"workers"| DW["Seven per-queue workers"]
+    D -->|"observability"| DO["Temporal UI and admin tools"]
+    D -->|"peerdb"| DP["PeerDB UI"]
 `} />
 
-## The core stack
+## Standalone profiles
 
-Thirteen services carry no profile, so they always run:
+Standalone runs `app`, `postgres` and `clickhouse`. Two profiles add one container each, and neither publishes a host port.
 
-- **Application:** `frontend`, `backend`, `worker`, `agentcc-gateway`, `serving`, `code-executor`
-- **Data layer:** `postgres`, `clickhouse`, `redis`, `rabbitmq`, `minio`, `temporal`, `fi-collector`
+| Profile | Adds | Download | Turn it on for |
+|---|---|---|---|
+| `ml` | `serving`, the embedding model server | about 450 MB | Embedding-based evals, knowledge bases, ground truth and Vector DB columns |
+| `sandbox` | `code-executor`, the nsjail sandbox (privileged) | about 185 MB | JavaScript code evals, and code evals isolated from each other |
 
-This is a complete instance. You can sign in, send traces, and run evaluations with nothing else enabled.
+### ml: model serving
 
-## The profiles
+`serving` runs the embedding models behind embedding-based evals, knowledge bases, ground truth and Vector DB columns (and, with an Enterprise Edition license, Error Feed clustering). Without it those features report that model serving is not deployed, everything else works, and the **Agent fixer (evals)** row on the [first-run setup](/docs/self-hosting/configuration/launch-mode) screen reads Optional. A knowledge-base file uploaded while serving is off is marked Failed: turn on `ml`, then upload the file again.
 
-Leave `COMPOSE_PROFILES` unset and you get those 13. Three profiles exist to add to them, each one independent.
+It needs a few more GB of memory once its models load. The image runs PyTorch on the CPU. On a host with an NVIDIA GPU, set `SERVING_VERSION=vX.Y.Z-gpu` (or `latest-gpu`) in `.env` for the CUDA build, and give the `serving` container the GPU with a `deploy.resources.reservations.devices` entry in `docker-compose.override.yml`. The `-gpu` image is `linux/amd64` only and about 3.3 GB.
 
-| Profile | What it adds | Total services |
+### sandbox: isolated code evals
+
+Without this profile, custom code evals run in the sandbox built into `app`. Python evals run there as an unprivileged user with resource limits. JavaScript evals do not run: the `app` image has no Node.js, so each one fails with an error that names the `sandbox` profile.
+
+With `sandbox`, every run gets its own nsjail jail, with its own processes and a read-only view of the filesystem. It needs a host that allows privileged containers. Turn it on for an install shared by people who must not trust one another. [Isolate the code executor](/docs/self-hosting/production/security-tls#isolate-the-code-executor) covers what each sandbox allows.
+
+Neither sandbox closes the network. In the built-in one, even where Landlock (Linux 6.7 or later) limits evals to TCP ports 80 and 443, UDP and whatever your network serves on those ports stay reachable. On older kernels an eval can reach Postgres and ClickHouse over the Docker network, and ClickHouse has no password while `CH_PASSWORD` is empty, as it is in a `.env` copied by hand from `.env.example`. Set it as in [Secrets the installer generates](/docs/self-hosting/configuration/environment#secrets-the-installer-generates).
+
+### Turn a profile on
+
+Add the profiles to `.env`, comma-separated:
+
+```bash
+COMPOSE_PROFILES=ml,sandbox
+```
+
+Then apply it:
+
+```bash
+./bin/install          # or: docker compose up -d
+```
+
+<Note>
+Set `COMPOSE_PROFILES` in `.env`, not only with `--profile` or in your shell. The app reads it from `.env` to send code evals to the nsjail `code-executor` instead of its built-in sandbox, and `./bin/install` warns when `sandbox` is set in your shell but not in `.env`.
+</Note>
+
+### Turn a profile off
+
+Remove it from `COMPOSE_PROFILES` in `.env` and run `docker compose up -d`. Compose leaves the containers of a profile that is no longer active running, and `--remove-orphans` does not count them as orphans, so remove the container yourself:
+
+```bash
+docker compose --profile sandbox rm -sf code-executor   # after turning sandbox off
+docker compose --profile ml rm -sf serving              # after turning ml off
+```
+
+Otherwise the privileged `code-executor` keeps running although the app no longer uses it.
+
+## Distributed profiles
+
+Distributed runs 31 containers without a profile: 22 long-running services, including `serving`, `code-executor`, the all-queue `worker` and PeerDB replication, and 9 one-shot setup jobs. Four profiles add optional services:
+
+| Profile | Adds | Where to reach it |
 |---|---|---|
-| `workers` | Six per-queue Temporal workers | 19 |
-| `observability` | Temporal UI and admin tools | 15 |
-| `full` | The ten-service PeerDB replication stack | 23 |
+| `workers` | `worker-default`, `worker-tasks-s`, `worker-tasks-l`, `worker-tasks-xl`, `worker-trace-ingestion`, `worker-agent-compass`, `worker-simulation-runner` | Nothing to open |
+| `observability` | `temporal-ui`, `temporal-admin-tools` | Temporal UI at `http://localhost:8085` (`TEMPORAL_UI_PORT`) |
+| `peerdb` | `peerdb-ui` | PeerDB UI at `http://localhost:3001` (`PEERDB_UI_PORT`) |
+| `all` | All ten of the above | Both UIs |
 
-Combine them with commas, and the additions stack: `COMPOSE_PROFILES=workers,observability` runs 21 services, and naming all three runs all 31.
+Combine them with commas, for example `COMPOSE_PROFILES=workers,observability`, then run `./bin/install` or `docker compose up -d`. No other service needs the ones these profiles add in order to start. PeerDB replication runs in Distributed with or without `peerdb`: the profile adds only its UI.
 
-### workers
+`full`, the name installs made with v1.41.x or earlier used, still works and adds the same services as `all`. A `.env` that sets it only to get PeerDB can drop it, since replication runs without a profile. On Standalone `full` has no effect.
 
-Adds six Temporal workers, each pinned to a single task queue: `default`, `tasks_s`, `tasks_l`, `tasks_xl`, `trace_ingestion`, and `agent_compass`. Each carries its own concurrency limit, so a handful of very large jobs can't starve everything else. Reach for this when one slow job type is holding up the rest. The per-queue limits are listed under [System configuration](/docs/self-hosting/configuration/system#temporal-workers).
+<Warning>
+The Temporal UI and the PeerDB UI listen on all interfaces and ask for no password: the Temporal UI has no sign-in, and the compose file sets no password for the PeerDB UI. Anyone who can reach those ports (`8085` and `3001` by default) can view and change workflows and mirrors. Turn on `observability`, `peerdb`, `all` or `full` only on a trusted network, or block those ports at a firewall as in [Security & TLS](/docs/self-hosting/production/security-tls#terminate-tls-with-a-reverse-proxy).
+</Warning>
 
-### observability
+### Per-queue workers
 
-Adds `temporal-ui` on port 8085 and `temporal-admin-tools`, a shell with the `tctl` CLI. Both are for inspecting workflow state when a background job misbehaves. Nothing depends on them, so they're safe to enable and disable at will.
+The `workers` profile gives each Temporal task queue its own worker, with its own concurrency limits. Hosted voice simulations run only in `worker-simulation-runner`, so they need `workers` or `all`. [System configuration](/docs/self-hosting/configuration/system#distributed) covers `TEMPORAL_ALL_QUEUES=false`, which leaves each queue to its own worker, and the limits of each worker.
 
-### full
+`worker-simulation-runner` is `linux/amd64` only. On an Apple Silicon or Linux arm64 host, Docker runs it under emulation (Rosetta 2 on Docker Desktop, `qemu-user-static` on Linux), which is slower.
 
-Adds the ten PeerDB services that replicate Postgres tables into ClickHouse through change data capture, covering datasets, prompts, simulation runs, and trace metadata. It's the heaviest option, roughly doubling your container count, and `./bin/install --full` is the shortcut for turning it on during [installation](/docs/self-hosting/installation).
+### observability and peerdb
 
-Stay light and those ClickHouse copies never get written, so the dataset and simulation-run dashboards built on them have nothing to read. Tracing is unaffected either way: `fi-collector` writes spans straight to ClickHouse, and it's one of the always-on 13.
+`temporal-ui` and `temporal-admin-tools` (Temporal's command-line tools) are for inspecting workflow state when a background job misbehaves. `peerdb-ui` is the web UI of PeerDB, which copies Postgres changes into ClickHouse.
 
-## Setting a profile
+<Note>
+`./bin/dev --distributed`, the Distributed development stack, runs the per-queue workers, the Temporal UI and admin tools and the PeerDB UI whatever `COMPOSE_PROFILES` says. See [Other ways to run it](/docs/self-hosting/installation#other-ways-to-run-it).
+</Note>
 
-Any of these work. The `.env` entry is the one that persists.
+## Helm
 
-<Tabs>
-<Tab title=".env">
-```bash
-# Applies to every docker compose command in this directory
-COMPOSE_PROFILES=full
-```
-</Tab>
-<Tab title="Inline">
-```bash
-COMPOSE_PROFILES=workers,observability docker compose up -d
-```
-</Tab>
-<Tab title="Flag">
-```bash
-docker compose --profile workers --profile observability up -d
-```
-</Tab>
-<Tab title="Installer">
-```bash
-./bin/install --full    # writes COMPOSE_PROFILES=full into .env
-```
-</Tab>
-</Tabs>
+The Helm chart has no profiles. The same choices are chart values:
 
-A changed profile takes effect on the next `docker compose up -d`. Containers from a profile you removed are not stopped for you, so take them down first if you want them gone:
+| Value | Default | What it does |
+|---|---|---|
+| `serving.enabled` | `false` | Runs the embedding model server, as `ml` does in Standalone |
+| `codeExecutor.enabled` | `false` | Runs the nsjail sandbox for custom code evals. It needs privileged pods |
+| `worker.queues` | `[]` | Gives a busy queue its own Deployment, as `workers` does in Distributed |
 
-```bash
-docker compose --profile observability down    # stop what that profile started
-docker compose up -d                           # bring the rest back on the new set
-```
-
-## Where profiles catch people out
-
-**`full` does not mean everything.** It adds only the PeerDB stack, taking you to 23 services. It does not enable `workers` or `observability`. For all 31, list every profile: `COMPOSE_PROFILES=workers,observability,full`.
-
-**There is no `peerdb` profile.** The PeerDB services are tagged `full`, so `COMPOSE_PROFILES=peerdb` matches nothing and silently leaves you on the default 13. Compose reports no error for an unknown profile name.
-
-**The all-queue `worker` always runs.** It carries no profile and polls every queue via `TEMPORAL_ALL_QUEUES`, which defaults to true. Enabling `workers` does not replace it, so the six dedicated workers run *alongside* it. Setting `TEMPORAL_ALL_QUEUES=false` doesn't take it out of the picture either: the service sets no `TEMPORAL_TASK_QUEUE`, so it falls back to polling `default` on its own, overlapping `worker-default` instead of every queue. The overlap is wasteful rather than harmful, since Temporal hands each task to one worker, but it does mean the `default` queue gets two pollers and no queue gets none. Leave `TEMPORAL_ALL_QUEUES` at its default unless you're running the `workers` profile.
-
-**The dev overlay ignores profiles completely.** `docker-compose.dev.yml` resets the profile tag on all 18 tagged services, so `docker compose -f docker-compose.yml -f docker-compose.dev.yml up` starts every service unconditionally: all 31, plus two that exist only in the overlay, `pgbouncer` and `docker-proxy`, for 33. `COMPOSE_PROFILES` has no effect in this mode.
-
-**A profile is not a launch mode.** The choice the first-run screen asks you to make is a [launch mode](/docs/self-hosting/configuration/launch-mode), and it can't change which services run.
+See [Configure](/docs/self-hosting/helm#configure) on the Helm page.
 
 ## Checking what will run
 
-Both commands read the config only, so they work with the stack down.
+These commands read the configuration only, so they work with the stack down:
 
 ```bash
-docker compose config --profiles                          # list every profile name
-COMPOSE_PROFILES=full docker compose config --services    # resolve a profile set to services
+docker compose config --profiles                              # every profile name in the file
+COMPOSE_PROFILES=ml,sandbox docker compose config --services  # Standalone: what these profiles start
+COMPOSE_PROFILES=all docker compose config --services         # Distributed: what the all profile starts
 ```
 
-Counting the second command's output is the quickest way to confirm you're getting what you expect before pulling images.
+On Distributed they read `COMPOSE_FILE` from `.env`, which `./bin/install --distributed` writes. Without it, add `-f docker-compose.distributed.yml`. On Distributed the profile list includes `full`, the older name of `all`. Standalone with no profile lists `app`, `postgres` and `clickhouse`.
+
+<Note>
+A profile is not a launch mode. The choice the [first-run setup](/docs/self-hosting/configuration/launch-mode) screen asks you to make changes how its checks are reported, never which services run.
+</Note>
 
 ## Dive deeper
 
 <CardGroup cols={3}>
-  <Card title="Launch mode" icon="rocket" href="/docs/self-hosting/configuration/launch-mode">
-    The checks a fresh install runs before it lets you in
+  <Card title="First-run setup" icon="rocket" href="/docs/self-hosting/configuration/launch-mode">
+    The checks a new install runs before you sign in
   </Card>
   <Card title="System configuration" icon="gear" href="/docs/self-hosting/configuration/system">
-    Tune worker concurrency and set up PeerDB replication
+    Tune worker concurrency and the LLM gateway
   </Card>
   <Card title="Troubleshooting & FAQs" icon="wrench" href="/docs/self-hosting/troubleshooting">
-    Fixes for gateway, PeerDB, and Temporal errors
+    Fixes for common install and runtime errors
   </Card>
 </CardGroup>
