@@ -1,0 +1,229 @@
+---
+title: "Colima on macOS"
+description: "Run a self-hosted Future AGI instance on macOS with Colima instead of Docker Desktop"
+---
+
+[Colima](https://github.com/abiosoft/colima) runs the Docker daemon in a Linux VM on macOS and is a drop-in replacement for Docker Desktop. It is MIT licensed, so it is the usual choice when Docker Desktop's subscription terms do not fit your organization.
+
+## In this page
+
+The stack itself is unchanged: you still run `./bin/install` and the same `docker compose` commands. Four things differ from a Docker Desktop install, and only the first two stop a first boot:
+
+- Colima's default VM has 2 GiB of RAM, which is not enough to boot the stack
+- The repository has to live inside your home directory, or ClickHouse fails
+- Apple Silicon without Rosetta still runs, just slowly, under QEMU
+- Development mode needs `DOCKER_SOCKET` pointed at Colima's socket, and only development mode
+
+<TLDR>
+```bash
+brew install docker docker-compose colima git
+colima start --cpu 4 --memory 8 --disk 64 --vm-type vz --vz-rosetta
+git clone https://github.com/future-agi/future-agi.git ~/future-agi
+cd ~/future-agi && ./bin/install
+```
+Clone inside your home directory. Anywhere else and the bind mounts come up empty.
+</TLDR>
+
+## Install Colima
+
+Homebrew gives you the CLI, Compose, and the VM manager. Docker Desktop is not needed and does not have to be uninstalled.
+
+```bash
+brew install docker docker-compose colima git
+```
+
+`brew install docker` installs the Docker CLI only, not a daemon. Colima supplies the daemon and registers itself as the active Docker context on start, so `docker` and `docker compose` work unchanged afterwards.
+
+Check the versions against the [requirements](/docs/self-hosting/requirements) before you continue:
+
+```bash
+docker --version           # Engine 24.0+
+docker compose version     # v2.24+ is a hard floor
+colima version
+```
+
+## Size the VM
+
+Colima's defaults are built for small containers, not for a 13 service stack with ClickHouse in it. Raise CPU and memory at creation time.
+
+| Setting | Colima default | Use for Future AGI | Flag |
+|---|---|---|---|
+| CPU | 2 | 4 | `--cpu 4` |
+| Memory | 2 GiB | 8 GiB | `--memory 8` |
+| Disk | 100 GiB | 64 GiB is plenty | `--disk 64` |
+| VM type | `vz` | `vz` | `--vm-type vz` |
+| Rosetta | off | on, Apple Silicon only | `--vz-rosetta` |
+
+```bash
+colima start --cpu 4 --memory 8 --disk 64 --vm-type vz --vz-rosetta
+```
+
+On an Intel Mac, drop `--vz-rosetta`. Everything else is the same.
+
+<Warning>
+The 2 GiB default is the single most common cause of a failed first boot. ClickHouse and the Temporal worker each hold around 1 GiB at steady state, so at 2 GiB the kernel OOM-kills one of them and you get a container restarting in a loop rather than a clear error. This is the same failure Docker Desktop users hit with its default limits.
+</Warning>
+
+Confirm the VM came up with the values you asked for, and that Docker is pointed at it:
+
+```bash
+colima status
+docker context show      # should print "colima"
+docker info | grep -iE "total memory|cpus"
+```
+
+## Clone inside your home directory
+
+This is the Colima specific trap, and it fails quietly.
+
+Colima mounts only `/Users/$USER` into the VM. The stack bind mounts several files out of the repository into containers, so the repository has to sit somewhere the VM can actually see.
+
+Colima's own FAQ describes what happens when it cannot:
+
+> When using docker to bind mount a volume (e.g. using `-v` or `--mount`) from the host where the volume is not contained within `/Users/$USER`, the container will start without raising any errors but the mapped mountpoint on the container will be empty.
+
+So a repo in `/opt`, `/srv`, `/Volumes/External`, or any other path outside your home directory produces no mount error at all. Instead the files arrive missing, and you get a downstream error that looks unrelated. The one you will hit first is ClickHouse, which is handed its storage policy from the repo:
+
+```
+Unknown storage policy 'tiered'
+```
+
+The fix is the clone path, not ClickHouse. These are the host paths the default stack mounts, all of them relative to the repository root:
+
+| Host path | Mounted into | Breaks if missing |
+|---|---|---|
+| `./futureagi/.ci/clickhouse-storage-policy.xml` | `clickhouse` | `Unknown storage policy 'tiered'`, ClickHouse will not start |
+| `./agentcc-gateway/config.example.yaml` | `agentcc-gateway` | Gateway starts with no provider configuration |
+| `./futureagi/scripts/property_catalog_oss` | catalog bootstrap jobs | Property catalog bootstrap fails |
+| `./futureagi/tracer/services/clickhouse/v2/schema` | catalog bootstrap jobs | Same |
+
+Keeping the clone in your home directory is the simplest answer:
+
+```bash
+git clone https://github.com/future-agi/future-agi.git ~/future-agi
+```
+
+If the repository has to live elsewhere, mount that path explicitly when you create the VM, and list your home directory alongside it:
+
+```bash
+colima start --cpu 4 --memory 8 --disk 64 --vm-type vz --vz-rosetta \
+  --mount "$HOME:w" --mount /opt/future-agi:w
+```
+
+The `:w` suffix makes the mount writable, which the stack needs.
+
+<Warning>
+Passing any `--mount` replaces the default home mount rather than adding to it. Colima mounts `$HOME` only when no mount list is given, so a lone `--mount /opt/future-agi:w` leaves your home directory invisible inside the VM. List `$HOME` explicitly whenever you pass a mount.
+
+The paths also must not overlap. Colima rejects an overlapping list with `overlapping mounts not supported`, so `--mount "$HOME:w" --mount "$HOME/projects:w"` fails: the first already covers the second.
+</Warning>
+
+<Note>
+Published ports behave normally. The stack binds its data stores to `127.0.0.1`, and Colima forwards those to the host loopback, so `psql` on `127.0.0.1:5432` and the frontend on `127.0.0.1:3000` work with no extra configuration.
+</Note>
+
+## Apple Silicon and the backend image
+
+Five of the six first-party images in the default stack ship `linux/arm64`, so they run native. The exception is `futureagi/future-agi`, which is `linux/amd64` only and backs both `backend` and `worker`. Those two containers are emulated on an M-series Mac.
+
+Colima can emulate amd64 two ways, and the difference is performance, not whether it works:
+
+| | How it emulates | Notes |
+|---|---|---|
+| Default (`binfmt`) | QEMU | On by default, so amd64 images do start. Noticeably slower on the backend and worker |
+| `--vz-rosetta` | Rosetta 2 | Substantially faster. Requires Colima 0.5.3+, macOS 13 Ventura or later, Apple Silicon, and `--vm-type vz` |
+
+Use Rosetta. Verify it is actually registered inside the VM rather than assuming the flag took:
+
+```bash
+colima ssh -- ls /proc/sys/fs/binfmt_misc/     # a "rosetta" entry means it took
+```
+
+That entry is the only check that distinguishes the two. Running an amd64 container and reading `uname -m` prints `x86_64` under QEMU as well, so it confirms emulation works and tells you nothing about which one you got.
+
+<Note>
+Rosetta is a property of the VM, not of a container, so set it when you create the VM. If the VM already exists, `colima stop` then `colima start --vm-type vz --vz-rosetta` is the supported way to change VM settings. Run the `binfmt_misc` check above afterwards to confirm it took, because the flag is accepted either way.
+</Note>
+
+The default stack only pulls: it has no build context for `backend` or `worker`, so emulation is the path there. If you want a native arm64 backend image, the development overlay does carry a build for it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml build backend
+```
+
+That builds from the repo's `Dockerfile` for your host architecture and tags it `futureagi/future-agi:dev`.
+
+## Install the stack
+
+From here the flow is identical to any other host, so follow [Installation](/docs/self-hosting/installation):
+
+```bash
+cd ~/future-agi
+./bin/install
+```
+
+Then open [http://localhost:3000](http://localhost:3000).
+
+## Resize the VM later
+
+Changing CPU or memory needs a stop first. The values persist in `~/.colima/default/colima.yaml`, so plain `colima start` afterwards reuses them.
+
+```bash
+colima stop
+colima start --cpu 6 --memory 12
+```
+
+Raising `--disk` expands the disk on the next start. Colima documents increasing a disk but not shrinking one, so plan on `colima delete` and a fresh VM if you ever need it smaller.
+
+The VM does not come back automatically after a reboot. Run `colima start` with no flags and it picks up the saved configuration.
+
+## Development mode
+
+[Development mode](/docs/self-hosting/installation#other-ways-to-run-it) layers `docker-compose.dev.yml` on top of the base stack and includes a `docker-proxy` service that mounts the host Docker socket. It defaults to `/var/run/docker.sock`, which is Docker Desktop's path, not Colima's. Point it at Colima's socket in `.env`:
+
+```bash
+echo "DOCKER_SOCKET=$HOME/.colima/default/docker.sock" >> .env
+```
+
+Then bring the stack up as normal:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+Development mode also bind mounts `./futureagi` and `./frontend` for hot reload, which is the second reason the repository has to be inside your home directory.
+
+## Troubleshooting
+
+Colima specific symptoms. Everything else is in [Troubleshooting & FAQs](/docs/self-hosting/troubleshooting).
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Cannot connect to the Docker daemon` | The VM is not running, or the Docker context points elsewhere | `colima start`, then `docker context use colima` |
+| ClickHouse exits with `Unknown storage policy 'tiered'` | The repo is outside `/Users/$USER`, so the storage policy file mounted as an empty path | Clone inside your home directory, or add `--mount <path>:w` |
+| A container starts but a mounted file is missing or empty | Same cause. Colima raises no error for an unmounted host path | As above |
+| Backend and worker restart in a loop, other services fine | VM memory too low | `colima stop && colima start --memory 8` |
+| Backend and worker are very slow | amd64 running under QEMU rather than Rosetta | Recreate the VM with `--vm-type vz --vz-rosetta` |
+| `no space left on device` | VM disk is full, not the Mac's disk | `docker system prune -af`, then raise `--disk` and restart |
+| `docker-proxy` cannot see the Docker socket in dev mode | `DOCKER_SOCKET` still defaults to Docker Desktop's path | Set `DOCKER_SOCKET=$HOME/.colima/default/docker.sock` in `.env` |
+
+To start over completely, without touching the Mac:
+
+```bash
+colima delete          # destroys the VM and every image and volume in it
+colima start --cpu 4 --memory 8 --disk 64 --vm-type vz --vz-rosetta
+```
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Requirements" icon="server" href="/docs/self-hosting/requirements">
+    Host sizing, supported platforms, and the ports the stack needs
+  </Card>
+  <Card title="Installation" icon="play-circle" href="/docs/self-hosting/installation">
+    Bring the stack up with `./bin/install`
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/docs/self-hosting/troubleshooting">
+    Symptoms, causes, and fixes for a self-hosted instance
+  </Card>
+</CardGroup>
