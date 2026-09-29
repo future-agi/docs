@@ -372,6 +372,9 @@ export const redirectMap: Record<string, string> = {
   '/sdk-reference/python-sdk-client': '/docs/sdk',
   '/sdk-reference/testcase': '/docs/sdk/testcase',
   '/sdk-reference/tracing': '/docs/sdk/tracing',
+  // Orphaned self-hosting pages removed with the Standalone / Distributed / Helm rewrite
+  '/docs/self-hosting/docker-compose': '/docs/self-hosting/installation',
+  '/docs/self-hosting/configuration': '/docs/self-hosting/configuration/system',
   '/docs/self-hosting/environment': '/docs/self-hosting/configuration/environment',
   '/docs/simulation/features/run-simulation': '/docs/simulation/guides/run-voice-simulation',
   '/docs/simulation/features/simulation-using-sdk': '/docs/simulation/guides/run-chat-simulation',

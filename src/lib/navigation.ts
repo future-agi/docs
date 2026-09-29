@@ -63,13 +63,16 @@ export const tabNavigation: NavTab[] = [
               { title: 'Overview', href: '/docs/self-hosting' },
               { title: 'Requirements', href: '/docs/self-hosting/requirements' },
               { title: 'Installation', href: '/docs/self-hosting/installation' },
+              { title: 'Helm (Kubernetes)', href: '/docs/self-hosting/helm' },
               {
                 title: 'Configuration',
                 items: [
+                  { title: 'First-run setup', href: '/docs/self-hosting/configuration/launch-mode' },
                   { title: 'System configuration', href: '/docs/self-hosting/configuration/system' },
                   { title: 'Environment variables', href: '/docs/self-hosting/configuration/environment' },
                   { title: 'Profiles', href: '/docs/self-hosting/configuration/profiles' },
-                  { title: 'Launch mode', href: '/docs/self-hosting/configuration/launch-mode' },
+                  { title: 'Users & sign-in', href: '/docs/self-hosting/user-management' },
+                  { title: 'Telemetry', href: '/docs/self-hosting/configuration/telemetry' },
                 ]
               },
               {
