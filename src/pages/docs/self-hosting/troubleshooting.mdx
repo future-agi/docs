@@ -1,19 +1,25 @@
 ---
 title: "Troubleshooting & FAQs"
-description: "Symptoms, causes, and fixes for a self-hosted instance"
+description: "Symptoms, causes and fixes for a self-hosted Future AGI install: installer and startup errors, sign-in, LLM gateway provider URLs, PeerDB, Temporal, upgrades."
 ---
 
 ## In this page
 
-Symptoms, causes, and fixes for the errors most commonly hit when self-hosting. Grouped by where they show up: startup, network, PeerDB, Temporal, and post-upgrade.
+Symptoms, causes, and fixes for the errors most commonly hit when self-hosting with Docker Compose. Grouped by where they show up: startup and install, code evals, network and UI, sign-in, the LLM gateway, knowledge bases and filters, PeerDB, Temporal, performance, and after an upgrade. For Kubernetes, see [Helm troubleshooting](/docs/self-hosting/helm#troubleshooting).
+
+<TLDR>
+Start with `docker compose ps` and `docker compose logs -f app` (Distributed: `backend`): the log names most causes. Messages from `./bin/install` carry their own fix, and the first-run setup screen shows the fix for a service that is down.
+</TLDR>
 
 ## Start here
 
 ```bash
 docker compose ps                    # what's running / what's restarting
-docker compose logs -f backend       # most informative starting point
-docker compose exec backend bash     # shell in, swap "backend" for any service
+docker compose logs -f app           # Standalone; Distributed: docker compose logs -f backend
+docker compose exec app bash         # shell in; Distributed: backend, or any other service
 ```
+
+In Standalone, `docker compose logs -f app` starts with a summary of the configuration (setup, version, URLs, which integrations are on, telemetry) and ends with `Future AGI is ready in ...` once the start has finished. The [first-run setup screen](/docs/self-hosting/configuration/launch-mode) checks every service the app depends on, marks the one that fails, and shows the fix for your setup.
 
 ---
 
@@ -25,11 +31,12 @@ Docker isn't running. Start Docker Desktop (Mac/Windows) or `sudo systemctl star
 ---
 
 ### First boot takes 15+ min or looks stuck
-Normal. First boot pulls every image from Docker Hub, a few GB in total, and nothing is built locally so there's no compile step to hang on. Watch the pull actually progressing:
+Standalone downloads about 800 MB on the first run; Distributed pulls more images, among them Redis, MinIO, Temporal, Kafka and PeerDB. While Standalone's first boot sets up Postgres, ClickHouse and Temporal, [http://localhost:3000](http://localhost:3000) shows a **Future AGI is starting** page with the current phase, and the API answers `503` with `{"status": "starting", "phase": "..."}`. The page switches to the app by itself. If it stays on one phase, or the phase keeps starting over, the log says why: a failed start step prints its error, waits 30 seconds and tries again.
 ```bash
-docker compose logs -f
-docker compose pull        # re-run to resume an interrupted pull
+docker compose logs -f app   # Standalone; on Distributed, docker compose ps shows what is still starting
+docker compose pull          # re-run to resume an interrupted pull
 ```
+On a slow or busy host, the migrations of a first boot alone can take over half an hour while the log prints `Applying ...` lines. `./bin/install` waits 10 minutes for the stack to become ready (`INSTALL_READY_TIMEOUT_SECONDS`, 600 by default). While the backend is still migrating, each new `Applying ...` line starts that wait again, up to `INSTALL_READY_MAX_SECONDS` in total (3600 by default). A slow phase that prints no new migration lines, such as one long migration or the ClickHouse setup, still times out after the 10 minutes. If the installer gives up first, the stack keeps starting: raise either value in `.env` (at most 1800 and 7200) and run `./bin/install` again, or keep following the log.
 
 ---
 
@@ -39,20 +46,61 @@ Docker Desktop's virtual disk is full. Settings → Resources → Disk image siz
 ---
 
 ### Port already in use
+Another process holds a port the stack publishes. Find it:
 ```bash
 lsof -i :3000                # swap 3000 for whichever port the error named
-# then override it in .env:
+```
+Stop that process, or move the port. Re-running `./bin/install` offers the next free port and writes it to `.env`. To move it yourself, set the port's key in `.env`, for example:
+```bash
 FRONTEND_PORT=3100
 BACKEND_PORT=8100
-docker compose up -d         # recreate so the new binding takes
+```
+Then run `docker compose up -d` so the new binding takes. Every published port has its own key: [Network ports](/docs/self-hosting/requirements#network-ports) lists them for each setup. If `.env` sets `VITE_HOST_API` to a `localhost` URL, change its port to the new `BACKEND_PORT` too. The installer does that for you when it moves the port.
+
+---
+
+### `bin/install` says Docker has too little memory
+The Docker VM is smaller than the setup needs: 3 GB minimum for Standalone (4 GB recommended), 6 GB minimum for a new Distributed install (12 GB recommended). The message carries the resize step for your runtime, for example `colima stop && colima start --cpu 2 --memory 4`, or Docker Desktop's Settings → Resources. `--force` continues anyway, at the risk of containers being killed for lack of memory. Above the minimum, and for an existing Distributed install at any size, the installer only warns.
+
+---
+
+### `bin/install` says `Project ... already holds a standalone install`
+You passed `--distributed`, or `.env` records `COMPOSE_FILE=docker-compose.distributed.yml`, for a Compose project that already runs Standalone. A Standalone install's data can't move to Distributed, and `--force` does not override this refusal: see [Switch setups](/docs/self-hosting/installation#switch-setups). If you did not mean to switch, delete the `COMPOSE_FILE` line from `.env` and run `./bin/install` again.
+
+---
+
+### `bin/install` says `Existing distributed install detected`
+The project has volumes or containers that only Distributed creates, typically from an install made with v1.41.x or earlier, when `docker-compose.yml` was the Distributed stack. The installer keeps it on Distributed and records `COMPOSE_FILE` in `.env`, so nothing is lost. If it also finds a Standalone `app` container, a plain `docker compose up -d` started the new default file against the old install. Remove that container with the command the installer prints, then run `./bin/install` again:
+```bash
+docker compose -f docker-compose.yml -p futureagi rm -sf app   # the installer prints it with your project name
 ```
 
 ---
 
-### Backend never reaches `Application startup complete`
-- Check RAM: `docker info | grep -i memory` (Docker needs ≥ 8 GB)
-- Check for migration errors: `docker compose logs backend | grep -i error`
-- Run migrations manually: `docker compose exec backend python manage.py migrate`
+### `docker compose pull failed: Docker Hub has no futureagi/standalone:...`
+The release you are installing was published before the Standalone image existed, or Docker Hub is unreachable. Build the images from your checkout instead. The build needs an 8 GB Docker VM:
+```bash
+./bin/install --from-source
+```
+
+---
+
+### `bin/install` says Docker cannot see the checkout
+Docker runs in a VM that shares only some host paths, and the stack bind-mounts config files from the checkout, so a path the VM can't see mounts empty. Colima shares your home directory only; Docker Desktop shares what is listed under Settings → Resources → File sharing. Move the clone under your home directory. If it has to stay where it is, share its path. On Colima that means restarting the VM with the path mounted writable, and listing your home directory too, because any `--mount` replaces Colima's default home mount:
+```bash
+colima stop && colima start --mount "$HOME:w" --mount /path/to/future-agi:w
+```
+
+---
+
+### The app keeps restarting or never becomes ready
+**Standalone**: `docker compose ps` shows `app` restarting, or still `starting` long after the first boot. `./bin/install` stops when the `app` container stops or restarts twice during the install, and appends the last lines of the service logs to its `install-*.log`. The usual causes are too little Docker memory (3 GB minimum, 4 GB recommended) and a `PG_PASSWORD` changed after the first start (below).
+- Check RAM: `docker info | grep -i memory`
+- Read the cause: `docker compose logs app | grep -i error`
+
+**Distributed**: the backend waits for the setup jobs, which `docker compose ps -a` lists with their exit codes. Give Docker 12 GB of memory or more (6 GB minimum).
+- Check RAM: `docker info | grep -i memory`
+- Read the cause: `docker compose logs backend | grep -i error`, and the logs of any setup job that exited with an error
 
 ---
 
@@ -63,94 +111,211 @@ docker compose up -d         # recreate so the new binding takes
 
 ---
 
+### `bin/install` says `CH_PASSWORD differs from the password this install's ClickHouse runs with`
+ClickHouse takes `CH_PASSWORD` at every start, while what was set up with the old password keeps it: on Distributed the PeerDB `ch_dest` peer that syncs Postgres to ClickHouse, and, if `CH_PASSWORD` is now empty, the dictionaries every span insert reads. So on an existing install the installer stops when `CH_PASSWORD` in `.env` (or exported in your shell) differs from the password ClickHouse runs with. Print that password and set `CH_PASSWORD` back to it:
+```bash
+docker compose exec clickhouse printenv CLICKHOUSE_PASSWORD
+```
+It prints nothing on installs made with v1.41.x or earlier: those releases ignored `CH_PASSWORD`, so ClickHouse runs with no password whatever `.env` said.
+
+If you mean to change it, re-run with `--force`. ClickHouse and the dictionaries take a new non-empty password at the next start, but on Distributed the Postgres to ClickHouse sync stops until the `ch_dest` peer carries the new password too. Removing a password is not supported: the dictionaries would keep the old one.
+
+---
+
+## Code evals
+
 ### `code-executor` crashes with `clone: Operation not permitted`
-Host platform blocks `privileged: true`. Won't work on Fargate, Cloud Run, or restricted Kubernetes. Use EC2, GCE, or bare metal. The rest of the stack runs, and only code-based eval features are unavailable.
+The host kernel or container platform blocks `privileged: true`, as on Fargate, Cloud Run and some Kubernetes policies. Only the nsjail `code-executor` needs it: always on Distributed, and on Standalone with the `sandbox` profile. Standalone without that profile runs Python code evals in the sandbox built into the `app` container and needs no privileged containers, so removing `sandbox` from `COMPOSE_PROFILES` is one fix. It costs JavaScript code evals, and the built-in sandbox isolates less: evals share the app's network, and unless the Docker host runs Linux 6.7 or later with Landlock enabled, they can connect to Postgres, ClickHouse and the Temporal dev server. Do it only where everyone who can write a code eval is trusted with the data: see [sandbox: isolated code evals](/docs/self-hosting/configuration/profiles#sandbox-isolated-code-evals). Otherwise run on a platform that allows privileged containers (EC2, GKE with privileged enabled, bare metal) or turn off code evaluation features. The rest of the stack runs either way.
+
+On Helm the sandbox is off by default (`codeExecutor.enabled=false`), and custom code evals are refused until you turn it on, which needs nodes that allow privileged pods. `codeExecutor.localFallback=true` runs them inside the worker pods instead, next to the platform's secrets: set it only when everyone who can create evals is trusted.
+
+---
+
+### JavaScript code evals fail with `JavaScript evals need Node.js`
+Standalone's built-in sandbox runs Python code evals only. Add the nsjail sandbox, which runs both and needs privileged containers:
+```bash
+echo "COMPOSE_PROFILES=sandbox" >> .env   # or add sandbox to an existing COMPOSE_PROFILES line
+docker compose up -d
+```
+The app then sends every code eval to it. Set the profile in `.env`, not only with `--profile`: the app reads `COMPOSE_PROFILES` from `.env` to make that switch.
+
+---
+
+### Code evals fail with `Code executor unavailable`
+The app or the workers cannot reach the code sandbox: its container is not running, or `CODE_EXECUTOR_URL` is wrong. Each code eval then returns this error instead of a score.
+- Standalone: the built-in sandbox runs inside `app` (`docker compose restart app`); with the `sandbox` profile it is `code-executor` (`docker compose up -d code-executor`).
+- Distributed: `docker compose up -d code-executor`, then `docker compose logs code-executor`.
+
+If your platform cannot run `code-executor` at all, Distributed can run code evals inside the worker container instead: set `CODE_EXECUTOR_LOCAL_FALLBACK=true` in `.env` and run `docker compose up -d`. Enable it only where everyone who can create or edit code evals is trusted. Standalone never falls back to running code evals in its API process.
 
 ---
 
 ## Network and UI errors
 
 ### Frontend blank page or CORS errors
-`VITE_HOST_API` in `.env` doesn't match the current backend URL. It's written into `config.js` when the frontend container starts, so recreating the container is enough and no rebuild is involved:
+`VITE_HOST_API` in `.env` doesn't match the URL the browser reaches the API on, typically because you opened the UI from another machine or a domain while it still says `http://localhost:8000`. Set it to that URL, then recreate the container that serves the UI (`app` in Standalone, `frontend` in Distributed). It's written into `config.js` when that container starts, so no rebuild is involved:
 ```bash
-docker compose up -d frontend
+echo "VITE_HOST_API=https://api.example.com" >> .env
+docker compose up -d
 ```
+A browser on another machine also needs the other public URLs, object storage's among them, or dataset uploads, downloads, exports and media previews fail from that machine: see [Public URLs](/docs/self-hosting/configuration/environment#public-urls).
 
 ---
 
 ### API calls fail with 502
-Backend isn't healthy. Check: `docker compose logs backend` and `docker compose ps backend`.
+The API isn't healthy. Check `docker compose ps` and `docker compose logs app` (Distributed: `docker compose logs backend`).
 
 ---
 
-## PeerDB errors
+## Sign-in and accounts
 
-### Mirrors show "not started" or don't appear
-PeerDB init ran before Django migrations completed. Fix:
+### Sign-in says `Sign-in is temporarily unavailable. Please try again in a moment.`
+The API answers `503` when Postgres or Redis fails during sign-in, and the attempt does not count toward the sign-in lockout. Bring the failed store back:
+- Postgres: `docker compose up -d postgres`, then check `docker compose logs postgres`
+- Redis: in Standalone it runs inside `app` (`docker compose restart app`); in Distributed, `docker compose up -d redis`
+
+---
+
+### Sign-in says the account is temporarily blocked
+After 10 failed sign-in attempts for one email address, sign-in for that address is blocked for 1 hour. The API answers `Too many failed login attempts. Account blocked for 1 hour.`, and the sign-in page shows `Account temporarily blocked`. Wait for the block to expire: resetting the password does not lift it. See [Sign-in lockout](/docs/self-hosting/user-management#sign-in-lockout).
+
+---
+
+### Forgot password sends no email
+Without [email](/docs/self-hosting/user-management#email) configured, **Forgot password** answers with the command an administrator runs to set a new password, instead of sending a link. See [Reset a password](/docs/self-hosting/user-management#reset-a-password).
+
+---
+
+## LLM gateway and models
+
+The base URL checks below apply to providers added in the UI (**Gateway > Providers**) or through the org config API, not to providers in the gateway's `config.yaml`. [Private and local provider URLs](/docs/command-center/features/self-hosted-models#private-and-local-provider-urls) covers the policy and the setup in full.
+
+### Requests fail with `403 provider_base_url_blocked`
+The gateway refused the provider's base URL, and the reason at the end of the message says why. `its base_url points to a private network address, ...` means a LAN or Tailscale address, a Docker service name or `host.docker.internal`, which needs `AGENTCC_ALLOW_PRIVATE_PROVIDER_URLS=true`: see [Allow private addresses](/docs/command-center/features/self-hosted-models#allow-private-addresses), and read its warning first. A loopback, link-local or cloud metadata address is never allowed. `localhost` inside a container is that container: see [Reach a model server](/docs/command-center/features/self-hosted-models#reach-a-model-server) for the address to use instead.
+
+---
+
+### Requests fail with `502 provider_base_url_unusable`
+The provider's base URL is not a valid http(s) URL, or its host does not resolve from the gateway's own container, which is not where your browser runs. Use a name that container can resolve: see [Reach a model server](/docs/command-center/features/self-hosted-models#reach-a-model-server).
+
+---
+
+### Saving a provider fails with `Base URL points to a private network address, which is refused by default. ...`
+The API checks the base URL when you save a provider, answers `400`, and reads the same setting as the gateway: see [Allow private addresses](/docs/command-center/features/self-hosted-models#allow-private-addresses). `Invalid base URL: ...` means an address no setting allows. [Errors](/docs/command-center/features/self-hosted-models#errors) has the full messages.
+
+---
+
+### API keys made in the UI stop working after the gateway restarts
+The gateway loads API keys and org settings from the app when it starts, and retries until the app answers. Until then, during a first boot or a slow start for example, it serves only its `config.yaml` keys. If the app stays unreachable for 2 minutes, the gateway logs `control plane sync still failing: ...; still retrying` (Standalone: `docker compose logs app`; Distributed: `docker compose logs agentcc-gateway`). It also re-reads them from the app every 60 seconds by default (`AGENTCC_SYNC_INTERVAL`).
+
+Once the app is up, open **Gateway > API Keys** and click **Sync**: it pushes every active key the gateway is missing. A key without a stored hash can't be restored that way: revoke it and create a new one.
+
+---
+
+### Creating a key fails with `The gateway issued key id '...', which already belongs to another API key`
+The gateway is older than the app and reuses key IDs after a restart. The app discards the new key instead of overwriting the other one's record. Upgrade the gateway image to the app's release (Distributed: `AGENTCC_GATEWAY_VERSION`), then create the key again.
+
+---
+
+### Custom model check fails with `<url> answered 404 Not Found`
+The full message is `<url> answered 404 Not Found. API Base URL must be the full chat-completions URL, such as https://your-host/v1/chat/completions, and the server must serve model '<name>'.` (or `405 Method Not Allowed`). In **Settings > AI Providers**, a custom model's **API Base URL** is called exactly as entered, so give the full chat-completions URL, not just the `/v1` base, and check that the server serves a model by that name.
+
+---
+
+## Knowledge bases and trace filters
+
+### A knowledge base file shows Failed: `Knowledge bases need the model serving service to embed documents, and it is not reachable. ...`
+Knowledge bases embed documents with the `serving` model server, which is not running or not reachable. Start it for your setup, then upload the file again:
+- Standalone: `serving` is the optional `ml` profile. The `docker compose up -d serving` in the message starts it once. To keep it in the stack, so that every `docker compose up -d` and `./bin/install` starts it too, add `ml` to `COMPOSE_PROFILES` in `.env` (`COMPOSE_PROFILES=ml`, or `ml,sandbox`) and run `docker compose up -d`.
+- Distributed: `docker compose up -d serving`, then `docker compose logs serving`.
+- Helm: set `serving.enabled=true`.
+
+It needs a few GB more memory once its models load.
+
+---
+
+### Filters suggest no attributes or values for older traces
+Trace filters, dashboard widgets and task filters suggest the span attributes and values that were indexed as spans arrived. Spans stored while nothing indexed them are missing from the suggestions, although filtering on them still works when you type the name and value. Index a project's older spans with `fi-observed-catalog-backfill`, following [the backfill steps](https://github.com/future-agi/future-agi/blob/main/INSTALLATION.md#filters-suggest-no-attributes-or-values-for-older-traces) in the repository.
+
+---
+
+## PeerDB errors (Distributed)
+
+PeerDB runs only in Distributed: Standalone and Helm sync Postgres to ClickHouse without it. The PeerDB UI at [http://localhost:3001](http://localhost:3001) needs `peerdb` or `all` in `COMPOSE_PROFILES` in `.env` (sign in with `peerdb` / `peerdb`).
+
+Two one-shot jobs set up the mirrors. `peerdb-init` creates the peers and mirrors that are missing, and `clickhouse-cdc-bootstrap` then waits up to 15 minutes for the mirrors' first copy. The backend starts only after both exit successfully. Neither job restarts, resyncs or repairs a mirror that already exists.
+
+### The backend never starts, or mirrors are missing
+Check how the two jobs exited, then read their logs:
 ```bash
-docker compose logs -f backend      # wait for "Application startup complete"
-docker compose run --rm peerdb-init
+docker compose ps -a                        # peerdb-init and clickhouse-cdc-bootstrap should show Exited (0)
+docker compose logs peerdb-init
+docker compose logs clickhouse-cdc-bootstrap
 ```
-Verify at [http://localhost:3001](http://localhost:3001), where mirrors should show `running`.
+- `invalid or unhealthy existing mirror status`: a mirror is in an error state, and `peerdb-init` stops there. Deal with that mirror in PeerDB itself; re-running the job does not touch it.
+- `existing landing table has no mirror; refusing initial copy into retained data`: ClickHouse holds a table whose mirror is gone, and `peerdb-init` won't copy Postgres into it again.
+- `CDC setup deadline exceeded; partial results retained`: the first copy took longer than the 15 minutes `clickhouse-cdc-bootstrap` waits.
+
+Fix the cause the log names, then run `./bin/install` again. The jobs run again, and `peerdb-init` creates only what is still missing.
 
 ---
 
 ### Analytics data is stale
-PeerDB replication has fallen behind. Check mirror lag in the PeerDB UI at [http://localhost:3001](http://localhost:3001). Re-run init if a mirror shows an error:
-```bash
-docker compose run --rm peerdb-init
-```
+PeerDB replication has fallen behind, or a mirror has failed. Check the mirrors' state and lag in the PeerDB UI at [http://localhost:3001](http://localhost:3001). Re-running `peerdb-init` does not help here: it never restarts or resyncs a mirror, and it fails while one is in an error state, which also keeps the jobs and the backend that start after it from starting. Deal with a failed mirror in PeerDB itself.
 
 ---
 
 ## Temporal errors
 
 ### `temporal-server` keeps restarting
-Almost always a Postgres issue. Check: `docker compose logs postgres`. If Postgres is OOM-killing, raise Docker RAM to ≥ 8 GB. If Postgres is healthy: `docker compose restart postgres temporal`
+Distributed. Almost always a Postgres issue. Check `docker compose logs postgres` for out-of-memory kills, and raise the Docker VM's memory to 12 GB or more. If Postgres is healthy: `docker compose restart postgres temporal`
+
+---
+
+## Performance
+
+### Standalone is slow when several people use it
+Standalone runs the API and the Temporal worker in one process, next to a Temporal dev server, so a host short of CPU makes the UI slow. Give Docker at least 2 CPUs. For more concurrent users or a steady eval load, use Distributed or Helm: see [Choose a setup](/docs/self-hosting#choose-a-setup). Standalone data can't move to either, so that's a fresh install: see [Switch setups](/docs/self-hosting/installation#switch-setups).
 
 ---
 
 ## After an upgrade
 
 ### Migration fails after `git pull`
-```bash
-docker compose exec backend python manage.py migrate
-```
-If a conflict persists, check the release notes for manual steps.
+Migrations run on start: in Standalone, in the `app` container's start step (`docker compose logs app` shows the error, and the step retries every 30 seconds); in Distributed, in the `postgres-schema-bootstrap` job the backend waits for (`docker compose logs postgres-schema-bootstrap`). A `docker compose exec` session can't run `migrate`: the app refuses schema changes there. Fix the cause the log names, then run `./bin/install` again. If a conflict persists, check the release notes for manual steps.
 
 ---
 
 ### Everything worked before the upgrade, now it doesn't
-Roll back by pinning the image versions in `.env` to the previous release tag, then bringing the stack up again. Nothing is built locally, so a `git checkout` on its own changes no running code. The full procedure is in [Upgrades & rollback](/docs/self-hosting/production/upgrades-rollback).
-```bash
-# .env, pin all five to the previous release tag
-FUTURE_AGI_VERSION=v1.25.0
-FRONTEND_VERSION=v1.25.0
-AGENTCC_GATEWAY_VERSION=v1.25.0
-SERVING_VERSION=v1.25.0
-CODE_EXECUTOR_VERSION=v1.25.0
-```
-```bash
-docker compose up -d
-```
+Roll back by pinning the image versions in `.env` to the previous release tag, then bringing the stack up again. A rollback does not undo a migration the new release already ran: if it applied one, first restore Postgres from the backup you took before the upgrade, or the old images run against a newer schema. A `git checkout` on its own is not a rollback, because the stack runs published images, with two exceptions: an install made with `--from-source`, and on Distributed `fi-collector`, which is built from the checkout unless `FI_COLLECTOR_VERSION` names a published tag, so pin it too. [Roll back a bad release](/docs/self-hosting/production/upgrades-rollback#roll-back-a-bad-release) has the procedure and the variables to pin.
+
+---
+
+### An install made with v1.41.x or earlier breaks after a plain `docker compose up -d`
+On those installs `docker-compose.yml` was the Distributed stack, and it is now Standalone. Without `COMPOSE_FILE=docker-compose.distributed.yml` in `.env`, Compose starts the new default file against the old install: it recreates `postgres` and `clickhouse` with Standalone's small-host settings and adds an `app` container that fails on the ports the old services hold. Your data stays in its volumes. Add the line to `.env`, remove the stray container with `docker compose -f docker-compose.yml rm -sf app`, and run `./bin/install`. See [Upgrading older installs](/docs/self-hosting/production/upgrades-rollback#upgrading-older-installs).
+
+---
+
+## Kubernetes (Helm)
+
+The chart's own failures, such as values it refuses, the bootstrap job, load balancer health checks and the code sandbox, are covered in [Helm troubleshooting](/docs/self-hosting/helm#troubleshooting). On Helm, the first-run setup screen shows `kubectl` commands for a failing service instead of Compose ones.
 
 ---
 
 ## Still stuck?
 
-Open an issue at [github.com/future-agi/future-agi/issues](https://github.com/future-agi/future-agi/issues) and attach `all-logs.txt`. Scrub any credentials before you upload it, since the dump includes container environments.
-```bash
-docker compose logs > all-logs.txt 2>&1
-docker compose ps >> all-logs.txt
-```
+Ask in [Discord](https://discord.com/invite/n2tCUKBkAw) or open an issue at [github.com/future-agi/future-agi/issues](https://github.com/future-agi/future-agi/issues), with what [Before you post](/docs/self-hosting/support#before-you-post) lists: your setup and release, `docker compose ps` and the failing service's logs, or a support bundle on Helm. Review every log before you upload it: logs can hold credentials inside URLs or provider error messages.
 
 ## Dive deeper
 
-<CardGroup cols={2}>
+<CardGroup cols={3}>
   <Card title="Requirements" icon="server" href="/docs/self-hosting/requirements">
     Verify your platform and resources meet the minimums
   </Card>
   <Card title="Production" icon="shield" href="/docs/self-hosting/production">
     Hardening, backups, and monitoring once the stack is stable
+  </Card>
+  <Card title="Support" icon="comments" href="/docs/self-hosting/support">
+    Where to ask for help and what to include
   </Card>
 </CardGroup>
