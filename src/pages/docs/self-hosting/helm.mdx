@@ -1,0 +1,428 @@
+---
+title: "Install on Kubernetes with Helm"
+description: "Install Future AGI on Kubernetes from the signed OCI Helm chart: the Distributed topology, with evaluation and production setups, upgrades and backups."
+---
+
+The Helm setup runs Future AGI's Distributed topology on Kubernetes: one Deployment per service, so each one scales on its own. The API, the Temporal workers, the UI, the OTLP collector (fi-collector) and the LLM gateway each get a Deployment. Model serving and the code sandbox are optional. A bootstrap Job prepares the databases on every install and upgrade. One chart installs both the open-source and the Enterprise edition.
+
+The chart is published as a signed OCI artifact, `oci://ghcr.io/future-agi/charts/futureagi`, one version per platform release. Chart version `X.Y.Z` is the platform release and runs the images tagged `vX.Y.Z`. There is no `latest` tag, so always pass `--version`: take the latest release on the [releases page](https://github.com/future-agi/future-agi/releases), without the `v`. A published version is never overwritten.
+
+To run on a single machine with Docker instead, see [Choose a setup](/docs/self-hosting#choose-a-setup).
+
+## In this page
+
+- Check the cluster and the supported configurations
+- Verify the chart's signature
+- Install for evaluation, with every datastore in the cluster, or for production, against datastores you run
+- Create the first account and check the install
+- Configure, upgrade, back up, troubleshoot and uninstall the release
+
+<TLDR>
+For an evaluation, install the chart with `--version`, `--timeout 20m` and the chart's `examples/bundled.yaml`, port-forward the UI and API, and create the first account with `kubectl exec ... create_user`. For production, write one values file for your own PostgreSQL, ClickHouse, Redis, Temporal and S3 storage and your hosts, pass it after a size preset, and pass the same files on every upgrade.
+</TLDR>
+
+## Before you start
+
+| For | You need |
+|---|---|
+| Every install | Kubernetes 1.27 or newer, and Helm 3.10 or newer, or Helm 4. |
+| An evaluation | About 4 CPUs and 8 GiB of memory free, and a default StorageClass: bundled datastores use PersistentVolumeClaims. |
+| Production | The [external datastores](#external-datastores), reachable from the cluster, and metrics-server for the autoscalers. |
+| Gateway API routes | The Gateway API CRDs v1.2 or newer (route `timeouts` are in the Standard channel from v1.2) and a Gateway controller. |
+
+What the chart supports today:
+
+| Level | Covers |
+|---|---|
+| Supported: tested in CI, fixed in patch releases | Kubernetes 1.27 to 1.37 and kind; Helm 3.22 and 4.3; the datastore versions in [External datastores](#external-datastores); Gateway API, Ingress and LoadBalancer exposure; bundled datastores for evaluation |
+| Community: expected to work, not tested in CI | GKE, EKS and AKS (`examples/cloud/`), OpenShift, k3s, Docker Desktop and OrbStack; Helm 3 from 3.10; Argo CD and Flux; PgBouncer and a read replica for PostgreSQL; managed Redis; Google Cloud Storage through HMAC keys |
+| Not supported today | The code sandbox in a `baseline` or `restricted` Pod Security namespace (it is privileged); TLS-only ClickHouse endpoints such as ClickHouse Cloud, and replicated ClickHouse clusters; Temporal Cloud; IAM roles for service accounts (IRSA), Workload Identity and Entra ID; Azure Blob Storage; TLS Redis for the LLM gateway and fi-collector; IAM database authentication; bundled datastores in production |
+
+The full matrix is in the chart README under [Supported configurations](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#supported-configurations).
+
+<Note>
+Every command on this page uses the release `futureagi` in the namespace `futureagi`, which names the resources `futureagi-backend`, `futureagi-secrets` and so on. With another release name, the resources are named `<release>-futureagi-...`: release `prod` gives `prod-futureagi-backend` and `prod-futureagi-secrets`.
+</Note>
+
+<Warning>
+Data from a Docker Compose install, Standalone or Distributed, cannot move to Helm. [Back up](/docs/self-hosting/production/backups-restore) what you need, install the chart fresh and check that it works, and only then remove the Compose install with `./bin/uninstall --wipe-data`, which permanently deletes its data. The chart does not read `.env`, so carry what you need from it over into the chart's values by hand. See [Switch setups](/docs/self-hosting/installation#switch-setups).
+</Warning>
+
+## Verify the chart
+
+The release workflow signs each published chart keylessly with cosign (GitHub OIDC, no key to manage) and attaches a build provenance attestation. Both name the workflow and the tag that built the chart. Check them with `cosign` and the GitHub CLI before you install:
+
+```bash
+VERSION=X.Y.Z
+cosign verify --new-bundle-format=false ghcr.io/future-agi/charts/futureagi:$VERSION \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/future-agi/future-agi/.github/workflows/helm-release.yml@refs/tags/v$VERSION
+gh attestation verify oci://ghcr.io/future-agi/charts/futureagi:$VERSION --repo future-agi/future-agi \
+  --signer-workflow future-agi/future-agi/.github/workflows/helm-release.yml
+```
+
+`--new-bundle-format=false` makes cosign check the chart's signature, as the release workflow does. Without it, cosign checks the provenance attestation in its place, which `gh attestation verify` already covers.
+
+The chart pins each Future AGI image by digest while it runs the chart's own release tag, so a verified chart also fixes the exact images it runs. The images themselves are not signed yet.
+
+The GitHub Release `vX.Y.Z` carries the same package, its signature bundle, checksums and the list of images the chart can pull, for registries that cannot proxy GHCR. The chart README's [Verify](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#verify) section shows how to check that copy, and its [GitOps](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#gitops-argo-cd-and-flux) section shows how Flux checks the signature before every install and upgrade.
+
+## Choose a values setup
+
+| Setup | Values | Datastores | For |
+|---|---|---|---|
+| Evaluation | `examples/bundled.yaml` | bundled, reached through port-forwards | trying it on any cluster |
+| Local cluster | `examples/local.yaml` | bundled, published as LoadBalancer Services | Docker Desktop, k3s, OrbStack, Rancher Desktop |
+| Production | a preset from `examples/sizes/`, then your values started from `examples/external.yaml` (or `examples/cloud/`) with an exposure example copied in | yours | teams and production |
+| Enterprise | the production files plus `examples/enterprise.yaml` | yours | a licensed install, SSO, proxies, air-gap |
+
+The datastores are external by default: PostgreSQL, ClickHouse, Redis, Temporal and S3-compatible object storage that you run and back up. Bundled mode runs each one in the release instead, with one replica each, no high availability and no backups, so use it for evaluation only. You set the mode per datastore, and the modes mix.
+
+Values files layer: later `-f` files win. The examples ship inside the chart, and this command puts them in `futureagi/examples/`:
+
+```bash
+helm pull oci://ghcr.io/future-agi/charts/futureagi --version "$VERSION" --untar
+```
+
+You can also pass an example by its tag-pinned URL, such as `https://raw.githubusercontent.com/future-agi/future-agi/v$VERSION/deploy/helm/futureagi/examples/bundled.yaml`. Besides the setups above, `gateway-api.yaml`, `ingress-traefik.yaml` and `ingress.yaml` hold the settings that expose the install, with example hosts to replace ([Expose it](#expose-it)), `external-secrets.yaml` and `airgap.yaml` cover secret stores and air-gapped clusters, and `gitops/` holds an Argo CD Application and a Flux HelmRelease.
+
+## Install for evaluation
+
+Every datastore runs in the cluster, and you reach the app through port-forwards.
+
+<Steps>
+<Step title="Install the chart with bundled datastores">
+```bash
+VERSION=X.Y.Z   # a platform release, without the "v"
+helm install futureagi oci://ghcr.io/future-agi/charts/futureagi --version "$VERSION" \
+  -n futureagi --create-namespace --timeout 20m \
+  -f https://raw.githubusercontent.com/future-agi/future-agi/v$VERSION/deploy/helm/futureagi/examples/bundled.yaml
+```
+
+Helm waits for the bootstrap job, which runs the migrations and creates the schema: a few minutes on the first install. Then it prints the next steps. If Helm times out first, the job keeps running. Wait for it to finish before you run Helm again, since a new run replaces the job mid-way:
+
+```bash
+kubectl -n futureagi get job futureagi-bootstrap
+```
+
+Then run the same command with `helm upgrade --install` in place of `helm install`. The failed install already holds the release name, so a repeated `helm install` refuses it.
+</Step>
+
+<Step title="Forward the ports and create the first account">
+```bash
+kubectl -n futureagi port-forward svc/futureagi-frontend 3000:80 &
+kubectl -n futureagi port-forward svc/futureagi-backend 8000:8000 &
+kubectl -n futureagi port-forward svc/futureagi-fi-collector 4318:4318 &   # traces: FI_BASE_URL=http://localhost:4318
+kubectl -n futureagi port-forward svc/futureagi-minio 9005:9000 &   # file downloads
+kubectl -n futureagi exec -it deploy/futureagi-backend -c backend -- python manage.py create_user
+```
+
+`create_user` asks for an email, a name and a password. [Create the first account](#create-the-first-account) covers the other ways.
+</Step>
+
+<Step title="Open the app">
+Open [http://localhost:3000](http://localhost:3000) and sign in with the account you just created.
+</Step>
+</Steps>
+
+For anything you would mind losing, move to [production](#install-for-production).
+
+### Local cluster
+
+On Docker Desktop, OrbStack, Rancher Desktop and k3s, `examples/local.yaml` in place of `bundled.yaml` bundles every datastore and publishes the UI (3000), the API (8000), OTLP (4317, 4318) and file downloads (9005) as LoadBalancer Services, so you need no port-forwards. Docker Desktop, OrbStack and Rancher Desktop publish them on localhost. k3s publishes them on the node's address, where anything that can reach the node reaches them too, the bundled bucket included, so use it there only on a trusted network. Create the first account the same way, then open [http://localhost:3000](http://localhost:3000) (on k3s, from the node itself). Elsewhere a LoadBalancer needs `minikube tunnel`, cloud-provider-kind or MetalLB. It is for evaluation only.
+
+## Install for production
+
+A production install runs against datastores you operate and back up. Check them against the contract below, choose a size preset and a way in, then install.
+
+### External datastores
+
+| Datastore | Requirements |
+|---|---|
+| PostgreSQL | 16 (11 or newer works), with the `pg_trgm` extension: a migration runs `CREATE EXTENSION pg_trgm`. Set `postgres.external.sslMode` to `require`, or `verify-full` with the server's CA (the chart default is `prefer`). `postgres.external.host` must reach PostgreSQL directly, because the outbox CDC holds a session advisory lock and migrations set session options. PgBouncer is only for Django's connections, through `postgres.pooler`. |
+| ClickHouse | 25.3 or newer, single node, over plain HTTP (8123) and the native protocol (9000). The server needs a storage policy named `tiered` with a `cold` volume, or the bootstrap job stops with `native tiered storage policy required`. The user needs CREATE on the database and, for the observed-attribute index, CREATE DATABASE, CREATE USER and GRANT. |
+| Redis | 6 or newer. The app uses databases 0 to 3, and the LLM gateway database 4 when it runs more than one replica. The password must be URL-safe. |
+| Temporal | A self-hosted 1.2x server over plain gRPC, with the namespace (`temporal.namespace`, default `default`) created in advance. |
+| Object storage | AWS S3 or an S3-compatible service, with an access key and secret key. Browsers download stored files by plain object URLs, so the bucket's endpoint must be reachable from your users' browsers. |
+
+The chart README's [External datastores](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#external-datastores) section has the full contract, a sample ClickHouse storage policy and the PostgreSQL connection budget.
+
+### Sizing presets
+
+Pass one of `examples/sizes/` before your values file:
+
+| Preset | For | Replicas | Also |
+|---|---|---|---|
+| Evaluation (`bundled.yaml`) | trying it | 1 of each, datastores included | about 2 CPUs and 5 GiB requested |
+| `small.yaml` | a team, up to a few million spans a day | 1 of each, with the backend and worker requests raised above the chart defaults | about 1.5 CPUs and 4.5 GiB requested, datastores not included |
+| `medium.yaml` | production for one organization | autoscaled on CPU and memory: backend 2 to 6, all-queues worker 2 to 6, UI 2 to 4, collector 2 to 6, gateway 2 to 6 (sharing state in Redis) | soft zone and node spread, disruption budgets, 300 s worker drain; at least two nodes |
+| `large.yaml` | many teams, heavy evaluation or simulation load | backend 3 to 12; a worker Deployment per queue: `default` 2 to 6, `tasks_s` 2 to 8, `tasks_l` 2 to 6, `tasks_xl` 1 to 4, `agent_compass` 1 to 4; gateway 2 to 8 | drains of 300 to 900 s per queue, hard node spread, Guaranteed-QoS collector, PgBouncer; three nodes across zones |
+
+Your values file comes after the preset, so a key set in both takes your value. `external.yaml` sets `backend.replicas` and `worker.allQueues.replicas` to 2: with `small.yaml`, delete those lines to run one of each. The medium and large presets autoscale, so they ignore them.
+
+`large.yaml` sends Django's connections through a transaction-mode PgBouncer that you run, and ships an example host, `pgbouncer.example.internal`. Run PgBouncer with `pool_mode = transaction`, `server_reset_query_always = 1` and `ignore_startup_parameters = extra_float_digits,search_path`, and set `postgres.pooler.host` in your values file.
+
+The medium and large presets autoscale the LLM gateway, which has no Redis TLS: they need a Redis without TLS for it. See [Sizing presets](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#sizing-presets) in the chart README.
+
+### Expose it
+
+Without public URLs, the install is reachable only through port-forwards, and the UI calls the API on `http://localhost:8000`.
+
+| Way in | Values | What it does |
+|---|---|---|
+| Gateway API (recommended) | `examples/gateway-api.yaml` | Attaches routes to a Gateway you run: an HTTPRoute for the UI, and an HTTPRoute for the API that also sends `/v1/traces` to the collector and gives `/ws/` a long WebSocket timeout (`gatewayApi.timeouts.websocket`, 24 h). Other API requests get `gatewayApi.timeouts.request` (300 s). |
+| Ingress | `examples/ingress-traefik.yaml` | Traefik. ingress-nginx (`examples/ingress.yaml`) is retired upstream and kept as legacy. The API host must differ from the UI host. |
+| LoadBalancer | `<component>.service.type: LoadBalancer` | Publishes a component directly. `fiCollector.service.type=LoadBalancer` is the simplest way to take OTLP/gRPC from outside without a Gateway. |
+
+The Gateway API and Ingress examples carry example hosts (`futureagi.example.com` and its `api.` and `otlp.` names), and `gateway-api.yaml` attaches to an example Gateway, `public` in `gateway-system`. Passed as they are, they route the example hosts. Copy the settings of the one you use into your values file, then set the hosts to your domain and, for the Gateway API, `gatewayApi.parentRefs` to your Gateway.
+
+The hosts set the public URLs: `BASE_URL`, `FRONTEND_URL`, `APP_URL` (invite and password-reset links point there), the CSRF origins, the UI's API URL and `FI_COLLECTOR_PUBLIC_URL`, with https for TLS hosts. `urls.app` and `urls.api`, which `external.yaml` sets, win over the hosts, so set them to the same hosts or delete them. Once the URLs are public, `ALLOWED_HOSTS` narrows to the API host (plus localhost, the in-cluster names and the pod's own IP) and `CORS_ALLOWED_ORIGINS` to the UI's origin. Whatever sits in front must allow long requests and WebSockets: see [Exposing it](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#exposing-it) and [Timeouts and WebSockets](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#timeouts-and-websockets) in the chart README.
+
+### Install
+
+<Steps>
+<Step title="Create the Secrets for your datastores">
+```bash
+kubectl create namespace futureagi
+kubectl -n futureagi create secret generic futureagi-postgres --from-literal=password='...'
+kubectl -n futureagi create secret generic futureagi-s3 \
+  --from-literal=access-key='...' --from-literal=secret-key='...'
+```
+
+The cloud examples name their own Secrets: `gke.yaml` uses `futureagi-gcs` for the bucket in place of `futureagi-s3`, and `aks.yaml` also needs `futureagi-redis`. Create the ones listed at the top of the file you start from.
+
+You can put the passwords in your values file instead. The chart then stores them in its own Secret.
+</Step>
+
+<Step title="Pull the chart and write your values file">
+```bash
+helm pull oci://ghcr.io/future-agi/charts/futureagi --version "$VERSION" --untar
+cp futureagi/examples/external.yaml my-values.yaml
+cp futureagi/examples/sizes/medium.yaml medium.yaml   # or small.yaml, large.yaml
+```
+
+Start `my-values.yaml` from `external.yaml` as here, or from `futureagi/examples/cloud/eks.yaml`, `gke.yaml` or `aks.yaml` (community support). Replace every example host, and check each datastore against the contract above. Add the settings for your way in, with your hosts and Gateway, as in [Expose it](#expose-it). With `large.yaml`, also set `postgres.pooler.host`.
+</Step>
+
+<Step title="Install with the preset first and your values last">
+```bash
+helm install futureagi oci://ghcr.io/future-agi/charts/futureagi --version "$VERSION" \
+  -n futureagi -f medium.yaml -f my-values.yaml --timeout 20m
+```
+
+With only external datastores, the bootstrap job runs before anything else is created, so the API starts on a ready schema. If Helm times out, see [Troubleshooting](#troubleshooting).
+</Step>
+</Steps>
+
+A values file that leaves out a required setting fails at once, before anything is created, under the heading `Future AGI chart: fix these values`, with one line per setting to fix.
+
+Keep `my-values.yaml` and your copy of the preset in version control, and pass both, in the same order, on every `helm upgrade`. An upgrade renders the chart from its defaults and the files you pass, so a file you leave out takes its settings with it, such as the preset's autoscalers and replica counts.
+
+<Note>
+If you bundle a datastore, its volume size and StorageClass (`<datastore>.bundled.persistence.size` and `.storageClass`, and `global.storageClass`) are fixed at install. `helm upgrade` refuses a change and names the key. The chart README's [Install-time settings](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#install-time-settings) show how to grow a volume.
+</Note>
+
+## Create the first account
+
+Run `create_user` in the backend pod. It asks for an email, a name and a password:
+
+```bash
+kubectl -n futureagi exec -it deploy/futureagi-backend -c backend -- python manage.py create_user
+```
+
+To script it, pass the email and name as flags and pipe the password in, so it stays off the command line:
+
+```bash
+printf '%s\n' "$PASSWORD" | kubectl -n futureagi exec -i deploy/futureagi-backend -c backend -- \
+  python manage.py create_user --email admin@example.com --name "Admin"
+```
+
+The password must pass the sign-up rules in [Create accounts](/docs/self-hosting/user-management#create-accounts).
+
+For GitOps, let the bootstrap job create the first account from a Secret with the keys `email`, `name` and `password`:
+
+```bash
+kubectl -n futureagi create secret generic futureagi-admin \
+  --from-literal=email=admin@example.com --from-literal=name='First Admin' \
+  --from-literal=password='...'
+```
+
+```yaml
+bootstrap:
+  admin:
+    existingSecret: futureagi-admin
+```
+
+The job creates the account once, if no account with that email exists, and never changes an existing one, password included. A password the sign-up rules reject, a missing name or password, or a malformed email fails the job, and its log says why.
+
+To set a new password for an account, and for the other account tasks, see [Users & sign-in](/docs/self-hosting/user-management#reset-a-password).
+
+## Check the install
+
+```bash
+kubectl -n futureagi get pods -l app.kubernetes.io/instance=futureagi   # every pod Running and Ready; the bootstrap pod Completed
+helm test futureagi -n futureagi
+```
+
+`helm test` checks that the API, the UI, the collector and the gateway answer, plus model serving and the code sandbox when you enable them.
+
+When you first open the app, the first-run setup screen checks every service. With the code sandbox off, the default, its **Code execution sandbox** row reads Optional and names `codeExecutor.enabled=true` as the way to turn it on. **Agent fixer (evals)** reads the same with `serving.enabled=false`, also the default. Neither row blocks either launch mode. See [First-run setup](/docs/self-hosting/configuration/launch-mode).
+
+## Configure
+
+Set everything in `my-values.yaml` and apply it with `helm upgrade`, passing the same values files as at install, as in [Upgrade and roll back](#upgrade-and-roll-back). The chart README's [Values](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#values) table lists every key.
+
+- **Application keys.** The chart generates seven keys once into `futureagi-secrets` and reads them back on every upgrade. Keep `SECRET_KEY`, which signs logins (a new one signs everyone out), and `INTEGRATION_ENCRYPTION_KEY`, without which stored integration credentials cannot be decrypted. `helm uninstall` keeps this Secret on purpose. To manage the keys yourself, create a Secret with all seven and set `secrets.existingSecret` (required with Argo CD), or fill it from a secret store with `externalSecrets`. See [Secrets](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#secrets).
+- **LLM provider keys.** Built-in evals need one. Set `secrets.llm.openaiApiKey`, `anthropicApiKey`, `googleApiKey` or the AWS Bedrock keys, or point `secrets.llm.existingSecret` at a Secret holding any of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Workspaces can also add their own keys in the UI. The command after this list adds a key to a running install.
+- **Model serving.** `serving.enabled=true` runs the embedding model server that knowledge bases, embedding-based evals and Vector DB columns need, and, with an Enterprise license, Error Feed clustering. For the CUDA image, set `serving.image.tag` to the release tag plus `-gpu` (for example `vX.Y.Z-gpu`, linux/amd64 only) and add `nvidia.com/gpu` to `serving.resources.limits`. That image runs by tag, not pinned by digest.
+- **Code sandbox.** `codeExecutor.enabled=true` runs the nsjail sandbox for custom code evals. It needs privileged pods, which `baseline` and `restricted` Pod Security namespaces and some managed clusters refuse. With the sandbox off, custom code evals are refused. `codeExecutor.localFallback=true` runs them inside the worker pods instead, next to the platform's secrets: set it only when everyone who can create evals is trusted.
+- **Scaling and placement.** `worker.queues` gives a busy queue its own Deployment, `autoscaling` on each component adds a HorizontalPodAutoscaler (it needs metrics-server), PodDisruptionBudgets are on by default, and `topologySpread.preset` (`soft` by default, `hard` or `none`) spreads replicas over zones and nodes. See [Sizing presets](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#sizing-presets).
+- **Network and pod security.** `networkPolicy.enabled=true` limits the datastores, the gateway, serving and the sandbox to this release's pods, and blocks the sandbox from private, link-local and metadata addresses. With the code sandbox off, every pod meets the Pod Security `restricted` level. See [Security](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#security).
+- **Telemetry and air-gap.** Deployment telemetry is on by default: a one-time registration with the owner, admin, staff and superuser emails, then usage counts every 6 hours, never traces, prompts or other content. `config.telemetry=false` stops the emails and heartbeats, but one minimal registration without emails is still attempted: block `api.futureagi.com` to send nothing. `global.airgap=true` turns telemetry off the same way, along with the license heartbeat (unless `license.heartbeat` is `true`), the price-list download and model serving's downloads. See [Telemetry](/docs/self-hosting/configuration/telemetry).
+- **Email.** `config.email.mailgunSenderDomain` with `secrets.mailgunApiKey`, or `config.email.existingSecret` holding `MAILGUN_API_KEY`. Until both are set, email stays off and invites return a link to share yourself.
+- **Enterprise.** `edition=ee` with `license.existingSecret` (a Secret holding `EE_LICENSE_KEY`) turns on the Enterprise features in the same public image. `examples/enterprise.yaml` adds SSO (`auth.google`, `auth.github`, `auth.microsoft`), a corporate proxy (`global.proxy`; the LLM gateway does not use it yet), a CA bundle (`global.caBundle`) and a private registry mirror (`global.imageRegistry`). See [Enterprise](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#enterprise).
+- **Private provider URLs.** `agentccGateway.allowPrivateProviderURLs=true` lets organization providers use base URLs on private networks, such as an Ollama or vLLM server in the cluster or on your network. It sets `AGENTCC_ALLOW_PRIVATE_PROVIDER_URLS` on the backend and the gateway. Loopback, link-local and cloud metadata addresses stay refused. Set it only when everyone who can add a provider is trusted: it puts every in-cluster service in reach of a provider URL. See [Private and local provider URLs](/docs/command-center/features/self-hosted-models#private-and-local-provider-urls).
+- **Gateway shutdown.** A stopping gateway pod gets 45 s (`agentccGateway.terminationGracePeriodSeconds`): the 10 s preStop sleep (Kubernetes 1.30 or newer), 30 s of `agentccGateway.config.server.shutdown_timeout` for in-flight streams, and 5 s in which the gateway sends its buffered request logs. If you change either setting, keep the grace period at least their sum plus 5 s, and add up to 15 s with `agentccGateway.config.otel.exporter: otlp`.
+- **GitOps.** Argo CD renders the chart with `helm template`, so it needs `secrets.existingSecret` and explicit passwords for bundled datastores. Flux can verify the chart's signature before every install and upgrade. Pin an exact chart version in either. `examples/gitops/` has an Argo CD Application and a Flux HelmRelease. See [GitOps](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#gitops-argo-cd-and-flux).
+- **Anything else.** `config.extraEnv` sets environment variables on the backend, workers and bootstrap job. [docs/configuration.md](https://github.com/future-agi/future-agi/blob/main/docs/configuration.md) lists every supported key.
+
+To add an LLM key to a running install within the same chart version, reuse the release's values:
+
+```bash
+helm upgrade futureagi oci://ghcr.io/future-agi/charts/futureagi --version "$VERSION" \
+  -n futureagi --reset-then-reuse-values --set secrets.llm.openaiApiKey=sk-... --timeout 20m
+```
+
+This restarts the application pods, not the bundled datastores. `--reset-then-reuse-values` needs Helm 3.14 or newer, or Helm 4. The key is then only in the release's stored values, so also add it to `my-values.yaml`, or better to a Secret named by `secrets.llm.existingSecret`. Otherwise the next upgrade with your values files removes it from the chart's Secret.
+
+## Upgrade and roll back
+
+Chart `X.Y.Z` runs images `vX.Y.Z`, so upgrading the chart upgrades the platform. Any patch within a minor is a supported path, and so is the previous minor to the next. Going further, upgrade one minor at a time, and read the [release notes](https://github.com/future-agi/future-agi/releases) first: they carry a migrations callout when a release has one.
+
+```bash
+NEW=X.Y.Z
+helm upgrade futureagi oci://ghcr.io/future-agi/charts/futureagi --version "$NEW" \
+  -n futureagi -f medium.yaml -f my-values.yaml --timeout 20m --rollback-on-failure   # Helm 3: --atomic
+```
+
+Pass every values file you installed with, in the same order: here the preset and `my-values.yaml`, or `bundled.yaml` for an evaluation install. A file you leave out takes its settings with it. Never use `--reuse-values` across versions: it keeps the previous release's merged values, so new keys and changed defaults in the new chart are silently dropped.
+
+The bootstrap job runs first, with the new image: migrations, seeds, the ClickHouse schema, CDC and schedules. Only then do the Deployments roll. A failed bootstrap stops the upgrade before any Deployment rolls, and its log says why:
+
+```bash
+kubectl -n futureagi logs job/futureagi-bootstrap
+```
+
+Fix the cause and run the upgrade again, or go back with `helm rollback futureagi -n futureagi`, which restores the previous revision's Deployments and Secret. A job still running after Helm's `--timeout` must finish before you retry.
+
+<Warning>
+`helm rollback` restores images and the Secret, never the database schema. A rollback across a migration the old version cannot run on means restoring the pre-upgrade backup, so take one before every minor upgrade.
+</Warning>
+
+The chart README's [Upgrading](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#upgrading) section covers renamed values and breaking changes.
+
+## Back up and restore
+
+| Data | Holds | Back it up with |
+|---|---|---|
+| PostgreSQL | accounts, projects, datasets, evals, the CDC outbox | managed point-in-time recovery, CloudNativePG backups, or `pg_dump` |
+| ClickHouse | traces, spans and analytics | `BACKUP DATABASE ... TO S3(...)` (25.3 or newer) or `clickhouse-backup`, including the `cold` volume |
+| Object storage | uploads, datasets and exports | bucket versioning and replication |
+| Temporal | workflow state and schedules | its own database; bundled Temporal: a volume snapshot |
+| `futureagi-secrets` (or your `secrets.existingSecret`) | `SECRET_KEY`, `INTEGRATION_ENCRYPTION_KEY` and the other application keys | export it and keep it offline, next to the database backups |
+| Redis | cache, locks, live updates | nothing: it is rebuilt |
+
+Without `INTEGRATION_ENCRYPTION_KEY`, the integration credentials in a restored database cannot be decrypted. Export the Secret once:
+
+```bash
+kubectl -n futureagi get secret futureagi-secrets -o yaml > futureagi-secrets.backup.yaml
+```
+
+To restore:
+
+1. Scale the application down so nothing writes meanwhile: `kubectl -n futureagi scale deploy -l app.kubernetes.io/instance=futureagi --replicas=0`.
+2. Restore PostgreSQL, then ClickHouse from a backup taken at or after the same point, then the bucket.
+3. Put back the application Secret.
+4. Run `helm upgrade` with the same chart version and the same values files, in the same order. The bootstrap job re-applies the schema, CDC and Temporal schedules, and the Deployments come back. Autoscaled Deployments stay at 0, so scale them to 1 yourself.
+5. Run `helm test futureagi -n futureagi`, sign in, open a recent trace and download a file.
+
+For bundled datastores, Velero or your volume snapshots cover the PersistentVolumeClaims. Stop the application first for a consistent copy. See [Backup and restore](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#backup-and-restore) in the chart README.
+
+## Troubleshooting
+
+| Symptom | Look at |
+|---|---|
+| `helm install` fails at once with "fix these values" | the listed keys |
+| `helm install` times out | `kubectl -n futureagi logs job/futureagi-bootstrap`; let a running job finish, then retry with `helm upgrade --install` and the same flags (a repeated `helm install` refuses the release name); raise `--timeout` together with `bootstrap.activeDeadlineSeconds` (the first bootstrap migrates an empty database) |
+| bootstrap: `... is not reachable after 600s` | the host and port in the values, NetworkPolicies, DNS, `global.proxy.noProxy` |
+| bootstrap: `native tiered storage policy required` | the ClickHouse [storage policy](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#clickhouse) |
+| bootstrap: `Unknown command: 'bootstrap_install'` | `image.tag` points at a backend image from v1.41.x or earlier, which predates the chart: set it to the chart's release, or leave it empty to use the chart's `appVersion` |
+| bootstrap or fi-collector: certificate verify failed | `global.caBundle`, or `PGSSLROOTCERT` and the CA mount (see [PostgreSQL](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#postgresql)) |
+| `helm upgrade`: `... cannot change` (StatefulSet ...) | [Install-time settings](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#install-time-settings) |
+| Workers log `waiting for the database migrations` | the bootstrap job: `kubectl -n futureagi logs job/futureagi-bootstrap` |
+| UI loads but every call fails, or CORS errors | `urls.api` or the API host; `config.corsAllowedOrigins`; with port-forwards, forward the backend to localhost:8000 |
+| API answers 400 Bad Request | `config.allowedHosts`: the Host header is not an allowed host |
+| The load balancer marks the API or collector unhealthy (`no healthy upstream`, 502, 503) | its own health checks, which skip the readiness probes: GKE `gatewayApi.gke.healthChecks`, EKS the `alb.ingress.kubernetes.io/healthcheck-*` Service annotations |
+| WebSockets drop, or long uploads fail after 15 to 60 s | [Timeouts and WebSockets](https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md#timeouts-and-websockets) |
+| Custom code evals fail with `Code executor unavailable` | `codeExecutor` (see [Configure](#configure)) |
+| The first-run setup screen marks a service down | `kubectl get pods`, then that service's logs |
+| Filters and widgets suggest no attributes, fi-collector logs `observed catalog replay failed` | the observed-attribute index and its `observed_catalog_writer` user (created by the bootstrap job unless `bootstrap.propertyCatalog=false`) |
+
+For problems inside the app, see [Troubleshooting](/docs/self-hosting/troubleshooting).
+
+## Collect a support bundle
+
+When you ask for help, attach a support bundle. The script is attached to every GitHub Release:
+
+```bash
+curl -fsSLO https://github.com/future-agi/future-agi/releases/download/v$VERSION/support-bundle.sh
+bash support-bundle.sh -n futureagi -r futureagi   # writes futureagi-support-<release>-<time>.tar.gz
+```
+
+It needs `kubectl` and `helm` with access to the namespace, and `curl` for the setup checks. It collects:
+
+- `helm status`, history and your user-supplied values
+- the release's workloads, Services, PersistentVolumeClaims, routes, network policies and ExternalSecrets, and the namespace's events
+- `describe` output of pods that are not ready
+- current and previous logs of every Future AGI container, the bootstrap job included
+- nodes, StorageClasses and the image digests the pods run
+- the setup checks, through a short port-forward to the backend
+
+In the values, status, `describe` output and logs, it redacts every setting whose name contains PASSWORD, SECRET, TOKEN, KEY, DSN, CREDENTIAL or HTTP(S)_PROXY, and the `user:password@` part of every URL. It never reads Secret objects and never runs `helm get manifest` or `helm get hooks`, which can hold inline secrets. Review the files before you send them. `-o DIR` sets the output directory, `--tail LINES` the log lines per container (1000 by default), and `--no-setup-checks` skips the setup checks.
+
+See [Support](/docs/self-hosting/support) for where to send it.
+
+## Uninstall
+
+```bash
+helm uninstall futureagi --namespace futureagi
+```
+
+`helm uninstall` keeps these on purpose:
+
+- `futureagi-secrets`, the generated keys. `INTEGRATION_ENCRYPTION_KEY` decrypts the integration credentials stored in PostgreSQL, and a reinstall reuses it.
+- The bootstrap ServiceAccount, because Helm does not delete hooks on uninstall.
+- Secrets created by `externalSecrets`, whose ExternalSecrets use `creationPolicy: Orphan`.
+- The bundled datastores' PersistentVolumeClaims (`data-futureagi-postgres-0`, ...).
+
+Delete them when you mean it. Without `futureagi-secrets`, a restored database's integration credentials cannot be decrypted.
+
+```bash
+kubectl -n futureagi delete secret futureagi-secrets
+kubectl -n futureagi delete serviceaccount futureagi-bootstrap
+kubectl -n futureagi delete pvc -l app.kubernetes.io/instance=futureagi
+```
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Chart README" icon="github" href="https://github.com/future-agi/future-agi/blob/main/deploy/helm/futureagi/README.md">
+    Every value, the cloud examples, Enterprise and air-gap options
+  </Card>
+  <Card title="Requirements" icon="server" href="/docs/self-hosting/requirements">
+    Hardware, software and platform support for every setup
+  </Card>
+  <Card title="Support" icon="comments" href="/docs/self-hosting/support">
+    Where to ask for help and what to include
+  </Card>
+</CardGroup>
