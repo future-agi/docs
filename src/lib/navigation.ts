@@ -64,6 +64,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Requirements', href: '/docs/self-hosting/requirements' },
               { title: 'Installation', href: '/docs/self-hosting/installation' },
               { title: 'Helm (Kubernetes)', href: '/docs/self-hosting/helm' },
+              { title: 'Container images', href: '/docs/self-hosting/images' },
               {
                 title: 'Configuration',
                 items: [
@@ -87,6 +88,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Upgrades & rollback', href: '/docs/self-hosting/production/upgrades-rollback' },
                 ]
               },
+              { title: 'Local development', href: '/docs/self-hosting/development' },
               { title: 'Troubleshooting & FAQs', href: '/docs/self-hosting/troubleshooting' },
               { title: 'Support', href: '/docs/self-hosting/support' },
             ]
