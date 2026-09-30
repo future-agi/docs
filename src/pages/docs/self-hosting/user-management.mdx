@@ -1,77 +1,143 @@
 ---
-title: "Self-Hosting User Management"
-description: "Create user accounts, reset passwords, and manage roles in self-hosted Future AGI — via Mailgun email flow or directly through the Django admin shell."
+title: "Users & sign-in"
+description: "Create accounts, invite your team, reset passwords, understand sign-in lockouts and set up single sign-on on a self-hosted Future AGI instance."
 ---
 
-## About
+## In this page
 
-Create accounts, reset passwords, and manage roles. The email-based sign-up flow needs Mailgun; without it, the Django shell is the fastest path to a first user.
+A self-hosted instance manages its own accounts. This page covers creating them from the installer, the command line or the UI, sending invites and password resets by email or without it, what happens after too many failed sign-ins, and single sign-on.
 
-## Create your first user
+<TLDR>
+The installer creates the first account. After that, use `create_user`, sign-up in the UI, or team invites. Without email, an administrator resets passwords with `reset_password`. Ten failed sign-ins lock an email address for an hour, unless an administrator clears the lock.
+</TLDR>
 
-### With Mailgun (recommended)
+## Create accounts
 
-Set these in `.env` and restart the backend:
+`./bin/install` asks for the first account's email, name and password; press Enter at the email prompt to skip it. With `-y` it reads `FAGI_ADMIN_EMAIL`, `FAGI_ADMIN_NAME` and `FAGI_ADMIN_PASSWORD` instead, and skips the account unless all three are set. See [Installer flags](/docs/self-hosting/installation#installer-flags).
 
-```bash
-MAILGUN_API_KEY=key-...
-MAILGUN_SENDER_DOMAIN=mail.yourcompany.com
-DEFAULT_FROM_EMAIL=no-reply@yourcompany.com
-```
+To create an account later, run `create_user` in the container that runs the API. It asks for the email, full name and password:
 
 ```bash
-docker compose restart backend
+docker compose exec app python manage.py create_user       # Standalone
+docker compose exec backend python manage.py create_user   # Distributed
+kubectl -n futureagi exec -it deploy/futureagi-backend -c backend -- python manage.py create_user   # Helm
 ```
 
-Then sign up via [http://localhost:3000](http://localhost:3000).
-
-### Without Mailgun — Django shell
+To script it, pass the email and name as flags and pipe the password in. A password on the command line can be read by every process in the container, which in Standalone includes code evals:
 
 ```bash
-docker compose exec backend python manage.py shell -c "
-from django.contrib.auth.hashers import make_password
-from accounts.models import User
-User.objects.create(email='you@example.com', password=make_password('your-password'))
-"
+printf '%s\n' "$PASSWORD" | docker compose exec -T app python manage.py create_user \
+  --email you@example.com \
+  --name "Your Name"
 ```
 
-Log in at [http://localhost:3000](http://localhost:3000) with those credentials.
+The password must pass the sign-up rules: at least 8 characters, not a common password, and not all digits. Then sign in at `http://localhost:3000`.
 
-## Superuser
+Other ways to add people:
 
-```bash
-docker compose exec backend python manage.py createsuperuser
-```
+- **Sign-up in the UI.** Anyone who can reach the instance can create an account on the sign-up page.
+- **Team invites.** Invite people from the app's settings. With [email](#email) set up, the invite is emailed. Without it, the invite dialog returns a link for each invitee to share yourself.
+- **Helm.** Set `bootstrap.admin.existingSecret` to a Secret with the keys `email`, `name` and `password`, and the bootstrap job creates the first account if no account with that email exists. See [Create the first account](/docs/self-hosting/helm#create-the-first-account).
 
-Superusers can access the Django admin at `http://localhost:8000/admin/`.
+<Note>
+An account made with `create_user` or on the sign-up page owns a new organization, as the first account does. To bring someone into your organization, invite them instead.
+</Note>
+
+## Email
+
+Email is optional. Without it, invites return a link for you to share, and **Forgot password** answers with the command an administrator runs on the host. To send invites and password resets, set up Mailgun as in [Email](/docs/self-hosting/configuration/environment#email) on the Environment variables page. On Helm, set `secrets.mailgunApiKey` and `config.email.mailgunSenderDomain`.
 
 ## Reset a password
 
+With email set up, **Forgot password** on the sign-in page emails a reset link. It answers the same whether or not the address has an account.
+
+Without email, **Forgot password** answers with the command an administrator runs on the host:
+
 ```bash
-docker compose exec backend python manage.py shell -c "
-from django.contrib.auth.hashers import make_password
-from accounts.models import User
-u = User.objects.get(email='you@example.com')
-u.password = make_password('new-password')
-u.save()
-"
+docker compose exec app python manage.py reset_password --email you@example.com       # Standalone
+docker compose exec backend python manage.py reset_password --email you@example.com   # Distributed
+kubectl -n futureagi exec -it deploy/futureagi-backend -c backend -- \
+  python manage.py reset_password --email you@example.com                             # Helm
+```
+
+It asks for the new password, which must pass the sign-up rules and not be too close to the account's email or name. To script it, pipe the password in as for `create_user`:
+
+```bash
+printf '%s\n' "$PASSWORD" | docker compose exec -T app python manage.py reset_password --email you@example.com
+```
+
+A deactivated account is active again, and browsers signed in without **Remember me** are signed out. A browser signed in with **Remember me** keeps its refresh token and uses it to get new access for up to 30 days after it signed in, until the account signs in again: each sign-in ends the refresh tokens of earlier ones. If you reset the password because the account may be compromised, end those sessions too:
+
+```bash
+docker compose exec app python manage.py shell -c "from accounts.models.auth_token import AuthToken; AuthToken.objects.filter(user__email__iexact='you@example.com', auth_type='refresh', is_active=True).update(is_active=False)"
+```
+
+On Distributed, use `backend` in place of `app`.
+
+<Warning>
+`OSS_RETURN_PASSWORD_RESET_LINK=true` in `.env` makes **Forgot password** return the reset link in the browser, email or not. The endpoint takes no authentication, so anyone who can reach the instance can request a link for any address and take over that account. It defaults to `false`, and `./bin/install` warns while `.env` sets it. Turn it on only where reaching the instance already implies full trust, such as a laptop, and keep it off on anything internet-facing.
+</Warning>
+
+## Sign-in lockout
+
+After 10 failed sign-ins for one email address, including sign-ins to an address that has no account, that address is locked for 1 hour. After the tenth failure the sign-in page reads:
+
+```text
+Account temporarily blocked due to too many failed attempts.
+```
+
+Each sign-in during the lock shows the time left, rounded up to the minute:
+
+```text
+Account temporarily blocked. Please try again in N minutes.
+```
+
+The API's own messages differ: its tenth failure answers `Too many failed login attempts. Account blocked for 1 hour.`, and it rounds the minutes down. The next successful sign-in resets the count.
+
+`reset_password` does not clear the lock. To clear it sooner, delete the lock's two cache keys, with the address in lowercase:
+
+```bash
+docker compose exec app python manage.py shell -c "from django.core.cache import cache; cache.delete_many(['user_blocked_you@example.com', 'login_attempts_you@example.com'])"
+```
+
+On Distributed, use `backend` in place of `app`. On Standalone, restarting `app` also clears every lock, because the Redis inside it keeps nothing on disk.
+
+On an open-source install the lock is per address only, so anyone who can reach the sign-in page can lock out any address they know, the administrator's included, and lock it again every hour. On an install with an Enterprise Edition license, each IP address is also limited to 10 sign-in and sign-up requests an hour.
+
+When Postgres or Redis is down, sign-in answers with a 503 and the message below. That failure does not count toward the lock. Check the services on the [first-run setup](/docs/self-hosting/configuration/launch-mode) screen at `/setup`.
+
+```text
+Sign-in is temporarily unavailable. Please try again in a moment.
 ```
 
 ## Roles and permissions
 
-Manage workspace roles and permissions in the platform UI under **Settings → User Management** and **Settings → Roles & Permissions**. See [Roles & Permissions](/docs/roles-and-permissions) for the full model.
+Manage who belongs to your organization under **Settings → Members**, and each workspace's members from that workspace's **Members** page in Settings. See [Roles & Permissions](/docs/roles-and-permissions) for the roles and what each can do.
 
-## SSO / SAML2
+## Single sign-on
 
-Future AGI includes a `saml2_auth` module for SAML2 SSO (Okta, Azure AD, Google Workspace). Configuration requires a SAML2 metadata file and environment variables mounted into the backend container. For setup details, open a discussion at [github.com/future-agi/future-agi](https://github.com/future-agi/future-agi).
+Google, GitHub and Microsoft sign-in and SAML single sign-on need an Enterprise Edition license (`EE_LICENSE_KEY`). On an open-source install the sign-in page offers email and password only.
 
-## Next Steps
+With a license, set the provider's client ID and secret in `.env` and run `docker compose up -d`, or set the Helm value. Register the redirect URI with the provider, where `<API URL>` is the address of your API:
 
-<CardGroup cols={2}>
-  <Card title="Production" icon="shield" href="/docs/self-hosting/production">
-    Hardening checklist before exposing to real users.
+| Provider | `.env` keys | Helm | Redirect URI |
+|---|---|---|---|
+| Google | `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`: the OAuth client of a Google Cloud "Web application" | `auth.google` | `<API URL>/saml2_auth/auth/callback/` |
+| GitHub | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`: a GitHub OAuth app | `auth.github` | `<API URL>/saml2_auth/github/callback/` |
+| Microsoft | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`: a multi-tenant Entra app registration | `auth.microsoft` | `<API URL>/saml2_auth/microsoft/callback/` |
+
+The app names Google's settings `AUTH0_*`. SAML is configured per organization in the app. Give your identity provider the ACS URL `<API URL>/saml2_auth/acs/` and the entity ID `https://<app host>`, which the app builds from `APP_URL`.
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Production checklist" icon="shield" href="/docs/self-hosting/production/checklist">
+    Harden the instance before you expose it to real users
   </Card>
-  <Card title="Roles & Permissions" icon="user-shield" href="/docs/roles-and-permissions">
-    Workspace roles and permission model.
+  <Card title="Roles & Permissions" icon="users" href="/docs/roles-and-permissions">
+    Workspace roles and the permission model
+  </Card>
+  <Card title="Environment variables" icon="gear" href="/docs/self-hosting/configuration/environment">
+    Email, sign-in and every other setting you can change
   </Card>
 </CardGroup>

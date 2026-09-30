@@ -1,88 +1,220 @@
 ---
 title: "Checklist"
-description: "The go-live pass before a self-hosted instance takes real traffic"
+description: "The go-live pass for a self-hosted Future AGI instance: real secrets, production mode, public URLs, pinned images, isolation, backups, managed stores."
 ---
 
-Run through this once before the stack is reachable by anyone else. It assumes a working Compose install from [Installation](/docs/self-hosting/installation). Three things separate a laptop trial from a real deployment:
+Run through this once before anyone else can reach the instance. The list is the same for every setup:
 
-- Replace the dev-only secret defaults, and bring the stack up with the production overlay so it refuses to boot until they're set
-- Switch the backend to production mode
-- Move the compose-managed data stores to managed services
+- **Distributed** has a production overlay that refuses to start while part of it is missing: see [Start Distributed with the production overlay](#start-distributed-with-the-production-overlay).
+- **Standalone** has no production overlay, so you check each item yourself in `.env`.
+- **Helm (Kubernetes)** sets the same things through its values: see [Install for production](/docs/self-hosting/helm#install-for-production).
 
-## Replace the dev-only secrets
+Apply a `.env` change with `docker compose up -d`, which recreates every container whose configuration changed and keeps the data volumes. With the production overlay, use the overlay's own command, and put each key in the file [Which file a key goes in](#which-file-a-key-goes-in) names.
 
-The stack boots with dev-only placeholders baked into `docker-compose.yml`, values like `local-dev-only-not-for-production-replace-me`, and `futureagi` for the database passwords. It runs fine with them, which is the point on a laptop and the danger in production.
+## Decide on telemetry
 
-What forces real secrets is the production overlay, `deploy/docker-compose.production.yml`. It re-binds each one with `${VAR:?}`, so the stack won't start until you've set them.
+Decide before the first account exists. A self-hosted install sends deployment telemetry to Future AGI by default. Right after the first account is created, which `./bin/install` does, it sends a registration with the email addresses of the owner, admin, staff and superuser accounts, then usage counts.
 
-These values go in `deploy/.env.production`, not the root `.env`. Copy the shipped example and fill it in:
+- To opt out from the start, install with `./bin/install --no-telemetry`, or with the production overlay, set `FUTURE_AGI_TELEMETRY_DISABLED=true` in `deploy/.env.production` before you start the stack.
+- Setting `FUTURE_AGI_TELEMETRY_DISABLED=true` later stops the heartbeats, but the registration already sent cannot be taken back.
+
+What is sent, and how to send nothing: [Telemetry](/docs/self-hosting/configuration/telemetry).
+
+## Replace published defaults with real secrets
+
+`SECRET_KEY`, `PG_PASSWORD`, `MINIO_ROOT_PASSWORD`, `AGENTCC_INTERNAL_API_KEY`, `AGENTCC_ADMIN_TOKEN` and `CH_PASSWORD` each need 32 random bytes, none left at a default published in the repository. `INTEGRATION_ENCRYPTION_KEY` is set once and kept.
+
+- **Fresh install**: `./bin/install` fills every one of them that is empty or a `CHANGEME-` placeholder with a random value and writes it to `.env`. It also fills `INTEGRATION_ENCRYPTION_KEY`, `AGENTCC_WEBHOOK_SECRET` and, on Standalone, `REDIS_PASSWORD`. It never changes a value afterwards.
+- **Installs made before Standalone became the default**: the installer never changes existing secrets. It fills only `INTEGRATION_ENCRYPTION_KEY` and `AGENTCC_WEBHOOK_SECRET` when they are unset, and warns about the rest. Look in `.env` for values that start with `local-dev-only-`, a `PG_PASSWORD` or `MINIO_ROOT_PASSWORD` of `futureagi`, and secret keys that are empty or commented out, which fall back to those defaults. An empty `CH_PASSWORD` means ClickHouse's `default` user has no password, and code evals can then read and change every trace.
+- **Without the installer**: set them yourself before the first start, together with `INTEGRATION_ENCRYPTION_KEY`, `REDIS_PASSWORD` on Standalone (its default is published, and code evals can reach that Redis), and `AGENTCC_WEBHOOK_SECRET` on Distributed (empty, the app refuses the gateway's request logs):
 
 ```bash
-cp deploy/.env.production.example deploy/.env.production
+openssl rand -hex 32   # once for each secret
+python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"   # INTEGRATION_ENCRYPTION_KEY
 ```
 
-Set, at minimum:
+`./bin/install` never generates `PROPERTY_CATALOG_API_PASSWORD` or `PROPERTY_CATALOG_CONSUMER_PASSWORD`, so outside the production overlay every install runs them on the published defaults `oss-observed-reader-local-only` and `oss-observed-writer-local-only`. They are the passwords of the observed-attribute catalog's two ClickHouse users, which accept logins from any host, and code evals can reach ClickHouse except in Standalone's built-in sandbox on a Docker host with Linux 6.7 or later and Landlock (see [Isolate the code executor](/docs/self-hosting/production/security-tls#isolate-the-code-executor)). Set both to `openssl rand -hex 32` values in `.env` and run `docker compose up -d`: the bootstrap sets the two users' passwords on every start.
 
-- `SECRET_KEY`
-- `AGENTCC_INTERNAL_API_KEY`
-- `AGENTCC_ADMIN_TOKEN`
-- `PG_PASSWORD`
-- `MINIO_ROOT_PASSWORD`
-- `RABBITMQ_USER` and `RABBITMQ_PASSWORD`
+What changing each secret later does, and why `PG_PASSWORD`, `CH_PASSWORD` and `INTEGRATION_ENCRYPTION_KEY` must keep their first values, is in [Secrets the installer generates](/docs/self-hosting/configuration/environment#secrets-the-installer-generates).
+
+## Turn off local mode
+
+Set `ENV_TYPE=production` in `.env` (the production overlay sets it for you). Any value other than `local` turns off the self-host fallbacks:
+
+- `DEBUG` is off.
+- Links built from an `APP_URL` without a scheme use `https://` for any host other than `localhost` or a loopback address.
+- An empty `INTEGRATION_ENCRYPTION_KEY` makes connecting an integration fail, instead of using a throwaway key that does not survive a restart.
+- New uploads go to the bucket `fi-content` instead of `fi-content-dev`. On an install that already holds files, also set `UPLOAD_BUCKET_NAME=fi-content-dev` in `.env`, or the app looks for knowledge-base files and other stored files in the new, empty bucket. On a new install, set `ENV_TYPE` before anyone stores a file.
+
+<Note>
+`ENV_TYPE=production` makes the app refuse to start only on Django's own placeholder `SECRET_KEY`. The compose files pass their published default, `local-dev-only-not-for-production-replace-me`, when `SECRET_KEY` is empty, and the app accepts that one, so production mode does not replace the secrets step above.
+</Note>
+
+## Set the public URLs
+
+Point every URL at the HTTPS name people and SDKs reach, then put TLS in front of the UI, the API and object storage as [Security & TLS](/docs/self-hosting/production/security-tls) describes. With the production overlay, `BASE_URL` goes in the root `.env` and the others in `deploy/.env.production`: see [Which file a key goes in](#which-file-a-key-goes-in).
+
+| Key | Set it to | What breaks when it is wrong |
+|---|---|---|
+| `VITE_HOST_API` | The API as browsers reach it, e.g. `https://api.example.com` | The UI loads but every API call fails, often reported as a CORS error |
+| `BASE_URL` | The API's own public URL | SSO and OAuth callbacks, and the SDK and MCP endpoints shown in the UI |
+| `FRONTEND_URL` | The UI's URL, e.g. `https://app.example.com` | Links in digest and notification emails, and the setup screen's SSL/TLS check |
+| `APP_URL` | The UI's URL, with its scheme | Invite, verification and password-reset links |
+| `MINIO_URL` | The object storage URL browsers reach, e.g. `https://files.example.com` | File previews and downloads fail while the rest works |
+| `FI_COLLECTOR_PUBLIC_URL` | The trace collector URL SDKs send to | The SDK snippet in the app and on the setup screen points at an address that does not answer |
+
+## Lock down hosts and origins
+
+`ALLOWED_HOSTS` defaults to `*`. List your API host names instead. On Distributed also add `backend,localhost,127.0.0.1`: the workers call the API as `backend`, and `./bin/install` checks it on `localhost`. Standalone adds `127.0.0.1,localhost` itself.
+
+`CORS_ALLOWED_ORIGINS` is empty by default, which allows any origin. Set it to your UI's origin.
+
+```bash
+ALLOWED_HOSTS=api.example.com,backend,localhost,127.0.0.1   # Distributed; Standalone: api.example.com
+CORS_ALLOWED_ORIGINS=https://app.example.com
+```
+
+With the production overlay, both go in the root `.env`. No compose file passes them on, so in `deploy/.env.production` they never reach the API, which then keeps answering every host and origin.
+
+## Pin image versions
+
+Pin a release tag (`vX.Y.Z`), never `latest` or `local`. An empty version variable means `latest`.
+
+- **Standalone**: `FUTURE_AGI_VERSION`, plus `SERVING_VERSION` with the `ml` profile and `CODE_EXECUTOR_VERSION` with the `sandbox` profile.
+- **Distributed**: every image on its own: `FUTURE_AGI_VERSION`, `FRONTEND_VERSION`, `AGENTCC_GATEWAY_VERSION`, `FI_COLLECTOR_VERSION`, `SERVING_VERSION`, `CODE_EXECUTOR_VERSION` and `SIMULATION_RUNNER_VERSION`. With `FI_COLLECTOR_VERSION` unset, Compose builds the collector from your checkout.
+
+On a host with an NVIDIA GPU, pin `SERVING_VERSION` to `vX.Y.Z-gpu`, the CUDA build (`linux/amd64` only). A plain `vX.Y.Z` is the CPU build.
+
+[Upgrades & rollback](/docs/self-hosting/production/upgrades-rollback) covers moving the pins.
+
+## Decide how people get accounts
+
+- **Email**: set `MAILGUN_API_KEY`, `MAILGUN_SENDER_DOMAIN` and `DEFAULT_FROM_EMAIL`, and `APP_URL`, which the links in emails are built from. Mailgun is the supported provider; SMTP settings are not read from the environment.
+- **Without email**: invites return a link for you to share, and "Forgot password" answers with the command an administrator runs on the host. See [Reset a password](/docs/self-hosting/user-management#reset-a-password).
+
+Leave `OSS_RETURN_PASSWORD_RESET_LINK` unset or `false`: `true` lets anyone who can reach the instance take over any account. See [Sign-in](/docs/self-hosting/configuration/environment#sign-in).
+
+## Isolate code evals
+
+Standalone runs Python code evals in an unprivileged sandbox inside the `app` container, which suits installs where everyone who can write a code eval is trusted with the data. If they must not trust one another, set `COMPOSE_PROFILES=sandbox` in `.env` and run `./bin/install` again. Distributed always uses the nsjail `code-executor`. Details, and what each option needs, are in [Isolate the code executor](/docs/self-hosting/production/security-tls#isolate-the-code-executor).
+
+## Test a restore
+
+Back up Postgres, ClickHouse and object storage, and restore the backup once as a test before you rely on it. [Backups & restore](/docs/self-hosting/production/backups-restore) has the commands.
+
+## Start Distributed with the production overlay
+
+`deploy/docker-compose.production.yml` layers on `docker-compose.distributed.yml`. It sets `ENV_TYPE=production` and re-binds each required value with `${VAR:?}`, so Compose refuses to start with `must be set for production` and names the missing variable. It requires:
+
+- `SECRET_KEY`, `AGENTCC_INTERNAL_API_KEY`, `AGENTCC_ADMIN_TOKEN`, `PG_PASSWORD` and `MINIO_ROOT_PASSWORD`
+- `PROPERTY_CATALOG_API_PASSWORD` and `PROPERTY_CATALOG_CONSUMER_PASSWORD`, which match the observed-attribute catalog's ClickHouse users
 - `FRONTEND_URL` and `VITE_HOST_API`
+- Every image version: `FUTURE_AGI_VERSION`, `FRONTEND_VERSION`, `AGENTCC_GATEWAY_VERSION`, `FI_COLLECTOR_VERSION`, `SERVING_VERSION`, `CODE_EXECUTOR_VERSION` and `SIMULATION_RUNNER_VERSION`
 
-```bash
-openssl rand -hex 32     # SECRET_KEY, AGENTCC_INTERNAL_API_KEY, AGENTCC_ADMIN_TOKEN
-openssl rand -base64 24  # PG_PASSWORD, MINIO_ROOT_PASSWORD, RABBITMQ_PASSWORD
-```
-
-Then bring the stack up with both files:
+Run every `docker compose` command for this install with the overlay's env file and files, for example:
 
 ```bash
 docker compose --env-file deploy/.env.production \
-  -f docker-compose.yml -f deploy/docker-compose.production.yml up -d
+  -f docker-compose.distributed.yml -f deploy/docker-compose.production.yml ps
 ```
 
-Miss one and compose refuses to start, naming the variable it wanted. That's the overlay doing its job, not a broken install.
+A plain `docker compose` command reads the Standalone `docker-compose.yml` under the same project name, and `./bin/install` ignores the overlay. [Upgrade with the production overlay](/docs/self-hosting/production/upgrades-rollback#upgrade-with-the-production-overlay) has the upgrade steps.
+
+`deploy/setup.sh` writes `deploy/.env.production` and starts the stack. A first install runs:
+
+<Steps>
+  <Step title="Write deploy/.env.production">
+    ```bash
+    ./deploy/setup.sh --skip-up               # write deploy/.env.production, start nothing
+    ```
+
+    It asks for the public URLs, every image version and the two catalog passwords, and generates `SECRET_KEY`, `AGENTCC_INTERNAL_API_KEY`, `AGENTCC_ADMIN_TOKEN`, `PG_PASSWORD` and `MINIO_ROOT_PASSWORD`.
+  </Step>
+  <Step title="Add the secrets setup.sh leaves out">
+    `deploy/setup.sh` writes no `CH_PASSWORD` or `AGENTCC_WEBHOOK_SECRET`, and an empty `INTEGRATION_ENCRYPTION_KEY`. Without them ClickHouse's `default` user has no password, the app refuses the gateway's request logs, and connecting an integration fails. Add them before the initialization in the next step: PeerDB's `ch_dest` peer is created with `CH_PASSWORD` then and is not updated afterwards.
+
+    ```bash
+    echo "CH_PASSWORD=$(openssl rand -hex 32)" >> deploy/.env.production
+    echo "AGENTCC_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> deploy/.env.production
+    ```
+
+    Then replace the empty `INTEGRATION_ENCRYPTION_KEY=""` line in `deploy/.env.production` with a key from the Fernet command in [Replace published defaults with real secrets](#replace-published-defaults-with-real-secrets). A `CH_PASSWORD` you choose yourself must not contain `<`, `>` or `&`.
+  </Step>
+  <Step title="Initialize the databases">
+    The overlay's start-up jobs only check the database schema, the ClickHouse objects and the PeerDB mirrors; they never create them. Run the initialization jobs once by hand, as [`deploy/README.md`](https://github.com/future-agi/future-agi/blob/main/deploy/README.md#performing-that-initialization-first-install) describes. That guide also covers the manual flow, deployment topologies and resource sizing.
+  </Step>
+  <Step title="Start the stack">
+    ```bash
+    ./deploy/setup.sh --confirm-initialized   # pull the images and start the stack
+    ```
+  </Step>
+</Steps>
 
 <Warning>
-`PG_PASSWORD` is baked into the Postgres volume on the **first** boot, so set it before your first `docker compose up`. `MINIO_ROOT_PASSWORD` is read from the environment on every boot, so that one you can change and restart. The full field list is in [Environment variables](/docs/self-hosting/configuration/environment).
+`PG_PASSWORD` is written into the Postgres volume on the first start, so set it before you start the stack for the first time. `deploy/setup.sh` never regenerates a value in an existing `deploy/.env.production`: for retained data, reuse the credentials the data was created with.
 </Warning>
 
-## Switch the backend to production mode
+### Which file a key goes in
 
-Set these runtime flags before going live:
+`--env-file deploy/.env.production` fills only the `${VAR}` references in the compose files. The backend, the workers, the LLM gateway and serving also load the root `.env` as `env_file`, and a key the compose files set wins over it. So:
 
-| Variable | Go-live value | Why |
-|---|---|---|
-| `ENV_TYPE` | `prod` | Defaults to `development`. Disables debug output and runs Django `check --deploy` |
-| `GRANIAN_WORKERS` | your CPU count | One worker per core, up from the default `1` |
-| `FAST_STARTUP` | leave unset | Already `false`. Setting it `true` skips migrations and DB checks at boot, which you never want here |
+| File | Keys |
+|---|---|
+| `deploy/.env.production` | Every key the compose files reference: the required keys above, `CH_PASSWORD`, `AGENTCC_WEBHOOK_SECRET`, `INTEGRATION_ENCRYPTION_KEY`, `APP_URL`, `MINIO_URL`, `FI_COLLECTOR_PUBLIC_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, the `AWS_*` keys, the Mailgun keys, `FUTURE_AGI_TELEMETRY_DISABLED` |
+| Root `.env` | Every other key, among them `BASE_URL`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `EXTRA_CSRF_ORIGINS` and `UPLOAD_BUCKET_NAME`. In `deploy/.env.production` they have no effect, and nothing reports it. |
 
-`check --deploy` warns and continues rather than refusing to start, so a failing deployment check won't stop the container. Read the backend logs on your first `prod` boot instead of assuming a clean start means a clean report.
+To check a key, search the compose files for it. No output means it goes in the root `.env`:
+
+```bash
+grep -F '{BASE_URL:' docker-compose.distributed.yml deploy/docker-compose.production.yml
+```
+
+Whatever the root `.env` holds still reaches those containers. Check it for stale values, such as `OSS_RETURN_PASSWORD_RESET_LINK=true` from an older `.env.example`.
 
 ## Move to managed data stores
 
-Compose-managed Postgres, ClickHouse, Redis, and MinIO are fine for a trial. For production, point the stack at managed services. The catch: the backend reads these hosts from **hardcoded values in the `backend` env block of `docker-compose.yml`** (`PG_HOST: postgres`, `CH_HOST: clickhouse`, `REDIS_URL: redis://redis:6379/0`, `S3_ENDPOINT_URL: http://minio:9000`), not from `.env`. Setting them in `.env` does nothing. You edit the compose file.
+Compose-managed Postgres, ClickHouse, Redis and object storage suit a single host. On Kubernetes, external datastores are the Helm chart's default: see [Install for production](/docs/self-hosting/helm#install-for-production).
 
-| Replace | With | Edit in `docker-compose.yml` |
+Under Compose, the repository documents these overrides:
+
+- **Postgres and ClickHouse**: the compose files name the bundled `postgres` and `clickhouse` services, and their ports, in `environment:` blocks, which win over `.env`, so values in `.env` do not reach them. Override every such value, for every service that sets it, in a `docker-compose.override.yml`. Besides the app's `PG_HOST`, `PGBOUNCER_HOST` and `CH_HOST`, that includes the collector's `FI_CH_URL` and its Postgres settings (`FI_PG_WRITE` and `FI_PG_READ` on Standalone, `FI_PG_WRITE_HOST` and `FI_PG_READ_HOST` on Distributed), the observed-attribute catalog's `PROPERTY_CATALOG_CH_HOST` and `FI_OBSERVED_CATALOG_CH_URL`, and on Distributed Temporal's `POSTGRES_SEEDS`, `peerdb-init`'s `SRC_PG_HOST` and `DST_CH_HOST`, and the catalog bootstrap's `CLICKHOUSE_HOST`. `FI_CH_URL` must name the same ClickHouse as `CH_HOST`: otherwise the collector writes spans to one while the app reads the other, and traces never appear. To list every line that names them:
+
+  ```bash
+  docker compose config | grep -nE 'postgres|clickhouse'
+  ```
+
+- **Object storage**: `STORAGE_BACKEND` takes `minio` (the default), `s3` or `gcs`. `s3` needs `S3_ENDPOINT_URL`, `S3_ACCESS_KEY` and `S3_SECRET_KEY`, and `gcs` needs `GCS_HMAC_ACCESS_KEY` and `GCS_HMAC_SECRET_KEY`, set in a compose override.
+- **Redis**: Standalone runs its Redis inside the `app` container, with nothing in it that must survive a restart. Distributed's services find Redis at addresses `docker-compose.distributed.yml` sets. If you move it, the backend's `REDIS_URL` and the collector's `FI_AUTH_REDIS_ADDR` must name the same server: a mismatch fails silently, and key revocation stops reaching the collector.
+
+On Distributed, `.env` sets `COMPOSE_FILE`, which turns off Compose's automatic loading of `docker-compose.override.yml`. List the override there too:
+
+```bash
+COMPOSE_FILE=docker-compose.distributed.yml:docker-compose.override.yml
+```
+
+The Helm chart states what each managed service must support, and Compose runs the same application. On Distributed, PeerDB's sync also reads Postgres through logical replication (its bundled Postgres runs with `wal_level=logical`), which Helm's outbox sync does not need.
+
+| Datastore | Supported | Not supported |
 |---|---|---|
-| `postgres` | RDS, Aurora, or Cloud SQL | `PG_HOST` / `PG_PORT` to the managed endpoint |
-| `clickhouse` | ClickHouse Cloud | `CH_HOST` / `CH_PORT` and the credentials |
-| `redis` | ElastiCache or Upstash | `REDIS_URL` |
-| `minio` | AWS S3 | `STORAGE_BACKEND: s3` and the S3 credentials |
+| PostgreSQL | 16 (11 or newer works), a direct connection, password authentication. The chart's cloud examples use RDS for PostgreSQL and Cloud SQL | IAM database authentication |
+| ClickHouse | 25.3 or newer, single node, plain HTTP and native ports, with the `tiered` storage policy | TLS-only endpoints such as ClickHouse Cloud; replicated clusters |
+| Redis | 6 or newer. Managed Redis (ElastiCache, Memorystore, Azure Cache) is expected to work but not tested in CI | TLS for the LLM gateway and the collector |
+| Object storage | AWS S3 or an S3-compatible service with access keys. GCS through HMAC keys is expected to work but not tested in CI | IAM roles for service accounts, Workload Identity, Entra ID; Azure Blob |
 
 <Note>
-`code-executor` runs with `privileged: true`, so it can't run on ECS Fargate or Cloud Run. Put it on an EC2 or GCE instance. The platform matrix is in [Requirements](/docs/self-hosting/requirements).
+Distributed's `code-executor` and Standalone's `sandbox` profile run with `privileged: true`, which ECS Fargate, Cloud Run and some Kubernetes policies refuse. Run them where privileged containers are allowed, such as EC2, GKE with privileged containers enabled, or bare metal. Standalone's built-in sandbox needs no privileges. The platform matrix is in [Requirements](/docs/self-hosting/requirements).
 </Note>
 
 ## Dive deeper
 
-<CardGroup cols={2}>
+<CardGroup cols={3}>
   <Card title="Security & TLS" icon="shield" href="/docs/self-hosting/production/security-tls">
-    Put TLS in front of the stack and move secrets into a manager
+    Put TLS in front of the stack and keep secrets in a manager
   </Card>
   <Card title="Backups & restore" icon="database" href="/docs/self-hosting/production/backups-restore">
     Set up backups before the instance holds real data
+  </Card>
+  <Card title="Environment variables" icon="gear" href="/docs/self-hosting/configuration/environment">
+    Every key on this page, with its default
   </Card>
 </CardGroup>

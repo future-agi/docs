@@ -1,6 +1,6 @@
 ---
 title: "Self-Hosted Command Center"
-description: "Deploy Agent Command Center on your own infrastructure via Docker or Go binary — full control over data residency, routing, failover, caching, and rate limiting."
+description: "Deploy Agent Command Center on your own infrastructure via Docker or Go binary: full control over data residency, routing, failover, caching, and rate limiting."
 ---
 
 ## About
@@ -9,12 +9,14 @@ Agent Command Center is distributed as a Go binary and Docker image. Self-hostin
 
 Whether you're running a single instance for development or scaling to production, Agent Command Center handles routing, failover, caching, and rate limiting across multiple LLM providers.
 
+<Note>
+A self-hosted Future AGI install already runs this gateway: inside the `app` container in Standalone and as the `agentcc-gateway` container in Distributed, both on port 8090, and as the `<release>-agentcc-gateway` Service in Helm. See [Self-hosting](/docs/self-hosting). This page is for running the gateway on its own.
+</Note>
+
 ## Requirements
 
-- **Docker** (for container deployment) or **Go 1.23+** (to build from source)
-- A publicly routable endpoint (if self-hosted LLM providers need to connect back to Agent Command Center)
+- **Docker** (for container deployment) or **Go 1.25+** (to build from source)
 - Provider API keys for any cloud LLM providers you want to use
-- At least 256MB of available memory
 
 ## Quick start with Docker
 
@@ -28,6 +30,7 @@ Whether you're running a single instance for development or scaling to productio
 
     providers:
       openai:
+        base_url: "https://api.openai.com"
         api_key: "${OPENAI_API_KEY}"
         api_format: "openai"
         models:
@@ -39,6 +42,7 @@ Whether you're running a single instance for development or scaling to productio
       keys:
         - name: "my-key"
           key: "sk-agentcc-my-key-here"
+          key_type: "internal"
 
     logging:
       level: info
@@ -72,7 +76,9 @@ Whether you're running a single instance for development or scaling to productio
 </Steps>
 
 <Note>
-Replace `config.yaml` with your actual configuration file. Environment variables referenced in the config (like `${OPENAI_API_KEY}`) are resolved at runtime.
+Replace `config.yaml` with your actual configuration file. Environment variables referenced in the config (like `${OPENAI_API_KEY}`) are resolved at runtime. The container runs as uid 65532, so `config.yaml` must be readable by that user (mode `0644`).
+
+`key_type: "internal"` lets the key use the providers in `config.yaml`. Without it, requests fail with 403: see [Authentication](#authentication).
 </Note>
 
 ## Configuration file
@@ -88,6 +94,7 @@ server:
 
 providers:
   openai:
+    base_url: "https://api.openai.com"
     api_key: "${OPENAI_API_KEY}"
     api_format: "openai"
     models:
@@ -99,6 +106,7 @@ auth:
   keys:
     - name: "my-key"
       key: "sk-agentcc-my-key-here"
+      key_type: "internal"
 
 logging:
   level: info
@@ -114,6 +122,7 @@ server:
 
 providers:
   openai:
+    base_url: "https://api.openai.com"
     api_key: "${OPENAI_API_KEY}"
     api_format: "openai"
     models:
@@ -121,28 +130,31 @@ providers:
       - gpt-4o-mini
 
   anthropic:
+    base_url: "https://api.anthropic.com"
     api_key: "${ANTHROPIC_API_KEY}"
     api_format: "anthropic"
     models:
       - claude-sonnet-4-6
 
   ollama:
-    base_url: "http://localhost:11434"
+    base_url: "http://host.docker.internal:11434"
     api_format: "openai"
-    type: "ollama"
 
 auth:
   enabled: true
   keys:
     - name: "my-key"
       key: "sk-agentcc-my-key-here"
+      key_type: "internal"
 
 logging:
   level: info
 ```
 
 <Tip>
-For Ollama, models are auto-discovered from the `/v1/models` endpoint. You don't need to list them explicitly.
+For Ollama, models are auto-discovered from the `/v1/models` endpoint when the gateway starts. You don't need to list them, but restart the gateway after you pull a new model.
+
+`host.docker.internal` is the Docker host as seen from the gateway's container. Docker Desktop, Colima and OrbStack resolve it; on Linux, add `--add-host=host.docker.internal:host-gateway` to `docker run`. If you run the Go binary on the machine that runs Ollama, use `http://localhost:11434`. See [Self-hosted models](/docs/command-center/features/self-hosted-models) for more servers.
 </Tip>
 
 ### Enabling routing and failover
@@ -213,6 +225,7 @@ auth:
   keys:
     - name: "dev-key"
       key: "sk-agentcc-dev-key-for-testing"
+      key_type: "internal"
       owner: "dev-team"
       models:
         - gpt-4o
@@ -220,10 +233,13 @@ auth:
 
     - name: "prod-key"
       key: "sk-agentcc-prod-key-here"
+      key_type: "internal"
       owner: "production"
 ```
 
 The `models` field is optional. If omitted, the key can access all models.
+
+Only keys with `key_type: "internal"` can use the providers in `config.yaml`. A key without `key_type` is a `byok` key, which can use only the providers an organization adds in a connected Future AGI app, so on a gateway you run on its own its requests fail with 403 `model "<model>" is not available for this API key`. Requests made with an internal key get no `request.trace` log line and are not sent to a connected Future AGI app, and the gateway does not enforce the key's `providers` list. It still enforces `models`.
 
 ## Server configuration reference
 
@@ -234,8 +250,8 @@ The `models` field is optional. If omitted, the key can access all models.
 | `server.read_timeout` | `5s` | Request read timeout |
 | `server.write_timeout` | `300s` | Response write timeout |
 | `server.idle_timeout` | `120s` | Idle connection timeout |
-| `server.shutdown_timeout` | `30s` | Graceful shutdown timeout |
-| `server.max_request_body_size` | `10485760` | Max request body (10MB) |
+| `server.shutdown_timeout` | `30s` | How long shutdown waits for in-flight requests. See [Graceful shutdown](#graceful-shutdown). |
+| `server.max_request_body_size` | `52428800` | Max request body (50MB). `config.example.yaml` and the Future AGI Helm chart set it to `10485760` (10MB). |
 | `server.default_request_timeout` | `60s` | Default timeout for provider requests |
 
 ## Provider configuration reference
@@ -246,12 +262,26 @@ Each provider in the `providers:` section supports:
 |---------|----------|-------------|
 | `api_key` | Cloud only | API key (can use `${ENV_VAR}` syntax). Not needed for self-hosted providers like Ollama. |
 | `api_format` | Yes | Format: `openai`, `anthropic`, `gemini`, `bedrock`, `cohere`, `azure` |
-| `base_url` | No | Custom endpoint (auto-filled for known providers) |
-| `type` | No | Provider shorthand: `groq`, `mistral`, `ollama`, `vllm`, etc. |
-| `models` | No | List of available models (auto-discovered for some providers) |
+| `base_url` | Yes | Provider endpoint, such as `https://api.openai.com`. The gateway refuses to start without it. |
+| `type` | No | Has no effect in `config.yaml`, since `base_url` and `api_format` are required anyway. Leave it out. |
+| `models` | No | List of available models. If you leave it out, the gateway asks the server's `/v1/models` endpoint when it starts, without credentials. That works for a server that checks no key, such as Ollama. List the models for cloud providers. |
 | `default_timeout` | No | Request timeout for this provider |
 | `max_concurrent` | No | Max concurrent requests |
 | `conn_pool_size` | No | Connection pool size |
+
+## Connecting to a Future AGI app
+
+A gateway connected to a Future AGI app (the control plane) loads API keys and organization settings from it, sends it request logs, and serves the providers that organizations add in the dashboard. API keys created in the dashboard can use only their organization's providers, not `providers:` in `config.yaml`. The settings below apply only when the gateway is connected. Each has a `config.yaml` key and an environment variable; the variable wins when both are set.
+
+| Setting | Environment variable | Default | Description |
+|---------|----------------------|---------|-------------|
+| `control_plane.url` | `AGENTCC_CONTROL_PLANE_URL` | none | URL of the Future AGI app |
+| `control_plane.admin_token` | `AGENTCC_CONTROL_PLANE_TOKEN` | The gateway admin token (`admin.token`, `AGENTCC_ADMIN_TOKEN`) | Token for the gateway's calls to the app |
+| `control_plane.sync_on_startup` | `AGENTCC_SYNC_ON_STARTUP` | `false` | Load keys and organization settings at startup. The gateway retries with backoff until the app answers, and serves only the keys in its `config.yaml` until then. Without it, keys created in the dashboard stop working when the gateway restarts. |
+| `control_plane.sync_interval` | `AGENTCC_SYNC_INTERVAL` | Unset (off) | Load them again this often, as a Go duration such as `60s` or `5m`. Unset or `0` turns periodic sync off. An `AGENTCC_SYNC_INTERVAL` that does not parse is ignored; in `config.yaml`, one stops the gateway from starting. Set it when you run more than one replica, so a key created on one reaches the others. |
+| `org_providers.allow_private_urls` | `AGENTCC_ALLOW_PRIVATE_PROVIDER_URLS` | `false` | Let providers that organizations add use private and LAN addresses. It does not apply to `providers:` in `config.yaml`, which are trusted. See [Private and local provider URLs](/docs/command-center/features/self-hosted-models#private-and-local-provider-urls). |
+
+The gateway logs `control plane startup sync succeeded` once the startup sync has loaded everything. While it keeps failing, it logs `control plane not ready yet, retrying startup sync`, and after two minutes a warning that starts with `control plane sync still failing`.
 
 ## Health checks
 
@@ -267,7 +297,7 @@ curl http://localhost:8080/readyz
 ```
 </CodeGroup>
 
-Both endpoints return `{"status":"ok"}` when healthy.
+`/healthz` returns `{"status":"ok"}` while the process is up. `/readyz` returns `{"status":"ready"}` while the gateway is serving, and 503 with `{"status":"not_ready"}` once it starts shutting down.
 
 ## Connecting your application
 
@@ -322,17 +352,16 @@ For production, use a public endpoint (e.g., behind a reverse proxy with TLS). R
 
 ## Building from source
 
-If you have access to the source repository, build the binary directly:
+The gateway's source is in the public [future-agi repository](https://github.com/future-agi/future-agi/blob/main/agentcc-gateway/README.md), under `agentcc-gateway/`. Build it with Go 1.25 or later:
 
 ```bash
-cd agentcc-gateway
+git clone https://github.com/future-agi/future-agi.git
+cd future-agi/agentcc-gateway
 go build -o agentcc-gateway ./cmd/agentcc
 ./agentcc-gateway --config config.yaml
 ```
 
-<Note>
-The source repository is private. Contact support for access.
-</Note>
+`agentcc-gateway/config.example.yaml` documents every configuration field.
 
 ## Environment variables
 
@@ -365,6 +394,37 @@ View logs from the container:
 ```bash
 docker logs -f agentcc-gateway
 ```
+
+## Graceful shutdown
+
+When the gateway gets `SIGTERM` or `SIGINT`, it:
+
+1. Stops taking new requests and lets in-flight requests finish, for up to `server.shutdown_timeout` (default `30s`).
+2. Sends the request logs it still holds to the Future AGI app, when it is connected to one. This takes up to about 5 seconds.
+3. Exits.
+
+If requests are still running when `shutdown_timeout` ends, the gateway logs `shutdown error`, still sends the buffered request logs, and exits with status 1. A second signal stops it at once.
+
+Give the container at least `shutdown_timeout` plus 5 seconds to stop before it is killed: 35 seconds with the default. With OTLP export (`otel.exporter: otlp`), add up to 15 seconds for the exporter's last flush. In Docker Compose, set `stop_grace_period`:
+
+```yaml
+services:
+  agentcc-gateway:
+    stop_grace_period: 35s
+```
+
+Two log lines report what happened to the buffered request logs:
+
+- `log flusher: delivered buffered request logs before shutdown`, with `count`: all of them reached the app.
+- `log flusher: request logs not delivered before shutdown`, with `undelivered`: some did not. It is a warning when the app was already gone, for example when the connection was refused, and an error otherwise.
+
+In a self-hosted Future AGI install:
+
+- **Helm** gives the gateway enough time by default: see [Configure](/docs/self-hosting/helm#configure).
+- **Distributed** sets no `stop_grace_period` on `agentcc-gateway`, so Docker's default stop timeout applies. To give it the time above, set `stop_grace_period: 35s` on `agentcc-gateway` in `docker-compose.override.yml`, and list the override in `COMPOSE_FILE`: see [Move to managed data stores](/docs/self-hosting/production/checklist#move-to-managed-data-stores).
+- **Standalone** runs the gateway inside the `app` container, where it stops after the API. Request logs it still holds at that point cannot reach the app, and it logs `log flusher: request logs not delivered before shutdown`.
+
+If you alert on the gateway's log lines, see [LLM gateway changes](/docs/self-hosting/production/upgrades-rollback#llm-gateway-changes) for the request-log lines that changed.
 
 ## Next Steps
 
