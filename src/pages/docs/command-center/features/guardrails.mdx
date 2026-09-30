@@ -5,7 +5,7 @@ description: "Enforce PII detection, prompt injection blocking, and content mode
 
 ## About
 
-Guardrails are safety checks that run on every request and response flowing through Agent Command Center. They catch dangerous or unwanted content before it reaches the LLM (pre-processing) or before it reaches your users (post-processing).
+Guardrails are safety checks that run on every request and response flowing through Agent Command Center. They catch dangerous or unwanted content before it reaches the LLM (pre-processing) or before it reaches your users (post-processing; for streamed responses, see [Streaming Guardrails](#streaming-guardrails)).
 
 <Warning>
 When [caching](/docs/command-center/features/caching) is on and a request is served from an exact match hit, guardrails that check the request (Pre stage) do not run on that request. Guardrails that check the response (Post stage) still run on the cached response before it is returned. Disable caching for traffic that must be screened on every request.
@@ -421,11 +421,18 @@ Use Redact or Mask to sanitize sensitive data while allowing the request to proc
 
 ## Streaming Guardrails
 
-Guardrails work with streaming responses. Pre-processing guardrails run before streaming begins. Post-processing guardrails accumulate the full streamed response before evaluation.
+When you stream a chat completion (`"stream": true` on `/v1/chat/completions`), Agent Command Center sends the response headers first, then the response in chunks as the model generates it. A guardrail's stage decides what it can still do:
 
-- **Sync + block**: The stream terminates immediately if a violation is detected
-- **Sync + warn**: A warning header is added, the stream continues
-- **Async**: The guardrail runs fire-and-forget in the background: the stream is never interrupted
+| Stage | When it runs on a stream | Effect |
+|---|---|---|
+| Pre (checks the request) | Before the stream opens | A `block` returns the 403 `content_blocked` error instead of a stream. A `warn` or `log` adds `x-agentcc-guardrail-triggered: true` to the stream's headers |
+| Post (checks the response) | After the last chunk of response text, before `data: [DONE]` | Cannot stop or take back anything, because the headers and the response text have already gone out. `data: [DONE]` waits until these checks finish or time out. The result is recorded in the request log |
+
+The table applies to guardrails set up in the dashboard and to `config.yaml` rules, except a `config.yaml` rule with `mode: "async"`: it runs in the background, so it cannot block the request, add the header, or delay `data: [DONE]`, and it reports a failure only in the gateway's own log output. Guardrails set up in the dashboard or through the SDK always run synchronously, whatever `mode` they carry.
+
+Post-stage guardrails see the streamed text only on `/v1/chat/completions` and `/v1/completions`, and on a self-hosted gateway only when it records request and response bodies (`logging.request_logging.include_bodies: true`, or `otel.include_bodies: true` with `otel.enabled: true`). Otherwise they have no response text to check.
+
+To act on a response while it streams, run a self-hosted gateway and [check the stream as it is generated](#check-the-stream-as-it-is-generated).
 
 <CodeGroup>
 ```python Python
@@ -437,13 +444,13 @@ client = AgentCC(
     control_plane_url="https://api.futureagi.com",
 )
 
-# Streaming with guardrails active on this key/org
+# A pre-stage block raises here, before any chunk arrives
 for chunk in client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": "Tell me about security."}],
     stream=True,
 ):
-    if chunk.choices[0].delta.content:
+    if chunk.choices and chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
@@ -455,6 +462,7 @@ const client = new AgentCC({
   baseUrl: "https://gateway.futureagi.com",
 });
 
+// A pre-stage block throws here, before any chunk arrives
 const stream = await client.chat.completions.create({
   model: "gpt-4o-mini",
   messages: [{ role: "user", content: "Tell me about security." }],
@@ -468,8 +476,44 @@ for await (const chunk of stream) {
 ```
 </CodeGroup>
 
+### Check the stream as it is generated
+
+On a self-hosted gateway, the post-stage rules in [`config.yaml`](/docs/command-center/deployment/self-hosted#configuration-file) (`guardrails.rules`) can check a `/v1/chat/completions` response while the model is still generating it. This is off by default. Turn it on with `guardrails.streaming`:
+
+```yaml
+guardrails:
+  enabled: true
+  rules:
+    - name: "content-moderation"
+      stage: "post"
+      mode: "sync"
+      action: "block"
+      threshold: 0.7
+  streaming:
+    enabled: true
+    check_interval: 100     # Bytes of new response text between checks (default: 100)
+    failure_action: "stop"  # "stop" (default) or "disclaimer"
+```
+
+Each time another `check_interval` bytes of text have arrived, the gateway holds the chunk that completes the interval and runs these rules on the whole response so far. It runs them once more when the model finishes, if text has arrived since the last check. Chunks in between are sent without waiting for a check, so up to `check_interval` bytes of text can reach the client before a check catches it, and a response shorter than `check_interval` is checked only after all of it has been sent. The stream waits while a check runs, so a smaller interval catches content sooner but runs more checks. Only `sync` rules whose action is `block` affect the stream:
+
+| `failure_action` | When a check fails |
+|---|---|
+| `stop` (default) | If a check during the stream fails, the gateway sends an error event instead of the chunk it held and ends the stream without `data: [DONE]`. If the check at the end fails, the whole response has already been sent: the error event follows it, and the stream still ends with `data: [DONE]` |
+| `disclaimer` | The stream continues. If the check at the end fails, the gateway sends one more content chunk after the one with `finish_reason`: two newlines followed by `[Content warning: <guardrail message>]`. A check that fails during the stream adds no notice |
+
+With `disclaimer`, the check at the end runs only if text arrived after the last interval check. If the last chunk of text completes an interval, the response gets no notice, even when that check fails.
+
+The error event that `stop` sends:
+
+```text
+data: {"error":{"message":"Content moderation triggered: violence (score: 1.00)","type":"guardrail_error","param":null,"code":"stream_blocked"}}
+```
+
+The HTTP status stays 200, because it was sent with the headers, and the chunks sent before the check are not taken back.
+
 <Note>
-Post-processing guardrails (stage: "post") accumulate the complete streamed response before evaluation. If a violation is detected in sync+block mode, the stream terminates and the client receives an error. Any chunks already delivered cannot be recalled.
+Streaming checks use only the rules in `config.yaml`. Guardrails set up in the dashboard run only before the stream opens and after the response text has been sent, as described in [Streaming Guardrails](#streaming-guardrails), even when `guardrails.streaming.enabled` is `true`.
 </Note>
 
 ---
