@@ -904,6 +904,42 @@ export const tabNavigation: NavTab[] = [
           },
         ]
       },
+      {
+        group: 'Environments',
+        icon: 'layers',
+        items: [
+          { title: 'Quickstart', href: '/docs/environments/quickstart' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
+              { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
+              { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
+              { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
+              { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
+              { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
+            ]
+          },
+          {
+            title: 'References',
+            items: [
+              { title: 'Supported agents', href: '/docs/environments/reference/supported-agents' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Environment FAQ & fixes', href: '/docs/environments/troubleshooting' },
+            ]
+          },
+        ]
+      },
     ]
   },
   {
