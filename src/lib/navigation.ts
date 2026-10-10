@@ -908,11 +908,14 @@ export const tabNavigation: NavTab[] = [
         group: 'Environments',
         icon: 'layers',
         items: [
+          { title: 'Overview', href: '/docs/environments' },
           { title: 'Quickstart', href: '/docs/environments/quickstart' },
           {
             title: 'Concepts',
             items: [
+              { title: 'Understanding Environments', href: '/docs/environments/concepts/understanding-environments' },
               { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
+              { title: 'Scenarios & Trials', href: '/docs/environments/concepts/scenarios-and-trials' },
               { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
             ]
           },
@@ -921,6 +924,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
               { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
+              { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
