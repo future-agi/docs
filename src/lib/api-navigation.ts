@@ -318,6 +318,8 @@ export const apiNavigation: ApiNavGroup[] = [
     "title": "Datasets",
     "items": [
       { "title": "List Datasets", "href": "/docs/api/datasets/list-datasets", "method": "GET" },
+      { "title": "List Dataset Versions", "href": "/docs/api/datasets/list-dataset-versions", "method": "GET" },
+      { "title": "Get Dataset Version", "href": "/docs/api/datasets/get-dataset-version", "method": "GET" },
       { "title": "Create Dataset", "href": "/docs/api/datasets/create-dataset", "method": "POST" },
       { "title": "Create Empty Dataset", "href": "/docs/api/datasets/create-empty-dataset", "method": "POST" },
       { "title": "Upload Dataset from File", "href": "/docs/api/datasets/upload-dataset", "method": "POST" },
