@@ -310,6 +310,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add columns', href: '/docs/dataset/guides/add-columns' },
               { title: 'Run a prompt on every row', href: '/docs/dataset/guides/run-a-prompt-on-every-row' },
               { title: 'Run an experiment', href: '/docs/dataset/guides/run-an-experiment' },
+              { title: 'Compare an external workflow', href: '/docs/dataset/guides/compare-external-workflow' },
               { title: 'Manage datasets', href: '/docs/dataset/guides/manage-datasets' },
             ]
           },
@@ -1453,7 +1454,9 @@ export const tabNavigation: NavTab[] = [
               { title: 'List Datasets', href: '/docs/api/datasets/list-datasets' },
               { title: 'List Dataset Versions', href: '/docs/api/datasets/list-dataset-versions' },
               { title: 'Get Dataset Version', href: '/docs/api/datasets/get-dataset-version' },
+              { title: 'Create Dataset Version', href: '/docs/api/datasets/create-dataset-version' },
               { title: 'Compare Experiment Runs', href: '/docs/api/datasets/compare-experiment-runs' },
+              { title: 'External Experiment Runs', href: '/docs/api/datasets/external-experiment-runs' },
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
               { title: 'Create Empty Dataset', href: '/docs/api/datasets/create-empty-dataset' },
               { title: 'Upload Dataset from File', href: '/docs/api/datasets/upload-dataset' },

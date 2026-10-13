@@ -1,0 +1,132 @@
+---
+title: "External Experiment Runs"
+description: "Create a pinned experiment run, submit results from your own agent or pipeline, and safely retry result delivery without overwriting recorded evidence."
+---
+
+## About
+
+Record experiments executed in your own application, notebook, agent framework, or CI job. Create a run against a fixed dataset version, then upload terminal results for its planned examples and trials. The API stores the results and finalizes the run when its full plan is terminal.
+
+<Note>
+  Draft API reference. Use a test deployment containing the external-run API. The task runs in your environment; these endpoints do not execute or schedule it. Public SDK wrappers and hosted availability are not established by this draft.
+</Note>
+
+Authenticate both operations with `X-Api-Key` and `X-Secret-Key`. Workspace write permission is required. Authentication determines organization, workspace and actor. Unknown fields and body tenant overrides are rejected.
+
+## Create or replay a run
+
+`POST /model-hub/experiment-runs/`
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `run_id` | UUID | Yes | Generate once and retain for delivery retries. |
+| `dataset_version_id` | UUID | Yes | Accessible frozen version. |
+| `expected_items` | array | Yes | 1–10,000 unique `{example_id, trial_number}` identities. Trial defaults to 1 and must be a positive integer. |
+| `evaluator_metric_ids` | UUID array | No | At most 100 unique evaluator bindings on this dataset. Defaults to empty. |
+| `experiment_id` | UUID or `null` | No | Optional existing experiment belonging to the same dataset. |
+| `model_config` | object | No | Caller-supplied task configuration. Defaults to an empty object. |
+| `metadata` | object | No | Caller metadata, such as task revision and run name. The `_futureagi_run_write` namespace is reserved. |
+
+All examples must belong to the selected version. Use `example_id` from [Get a Dataset Version](/docs/api/datasets/get-dataset-version), not its membership row `id`. Repeated trials use the same example ID with different trial numbers. A delivery retry retains the same trial number.
+
+Both first creation and matching replay return HTTP `200`, with `status: true` and `result`:
+
+| Result field | Meaning |
+| --- | --- |
+| `id`, `dataset_version_id`, `experiment_id` | Run and parent references. Experiment may be null. |
+| `task_kind` | Always `external` for this API. |
+| `status` | Initially `draft`; a replay returns the current lifecycle state. |
+| `expected_items` | Exact pinned example/trial plan. |
+| `evaluator_bindings` | Pinned evaluator definitions and configuration. |
+| `model_config`, `metadata` | Caller-owned configuration and metadata. Internal write receipts are omitted. |
+| `started_at`, `completed_at` | Nullable server lifecycle timestamps. These are not the external task's execution timestamps. |
+| `created_at`, `updated_at` | Server record timestamps. |
+
+Each evaluator binding includes `metric_id`, `evaluator_version_id`, `template_id`, `version_number`, `binding_config`, `binding_model`, `prompt_messages`, `config_snapshot`, `criteria`, `model`, `output_type_normalized`, `pass_threshold`, and `choice_scores`. Use the returned version ID when submitting a score. Moving an evaluator's default later does not change an existing run's pins.
+
+Retain the original creation body. Resending the same run UUID with the same actor, plan and configuration returns the existing run; a conflicting request returns `409`. Replaying creation does not reset status or re-resolve evaluator defaults. Changing task behavior requires a new run UUID.
+
+## Submit results
+
+`POST /model-hub/experiment-runs/{run_id}/results/`
+
+Send `{"items": [...]}` with 1–100 unique example/trial results. The entire batch is atomic: if one result is invalid or conflicts with recorded evidence, no result or lifecycle transition in that request is saved.
+
+| Item field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `example_id` | UUID | Yes | Member of the pinned plan. |
+| `trial_number` | integer | No | Positive trial number, default 1. |
+| `receipt_key` | string | Yes | Nonempty delivery identity, at most 255 characters. Retain it with the exact result payload. |
+| `status` | string | Yes | `completed`, `failed`, or `skipped`. |
+| `output` | JSON or `null` | No | Task result. |
+| `error` | JSON or `null` | No | Failure details. Must be null for a completed task. |
+| `trace_id`, `root_span_id` | string or `null` | No | Existing task trace references, at most 255 characters each. |
+| `latency_ms`, `cost` | number or `null` | No | Finite, nonnegative measurements supplied by your runtime. |
+| `token_usage` | JSON or `null` | No | Usage recorded by your application. |
+| `score_refs` | array | No | Up to 100 score records matching the run's pinned metric/version pairs. Defaults to empty. |
+
+A score record requires `metric_id`, `evaluator_version_id`, and `status`. Status is `assessed`, `error`, `unknown`, `not_assessed`, or `unsupported`. An assessed score requires a finite numeric `value`. Optional fields are `explanation` (up to 16,384 characters), `trace_id`, and `span_id` (up to 255 characters). Duplicate metric/version pairs are rejected.
+
+Missing score evidence is not a zero or a pass. Execution success and evaluator success are separate: a completed task can have an evaluator error. Score and trace fields are caller-supplied evidence; this API does not run the declared evaluator or ingest the trace.
+
+HTTP `200` returns `status: true` and `result` containing:
+
+- `run`: the current run header described above;
+- `items`: receipts for this batch, each with `id`, `example_id`, `trial_number`, `receipt_key`, `status`, `trace_id`, `root_span_id`, and `score_refs`.
+
+The first accepted batch starts a draft run. Missing planned identities keep it active. Once every planned result is terminal, completion, partial completion, or failure is derived from the recorded item states. Receiving all results does not imply all tasks or evaluators passed.
+
+## Retry result delivery
+
+Resend the same receipt key and identical payload after a transport failure. Matching terminal results replay without overwriting evidence, including after run completion. A different receipt or changed payload for a recorded identity conflicts. Persist the produced output and receipt before upload; retrying delivery must not invoke your agent again.
+
+Automatic task retry, cancellation, failed-only reruns, and external environment reset are not provided by these two endpoints. The recorded trace references do not imply the referenced traces exist in Observe.
+
+## HTTP example
+
+This example assumes you already created a run and have its pinned case and evaluator IDs:
+
+```bash
+export BASE_URL="https://your-deployment.example.com"
+export RUN_ID="11111111-1111-4111-8111-111111111111"
+export FUTURE_AGI_API_KEY="YOUR_API_KEY"
+export FUTURE_AGI_SECRET_KEY="YOUR_SECRET_KEY"
+
+curl --fail-with-body --request POST \
+  "${BASE_URL}/model-hub/experiment-runs/${RUN_ID}/results/" \
+  --header "X-Api-Key: ${FUTURE_AGI_API_KEY}" \
+  --header "X-Secret-Key: ${FUTURE_AGI_SECRET_KEY}" \
+  --header 'Content-Type: application/json' \
+  --data '{"items": [{
+    "example_id": "22222222-2222-4222-8222-222222222222",
+    "trial_number": 1,
+    "receipt_key": "shipping-run-result-1",
+    "status": "completed",
+    "output": {"days": 5},
+    "score_refs": [{
+      "metric_id": "33333333-3333-4333-8333-333333333333",
+      "evaluator_version_id": "44444444-4444-4444-8444-444444444444",
+      "status": "assessed",
+      "value": 1,
+      "explanation": "Shipping days match the expected policy."
+    }]
+  }]}'
+```
+
+For a complete creation and upload example with IDs carried between calls, use [Compare an External Workflow](/docs/dataset/guides/compare-external-workflow).
+
+## Limits and errors
+
+The run-creation raw JSON body is limited to 10 MiB. For result ingestion, open JSON fields are limited to 256 KiB each, a submitted result is limited to 1 MiB, and the canonical result-batch body and raw HTTP body are limited to 2 MiB. JSON must contain finite values, valid Unicode and at most 100 nesting levels. The count limits do not override these size limits.
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Malformed fields, unknown keys, duplicate batch identities, invalid score values, or request size/count limits. |
+| `401` | Missing or invalid credentials. |
+| `403` | No workspace write access. |
+| `404` | Referenced dataset version, experiment, binding or run is missing/deleted/outside the authenticated scope. Missing organization context also returns 404. |
+| `409` | Request conflicts with the pinned plan, including an `example_id` that is not an active member, run UUID, lifecycle, receipt, or evaluator binding. Use the version item's `example_id`, not its membership row ID. Correct the conflict; unchanged retries cannot resolve it. |
+
+## Next steps
+
+[Create a dataset snapshot](/docs/api/datasets/create-dataset-version), run the [external workflow example](/docs/dataset/guides/compare-external-workflow), and inspect [case-level comparisons](/docs/api/datasets/compare-experiment-runs).
