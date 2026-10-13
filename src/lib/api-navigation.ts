@@ -322,6 +322,7 @@ export const apiNavigation: ApiNavGroup[] = [
       { "title": "Get Dataset Version", "href": "/docs/api/datasets/get-dataset-version", "method": "GET" },
       { "title": "Create Dataset Version", "href": "/docs/api/datasets/create-dataset-version", "method": "POST" },
       { "title": "Compare Experiment Runs", "href": "/docs/api/datasets/compare-experiment-runs", "method": "POST" },
+      { "title": "Case-Level Release Gate", "href": "/docs/api/datasets/release-gate", "method": "POST" },
       { "title": "Create External Experiment Run", "href": "/docs/api/datasets/external-experiment-runs", "method": "POST" },
       { "title": "Create Dataset", "href": "/docs/api/datasets/create-dataset", "method": "POST" },
       { "title": "Create Empty Dataset", "href": "/docs/api/datasets/create-empty-dataset", "method": "POST" },
