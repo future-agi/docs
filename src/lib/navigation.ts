@@ -311,6 +311,8 @@ export const tabNavigation: NavTab[] = [
               { title: 'Run a prompt on every row', href: '/docs/dataset/guides/run-a-prompt-on-every-row' },
               { title: 'Run an experiment', href: '/docs/dataset/guides/run-an-experiment' },
               { title: 'Compare an external workflow', href: '/docs/dataset/guides/compare-external-workflow' },
+              { title: 'Check an experiment run in CI', href: '/docs/dataset/guides/check-experiment-run' },
+              { title: 'Export and import a dataset version', href: '/docs/dataset/guides/portable-dataset-version' },
               { title: 'Manage datasets', href: '/docs/dataset/guides/manage-datasets' },
             ]
           },
@@ -1456,6 +1458,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Get Dataset Version', href: '/docs/api/datasets/get-dataset-version' },
               { title: 'Create Dataset Version', href: '/docs/api/datasets/create-dataset-version' },
               { title: 'Compare Experiment Runs', href: '/docs/api/datasets/compare-experiment-runs' },
+              { title: 'Case-Level Release Gate', href: '/docs/api/datasets/release-gate' },
               { title: 'External Experiment Runs', href: '/docs/api/datasets/external-experiment-runs' },
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
               { title: 'Create Empty Dataset', href: '/docs/api/datasets/create-empty-dataset' },
