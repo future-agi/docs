@@ -1453,6 +1453,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'List Datasets', href: '/docs/api/datasets/list-datasets' },
               { title: 'List Dataset Versions', href: '/docs/api/datasets/list-dataset-versions' },
               { title: 'Get Dataset Version', href: '/docs/api/datasets/get-dataset-version' },
+              { title: 'Compare Experiment Runs', href: '/docs/api/datasets/compare-experiment-runs' },
               { title: 'Create Dataset', href: '/docs/api/datasets/create-dataset' },
               { title: 'Create Empty Dataset', href: '/docs/api/datasets/create-empty-dataset' },
               { title: 'Upload Dataset from File', href: '/docs/api/datasets/upload-dataset' },
