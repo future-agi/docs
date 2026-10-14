@@ -1121,6 +1121,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Inline Evals in Tracing', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
               { title: 'Portkey Integration', href: '/docs/cookbook/portkey-integration' },
               { title: 'Debug Traces from IDE', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
+              { title: 'Cursor Hook-to-OTLP Tracing', href: '/docs/cookbook/cursor-hook-to-otlp' },
               { title: 'Falcon AI Trace Debugging', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
               { title: 'Falcon AI End-to-End Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
             ]
