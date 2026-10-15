@@ -26,10 +26,13 @@
 // call exports nothing, and events that arrive after `session_shutdown` are
 // ignored.
 //
-// omp also has its own OpenTelemetry export (OTEL_EXPORTER_OTLP_* env vars, on
-// by default whenever an endpoint is set). Do not point that at Future AGI while
-// this hook is installed, or every model and tool call is stored twice; start omp
-// with OTEL_TRACES_EXPORTER=none.
+// omp also has its own OpenTelemetry export of traces, logs and metrics
+// (OTEL_EXPORTER_OTLP_* env vars, on by default whenever an endpoint is set). Do
+// not point its traces at Future AGI while this hook is installed, or every model
+// and tool call is stored twice. OTEL_SDK_DISABLED=true or the
+// telemetry.otlpExportEnabled: false setting turns off all three signals;
+// OTEL_TRACES_EXPORTER=none turns off traces only. This hook reads only FI_*
+// variables, so none of those switches affects it.
 //
 // Environment:
 //   FI_API_KEY, FI_SECRET_KEY, FI_PROJECT_NAME   required; the hook is inert without them

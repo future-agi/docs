@@ -31,8 +31,13 @@ Content (prompts, answers, tool arguments and results, tool intents, error text)
 is off by default. Set `FI_CAPTURE_CONTENT=true` to export it, cut at 4,096
 characters per field with common key patterns redacted.
 
-omp also has its own OpenTelemetry export, which starts whenever
-`OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. Do
-not point it at Future AGI while this hook is installed, or every model and tool
-call is stored twice: start omp with `OTEL_TRACES_EXPORTER=none`. The docs page
-compares the two.
+omp also has its own OpenTelemetry export of traces, logs and metrics.
+`OTEL_EXPORTER_OTLP_ENDPOINT` turns on all three; the per-signal
+`OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` variables turn on one each. Do
+not point its traces at Future AGI while this hook is installed, or every model
+and tool call is stored twice. `OTEL_SDK_DISABLED=true omp`, or
+`telemetry.otlpExportEnabled: false` in `~/.omp/agent/config.yml`, turns off all
+three signals. `OTEL_TRACES_EXPORTER=none` turns off traces only, so omp keeps
+sending logs and metrics to `OTEL_EXPORTER_OTLP_ENDPOINT`. The hook reads only
+`FI_*` variables and is not affected by any of these. The docs page compares the
+two exports.

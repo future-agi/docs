@@ -204,8 +204,48 @@ test("tool and provider failures are ERROR without their messages by default", a
 
   const withContent = harness({ ...ENV, FI_CAPTURE_CONTENT: "true" })
   await withContent.replay(events)
-  const [readC] = byName(withContent.spans(), "execute_tool read")
+  const spansC = withContent.spans()
+  const [readC] = byName(spansC, "execute_tool read")
   assert.match(readC.status.message, /FIXTURE-SECRET-ERROR ENOENT/)
+  // With content on, only the tool and model spans carry the error text; the turn and
+  // prompt spans keep the fixed message (the page says so).
+  const failedC = byName(spansC, "chat gpt-6-luna").find((s) => s.status.code === 2)
+  assert.match(failedC.status.message, /FIXTURE-SECRET-ERROR provider said no/)
+  const failedTurns = byName(spansC, "omp.turn").filter((s) => s.status.code === 2)
+  assert.equal(failedTurns.length, 1)
+  const [promptC] = byName(spansC, "omp.prompt")
+  for (const s of [...failedTurns, promptC]) {
+    assert.deepEqual([s.status.code, s.status.message, attr(s, "error.type")], [2, "error details omitted by default", "ProviderError"])
+  }
+})
+
+test("omp's own OTEL_* switches and endpoints do not change what the hook sends", async () => {
+  // The page tells users to turn omp's built-in export off with these; the hook must keep working.
+  const otel = {
+    OTEL_SDK_DISABLED: "true",
+    OTEL_TRACES_EXPORTER: "none",
+    OTEL_LOGS_EXPORTER: "none",
+    OTEL_METRICS_EXPORTER: "none",
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://other-collector.test",
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://other-collector.test/v1/traces",
+    OTEL_EXPORTER_OTLP_HEADERS: "X-Api-Key=other-key,X-Secret-Key=other-secret",
+    OTEL_RESOURCE_ATTRIBUTES: "project_name=other-project",
+  }
+  const plain = harness()
+  await plain.replay()
+  const h = harness({ ...ENV, ...otel })
+  await h.replay()
+  assert.ok(h.requests.length > 0)
+  assert.equal(h.requests.length, plain.requests.length)
+  for (const r of h.requests) {
+    assert.equal(r.url, "http://collector.test/v1/traces")
+    assert.equal(r.headers["X-Api-Key"], "test-api-key")
+    assert.equal(r.headers["X-Secret-Key"], "test-secret-key")
+    const resource = Object.fromEntries(r.body.resourceSpans[0].resource.attributes.map((a: any) => [a.key, a.value.stringValue]))
+    assert.equal(resource.project_name, "omp-contract")
+  }
+  assert.deepEqual(h.spans().map((s) => s.name).sort(), plain.spans().map((s) => s.name).sort())
+  assert.ok(!JSON.stringify(h.requests).includes("other-"))
 })
 
 test("shutdown mid-turn closes open spans as incomplete, not as errors", async () => {
