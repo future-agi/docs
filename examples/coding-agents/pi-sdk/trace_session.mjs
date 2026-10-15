@@ -5,7 +5,7 @@
 // Environment:
 //   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (sent as X-Api-Key / X-Secret-Key)
 //   FI_PROJECT_NAME             Future AGI project (default: pi-sdk)
-//   FI_BASE_URL                 collector base URL (default: https://api.futureagi.com)
+//   FI_BASE_URL                 self-hosted Future AGI (default: https://api.futureagi.com)
 //   FI_HIDE_INPUTS=false        opt in to prompts and tool arguments
 //   FI_HIDE_OUTPUTS=false       opt in to answers and tool results
 //   PI_CODING_AGENT_DIR         Pi agent dir with models.json / auth.json (default: ~/.pi/agent)
@@ -25,7 +25,8 @@ const tracerProvider = register({
 const instrumentation = new PiCodingAgentInstrumentation({ tracerProvider });
 const createTracedSession = instrumentation.wrapCreateAgentSession(createAgentSession);
 
-const options = { cwd, sessionManager: SessionManager.inMemory(cwd), tools: ["read", "ls", "bash"] };
+// Only the tools the example prompt needs; Pi has no approval step for tools.
+const options = { cwd, sessionManager: SessionManager.inMemory(cwd), tools: ["read", "ls"] };
 if (process.env.PI_PROVIDER && process.env.PI_MODEL) {
   const modelRuntime = await ModelRuntime.create();
   const model = modelRuntime.getModel(process.env.PI_PROVIDER, process.env.PI_MODEL);
@@ -36,8 +37,14 @@ if (process.env.PI_PROVIDER && process.env.PI_MODEL) {
 const { session } = await createTracedSession(options);
 try {
   await session.prompt(prompt);
-  console.log(session.getLastAssistantText());
+  console.log(session.getLastAssistantText() ?? "");
   console.error(`pi session id: ${session.sessionId}`);
+  // Pi resolves prompt() even when the model call failed; report it in the exit code.
+  const last = session.messages.findLast((message) => message.role === "assistant");
+  if (last?.stopReason === "error" || last?.stopReason === "aborted") {
+    console.error(`pi run ended with stopReason=${last.stopReason}`);
+    process.exitCode = 1;
+  }
 } finally {
   session.dispose();
   await tracerProvider.shutdown();
