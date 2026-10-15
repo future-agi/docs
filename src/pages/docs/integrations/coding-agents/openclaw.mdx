@@ -80,8 +80,9 @@ openclaw config patch --file futureagi.patch.json5
 - `tracesEndpoint` is an exact URL: OpenClaw does not append a path to it. For a self-hosted Future AGI, replace the host and keep `/tracer/v1/traces`.
 - `metrics` and `logs` are off because Future AGI ingests traces only.
 - `OTEL_NODE_RESOURCE_DETECTORS=env` is required for the privacy default. Without it, OpenClaw's OpenTelemetry SDK also exports the host name, host id, OS user name, the executable and script paths, and the full command line, which for `openclaw agent --local -m "..."` contains the prompt. The patch sets it in OpenClaw's config `env` block, which reaches the Gateway and the CLI. That block does not override: if the variable is already set in the process environment or a `.env` file, that value wins, so keep it `env` there too.
+- Side effect: the `env` block sets the variable in OpenClaw's own process environment, so the commands the agent runs with the `exec` tool inherit it. OpenClaw 2026.10.3 has no setting that applies it to the exporter alone. A Node program the agent starts that takes its OpenTelemetry resource detectors from the environment (the default for `@opentelemetry/sdk-node`) then runs only the `env` detector and exports no host or process attributes. To give such a program its detectors back, set `OTEL_NODE_RESOURCE_DETECTORS=all` (or the list it needs) where that program is launched. To remove the side effect instead, run `openclaw config unset env.vars.OTEL_NODE_RESOURCE_DETECTORS`; OpenClaw's own spans then carry the host name, user name and command line again.
 
-Then put the keys and the project name in `~/.openclaw/.env` (OpenClaw's global env file, read by the Gateway and the CLI; see `env.example`):
+Then put the keys and the project name in `~/.openclaw/.env` (OpenClaw's global env file, read by the Gateway and the CLI):
 
 ```bash
 FI_API_KEY=your-futureagi-api-key
@@ -128,14 +129,14 @@ MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 MODEL_API_KEY=... MODE
 | `openclaw.context.assembled` | | message count, history and prompt sizes in characters, system prompt size, token budget |
 | `openclaw.model.call` | `LLM` | `gen_ai.request.model`, `gen_ai.system` (the provider id), `gen_ai.usage.input_tokens` / `output_tokens`, cache read and write tokens, reasoning tokens, request and response bytes, time to first byte, prompt component sizes (no text); status `ERROR` with the error category when the request fails |
 | `openclaw.tool.execution` | `TOOL` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, tool source and owner, status `ERROR` with `openclaw.errorCategory` when the tool fails (including a tool that returns an error, such as a missing file), `openclaw.outcome=blocked` when policy denies it |
-| `openclaw.exec` | | shell exec target, mode, exit code, command length (no command text). From OpenClaw's span catalog; not exercised in our test |
+| `openclaw.exec` | | One per command the agent runs with the `exec` tool, under `openclaw.harness.run`: exec target, mode, outcome, exit code, command length (no command text). Checked with a local OTLP capture, not in a Future AGI run |
 
 OpenClaw also exports, as separate traces:
 
 - `openclaw.model.usage`: run-level accounting for a Gateway run (total tokens, provider, model, channel); `openclaw agent --local` runs did not export it in our test. Its token counts repeat the `openclaw.model.call` spans. Future AGI stores it as an LLM span too, so project-level token and LLM-call totals count each Gateway run twice. For per-call numbers, filter by span name `openclaw.model.call`.
 - `openclaw.gateway.rpc.*`: Gateway request handling phases.
 - `openclaw.message.processed` and `openclaw.message.delivery` for channel messages, `openclaw.webhook.*` for webhooks.
-- `openclaw.diagnostic.phase`: process startup phases, one short trace each, every time a Gateway or `openclaw agent --local` starts.
+- `openclaw.diagnostic.phase`: timings of OpenClaw's internal startup phases, one short trace each. The number varies: in our tests a Gateway or `openclaw agent --local` start exported either none or about 20.
 
 The full span catalog is in OpenClaw's [spans and events](https://docs.openclaw.ai/gateway/opentelemetry/spans-and-events) page.
 
@@ -158,7 +159,9 @@ The full span catalog is in OpenClaw's [spans and events](https://docs.openclaw.
 
 With `captureContent: false` (the default), spans carry identifiers, model and provider names, token counts, sizes, durations and outcomes. OpenClaw states they never include prompt text, response text, tool inputs, tool outputs, skill file paths or session keys. With `OTEL_NODE_RESOURCE_DETECTORS=env` (set by the patch), the host name, host id, OS user name, executable paths and command line are not exported either.
 
-One exception: when a run fails, `openclaw.run` and `openclaw.harness.run` carry OpenClaw's error message (`openclaw.error` and the span status message, up to 4 KB, with secrets redacted) even with content capture off. It can contain file paths, URLs or provider error text. Channel `openclaw.message.processed` and `openclaw.webhook.error` spans carry their error text the same way. OpenClaw has no setting to turn this off.
+One exception: when a run fails, `openclaw.run` and `openclaw.harness.run` carry OpenClaw's error message (`openclaw.error` and the span status message, up to 4 KB, with secrets redacted) even with content capture off. It can contain file paths, URLs or provider error text. `openclaw.webhook.error` spans also carry error text in `openclaw.error` and the status message, and failed channel `openclaw.message.processed` spans carry it in the status message; both are redacted but have no 4 KB cap. OpenClaw has no setting to turn this off.
+
+Commands the agent runs with the `exec` tool inherit OpenClaw's environment (we checked execution on the host), including `FI_API_KEY`, `FI_SECRET_KEY` and `OTEL_RESOURCE_ATTRIBUTES` from `~/.openclaw/.env`. OpenClaw removes only a fixed list of variables such as `NODE_OPTIONS`, and treats provider API keys in that file the same way.
 
 To include content, set `captureContent: true` in `diagnostics.otel`. Model spans then carry bounded, redacted input and output messages (shown as the span's input and output in Future AGI) and tool spans carry `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` (also as `openclaw.content.tool_input` / `tool_output`), which include file paths, command text and file contents. Tool definitions are included; the system prompt stays excluded.
 
@@ -173,6 +176,8 @@ To include content, set `captureContent: true` in `diagnostics.otel`. Model span
 **Traces do not show up in the expected project.** Future AGI files traces under the `project_name` resource attribute. Check that `OTEL_RESOURCE_ATTRIBUTES=project_name=...` reaches the exporting process: set it in `~/.openclaw/.env` or the Gateway's service environment, then restart the Gateway.
 
 **Traces show your host name, user name or command line.** `OTEL_NODE_RESOURCE_DETECTORS` is set to something other than `env` in the exporting process's environment or a `.env` file, which wins over the patch. Set it to `env` there and restart the Gateway.
+
+**A Node program the agent runs exports no host or process attributes.** It inherited `OTEL_NODE_RESOURCE_DETECTORS=env` from OpenClaw's config `env` block. See the side-effect note in [step 2](#2-point-it-at-future-agi).
 
 **A failed turn shows as several successful traces.** Each model retry is its own trace and the roots can say `completed`. Look for `openclaw.model.call` spans with status `ERROR` (see [Failures and retries](#failures-and-retries)).
 
