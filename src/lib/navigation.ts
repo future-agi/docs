@@ -974,6 +974,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:grok-build
               // coding-agents:hermes-agent
               // coding-agents:kiro-cli
+              { title: 'Kiro CLI', href: '/docs/integrations/coding-agents/kiro-cli' },
               // coding-agents:kiro-ide
               // coding-agents:oh-my-pi
               // coding-agents:openclaw
