@@ -9,7 +9,7 @@ exports and turns each Codex turn into one trace:
     Codex turn (agent)                 one user prompt, session.id = conversation.id
     |-- Codex model request (llm)      codex.api_request + its response.completed tokens
     |-- exec (tool)                    codex.tool_result (+ codex.tool_decision)
-    |   `-- exec_command (tool)        a tool call made inside another one
+    |   `-- exec_command (tool)        a call made inside a code-mode `exec` call
     `-- Codex model request (llm)
 
 Stdlib only, Python 3.9+. Codex must send OTLP/JSON (protocol = "json").
@@ -33,10 +33,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,14 +48,16 @@ SCOPE = {"name": "fi-codex-bridge", "version": "1.0.0"}
 AGENT, LLM, TOOL = "AGENT", "LLM", "TOOL"
 STATUS_ERROR = 2
 REDACTED = ("[REDACTED]", "<REDACTED>", "")
-# Events that belong to a turn. codex.websocket_* are the WebSocket-transport
-# counterparts of codex.api_request / codex.sse_event.
-TURN_EVENTS = ("codex.api_request", "codex.websocket_request", "codex.sse_event", "codex.websocket_event",
-               "codex.tool_decision", "codex.tool_result", "codex.turn_ttft")
-
-
-def env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+STREAM_END = ("response.completed", "response.failed", "error")
+# Events that belong to a turn. codex.websocket_request is the WebSocket
+# transport's counterpart of codex.api_request (not tested; see the docs page).
+TURN_EVENTS = ("codex.api_request", "codex.websocket_request", "codex.sse_event", "codex.tool_decision",
+               "codex.tool_result", "codex.turn_ttft", "codex.turn_cost")
+# Code-mode: the model's `exec` tool runs further tool calls inside itself;
+# in 0.162.1 those inner calls have call ids starting with "exec-".
+CODE_MODE_TOOL, CODE_MODE_CALL_PREFIX = "exec", "exec-"
+# An error code token from a provider's JSON error body ("code" wins over "type").
+ERROR_CODE = [re.compile(r'"%s"\s*:\s*"([A-Za-z0-9_.-]{1,64})"' % k) for k in ("code", "type")]
 
 
 class Config:
@@ -165,8 +169,15 @@ class Span:
         return span
 
 
+def to_float(v: Any) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 class Turn:
-    def __init__(self, conv: str, index: int, start: int, ctx: Dict[str, Any]):
+    def __init__(self, conv: str, index: int, start: int):
         self.trace_id = hexid("codex-bridge", conv, index, start)
         self.root = Span(self.trace_id, hexid("root", self.trace_id, size=8), None, "Codex turn", AGENT,
                          start, start)
@@ -175,7 +186,6 @@ class Turn:
         self.decisions: Dict[str, Dict[str, Any]] = {}
         self.last_event = time.monotonic()
         self.dirty = True
-        self.ctx = ctx
         self.root.attrs.update({"session.id": conv, "codex.conversation_id": conv})
 
     def touch(self, t: int):
@@ -199,12 +209,23 @@ class CodexMapper:
         return s if len(s) <= self.cfg.max_chars else s[: self.cfg.max_chars] + "...[truncated]"
 
     def conv(self, cid: str) -> Dict[str, Any]:
-        return self.convs.setdefault(cid, {"turns": 0, "turn": None, "ctx": {}, "version": None})
+        return self.convs.setdefault(cid, {"turns": 0, "turn": None, "ctx": {}, "version": None, "seen": {}})
+
+    def duplicate(self, st: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+        """OTLP export is at-least-once: skip an event already applied (same name, time, attributes)."""
+        key = hashlib.sha256(json.dumps([ev["name"], ev["time"], ev["attrs"]], sort_keys=True,
+                                        default=str).encode()).hexdigest()
+        if key in st["seen"]:
+            return True
+        st["seen"][key] = None
+        if len(st["seen"]) > 20000:
+            st["seen"].pop(next(iter(st["seen"])))
+        return False
 
     def turn_for(self, state: Dict[str, Any], cid: str, t: int) -> Turn:
         if state["turn"] is None:  # events before the first prompt
             state["turns"] += 1
-            state["turn"] = Turn(cid, state["turns"], t, state["ctx"])
+            state["turn"] = Turn(cid, state["turns"], t)
             state["turn"].root.attrs["codex.turn.implicit"] = True
         return state["turn"]
 
@@ -219,6 +240,11 @@ class CodexMapper:
                 st["version"] = a.get("app.version") or ev["resource"].get("service.version") or st["version"]
                 st["service"] = ev["resource"].get("service.name") or st.get("service")
                 name = ev["name"]
+                acted = name in TURN_EVENTS or name in ("codex.conversation_starts", "codex.user_prompt")
+                if not acted or (name == "codex.sse_event" and a.get("event.kind") not in STREAM_END):
+                    continue  # startup phases and stream deltas
+                if self.duplicate(st, ev):
+                    continue
                 if name == "codex.conversation_starts":
                     st["ctx"].update({k: a.get(k) for k in ("provider_name", "approval_policy", "sandbox_policy",
                                                           "reasoning_effort", "reasoning_summary")})
@@ -227,18 +253,16 @@ class CodexMapper:
                     if st["turn"] is not None and st["turn"].dirty:
                         closed.append(st["turn"])
                     st["turns"] += 1
-                    turn = st["turn"] = Turn(cid, st["turns"], t, st["ctx"])
+                    turn = st["turn"] = Turn(cid, st["turns"], t)
                     turn.root.attrs.update({"codex.prompt_length": to_int(a.get("prompt_length")),
                                             "input.value": self.content(a.get("prompt"))})
                     self.common(turn.root, a, st)
                     turn.touch(t)
                     continue
-                if name not in TURN_EVENTS:
-                    continue  # startup phases, metrics-style events
                 turn = self.turn_for(st, cid, t)
                 if name in ("codex.api_request", "codex.websocket_request"):
                     self.llm(turn, a, t, st)
-                elif name in ("codex.sse_event", "codex.websocket_event"):
+                elif name == "codex.sse_event":
                     self.stream_event(turn, a, t)
                 elif name == "codex.tool_decision":
                     turn.decisions[str(a.get("call_id"))] = a
@@ -246,6 +270,8 @@ class CodexMapper:
                     self.tool(turn, a, t)
                 elif name == "codex.turn_ttft":
                     turn.root.attrs["codex.turn.ttft_ms"] = to_int(a.get("duration_ms"))
+                elif name == "codex.turn_cost":  # added to the turn open when it arrives
+                    turn.root.attrs["codex.turn.estimated_usd"] = to_float(a.get("usage.estimated_usd"))
                 turn.touch(t)
         return closed
 
@@ -257,6 +283,8 @@ class CodexMapper:
             "codex.provider": ctx.get("provider_name"),
             "codex.approval_policy": ctx.get("approval_policy"),
             "codex.sandbox_policy": ctx.get("sandbox_policy"),
+            "codex.reasoning_effort": ctx.get("reasoning_effort"),
+            "codex.reasoning_summary": ctx.get("reasoning_summary"),
         })
 
     def llm(self, turn: Turn, a: Dict[str, Any], t: int, st: Dict[str, Any]):
@@ -275,15 +303,21 @@ class CodexMapper:
         })
         err = a.get("error.message")
         if (status is not None and status >= 400) or err:
-            # Provider error text (model_not_found, rate limits), not user content.
-            span.error = str(err)[:512] if err else f"HTTP {status}"
+            span.error = self.error_summary(status, err)
         turn.children.append(span)
         turn.pending_llm.append(span)
 
+    def error_summary(self, status: Optional[int], err: Any) -> str:
+        """Provider and proxy error bodies are free text; without content capture
+        only the HTTP status and an error code parsed from the body are kept."""
+        if self.cfg.capture and err:
+            return str(err)[:512]
+        text = str(err or "")
+        code = next((m.group(1) for m in (p.search(text) for p in ERROR_CODE) if m), None)
+        return " ".join([f"HTTP {status}" if status else "request failed"] + ([code] if code else []))
+
     def stream_event(self, turn: Turn, a: Dict[str, Any], t: int):
         kind = a.get("event.kind")
-        if kind not in ("response.completed", "response.failed", "error"):
-            return
         span = turn.pending_llm[-1] if turn.pending_llm else None
         if span is None:
             return
@@ -334,13 +368,23 @@ class CodexMapper:
         turn.root.attrs["codex.tool_calls"] = sum(1 for c in turn.children if c.kind == TOOL)
 
     def nest(self, turn: Turn):
-        """Parent a tool call to the tool call it ran inside of (code-mode exec -> exec_command)."""
+        """Parent tool calls made inside a code-mode `exec` call to that call.
+
+        Only `exec` calls are parents and only code-mode calls (call id
+        "exec-...") are nested, so parallel sibling calls stay siblings.
+        Every tool is re-checked on each flush; a span whose parent changes
+        after it was sent is sent again under the same id."""
         tools = [c for c in turn.children if c.kind == TOOL]
-        for inner in (c for c in tools if not c.sent):
-            outers = [o for o in tools if o is not inner and o.start <= inner.start and inner.end <= o.end
-                      and (o.end - o.start) > (inner.end - inner.start)]
-            if outers:
-                inner.parent = min(outers, key=lambda o: o.end - o.start).span_id
+        outers = [o for o in tools if o.name == CODE_MODE_TOOL]
+        for inner in tools:
+            if inner.name == CODE_MODE_TOOL:
+                continue
+            nested = str(inner.attrs.get("gen_ai.tool.call.id") or "").startswith(CODE_MODE_CALL_PREFIX)
+            around = [o for o in outers if nested and o.start <= inner.start and inner.end <= o.end]
+            parent = min(around, key=lambda o: o.end - o.start).span_id if around else turn.root.span_id
+            if parent != inner.parent:
+                inner.parent = parent
+                inner.sent = False
 
     def due(self, force: bool = False) -> List[Turn]:
         """Turns with unsent changes whose last event is older than the idle window.
@@ -367,8 +411,10 @@ class CodexMapper:
                 if not turn.root.sent:
                     turn.root.start = min(turn.root.start, c.start)
                 turn.root.end = max(turn.root.end, c.end)
-            if any(c.error for c in turn.children if c.kind == LLM) and not turn.root.error:
-                turn.root.error = "model request failed"
+            # A failed request that Codex retried successfully stays ERROR on
+            # its own span; the turn is ERROR only if its last request failed.
+            llms = sorted((c for c in turn.children if c.kind == LLM), key=lambda c: c.start)
+            turn.root.error = "model request failed" if llms and llms[-1].error else None
             out = [turn.root] + [c for c in turn.children if not c.sent]
             for s in out:
                 s.sent = True
@@ -417,10 +463,14 @@ class Bridge:
     def __init__(self, cfg: Config):
         self.cfg, self.mapper, self.exporter = cfg, CodexMapper(cfg), Exporter(cfg)
         self.stop = threading.Event()
+        self.ready: List[Turn] = []  # turns a new prompt closed, sent by the next flush
+        self.ready_lock = threading.Lock()
 
     def receive(self, body: Dict[str, Any]):
-        for turn in self.mapper.add(log_events(body)):
-            self.export(turn)
+        """Apply a batch. No network I/O here, so Codex gets its ack at once."""
+        closed = self.mapper.add(log_events(body))
+        with self.ready_lock:
+            self.ready.extend(closed)
 
     def export(self, turn: Turn):
         cid = turn.root.attrs["session.id"]
@@ -430,7 +480,9 @@ class Bridge:
         log(f"turn trace_id={turn.trace_id} session.id={cid} spans={len(spans)} http={status}")
 
     def flush(self, force: bool = False):
-        for turn in self.mapper.due(force):
+        with self.ready_lock:
+            turns, self.ready = self.ready, []
+        for turn in turns + [t for t in self.mapper.due(force) if t not in turns]:
             self.export(turn)
 
     def loop(self):
@@ -450,15 +502,26 @@ def decode_protobuf(raw: bytes) -> Optional[Dict[str, Any]]:
         return None
     msg = ExportLogsServiceRequest()
     msg.ParseFromString(raw)
-    body = MessageToDict(msg)
-    return body
+    return MessageToDict(msg)
+
+
+_rejections: Dict[str, int] = {}
+
+
+def log_rejection(reason: str):
+    """One log line for the first rejection of each kind, then every 100th."""
+    n = _rejections[reason] = _rejections.get(reason, 0) + 1
+    if n == 1 or n % 100 == 0:
+        log(f"rejected request ({n}x): {reason}")
 
 
 def make_handler(bridge: Bridge):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            if self.path.split("?")[0] != "/v1/logs":
+            path = self.path.split("?")[0]
+            if path != "/v1/logs":
+                log_rejection(f"path {path}: Codex's exporter endpoint must end in /v1/logs")
                 return self.reply(404, {"message": "this bridge accepts /v1/logs only"})
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
             try:
@@ -467,8 +530,10 @@ def make_handler(bridge: Bridge):
                 elif ctype == "application/x-protobuf":
                     body = decode_protobuf(raw)
                     if body is None:
+                        log_rejection('application/x-protobuf: set protocol = "json" in the [otel] exporter')
                         return self.reply(415, {"message": "set protocol = \"json\" in Codex's [otel] exporter"})
                 else:
+                    log_rejection(f"content type {ctype or 'none'}")
                     return self.reply(415, {"message": f"unsupported content type {ctype}"})
                 bridge.receive(body)
             except Exception as e:  # noqa: BLE001  a bad batch must not stop the bridge

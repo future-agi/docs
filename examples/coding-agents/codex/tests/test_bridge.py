@@ -4,7 +4,8 @@ Fixtures are the request bodies `codex exec` (0.162.1) sent to an OTLP/HTTP
 logs endpoint with `protocol = "json"`, one request per line:
   codex-0.162.1-default.jsonl       log_user_prompt = false (the default)
   codex-0.162.1-prompt-optin.jsonl  log_user_prompt = true
-Only the host name and the local user name were replaced. Codex puts tool
+The host name and the local user name were replaced, and the runs used
+`environment = "fixture"` in [otel] (Codex's default is "dev"). Codex puts tool
 arguments and tool output on codex.tool_result by default, so the default
 fixture still carries content the bridge must drop.
 
@@ -145,29 +146,165 @@ class BridgeTest(unittest.TestCase):
                 if k in a:
                     self.assertLessEqual(len(a[k]), 20 + len("...[truncated]"))
 
-    def test_errors_mark_spans(self):
-        cid = "conv-err"
+    def synthetic(self, records, **env):
+        """Run hand-built Codex events (documented names and attributes) through a bridge."""
+        body = {"resourceLogs": [{"resource": {"attributes": []}, "scopeLogs": [{"logRecords": records}]}]}
+        b = bridge.Bridge(bridge.Config({"FI_API_KEY": "k", "FI_SECRET_KEY": "s", "FI_OTLP_ENDPOINT": self.sink.url,
+                                         **env}))
+        b.receive(body)
+        b.flush(force=True)
+        return b
+
+    @staticmethod
+    def events(cid="conv-x"):
+        n = [0]
 
         def ev(name, **attrs):
             attrs.update({"event.name": name, "conversation.id": cid, "model": "gpt-5.6-terra",
-                          "event.timestamp": "2026-10-14T20:00:0%d.000Z" % ev.n})
-            ev.n += 1
-            return {"key": None, "attributes": [{"key": k, "value": {"stringValue": str(v)}} for k, v in attrs.items()]}
-        ev.n = 0
-        records = [ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
-                   ev("codex.api_request", duration_ms="120", **{"http.response.status_code": "404",
-                                                                  "error.message": "model_not_found"}),
-                   ev("codex.tool_result", tool_name="exec_command", call_id="c1", duration_ms="5",
-                      success="false", arguments="{\"cmd\":\"secret\"}", output="boom")]
-        body = {"resourceLogs": [{"resource": {"attributes": []}, "scopeLogs": [{"logRecords": records}]}]}
-        b = bridge.Bridge(bridge.Config({"FI_API_KEY": "k", "FI_SECRET_KEY": "s", "FI_OTLP_ENDPOINT": self.sink.url}))
-        b.receive(body)
+                          "event.timestamp": "2026-10-14T20:00:%02d.000Z" % n[0]})
+            n[0] += 1
+            return {"attributes": [{"key": k, "value": {"stringValue": str(v)}} for k, v in attrs.items()]}
+        return ev
+
+    def by_name(self):
+        out = {}
+        for _, s, a in self.sink.spans():
+            out.setdefault(s["name"], []).append((s, a))
+        return out
+
+    def test_errors_mark_spans_without_error_text(self):
+        ev = self.events()
+        secret = 'upstream said {"error":{"code":"model_not_found","message":"no model at /Users/alice/proj"}}'
+        self.synthetic([ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
+                        ev("codex.api_request", duration_ms="120", attempt="0",
+                           **{"http.response.status_code": "404", "error.message": secret}),
+                        ev("codex.tool_result", tool_name="exec_command", call_id="c1", duration_ms="5",
+                           success="false", arguments="{\"cmd\":\"secret\"}", output="boom")])
+        by = self.by_name()
+        self.assertEqual(by["Codex model request"][0][0]["status"], {"code": 2, "message": "HTTP 404 model_not_found"})
+        self.assertEqual(by["exec_command"][0][0]["status"], {"code": 2, "message": "tool call failed"})
+        self.assertEqual(by["Codex turn"][0][0]["status"], {"code": 2, "message": "model request failed"})
+        dump = json.dumps(self.sink.payloads)
+        for leak in ("/Users/alice", "alice", "secret", "boom"):
+            self.assertNotIn(leak, dump)
+
+    def test_openai_error_body_reports_code_not_type(self):
+        ev = self.events()
+        body = ('unexpected status 404: {"error":{"message":"The model gpt-x does not exist for user alice",'
+                '"type":"invalid_request_error","param":null,"code":"model_not_found"}}')
+        self.synthetic([ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
+                        ev("codex.api_request", duration_ms="1", **{"http.response.status_code": "404",
+                                                                    "error.message": body})])
+        self.assertEqual(self.by_name()["Codex model request"][0][0]["status"]["message"],
+                         "HTTP 404 model_not_found")
+        self.assertNotIn("alice", json.dumps(self.sink.payloads))
+
+    def test_error_text_with_content_capture(self):
+        ev = self.events()
+        self.synthetic([ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
+                        ev("codex.api_request", duration_ms="1", **{"http.response.status_code": "500",
+                                                                    "error.message": "boom at /Users/alice"})],
+                       FI_BRIDGE_CAPTURE_CONTENT="1")
+        self.assertEqual(self.by_name()["Codex model request"][0][0]["status"]["message"], "boom at /Users/alice")
+
+    def test_retried_request_does_not_fail_the_turn(self):
+        ev = self.events()
+        self.synthetic([ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
+                        ev("codex.api_request", duration_ms="100", attempt="0",
+                           **{"http.response.status_code": "429", "error.message": "rate limited"}),
+                        ev("codex.api_request", duration_ms="900", attempt="1", **{"http.response.status_code": "200"}),
+                        ev("codex.sse_event", **{"event.kind": "response.completed", "input_token_count": "10",
+                                                 "output_token_count": "2"})])
+        by = self.by_name()
+        attempts = sorted(by["Codex model request"], key=lambda x: x[1]["codex.attempt"])
+        self.assertEqual(attempts[0][0]["status"]["code"], 2)
+        self.assertNotIn("status", attempts[1][0])
+        self.assertNotIn("status", by["Codex turn"][0][0])
+
+    def test_parallel_tool_calls_stay_siblings(self):
+        ev = self.events()
+        # call_A (200 ms) ran inside call_B's 4 s window; a parallel non-code-mode
+        # call inside an `exec` window is not nested either.
+        self.synthetic([ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
+                        ev("codex.tool_result", tool_name="exec_command", call_id="call_A", duration_ms="200"),
+                        ev("codex.tool_result", tool_name="exec_command", call_id="call_B", duration_ms="4000"),
+                        ev("codex.tool_result", tool_name="exec", call_id="call_outer", duration_ms="9000")])
+        by = self.by_name()
+        root = by["Codex turn"][0][0]["spanId"]
+        self.assertEqual({s["parentSpanId"] for s, _ in by["exec_command"]}, {root})
+        self.assertEqual(by["exec"][0][0]["parentSpanId"], root)
+
+    def test_code_mode_calls_nest_across_flushes(self):
+        ev = self.events()
+        b = self.synthetic([ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
+                            ev("codex.tool_result", tool_name="exec_command", call_id="exec-1", duration_ms="500")])
+        rest = [ev("codex.tool_result", tool_name="exec_command", call_id="exec-2", duration_ms="500"),
+                ev("codex.tool_result", tool_name="exec", call_id="call_outer", duration_ms="5000")]
+        b.receive({"resourceLogs": [{"resource": {"attributes": []}, "scopeLogs": [{"logRecords": rest}]}]})
         b.flush(force=True)
-        by_name = {s["name"]: s for _, s, _ in self.sink.spans()}
-        self.assertEqual(by_name["Codex model request"]["status"], {"code": 2, "message": "model_not_found"})
-        self.assertEqual(by_name["exec_command"]["status"]["code"], 2)
-        self.assertEqual(by_name["Codex turn"]["status"]["code"], 2)
-        self.assertNotIn("secret", json.dumps(self.sink.payloads))
+        latest = {}
+        for _, s, a in self.sink.spans():
+            latest[s["spanId"]] = (s, a)
+        outer = [s for s, a in latest.values() if s["name"] == "exec"][0]
+        inner = [s for s, a in latest.values() if s["name"] == "exec_command"]
+        self.assertEqual(len(inner), 2)
+        self.assertEqual({s["parentSpanId"] for s in inner}, {outer["spanId"]})  # exec-1 re-sent under exec
+
+    def test_redelivered_batch_is_applied_once(self):
+        b = bridge.Bridge(bridge.Config({"FI_API_KEY": "k", "FI_SECRET_KEY": "s", "FI_OTLP_ENDPOINT": self.sink.url}))
+        for body in bodies(DEFAULT) + bodies(DEFAULT):
+            b.receive(body)
+        b.flush(force=True)
+        spans = self.sink.spans()
+        self.assertEqual(len({s["traceId"] for _, s, _ in spans}), 1)
+        self.assertEqual(len({s["spanId"] for _, s, _ in spans}), 5)
+        root = [a for _, s, a in spans if "parentSpanId" not in s][-1]
+        llm = [a for _, s, a in spans if a["fi.span.kind"] == "LLM"]
+        self.assertEqual(root["codex.turn.input_tokens"], sum(a["gen_ai.usage.input_tokens"] for a in llm))
+
+    def test_chatgpt_identity_fields_not_forwarded(self):
+        body = bodies(DEFAULT)
+        for b in body:
+            for rl in b["resourceLogs"]:
+                for sl in rl["scopeLogs"]:
+                    for rec in sl["logRecords"]:
+                        rec["attributes"] += [{"key": "user.email", "value": {"stringValue": "alice@example.com"}},
+                                              {"key": "user.account_id", "value": {"stringValue": "acct-123"}},
+                                              {"key": "auth_mode", "value": {"stringValue": "chatgpt"}}]
+        br = bridge.Bridge(bridge.Config({"FI_API_KEY": "k", "FI_SECRET_KEY": "s", "FI_OTLP_ENDPOINT": self.sink.url}))
+        for x in body:
+            br.receive(x)
+        br.flush(force=True)
+        dump = json.dumps(self.sink.payloads)
+        for leak in ("alice", "acct-123", "chatgpt"):
+            self.assertNotIn(leak, dump)
+
+    def test_turn_cost(self):
+        ev = self.events()
+        self.synthetic([ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="7"),
+                        ev("codex.turn_cost", **{"usage.estimated_usd": "0.0123"})])
+        self.assertAlmostEqual(self.by_name()["Codex turn"][0][1]["codex.turn.estimated_usd"], 0.0123)
+
+    def test_receive_does_no_network_io(self):
+        import time as _t
+        slow = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (BaseHTTPRequestHandler,), {
+            "do_POST": lambda h: (_t.sleep(3), h.send_response(200), h.end_headers()),
+            "log_message": lambda *a: None}))
+        threading.Thread(target=slow.serve_forever, daemon=True).start()
+        self.addCleanup(slow.shutdown)
+        b = bridge.Bridge(bridge.Config({"FI_API_KEY": "k", "FI_SECRET_KEY": "s",
+                                         "FI_OTLP_ENDPOINT": f"http://127.0.0.1:{slow.server_address[1]}/"}))
+        ev = self.events()
+        first = {"resourceLogs": [{"resource": {"attributes": []}, "scopeLogs": [{"logRecords": [
+            ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="1"),
+            ev("codex.tool_result", tool_name="exec_command", call_id="c", duration_ms="1")]}]}]}
+        second = {"resourceLogs": [{"resource": {"attributes": []}, "scopeLogs": [{"logRecords": [
+            ev("codex.user_prompt", prompt="[REDACTED]", prompt_length="2")]}]}]}
+        b.receive(first)
+        t0 = _t.monotonic()
+        b.receive(second)  # closes the first turn; it is sent by the next flush, not here
+        self.assertLess(_t.monotonic() - t0, 0.5)
+        self.assertEqual(len(b.ready), 1)
 
     def test_late_events_join_the_same_trace(self):
         cfg = bridge.Config({"FI_API_KEY": "k", "FI_SECRET_KEY": "s", "FI_OTLP_ENDPOINT": self.sink.url})
