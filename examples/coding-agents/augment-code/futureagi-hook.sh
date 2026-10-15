@@ -1,15 +1,15 @@
 #!/bin/sh
 # Auggie hook command for Future AGI.
 #
-# Auggie's documented hook command is a path to a script with a .sh extension,
-# which it executes directly (no shell) with the event JSON on stdin. A shell
-# guard such as `|| true` in settings.json would therefore not be honoured, so
-# the guard lives here:
+# Augment documents a hook command as the path to a script with a .sh
+# extension, which Auggie runs with the event JSON on stdin. The settings
+# therefore name this script, and the guard that other coding-agent pages put
+# in the hook command lives here:
 # - the emitter runs in the canonical guarded subshell, so a missing emit.py,
 #   a missing python3 or a crash still exits 0;
-# - stdout goes to /dev/null: Auggie adds SessionStart output to the agent's
-#   context and reads Stop output as a possible "block" decision, and this hook
-#   has nothing to tell the agent;
+# - stdout goes to /dev/null: Auggie adds plain-text SessionStart output to the
+#   agent's context and reads a Stop {"decision": "block"} as "keep working",
+#   and this hook has nothing to tell the agent;
 # - stderr goes to /dev/null, so no Python error text reaches Auggie's logs;
 # - -B keeps __pycache__ out of the install folder.
 # It uses no external commands, so it works with an empty PATH too.

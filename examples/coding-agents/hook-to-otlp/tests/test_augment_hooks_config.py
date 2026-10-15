@@ -8,12 +8,15 @@ functions dao/QIt/cao/E7n and vao; Augment documents the command as "path to the
 - A command that starts with ``~`` or contains one of ``| & ; > < $ ` `` runs as ``bash -c <command>``.
 - The event JSON is written to the process's stdin. Exit code 2 blocks only on PreToolUse; any
   other non-zero exit, or a command that cannot be started, is logged and the session continues.
-  Exit 0 stdout is read as JSON (SessionStart output is added to the agent's context, a Stop
-  ``{"decision": "block"}`` keeps the agent working), so the hook must print nothing.
+  Exit 0 stdout is parsed as JSON (a Stop ``{"decision": "block"}`` keeps the agent working);
+  stdout that is not JSON is shown to the user, or on SessionStart added to the agent's context.
+  So the hook must print nothing.
 
-The documented command is a ``.sh`` path executed without a shell, so a ``|| true`` guard in
-settings.json would not be honoured. The guard is in futureagi-hook.sh, which runs
-``(python3 -B emit.py augment 2>/dev/null || true) >/dev/null`` and exits 0. These tests run
+Augment documents the command as the path to a ``.sh`` script, so the shipped settings name a
+script and the guard lives in it: futureagi-hook.sh runs
+``(python3 -B emit.py augment 2>/dev/null || true) >/dev/null`` and exits 0. (0.36.0 would also
+run a guarded one-line command through ``bash -c``, see auggie_argv, but that form is not
+documented, so it is not used.) These tests run
 every shipped command the way Auggie does, and also through ``sh -c`` with the payload on stdin
 and as a trailing heredoc, with the emitter installed, with emit.py missing and with python3
 missing. If the whole install folder is deleted, Auggie cannot start the wrapper; 0.36.0 logs
@@ -24,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -35,6 +39,7 @@ EXAMPLE = Path(__file__).resolve().parents[2] / "augment-code"
 TEMPLATE_COMMAND = "/Users/you/.augment/fi-hook-to-otlp/futureagi-hook.sh"
 OBSERVE_EVENTS = ["SessionStart", "PostToolUse", "Stop", "SessionEnd"]
 SHELLS = [sh for sh in ("/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash") if os.path.exists(sh)]
+WORKSPACE_FILE = ".augment/settings.local.json"
 # Home directories that break naive quoting: a space, JSON and sed specials, shell specials.
 HOMES = ["home", "my home", "odd &#\"\\$HOME`x`"]
 
@@ -96,13 +101,21 @@ class AugmentHooksConfigTest(unittest.TestCase):
         env.update(extra)
         return env
 
+    def run_install(self, home, *args):
+        return subprocess.run([str(EXAMPLE / "install.sh"), *args], capture_output=True, text=True,
+                              env=self.base_env(home, GIT_CONFIG_NOSYSTEM="1"))
+
     def install(self, tmp, home_name, *args):
         home = Path(tmp, home_name)
         home.mkdir()
-        result = subprocess.run([str(EXAMPLE / "install.sh"), *args], capture_output=True, text=True,
-                                env=self.base_env(home))
+        result = self.run_install(home, *args)
         self.assertEqual(result.returncode, 0, result.stderr)
         return home
+
+    def git(self, home, repo, *args):
+        return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                               *args], capture_output=True, text=True,
+                              env=self.base_env(home, GIT_CONFIG_NOSYSTEM="1"))
 
     def test_template_registers_observation_hooks_only(self):
         settings = json.loads((EXAMPLE / "settings.json").read_text())
@@ -173,13 +186,80 @@ class AugmentHooksConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp, "repo")
             repo.mkdir()
-            home = self.install(tmp, "home", "--project", str(repo))
-            local = repo / ".augment" / "settings.local.json"
+            home = Path(tmp, "home")
+            home.mkdir()
+            result = self.run_install(home, "--project", str(repo))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            local = repo / WORKSPACE_FILE
             self.assertTrue(local.exists())
             self.assertFalse((home / ".augment" / "settings.json").exists())
             wrapper = home / ".augment" / "fi-hook-to-otlp" / "futureagi-hook.sh"
             for _event, hook in commands(json.loads(local.read_text())):
                 self.assertEqual(auggie_argv(hook["command"]), [str(wrapper)])
+            self.assertIn("is not a git work tree", result.stdout)  # nothing to ignore it with
+
+    @unittest.skipUnless(shutil.which("git"), "git not installed")
+    def test_project_install_keeps_the_workspace_file_out_of_git(self):
+        """The workspace file holds this machine's home path, so `git add -A` must not pick it up.
+
+        The installer adds it to the repository's local exclude list (never committed) and changes
+        no tracked file: from a subfolder, from the root, on a re-run and in a linked worktree.
+        """
+        pattern = "**/" + WORKSPACE_FILE
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp, "home")
+            home.mkdir()
+            repo = Path(tmp, "repo")
+            (repo / "sub").mkdir(parents=True)
+            self.assertEqual(self.git(home, repo, "init", "-q").returncode, 0)
+            for target in (repo / "sub", repo, repo):
+                result = self.run_install(home, "--project", str(target))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.git(home, target, "check-ignore", "-q", "--", WORKSPACE_FILE).returncode,
+                                 0, f"{target}: {result.stdout}")
+                self.assertIn(str(home), (target / WORKSPACE_FILE).read_text())  # why it must stay local
+            exclude = repo / ".git" / "info" / "exclude"
+            self.assertEqual(exclude.read_text().count(pattern), 1)
+            self.assertFalse((repo / ".gitignore").exists())
+            self.assertEqual(self.git(home, repo, "status", "--porcelain", "--untracked-files=all").stdout, "")
+
+            # A linked worktree shares the main repository's exclude list.
+            self.assertEqual(self.git(home, repo, "commit", "-q", "--allow-empty", "-m", "init").returncode, 0)
+            worktree = Path(tmp, "worktree")
+            self.assertEqual(self.git(home, repo, "worktree", "add", "-q", str(worktree)).returncode, 0)
+            exclude.write_text("")
+            result = self.run_install(home, "--project", str(worktree))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.git(home, worktree, "check-ignore", "-q", "--", WORKSPACE_FILE).returncode, 0)
+            self.assertEqual(exclude.read_text().count(pattern), 1)
+            self.assertEqual(self.git(home, worktree, "status", "--porcelain", "--untracked-files=all").stdout, "")
+
+    @unittest.skipUnless(shutil.which("git"), "git not installed")
+    def test_project_install_leaves_an_existing_ignore_rule_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp, "home")
+            home.mkdir()
+            repo = Path(tmp, "repo")
+            repo.mkdir()
+            self.assertEqual(self.git(home, repo, "init", "-q").returncode, 0)
+            (repo / ".gitignore").write_text(WORKSPACE_FILE + "\n")  # what Auggie itself adds
+            exclude = repo / ".git" / "info" / "exclude"
+            before = exclude.read_text()
+            result = self.run_install(home, "--project", str(repo))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already ignored", result.stdout)
+            self.assertEqual(exclude.read_text(), before)
+            self.assertEqual((repo / ".gitignore").read_text(), WORKSPACE_FILE + "\n")
+
+    def test_unregistrable_home_stops_before_copying(self):
+        """A home path with a single quote cannot be registered; nothing is installed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp, "it's home")
+            home.mkdir()
+            result = self.run_install(home)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("single quote", result.stderr)
+            self.assertEqual(list(home.iterdir()), [])
 
     def test_existing_settings_file_is_never_modified(self):
         with tempfile.TemporaryDirectory() as tmp:
