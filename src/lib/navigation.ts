@@ -968,6 +968,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:devin
               // coding-agents:devin-desktop
               // coding-agents:gemini-cli
+              { title: 'Gemini CLI', href: '/docs/integrations/coding-agents/gemini-cli' },
               // coding-agents:github-copilot
               // coding-agents:google-antigravity
               // coding-agents:goose
