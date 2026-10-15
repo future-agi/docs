@@ -8,9 +8,10 @@ response), with the current environment.
     python3 replay.py cursor tests/fixtures/cursor/session.jsonl \
         --replace fixture-conv-0001=my-run-123 --sleep 0.2
 
-``--replace OLD=NEW`` rewrites every string value equal to OLD (use it to
-give each run a fresh session id). Prints one line per hook: the event and
-the stdout the host would receive.
+``--replace OLD=NEW`` rewrites every occurrence of OLD inside string values
+(use it to give each run a fresh session id; it also rewrites ids that carry
+a suffix, such as Cursor's ``<generation_id>-0-ab12``). Prints one line per
+hook: the event and the stdout the host would receive.
 """
 from __future__ import annotations
 
@@ -27,7 +28,9 @@ EMIT = Path(__file__).resolve().parent / "emit.py"
 
 def rewrite(value: Any, mapping: Dict[str, str]) -> Any:
     if isinstance(value, str):
-        return mapping.get(value, value)
+        for old, new in mapping.items():
+            value = value.replace(old, new)
+        return value
     if isinstance(value, list):
         return [rewrite(v, mapping) for v in value]
     if isinstance(value, dict):
@@ -50,7 +53,7 @@ def main() -> int:
         record = json.loads(line)
         event = record["event"]
         payload = rewrite(record["payload"], mapping)
-        argv = [sys.executable, str(EMIT), args.app] + ([event] if args.pass_event else [])
+        argv = [sys.executable, "-B", str(EMIT), args.app] + ([event] if args.pass_event else [])
         started = time.monotonic()
         result = subprocess.run(argv, input=json.dumps(payload), capture_output=True, text=True, timeout=30)
         took = (time.monotonic() - started) * 1000
