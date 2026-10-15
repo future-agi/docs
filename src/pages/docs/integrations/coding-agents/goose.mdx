@@ -1,13 +1,22 @@
 ---
 title: "Goose Application Session Tracing with Future AGI"
-description: "Export goose CLI sessions, model calls, and tool calls to Future AGI with goose's built-in OpenTelemetry exporter. Prompts and tool bodies stay off by default."
+description: "Export goose CLI sessions, model calls, and tool calls to Future AGI with goose's built-in OpenTelemetry exporter and a local OpenTelemetry Collector. Prompts, tool bodies, your user name, host name, and local paths stay off by default."
 ---
 
 ## About
 
-[goose](https://goose-docs.ai) is an open source AI agent for coding and other tasks, now maintained under the Agentic AI Foundation. It ships its own OpenTelemetry exporter, so you trace it by setting a few environment variables: no plugin, no wrapper, no code. Each goose reply (one prompt and everything the agent does to answer it) arrives in Future AGI as one trace with the agent turn, every model call with its token usage, and every tool call. Traces from the same goose session share a session id, so they group together in the Sessions view.
+[goose](https://goose-docs.ai) is an open source AI agent for coding and other tasks, now maintained under the Agentic AI Foundation. It ships its own OpenTelemetry exporter, so there is no plugin, wrapper, or code to add. goose sends its spans to a small OpenTelemetry Collector running next to it, which forwards them to Future AGI:
 
-By default goose does not export prompt text, model responses, tool arguments, or tool results. You can turn that on with one variable when you need it.
+```
+goose  ──OTLP/HTTP──▶  otelcol-contrib (localhost:4318)  ──▶  Future AGI
+                       removes your OS user name, host name,
+                       and goose's log-line span events,
+                       labels agent spans, adds your keys
+```
+
+Each goose reply (one prompt and everything the agent does to answer it) arrives in Future AGI as one trace with the agent turn, every model call with its token usage, and every tool call. Traces from the same goose session share a session id, so they group together in the Sessions view.
+
+By default goose does not export prompt text, model responses, tool arguments, or tool results. You can turn that on with one variable when you need it. goose always attaches your OS user name and machine host name to its spans and has no switch for them; the collector removes them.
 
 This is not the same as:
 
@@ -17,24 +26,45 @@ This is not the same as:
 
 | | |
 | --- | --- |
-| Tested with | goose CLI 1.54.0 (released 2026-10-08), macOS arm64, built-in developer extension, OpenAI-compatible and Anthropic providers |
+| Tested with | goose CLI 1.54.0 (released 2026-10-08), macOS arm64, built-in developer extension, OpenAI-compatible and Anthropic providers, OpenTelemetry Collector Contrib 0.162.0 |
 | goose docs used | [Environment variables: Observability](https://goose-docs.ai/docs/guides/environment-variables), [Configuration files](https://goose-docs.ai/docs/guides/config-files), read 2026-10-14 |
-| Requires | Nothing beyond goose. No plugin or package. |
+| Requires | [`otelcol-contrib`](https://github.com/open-telemetry/opentelemetry-collector-releases/releases) (the contrib build: the config uses the `transform` and `filter` processors). No goose plugin or package. |
 | Source | [examples/coding-agents/goose](https://github.com/future-agi/docs/tree/main/examples/coding-agents/goose) |
 
 ---
 
-## 1. Set environment variables
+## 1. Run the collector
 
-Get your API key and secret key from [API keys](/docs/admin-settings/api-keys), then export the standard OpenTelemetry variables goose reads at startup:
+Download the example collector config and start `otelcol-contrib` with your Future AGI keys (get them from [API keys](/docs/admin-settings/api-keys)):
 
 ```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
 export FI_API_KEY="your-futureagi-api-key"
 export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="goose-sessions"
+otelcol-contrib --config fi-docs/examples/coding-agents/goose/otel-collector.yaml
+```
 
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"
-export OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=${FI_API_KEY},X-Secret-Key=${FI_SECRET_KEY}"
-export OTEL_RESOURCE_ATTRIBUTES="project_name=goose-sessions,project_type=observe"
+It listens on `127.0.0.1:4318` (set `GOOSE_OTLP_LISTEN` to change it) and sends traces to `$FI_BASE_URL/tracer/v1/traces` (default `https://api.futureagi.com`; set `FI_BASE_URL` for a self-hosted Future AGI). Keep it running while you use goose, or run it as a service.
+
+| Collector step | Why |
+| --- | --- |
+| Adds `X-Api-Key`, `X-Secret-Key`, `project_name`, and `project_type=observe` | Authenticates the export and files the traces under your project, so no Future AGI credential is set in goose's environment. |
+| Deletes resource `user.name` and `host.name`, and span `session.user` and `session.host` | goose 1.54.0 always sets them from `$USER` and the machine's host name. See [Privacy](#privacy). |
+| Drops span events | goose attaches its own log lines to spans as events, for example `Loading config from: "/Users/<you>/.config/goose/config.yaml"`. They can hold local paths. |
+| Sets `gen_ai.span.kind=AGENT` on goose's `invoke_agent` spans | Future AGI does not map `invoke_agent` by itself, so `reply` and `reply_stream` would show as `unknown`. |
+| Drops logs and metrics | Future AGI accepts traces only. |
+
+It also sends uncompressed: the Future AGI collector answers gzip-encoded OTLP requests with HTTP 400.
+
+---
+
+## 2. Point goose at the collector
+
+In the shell where you start goose, export the standard OpenTelemetry variables goose reads at startup:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://127.0.0.1:4318/v1/traces"
 export OTEL_TRACES_EXPORTER="otlp"
 export OTEL_METRICS_EXPORTER="none"
 export OTEL_LOGS_EXPORTER="none"
@@ -42,23 +72,21 @@ export OTEL_LOGS_EXPORTER="none"
 
 | Variable | Why |
 | --- | --- |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Full Future AGI traces URL. goose uses a signal-specific endpoint as is; it only appends `/v1/traces` to the generic `OTEL_EXPORTER_OTLP_ENDPOINT`. |
-| `OTEL_EXPORTER_OTLP_HEADERS` | Authenticates the export. Percent-encode any comma or equals sign inside a value. |
-| `OTEL_RESOURCE_ATTRIBUTES` | `project_name` and `project_type` are both required. `project_name` is the Future AGI project the traces are filed under (created on first export); `project_type=observe` makes it a tracing project. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | The collector's traces URL. goose uses a signal-specific endpoint as is; it only appends `/v1/traces` to the generic `OTEL_EXPORTER_OTLP_ENDPOINT`. |
 | `OTEL_TRACES_EXPORTER=otlp` | Turns trace export on. |
-| `OTEL_METRICS_EXPORTER=none`, `OTEL_LOGS_EXPORTER=none` | Future AGI accepts traces only. goose can also export metrics and logs; switch them off so it does not retry against a route that does not exist. |
+| `OTEL_METRICS_EXPORTER=none`, `OTEL_LOGS_EXPORTER=none` | goose can also export metrics and logs; Future AGI does not ingest them. |
 
 goose sends OTLP/HTTP protobuf. It is built without gRPC, so `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` disables export instead of switching transport.
 
 A copy of these settings is in the docs repo at `examples/coding-agents/goose/futureagi-otel.env`.
 
 <Tip>
-goose's `config.yaml` also accepts `otel_exporter_otlp_endpoint` and `otel_exporter_otlp_timeout`, but not headers or resource attributes, and environment variables override it. Use the environment variables above so the credentials stay out of the config file.
+goose's `config.yaml` also accepts `otel_exporter_otlp_endpoint` and `otel_exporter_otlp_timeout`, and environment variables override it. The environment variables above are enough; no credential goes into goose's config.
 </Tip>
 
 ---
 
-## 2. Run goose
+## 3. Run goose
 
 Start goose from the same shell. Nothing else changes: your provider, model, and extensions stay as they are.
 
@@ -68,11 +96,11 @@ goose session
 goose run -t "List the files in this folder and read README.md"
 ```
 
-goose batches spans and flushes the last batch when the process exits, so a `goose run` appears in Future AGI a few seconds after it finishes. An interactive `goose session` exports in batches while it runs.
+goose batches spans and flushes the last batch when the process exits, and the collector forwards every 2 seconds, so a `goose run` appears in Future AGI a few seconds after it finishes. An interactive `goose session` exports in batches while it runs.
 
 ---
 
-## 3. See the trace
+## 4. See the trace
 
 Open **Observe** in Future AGI and pick the `goose-sessions` project. Each row in the trace list is one goose reply, named `reply`, with its latency and total tokens. A `goose run` with one prompt that lists files and reads a file looks like this:
 
@@ -94,16 +122,16 @@ The **Sessions** tab groups the replies of one goose session (same `session.id`)
 
 | goose span | `gen_ai.operation.name` | Shown in Future AGI as | Attributes |
 | --- | --- | --- | --- |
-| `reply` (root) | `invoke_agent` | span with type `unknown` | `session.id`, `gen_ai.agent.name`, total `gen_ai.usage.input_tokens` / `output_tokens` for the reply |
-| `reply_stream` | `invoke_agent` | span with type `unknown` | `session.id`, `gen_ai.conversation.id`, `gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.request.max_tokens`, token totals, `session.user`, `session.host`. Status `ERROR` when the model call fails. |
+| `reply` (root) | `invoke_agent` | Agent | `session.id`, `gen_ai.agent.name`, total `gen_ai.usage.input_tokens` / `output_tokens` for the reply |
+| `reply_stream` | `invoke_agent` | Agent | `session.id`, `gen_ai.conversation.id`, `gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.request.max_tokens`, token totals. Status `ERROR` when the model call fails. |
 | `stream_response_from_provider` | `chat` | LLM | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, cache read and cache creation tokens, `gen_ai.response.finish_reasons`, `gen_ai.response.id` |
 | `dispatch_tool_call` | `execute_tool` | Tool | `gen_ai.tool.name` (for example `shell`, `tree`, `edit`), `gen_ai.tool.call.id` |
 
-Future AGI has no agent type for goose's `invoke_agent` spans yet, so `reply` and `reply_stream` show as `unknown`. Their token counts are the totals for the reply; the trace list shows the reply total, not the sum of every span.
+The collector labels goose's `invoke_agent` spans as agent spans (`gen_ai.span.kind=AGENT`). Their token counts are the totals for the reply; the trace list shows the reply total, not the sum of every span.
 
-goose also attaches its own `tracing` events (for example `WAITING_LLM_STREAM_START`, `WAITING_TOOL_END: shell`) and code-location attributes (`code.file.path`, `thread.name`) to spans. They carry no prompt or tool content.
+goose also attaches code-location attributes (`code.file.path`, `thread.name`) to spans; they point into goose's own source, not your files. goose's log-line span events (for example `WAITING_TOOL_END: shell`) are dropped by the collector.
 
-Resource attributes on every span: `service.name=goose`, `service.version` (the goose version), `service.namespace`, `host.name`, `user.name`, plus the `project_name` and `project_type` you set.
+Resource attributes on every span: `service.name=goose`, `service.version` (the goose version), `service.namespace`, and the OpenTelemetry SDK name and version, plus `project_name` and `project_type` from the collector.
 
 **Session grouping**: every span carries `session.id`, goose's session id (for example `20261015_7`). One trace is one reply. A multi-turn session, interactive or resumed with `goose run -r`, produces one trace per reply, all with the same `session.id`.
 
@@ -127,7 +155,9 @@ With it set, goose adds `gen_ai.input.messages` and `gen_ai.output.messages` to 
 Tool arguments and results can contain file contents, shell output, environment values, and secrets. goose does not redact them. Turn content capture on only for projects where that is acceptable.
 </Warning>
 
-Even with content off, goose exports two identifying values: your OS user name (resource `user.name`, span `session.user`) and machine host name (resource `host.name`, span `session.host`). goose has no switch to turn them off. You can replace the resource values by adding `user.name=...,host.name=...` to `OTEL_RESOURCE_ATTRIBUTES`, and `session.user` follows the `USER` variable goose starts with. `session.host` on the `reply_stream` span always carries the real host name.
+Even with content off, goose 1.54.0 exports your OS user name (resource `user.name`, span `session.user`), your machine's host name (resource `host.name`, span `session.host`), and log-line span events that include local paths such as your goose config file. goose has no switch for any of them. The collector config removes all of them before anything reaches Future AGI, which is why this page sends goose through it instead of straight to Future AGI. If you point goose directly at Future AGI, those values are stored with every trace.
+
+To keep goose's log-line span events (for debugging goose itself), remove `filter/goose-log-events` from the `traces` pipeline in `otel-collector.yaml`. The user and host name stay removed.
 
 ---
 
@@ -152,14 +182,14 @@ Tool span timing covers goose's dispatch of the call. For long-running tools, th
 
 | Symptom | Fix |
 | --- | --- |
-| No traces | Check `OTEL_TRACES_EXPORTER=otlp` and that `OTEL_SDK_DISABLED` is not `true`. Start goose from the shell where you exported the variables. |
-| No traces, endpoint ends in `/v1/traces/v1/traces` | You set `OTEL_EXPORTER_OTLP_ENDPOINT` to the full `/tracer/v1/traces` URL, so goose appended `/v1/traces` again and the collector answers `404`. Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the full URL, or set `OTEL_EXPORTER_OTLP_ENDPOINT=https://api.futureagi.com/tracer`. |
-| No traces, keys set | The collector answers `401` when a key is missing or wrong. The header names are `X-Api-Key` and `X-Secret-Key`; check both are exported in the shell that starts goose. |
-| Traces land in the wrong project | `project_name` in `OTEL_RESOURCE_ATTRIBUTES` decides the project. |
-| Model and tool spans but no `reply` root | goose sends the root spans in its last batch, when it exits. If that export does not finish (process killed, or the collector slower than the export timeout), the trace has no root. Let goose exit normally, and raise `OTEL_EXPORTER_OTLP_TIMEOUT` (milliseconds, default `10000`) on slow networks. |
+| No traces | Check that the collector is running and that its log shows `Everything is ready`. Check `OTEL_TRACES_EXPORTER=otlp` and that `OTEL_SDK_DISABLED` is not `true`. Start goose from the shell where you exported the variables. |
+| No traces, endpoint ends in `/v1/traces/v1/traces` | You set `OTEL_EXPORTER_OTLP_ENDPOINT` to the full `/v1/traces` URL, so goose appended `/v1/traces` again and the collector answers `404`. Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the full URL, or set `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`. |
+| No traces, collector log shows `401` | `FI_API_KEY` or `FI_SECRET_KEY` is missing or wrong in the shell that started the collector. |
+| Traces land in the wrong project | `FI_PROJECT_NAME` in the collector's environment decides the project. Restart the collector after changing it. |
+| Model and tool spans but no `reply` root | goose sends the root spans in its last batch, when it exits. If that export does not finish (process killed, or the collector not running), the trace has no root. Let goose exit normally, and stop the collector gracefully (Ctrl-C) so it flushes its last batch. |
 | Export stopped after setting a protocol | goose has no gRPC transport. Leave `OTEL_EXPORTER_OTLP_PROTOCOL` unset or set it to `http/protobuf`. |
 
-To see what goose would send without a collector, set `OTEL_TRACES_EXPORTER=console` and run goose once.
+To see what goose sends before the collector filters it, set `OTEL_TRACES_EXPORTER=console` and run goose once.
 
 ---
 

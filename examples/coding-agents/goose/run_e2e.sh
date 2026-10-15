@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# One real goose session exported to Future AGI with the recipe's settings.
+# One real goose session exported to Future AGI with the recipe's settings:
+# goose -> local OpenTelemetry Collector (otel-collector.yaml) -> Future AGI.
 #
 # Needs: a goose CLI with a working provider (`goose configure` done), the
-# developer extension enabled, and FI_API_KEY / FI_SECRET_KEY in the env.
+# developer extension enabled, otelcol-contrib, and FI_API_KEY / FI_SECRET_KEY
+# in the env.
 # Optional: FI_PROJECT_NAME (default goose-sessions),
-#           FI_OTLP_TRACES_ENDPOINT (default https://api.futureagi.com/tracer/v1/traces),
+#           FI_BASE_URL (default https://api.futureagi.com),
 #           FI_CAPTURE_CONTENT=true to turn goose's content export on for this run,
-#           GOOSE_BIN (default goose).
+#           GOOSE_BIN (default goose), OTELCOL_BIN (default otelcol-contrib).
 #
 # Prints the marker string it put in the prompt. With content off, searching
 # the trace for that marker in Future AGI finds nothing.
@@ -15,28 +17,44 @@ set -euo pipefail
 : "${FI_API_KEY:?set FI_API_KEY}"
 : "${FI_SECRET_KEY:?set FI_SECRET_KEY}"
 GOOSE_BIN="${GOOSE_BIN:-goose}"
+OTELCOL_BIN="${OTELCOL_BIN:-otelcol-contrib}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # shellcheck source=futureagi-otel.env
 source "$ROOT/futureagi-otel.env"
-if [ -n "${FI_OTLP_TRACES_ENDPOINT:-}" ]; then
-  export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="$FI_OTLP_TRACES_ENDPOINT"
-fi
 if [ "${FI_CAPTURE_CONTENT:-}" = "true" ]; then
   export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
 else
   unset OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
 fi
 
-PROJ="$(mktemp -d)"
-trap 'rm -rf "$PROJ"' EXIT
-printf '# Demo project\n\nA throwaway folder for the goose tracing check.\n' > "$PROJ/README.md"
+WORK="$(mktemp -d)"
+COLLECTOR_PID=""
+cleanup() {
+  if [ -n "$COLLECTOR_PID" ]; then kill "$COLLECTOR_PID" 2>/dev/null || true; wait "$COLLECTOR_PID" 2>/dev/null || true; fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+"$OTELCOL_BIN" --config "file:$ROOT/otel-collector.yaml" > "$WORK/collector.log" 2>&1 &
+COLLECTOR_PID=$!
+for _ in $(seq 1 50); do
+  if grep -q "Everything is ready" "$WORK/collector.log"; then break; fi
+  if ! kill -0 "$COLLECTOR_PID" 2>/dev/null; then cat "$WORK/collector.log" >&2; exit 1; fi
+  sleep 0.2
+done
+
+mkdir -p "$WORK/project"
+printf '# Demo project\n\nA throwaway folder for the goose tracing check.\n' > "$WORK/project/README.md"
 MARKER="GOOSE-MARKER-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 
 echo "goose $("$GOOSE_BIN" --version | tr -d ' ')"
 echo "project: ${FI_PROJECT_NAME:-goose-sessions}"
 echo "content capture: ${OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT:-off}"
 echo "marker: $MARKER"
-(cd "$PROJ" && "$GOOSE_BIN" run -t "$MARKER List the files in this folder and read README.md, then summarize it in one sentence.")
-# goose flushes its batch span exporter when the process exits.
+(cd "$WORK/project" && "$GOOSE_BIN" run -t "$MARKER List the files in this folder and read README.md, then summarize it in one sentence.")
+# goose flushes its batch span exporter when the process exits; stopping the
+# collector (in cleanup) flushes its batch to Future AGI.
+kill "$COLLECTOR_PID"; wait "$COLLECTOR_PID" 2>/dev/null || true; COLLECTOR_PID=""
+if grep -qi "error" "$WORK/collector.log"; then grep -i "error" "$WORK/collector.log" | tail -5 >&2; fi
 echo "done: open Future AGI > Observe > ${FI_PROJECT_NAME:-goose-sessions} and look for a trace rooted at 'reply'."
