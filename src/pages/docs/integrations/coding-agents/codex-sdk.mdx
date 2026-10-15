@@ -1,0 +1,158 @@
+---
+title: "OpenAI Codex SDK tracing with Future AGI"
+description: "Trace @openai/codex-sdk threads in Future AGI with @traceai/codex-sdk: one trace per turn with shell commands, file changes, MCP tool calls, web searches, reasoning, agent messages, token usage, and errors. Prompt and tool content stay off by default."
+---
+
+## About
+
+The [OpenAI Codex SDK](https://developers.openai.com/codex/sdk) (`@openai/codex-sdk`) runs the Codex agent from your own TypeScript code: it starts the `codex` binary in a subprocess and streams the agent's events back to you. The `@traceai/codex-sdk` package turns that event stream into spans, so every `thread.run()` or `thread.runStreamed()` shows up in Future AGI as one trace:
+
+```
+codex.turn                     one run() / runStreamed(): session.id = thread id, model, tokens
+├── codex.reasoning            reasoning summary
+├── codex.agent_message        LLM: a message from the agent
+├── codex.command_execution    TOOL: shell command, exit code, status
+├── codex.file_change          TOOL: patch, number and kinds of changes
+├── codex.mcp_tool_call        TOOL: MCP server and tool, status
+├── codex.web_search           TOOL
+├── codex.todo_list            the agent's plan, items done
+└── codex.error                non-fatal error item, status ERROR
+```
+
+All turns of one Codex thread share a `session.id`, so Future AGI groups them into one session.
+
+This is not the same as:
+
+- **Codex application session tracing**: the `codex` CLI, TUI, and IDE extension exporting their own telemetry through the `[otel]` section of `~/.codex/config.toml`. That is a separate integration.
+- **OpenAI API tracing** (`@traceai/openai`). The SDK makes its model requests inside the `codex` subprocess, so an OpenAI client instrumentor in your app does not see them.
+
+| | |
+| --- | --- |
+| Tested with | `@openai/codex-sdk` 0.162.1 and its bundled `codex` 0.162.1 (macOS, Node 22) |
+| Supported SDK versions | 0.44.0 or later, below 1.0 |
+| Codex docs used | [Codex SDK](https://developers.openai.com/codex/sdk), the SDK's published type definitions (`dist/index.d.ts`), read 2026-10-14 |
+| Requires | Node 18 or later |
+| Source | [typescript/packages/traceai_codex_sdk](https://github.com/future-agi/traceAI/tree/main/typescript/packages/traceai_codex_sdk) in traceAI |
+
+## 1. Install
+
+```bash
+npm install @traceai/codex-sdk @traceai/fi-core @openai/codex-sdk
+```
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+```
+
+Codex itself authenticates as it normally does (`codex login`, or the `apiKey` option on `Codex`). For a self-hosted Future AGI, also set `FI_BASE_URL`; traces go to `$FI_BASE_URL/tracer/v1/traces`.
+
+## 3. Register a tracer provider and instrument the SDK
+
+```typescript
+import * as CodexSDK from "@openai/codex-sdk";
+import { register, ProjectType } from "@traceai/fi-core";
+import { CodexSDKInstrumentation, shutdown } from "@traceai/codex-sdk";
+
+const tracerProvider = register({
+  projectType: ProjectType.OBSERVE,
+  projectName: "codex-sdk-app",
+});
+
+new CodexSDKInstrumentation({ tracerProvider }).manuallyInstrument(CodexSDK);
+```
+
+Pass the module namespace (`import * as CodexSDK`), not the `Codex` class. The SDK is ESM-only, so the package patches its `Thread` class once for the whole process.
+
+To trace only some clients, wrap instances instead of the class:
+
+```typescript
+const instrumentation = new CodexSDKInstrumentation({ tracerProvider });
+const codex = instrumentation.wrapCodex(new CodexSDK.Codex()); // every thread it starts or resumes
+```
+
+## 4. Run the agent
+
+```typescript
+const codex = new CodexSDK.Codex();
+const thread = codex.startThread({ workingDirectory: "/path/to/repo", model: "gpt-5.6-terra" });
+
+const turn = await thread.run("List the files in this folder and read README.md");
+console.log(turn.finalResponse);
+
+// Streaming works the same way and is traced the same way.
+const { events } = await thread.runStreamed("Now summarize app.py");
+for await (const event of events) {
+  // the SDK's own event objects, unchanged
+}
+
+await shutdown(tracerProvider); // flush before a short script exits
+```
+
+Open **Observe** in Future AGI and select the project (`codex-sdk-app` above). Each turn is one trace named **codex.turn**; open it to see the commands and messages it ran. Both turns above share the thread's `session.id`, so the **Sessions** view shows them together.
+
+## What is captured
+
+| SDK event | Future AGI span | Fields |
+| --- | --- | --- |
+| `thread.started` | **codex.turn** (root, `AGENT`) | `session.id` and `gen_ai.conversation.id` = thread id, `codex.thread.resumed` |
+| `turn.completed` | **codex.turn** end | token usage (see below), status `OK` |
+| `turn.failed`, `error` | **codex.turn** end, status `ERROR` | error message in `codex.error.message` |
+| `command_execution` item | **codex.command_execution** (`TOOL`) | exit code, output length, status; `failed` marks the span `ERROR` |
+| `file_change` item | **codex.file_change** (`TOOL`) | number of changes, kinds (`add`, `delete`, `update`), status |
+| `mcp_tool_call` item | **codex.mcp_tool_call** (`TOOL`) | `tool.name` = MCP tool, `codex.mcp.server`, status |
+| `web_search` item | **codex.web_search** (`TOOL`) | |
+| `agent_message` item | **codex.agent_message** (`LLM`) | model, text length |
+| `reasoning` item | **codex.reasoning** | text length |
+| `todo_list` item | **codex.todo_list** | item count, completed count (updated until the turn ends) |
+| `error` item | **codex.error**, status `ERROR` | Codex's error message |
+
+The turn span also records the thread options you passed: `gen_ai.request.model`, `codex.sandbox_mode`, `codex.approval_policy`, `codex.model_reasoning_effort`, `codex.web_search_mode`. If your code stops reading `runStreamed()` events before `turn.completed`, or aborts with `TurnOptions.signal`, the turn and any open items end as `ERROR` with `codex.cancelled=true`. If the `codex` binary exits with an error, the SDK's error is recorded on the turn and then thrown to your code unchanged.
+
+### Token usage
+
+Tokens are recorded on the **codex.turn** span only: `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens`, `cache_read_tokens`, `cache_write_tokens`, and `output_tokens.reasoning`.
+
+The SDK's `turn.completed` usage is the thread's running total, not the turn's own spend: in our test a thread's second turn reported 39,318 input tokens after the first reported 19,378. So each turn span holds the difference from the last total seen in your process for that thread, and Future AGI's per-trace and per-session sums stay correct. The running totals are on `codex.cumulative.*`.
+
+When a thread is resumed with `resumeThread(id)` in a process that has not seen it before (after a restart, or on another worker), the first turn has no earlier total to subtract. It records no `gen_ai.usage.*` and sets `codex.usage.baseline_unknown=true`; its later turns record their difference. Keep a thread's turns in one process for exact per-turn tokens.
+
+## What is not available
+
+- **Per-request model spans.** The SDK reports agent messages, not individual model requests, so there is no span per Responses API call and no per-request token counts.
+- **Model chosen in `config.toml`.** The model is recorded only when you pass `model` in `startThread()` or `resumeThread()`; the SDK does not report which model the binary used.
+- **Cost.** Codex does not report cost, and the package does not compute one.
+- **Exact durations.** Span times are when each event reached your process. `agent_message` and `reasoning` arrive only when complete, so their spans start at the previous event. The binary reports a command's start and end close together, so command spans are short.
+- **Approval decisions and subagent internals.** The SDK event stream does not carry them.
+
+## Privacy
+
+By default only structure and metadata are exported: thread id, item ids and types, statuses, exit codes, counts, lengths, tool and MCP server names, model, and token counts.
+
+**Not exported by default:** the prompt, shell commands, command output, file paths in patches, MCP arguments and results, web search queries, reasoning text, agent messages, to-do text, and an MCP tool's error text.
+
+To include content, opt in when you create the instrumentation:
+
+```typescript
+new CodexSDKInstrumentation({
+  tracerProvider,
+  traceConfig: { hideInputs: false, hideOutputs: false },
+}).manuallyInstrument(CodexSDK);
+```
+
+or set `FI_HIDE_INPUTS=false` and `FI_HIDE_OUTPUTS=false`. With inputs visible, the turn's `input.value` is the prompt and tool spans carry the command, file changes, MCP arguments, or search query. With outputs visible, the turn's `output.value` is the final agent message and items carry their output. Only the exact value `false` turns capture on: `1`, `yes`, or `true` keep content hidden.
+
+## Troubleshooting
+
+**No trace appears.**
+1. `register()` needs a `projectName` (or `FI_PROJECT_NAME`); the collector drops spans without one.
+2. Pass the module namespace to `manuallyInstrument()`: `import * as CodexSDK from "@openai/codex-sdk"`. It returns `false` and logs a warning when it finds no `Thread` class.
+3. Call `await shutdown(tracerProvider)` before a short script exits, so the last spans are sent.
+
+**A turn has no token counts.** Look for `codex.usage.baseline_unknown=true` on the turn: the thread was resumed in a process that had not seen it. `codex.cumulative.*` still has the thread's totals.
+
+**The turn is marked cancelled.** Your code stopped iterating `runStreamed()` events before `turn.completed`, or aborted the turn. Read the stream to the end (or let `run()` finish) to record the turn as completed.
+
+**No model on the turn.** Pass `model` in the thread options.
