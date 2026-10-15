@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.helpers import Receiver, all_spans, attrs, base_env, config, latest, run_cli
 
@@ -181,8 +184,90 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "")
             module.respond = lambda event, payload: None
             self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "{}")
+            module.respond = lambda event, payload: 1 / 0
+            self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "",
+                             "a failing respond() prints nothing, never a default answer")
         finally:
             del sys.modules["adapters.fake_quiet"]
+
+    def test_children_never_start_before_the_exported_root(self):
+        adapter = scripted({
+            "tool1": [SpanEvent(END, TOOL, "S", key="c1", turn_id="g", name="Read", duration_ms=10)],
+            "tool2": [SpanEvent(END, TOOL, "S", key="c2", turn_id="g", name="Shell", duration_ms=5000)],
+            "stop": [SpanEvent(END, TURN, "S", key="g")],
+        })
+        spans = self.run_hooks(adapter, [(1000, "tool1"), (2000, "tool2"), (2100, "stop")])
+        root_start = int(latest(spans, emit.span_id("fake", "S", SESSION, ""))["startTimeUnixNano"])
+        self.assertTrue(all(int(s["startTimeUnixNano"]) >= root_start for s in spans))
+
+    def test_root_model_comes_from_session_turn_and_llm_events_only(self):
+        adapter = scripted({
+            "t": [SpanEvent(START, TURN, "S", key="g", model="turn-model")],
+            "tool": [SpanEvent(END, TOOL, "S", key="c", turn_id="g", name="Read", model="tool-model")],
+            "stop": [SpanEvent(END, TURN, "S", key="g")],
+        })
+        spans = self.run_hooks(adapter, [(0, "t"), (10, "tool"), (20, "stop")])
+        root = latest(spans, emit.span_id("fake", "S", SESSION, ""))
+        self.assertEqual(attrs(root)["llm.model_name"], "turn-model")
+
+    def test_tool_without_turn_id_is_marked_as_attached_to_open_turn(self):
+        adapter = scripted({
+            "t": [SpanEvent(START, TURN, "S", key="g1")],
+            "tool": [SpanEvent(END, TOOL, "S", key="c", name="Shell")],
+            "tool-known": [SpanEvent(END, TOOL, "S", key="d", turn_id="g1", name="Read")],
+        })
+        spans = self.run_hooks(adapter, [(0, "t"), (10, "tool"), (20, "tool-known")])
+        shell = [s for s in spans if s["name"] == "Shell"][0]
+        self.assertEqual(shell["parentSpanId"], emit.span_id("fake", "S", TURN, "g1"))
+        self.assertTrue(attrs(shell)["coding_agent.turn.inferred"])
+        read = [s for s in spans if s["name"] == "Read"][0]
+        self.assertNotIn("coding_agent.turn.inferred", attrs(read))
+
+    def test_state_keeps_no_content_of_completed_turns_and_ignores_duplicate_ends(self):
+        cfg = config("fake", self.tmp.name, FI_HOOK_CAPTURE_CONTENT="1")
+        adapter = scripted({
+            "t": [SpanEvent(START, TURN, "S", key="g", input="PROMPT_IN_STATE")],
+            "reply": [SpanEvent(UPDATE, TURN, "S", key="g", output="REPLY_IN_STATE")],
+            "stop": [SpanEvent(END, TURN, "S", key="g")],
+        })
+        self.run_hooks(adapter, [(0, "t"), (10, "reply"), (20, "stop")], cfg=cfg)
+        state_text = "".join(p.read_text() for p in cfg.state_dir.glob("*.json"))
+        self.assertNotIn("PROMPT_IN_STATE", state_text)
+        self.assertNotIn("REPLY_IN_STATE", state_text)
+        self.assertEqual(self.run_hooks(adapter, [(30, "stop")], cfg=cfg), [], "duplicate end is ignored")
+
+    def test_opted_in_content_drops_the_user_name_from_home_paths(self):
+        text = emit.render_content({"file_path": "/Users/alice/p/a.md", "cwd": "/home/bob/x",
+                                    "win": "C:\\Users\\carol\\y"}, 0)
+        for name in ("alice", "bob", "carol"):
+            self.assertNotIn(name, text)
+        self.assertIn("/Users/<user>/p/a.md", text)
+
+    def test_home_path_scrub_handles_spaced_and_tilde_names(self):
+        cases = {
+            "C:\\Users\\John Smith\\x": "C:\\Users\\<user>\\x",
+            "/Users/Hank Smith/notes.txt": "/Users/<user>/notes.txt",
+            "see /Users/alice and /tmp": "see /Users/<user> and /tmp",
+            "~bob/x and ~/y": "~<user>/x and ~/y",
+        }
+        for raw, want in cases.items():
+            self.assertEqual(emit.render_content(raw, 0), want)
+            self.assertEqual(json.loads(emit.render_content({"p": raw}, 0))["p"], want)
+        with mock.patch.dict(os.environ, {"HOME": "/Users/Jo Ann"}):
+            text = emit.render_content({"cwd": "/Users/Jo Ann", "cmd": "cd /Users/Jo Ann && ls"}, 0)
+        self.assertNotIn("Jo Ann", text)
+        self.assertNotIn("Ann", text)
+        with mock.patch.dict(os.environ, {"HOME": "/Users/al"}):
+            self.assertEqual(emit.render_content("/Users/alice/x", 0), "/Users/<user>/x")
+
+    def test_default_timeout_is_short_when_the_send_is_inline(self):
+        fork = os.fork
+        try:
+            del os.fork
+            self.assertEqual(emit.Config.from_env("fake", {}).timeout, 3.0)
+        finally:
+            os.fork = fork
+        self.assertEqual(emit.Config.from_env("fake", {}).timeout, 10.0)
 
     def test_end_without_start_uses_vendor_duration(self):
         adapter = scripted({"post": [SpanEvent(END, TOOL, "S", key="c", name="Read", duration_ms=250)]})
@@ -360,7 +445,22 @@ class CliTest(unittest.TestCase):
             result = run_cli(["cursor", "beforeSubmitPrompt"], stdin, env)
             self.assertEqual((result.returncode, result.stdout.strip()), (0, '{"continue": true}'))
         result = run_cli(["no-such-app"], "{}", env)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "{}"))
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+        self.assertEqual(self.rx.requests, [])
+
+    def test_adapter_that_fails_to_load_prints_nothing_even_on_a_permission_hook(self):
+        # A broken install (adapter file missing) must not answer "{}": Cursor
+        # blocks a permission hook on that. No output is a failed hook (fail-open).
+        broken = Path(self.tmp.name, "broken")
+        shutil.copytree(Path(emit.__file__).parent, broken,
+                        ignore=shutil.ignore_patterns("tests", "__pycache__", "cursor.py"))
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": self.tmp.name,
+               **base_env(self.tmp.name, endpoint=self.rx.url + "/v1/traces")}
+        for event in ("preToolUse", "beforeSubmitPrompt", "stop"):
+            result = subprocess.run([sys.executable, "-B", str(broken / "emit.py"), "cursor", event],
+                                    input=json.dumps(self.payload()), capture_output=True, text=True,
+                                    env=env, timeout=20)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""), event)
         self.assertEqual(self.rx.requests, [])
 
     def test_missing_credentials_is_a_noop(self):
