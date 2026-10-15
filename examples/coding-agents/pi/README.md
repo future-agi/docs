@@ -23,6 +23,11 @@ export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=my-pi-project
 pi
 ```
 
-Content (prompts, answers, tool arguments and results, session names) is off by
-default. Set `FI_CAPTURE_CONTENT=true` to export it, capped at 4 KiB per field
-with common key patterns redacted.
+Content (prompts, answers, tool arguments and results, error messages, session
+names, the working directory) is off by default. Set `FI_CAPTURE_CONTENT=true`
+to export it, capped at 4096 characters per field with common key patterns
+redacted.
+
+The extension sends one export request at a time. Pi waits for it when it
+quits and on `/new`, `/resume`, `/fork` and `/reload`; the extension gives up
+after `FI_OTLP_TIMEOUT_MS` or 3 seconds, whichever is shorter.

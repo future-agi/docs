@@ -107,7 +107,7 @@ Pi uses its own model configuration. Any provider Pi supports works, including O
 
 <Step title="Open the trace">
 
-In Future AGI, open **Observe**, select `my-pi-project`, and open the newest `pi.session` trace. A finished turn is sent about two seconds after it ends, and the last turn and the `pi.prompt` span are sent when the prompt's run settles. Open spans are closed when Pi exits.
+In Future AGI, open **Observe**, select `my-pi-project`, and open the newest `pi.session` trace. A finished turn is sent about two seconds after it ends. Each export also carries a provisional copy of the running `pi.prompt` span and the current `pi.turn` (same span ids, marked `pi.incomplete=true`), so the tree stays complete while Pi works. The final copies replace them when the prompt's run settles. Spans still open when Pi exits are closed and sent then.
 
 </Step>
 
@@ -122,19 +122,19 @@ In Future AGI, open **Observe**, select `my-pi-project`, and open the newest `pi
 | `FI_PROJECT_NAME` | none (required) | Project the traces are filed under (`project_name` resource attribute). |
 | `FI_BASE_URL` | `https://api.futureagi.com` | Collector base URL. `/tracer/v1/traces` is appended. Set this for a self-hosted Future AGI. |
 | `FI_OTLP_ENDPOINT` | `$FI_BASE_URL/tracer/v1/traces` | Full OTLP/HTTP traces URL. Overrides `FI_BASE_URL`. |
-| `FI_CAPTURE_CONTENT` | `false` | `true` exports prompt, answer, tool argument, tool result, and session name text. |
-| `FI_OTLP_TIMEOUT_MS` | `10000` | Timeout for each export request. |
+| `FI_CAPTURE_CONTENT` | `false` | `true` exports prompt, answer, tool argument, tool result, provider error message, session name, and working directory text. |
+| `FI_OTLP_TIMEOUT_MS` | `10000` | Timeout for each export request. When Pi quits or switches sessions, the extension waits at most this long or 3 seconds, whichever is shorter. |
 | `FI_OTLP_DEBUG` | `false` | `true` prints export failures to stderr. Failures are silent otherwise. |
 
-The extension posts OTLP/HTTP JSON with traces only. It subscribes to notification events and returns nothing from them, so it never blocks or rewrites a tool call, a message, or a provider request. It does not use `before_provider_request`, `before_provider_headers`, `tool_call`, or `tool_result`, and it never reads or writes Pi's session files. If an export fails, its spans are retried once with the next export and then dropped. Pi keeps working either way.
+The extension posts OTLP/HTTP JSON with traces only, one request at a time. It subscribes to `session_start`, `session_info_changed`, `session_shutdown`, `agent_start`, `agent_end`, `agent_settled`, `turn_start`, `message_end`, `tool_execution_start`, and `tool_execution_end`. Of these, only `message_end` is actionable in Pi (a handler may return a replacement message). The extension returns nothing from any handler, so Pi keeps every message as it is. It does not subscribe to `turn_end`, an actionable boundary that makes Pi rebuild its session view after every turn, nor to `before_provider_request`, `before_provider_headers`, `tool_call`, or `tool_result`, so it never blocks or rewrites a tool call or a provider request. It never reads or writes Pi's session files. If an export fails, its spans are retried once with a later export and then dropped. Pi keeps working either way.
 
 ## What is captured
 
 | Span | Pi events | Attributes |
 | --- | --- | --- |
 | `pi.session` | `session_start`, `session_info_changed`, `session_shutdown` | `session.id`, `gen_ai.conversation.id`, `gen_ai.agent.name=pi`, `pi.version`, `pi.mode`, `pi.session.start_reason`, `pi.session.parent` (sessions with a parent, such as forks), prompt, turn, model call, and tool counts, summed `pi.usage.input_tokens`, `pi.usage.output_tokens`, `pi.usage.cost`, `error.type` |
-| `pi.prompt` | `agent_start`, `message_end` (user), `agent_end`, `agent_settled` | `pi.prompt.index`, `pi.prompt.attempts` (automatic retries inside the run), `pi.prompt.turns`, `pi.prompt.bytes`, `pi.prompt.aborted` |
-| `pi.turn` | `turn_start`, `turn_end` | `pi.turn.index` (Pi's index), `pi.turn.seq` (unique within the Pi process), `pi.turn.outcome` |
+| `pi.prompt` | `agent_start`, `message_end` (user), `agent_end`, `agent_settled` | `pi.prompt.index`, `pi.prompt.attempts` (counts automatic retries, compaction recovery, and queued follow-up messages within one run), `pi.prompt.turns`, `pi.prompt.bytes` (every user message in the run), `pi.prompt.aborted` (you cancelled the run) |
+| `pi.turn` | `turn_start`, `message_end` (assistant); closed by the next `turn_start` or by `agent_end` | `pi.turn.index` (Pi's index), `pi.turn.seq` (unique within one Pi process or extension reload), `pi.turn.outcome` (`completed`, `aborted`, or `error`, from the assistant message's stop reason, as Pi computes it) |
 | `chat <model>` | `message_end` (assistant) | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.response.id`, `gen_ai.usage.input_tokens` (includes cache reads and writes), `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `gen_ai.response.finish_reasons` (Pi stop reason), `pi.api`, `pi.usage.reasoning_tokens`, `pi.usage.cost`, `pi.thinking_level`, `pi.llm.tool_calls`, `pi.response.bytes` |
 | `execute_tool <tool>` | `tool_execution_start`, `tool_execution_end` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `pi.tool.parent_call.id` (tools called by another tool), `pi.tool.input.bytes`, `pi.tool.output.bytes`; duration from Pi's `durationMs` |
 
@@ -142,9 +142,11 @@ Model call timing comes from the assistant message (`timestamp` and `durationMs`
 
 Errors set the span status to `ERROR` with the message `error details omitted by default`:
 
-- a model call that ends with stop reason `error` (`error.type=ProviderError`) or `aborted` (`error.type=Aborted`), and the turn and prompt it belongs to;
+- a model call that ends with stop reason `error` (`error.type=ProviderError`), its turn (`error.type=TurnError`), and its prompt (`error.type=ProviderError`). If Pi retries and the retry succeeds, the prompt is `OK`;
 - a tool execution that Pi reports with `isError` (`error.type=ToolError`). The prompt stays `OK` if the model recovers;
-- the `pi.session` span, when any prompt in the current Pi process failed (`error.type=PromptError`).
+- the `pi.session` span, when any prompt failed in the current Pi process or since the last `/reload` (`error.type=PromptError`).
+
+Cancelling a run (Escape, or `/new`, `/resume`, or `/fork` while Pi is working) is not an error. The prompt gets `pi.prompt.aborted=true` and stays `OK`. The model call and turn that were cut off get `pi.incomplete=true` and stay `OK`, and the model call keeps the finish reason `aborted`. A tool that was running or queued when you cancelled is reported by Pi itself as failed (`isError`), so its span is `ERROR`.
 
 If Pi exits in the middle of a turn, the open spans are closed and marked `pi.incomplete=true`. They are not marked as errors.
 
@@ -156,7 +158,7 @@ If Pi exits in the middle of a turn, the open spans are closed and marked `pi.in
 - **Cost for custom models.** `pi.usage.cost` comes from Pi's pricing. Models added in `models.json` without prices report `0` and get no cost attribute.
 - **Tokens in the trace list.** The trace list's Tokens column reads the root span. Tokens are on each `chat` span and are summed on the session as `pi.usage.*`.
 - **Hard kills.** `SIGTERM` and `SIGHUP` let Pi shut the session down, so the extension sends its last spans. A `SIGKILL` loses whatever was not sent yet.
-- **Session counters across processes.** Continuing a session in a new Pi process adds its prompts to the same trace. The counters on `pi.session` describe the latest process.
+- **Session counters across processes.** Continuing a session in a new Pi process adds its prompts to the same trace, and `/reload` replaces the extension inside one process. The counters and summed usage on `pi.session` (and, with content capture on, its first prompt and latest answer) describe the latest Pi process or extension reload.
 - **Oh My Pi.** Loading this file in `omp` is not supported. Use the Oh My Pi page.
 
 ## Privacy
@@ -166,10 +168,10 @@ By default the extension exports ids, model and provider names, token counts, co
 - your prompt text or the assistant's answers;
 - tool arguments or tool results;
 - the session name you set with `/name` or `--name`;
-- error messages (only the error type);
+- error messages: neither a failed tool's error text nor the provider's error message, only the error type;
 - local paths: the working directory (`pi.cwd`) is not exported, because it usually contains your OS user name.
 
-To export content, set `FI_CAPTURE_CONTENT=true` before starting Pi. Prompts and answers go to `input.value` and `output.value` on the `pi.prompt` span, the first prompt and latest answer also go on `pi.session` (so they show in the trace list), answer text goes on each `chat` span, tool arguments and results go on the tool span, the session name goes to `pi.session.name`, and the working directory goes to `pi.cwd` on the session span. Each field is capped at 4 KiB, and strings that look like `sk-...` keys, `Bearer` tokens, or `api_key=...` values are replaced with `[REDACTED]`.
+To export content, set `FI_CAPTURE_CONTENT=true` before starting Pi. The message that started each run and the run's final answer go to `input.value` and `output.value` on the `pi.prompt` span. The first prompt and latest answer of the current Pi process or extension reload also go on `pi.session` (so they show in the trace list). Answer text goes on each `chat` span. Tool arguments and results go on the tool span, and a failed tool's result is its error text. A provider error message becomes the status message of the failed `chat` span. The session name goes to `pi.session.name`, and the working directory goes to `pi.cwd` on the session span. Tool arguments and results can contain local paths too. Each field is capped at 4096 characters (tool arguments cut at the cap are labeled `text/plain` instead of `application/json`), and strings that look like `sk-...` keys, `Bearer` tokens, or `api_key=...` values are replaced with `[REDACTED]`.
 
 <Warning>
 Tool arguments and results can contain file contents, shell output, and secrets. Pattern redaction is not a data-loss-prevention control. Turn content capture on only for projects whose data you are allowed to store in Future AGI.
@@ -189,8 +191,8 @@ Check that `FI_API_KEY`, `FI_SECRET_KEY`, and `FI_PROJECT_NAME` are set in the s
 When stdin is not a terminal, `pi` reads it until it closes and adds it to the prompt. A script that leaves stdin open waits before the session starts. Run it as `pi -p "..." < /dev/null`. This is Pi CLI behavior, not the extension.
 </Accordion>
 
-<Accordion title="Pi takes longer to exit">
-On exit the extension waits for its last export. If the collector does not answer, exit can take up to three times `FI_OTLP_TIMEOUT_MS` (an in-flight export, the final export, and one retry). Check the endpoint, or lower `FI_OTLP_TIMEOUT_MS`.
+<Accordion title="Pi takes longer to exit or to switch sessions">
+Pi waits for the extension's last export when it quits and also on `/new`, `/resume`, `/fork`, and `/reload`. The extension sends one request at a time and stops waiting after `FI_OTLP_TIMEOUT_MS` or 3 seconds, whichever is shorter. It then cancels the request and drops the spans that were not sent, so an unreachable collector delays each of these by at most 3 seconds. Check the endpoint with `FI_OTLP_DEBUG=true`, or lower `FI_OTLP_TIMEOUT_MS`.
 </Accordion>
 
 <Accordion title="Every span appears twice">
@@ -198,11 +200,11 @@ The extension is installed both in `~/.pi/agent/extensions/` and in the project'
 </Accordion>
 
 <Accordion title="A turn appears at the top level of the trace">
-Its `pi.prompt` span did not arrive, usually because the export that carried it failed twice (see `FI_OTLP_DEBUG`). The turn keeps its parent id, so the tree is complete again if the prompt span arrives later.
+Its `pi.prompt` span did not arrive. Every export carries the prompt span, provisional while the prompt runs, so this means the exports failed (see `FI_OTLP_DEBUG`), or Pi was killed with `SIGKILL` before its first export. The turn keeps its parent id, so the tree is complete again if the prompt span arrives later.
 </Accordion>
 
 <Accordion title="Two turns have the same pi.turn.index">
-Pi can reuse a turn index when it retries a model request. Use `pi.turn.seq`, which is unique within a Pi process, to tell them apart.
+Pi can reuse a turn index when it retries a model request. Use `pi.turn.seq`, which is unique within one Pi process or extension reload, to tell them apart.
 </Accordion>
 
 <Accordion title="Token counts look higher than the provider's input count">

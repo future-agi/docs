@@ -13,11 +13,21 @@
 //
 // Default mode exports metadata only: ids, model and provider ids, token
 // counts, cost, timings, stop reasons, tool names and byte sizes. Prompt text,
-// assistant text, tool arguments, tool results, session names and error
-// messages are dropped unless FI_CAPTURE_CONTENT=true. The extension only
-// observes notification events: it never blocks or rewrites a tool call,
-// never touches provider requests or headers, and never reads or writes
-// Pi's session files.
+// assistant text, tool arguments, tool results (including a failed tool's
+// error text), provider error messages, session names and the working
+// directory are dropped unless FI_CAPTURE_CONTENT=true.
+//
+// The extension only observes. It subscribes to session, agent, turn_start,
+// message_end and tool execution events. message_end is the one actionable
+// hook among them (a handler may return a replacement message); this
+// extension returns nothing from it, so Pi keeps the original. It does not
+// subscribe to turn_end (an actionable boundary that makes Pi rebuild the
+// session projection every turn), tool_call, tool_result or the provider
+// request hooks, and it never reads or writes Pi's session files.
+//
+// Exports: at most one request is in flight. Pi waits for session_shutdown on
+// quit, /new, /resume, /fork and /reload, so the extension stops waiting
+// after min(FI_OTLP_TIMEOUT_MS, 3000) ms there and drops what is not sent.
 //
 // Environment:
 //   FI_API_KEY, FI_SECRET_KEY, FI_PROJECT_NAME   required; the extension is inert without them
@@ -34,9 +44,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { createHash, randomBytes } from "node:crypto"
 
 const SCOPE = { name: "futureagi.pi", version: "1.0.0" }
+// Content fields are cut at this many UTF-16 code units (JavaScript string length).
 const CONTENT_LIMIT = 4096
 const OMITTED = "error details omitted by default"
 const TURN_FLUSH_DELAY_MS = 2000
+// Pi awaits session_shutdown before it quits or switches sessions.
+const SHUTDOWN_BUDGET_MS = 3000
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/sk-[A-Za-z0-9_-]{12,}/g, "[REDACTED]"],
   [/(bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1[REDACTED]"],
@@ -57,6 +70,7 @@ type Span = {
   attributes: Array<{ key: string; value: Record<string, unknown> }>
   status: { code: number; message?: string }
 }
+type PostResult = "ok" | "failed" | "timeout"
 
 export type TracerDeps = { env?: Env; fetch?: typeof fetch; now?: () => number; version?: () => Promise<string | undefined> }
 
@@ -81,11 +95,17 @@ const byteLength = (value: unknown) => {
   return Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value) ?? "", "utf8")
 }
 
-function bounded(value: unknown): string {
+// Redacts key-like strings, then cuts to CONTENT_LIMIT characters without
+// splitting a surrogate pair.
+function clip(value: unknown): { text: string; truncated: boolean } {
   let text = typeof value === "string" ? value : JSON.stringify(value) ?? ""
   for (const [pattern, replacement] of SECRET_PATTERNS) text = text.replace(pattern, replacement)
-  return text.length > CONTENT_LIMIT ? text.slice(0, CONTENT_LIMIT) : text
+  if (text.length <= CONTENT_LIMIT) return { text, truncated: false }
+  let cut = text.slice(0, CONTENT_LIMIT)
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1)
+  return { text: cut, truncated: true }
 }
+const bounded = (value: unknown) => clip(value).text
 
 function otlpValue(value: AttrValue): Record<string, unknown> {
   if (Array.isArray(value)) return { arrayValue: { values: value.map((v) => ({ stringValue: String(v) })) } }
@@ -111,9 +131,20 @@ type RunState = {
   prompt?: string
   output?: string
   errorType?: string
+  aborted?: boolean
 }
 
-type TurnState = { spanId: string; index: number; seq: number; start: number; runSpanId: string }
+type TurnState = {
+  spanId: string
+  index: number
+  seq: number
+  start: number
+  runSpanId: string
+  runIndex: number
+  // From the stop reason of the turn's assistant message, as Pi computes it.
+  outcome?: "completed" | "aborted" | "error"
+  last?: number
+}
 
 type ToolState = {
   spanId: string
@@ -124,6 +155,7 @@ type ToolState = {
   start: number
   inputBytes: number
   input?: string
+  inputIsJson: boolean
 }
 
 async function piVersion(): Promise<string | undefined> {
@@ -148,6 +180,7 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
   const capture = truthy(env.FI_CAPTURE_CONTENT)
   const debug = truthy(env.FI_OTLP_DEBUG)
   const timeoutMs = Number(env.FI_OTLP_TIMEOUT_MS ?? "10000") || 10000
+  const shutdownBudgetMs = Math.min(timeoutMs, SHUTDOWN_BUDGET_MS)
   const endpoint =
     env.FI_OTLP_ENDPOINT || `${(env.FI_BASE_URL || "https://api.futureagi.com").replace(/\/+$/, "")}/tracer/v1/traces`
   const log = (message: string) => {
@@ -155,7 +188,7 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
   }
 
   // One extension instance serves one Pi session: Pi rebuilds the extension
-  // runtime on /new, /resume, /fork and /reload.
+  // runtime on /new, /resume, /fork and /reload, so counters restart there.
   let sessionId: string | undefined
   let traceId = ""
   let rootSpanId = ""
@@ -177,10 +210,16 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
   let turn: TurnState | undefined
   const tools = new Map<string, ToolState>()
   let buffer: Span[] = []
-  let pending: Promise<void> = Promise.resolve()
   const retried = new WeakSet<Span>()
   let shutDown = false
   let flushTimer: ReturnType<typeof setTimeout> | undefined
+  // Export state: at most one request in flight. A flush requested meanwhile
+  // only sets `dirty`; one follow-up export runs when the request finishes.
+  let inFlight: Promise<void> | undefined
+  let dirty = false
+  let lastResult: PostResult = "ok"
+  // Aborted at the shutdown deadline; cancels whatever request is in flight.
+  const stop = new AbortController()
 
   const common = (): Attrs => ({ "session.id": sessionId, "gen_ai.conversation.id": sessionId })
 
@@ -221,111 +260,15 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     }
   }
 
-  async function post(spans: Span[]): Promise<boolean> {
-    const body = {
-      resourceSpans: [
-        {
-          resource: {
-            attributes: toAttributes({
-              "service.name": "pi",
-              "service.version": serviceVersion,
-              project_name: projectName,
-              project_type: "observe",
-            }),
-          },
-          scopeSpans: [{ scope: SCOPE, spans }],
-        },
-      ],
-    }
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
-    try {
-      const response = await doFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Api-Key": apiKey!, "X-Secret-Key": secretKey! },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
-      if (!response.ok) {
-        log(`collector returned HTTP ${response.status}`)
-        return false
-      }
-      return true
-    } catch (error) {
-      // Never echo URLs, headers or payloads: they can hold credentials or content.
-      log(`export failed: ${(error as Error)?.name ?? "Error"}`)
-      return false
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-
-  // Sends the buffered spans plus a fresh copy of the session span (same id and
-  // start time, so the latest copy wins). A failed batch is retried once with
-  // the next flush; errors never reach Pi.
-  function flush(): Promise<void> {
-    if (flushTimer) clearTimeout(flushTimer)
-    flushTimer = undefined
-    // A session with no prompt (Pi opened and closed) exports nothing.
-    if (!sessionId || runCount === 0 || buffer.length === 0) return pending
-    const spans = buffer
-    const root = rootSpan(now())
-    buffer = []
-    pending = pending.then(async () => {
-      const ok = await post([...spans, root])
-      if (!ok) {
-        const again = spans.filter((s) => !retried.has(s))
-        again.forEach((s) => retried.add(s))
-        buffer.unshift(...again)
-      }
-    })
-    return pending
-  }
-
-  function startRun() {
-    runCount += 1
-    run = { spanId: newSpanId(), index: runCount, start: now(), attempts: 1, turns: 0, promptBytes: 0 }
-  }
-
-  function closeTurn(end: number, outcome?: string, incomplete = false) {
-    if (!turn) return
-    const t = turn
-    turn = undefined
-    const failed = outcome === "error" || outcome === "aborted"
-    push({
-      spanId: t.spanId,
-      parentSpanId: t.runSpanId,
-      name: "pi.turn",
-      startTimeUnixNano: nanos(t.start),
-      endTimeUnixNano: nanos(Math.max(end, t.start)),
-      attributes: toAttributes({
-        "fi.span.kind": "CHAIN",
-        "gen_ai.span.kind": "CHAIN",
-        ...common(),
-        "pi.turn.index": t.index,
-        "pi.turn.seq": t.seq,
-        "pi.prompt.index": run?.index,
-        "pi.turn.outcome": outcome,
-        "pi.incomplete": incomplete || undefined,
-        "error.type": failed ? (outcome === "aborted" ? "Aborted" : "TurnError") : undefined,
-      }),
-      status: failed ? { code: 2, message: OMITTED } : { code: 1 },
-    })
-  }
-
-  function closeRun(end: number, aborted: boolean, incomplete = false) {
-    if (!run) return
-    const r = run
-    run = undefined
-    if (aborted && !r.errorType) r.errorType = "Aborted"
-    if (r.errorType) failedRuns += 1
-    if (capture && r.output) lastOutput = r.output
-    push({
+  function promptSpan(r: RunState, end: number, aborted: boolean, incomplete: boolean): Span {
+    return {
+      traceId,
+      kind: 1,
       spanId: r.spanId,
       parentSpanId: rootSpanId,
       name: "pi.prompt",
       startTimeUnixNano: nanos(r.start),
-      endTimeUnixNano: nanos(Math.max(r.end ?? end, r.start)),
+      endTimeUnixNano: nanos(Math.max(end, r.start)),
       attributes: toAttributes({
         "fi.span.kind": "CHAIN",
         "gen_ai.span.kind": "CHAIN",
@@ -343,7 +286,168 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
         "error.type": r.errorType,
       }),
       status: r.errorType ? { code: 2, message: OMITTED } : { code: 1 },
+    }
+  }
+
+  function turnSpan(t: TurnState, end: number, incomplete: boolean): Span {
+    const failed = t.outcome === "error"
+    return {
+      traceId,
+      kind: 1,
+      spanId: t.spanId,
+      parentSpanId: t.runSpanId,
+      name: "pi.turn",
+      startTimeUnixNano: nanos(t.start),
+      endTimeUnixNano: nanos(Math.max(end, t.start)),
+      attributes: toAttributes({
+        "fi.span.kind": "CHAIN",
+        "gen_ai.span.kind": "CHAIN",
+        ...common(),
+        "pi.turn.index": t.index,
+        "pi.turn.seq": t.seq,
+        "pi.prompt.index": t.runIndex,
+        "pi.turn.outcome": t.outcome,
+        "pi.incomplete": incomplete || t.outcome === "aborted" || undefined,
+        "error.type": failed ? "TurnError" : undefined,
+      }),
+      status: failed ? { code: 2, message: OMITTED } : { code: 1 },
+    }
+  }
+
+  async function post(spans: Span[]): Promise<PostResult> {
+    const body = {
+      resourceSpans: [
+        {
+          resource: {
+            attributes: toAttributes({
+              "service.name": "pi",
+              "service.version": serviceVersion,
+              project_name: projectName,
+              project_type: "observe",
+            }),
+          },
+          scopeSpans: [{ scope: SCOPE, spans }],
+        },
+      ],
+    }
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, timeoutMs)
+    const onStop = () => controller.abort()
+    stop.signal.addEventListener("abort", onStop, { once: true })
+    if (stop.signal.aborted) controller.abort()
+    // Settles on abort even if a fetch implementation ignores the signal.
+    let onAbort = () => {}
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))
     })
+    aborted.catch(() => {})
+    controller.signal.addEventListener("abort", onAbort, { once: true })
+    if (controller.signal.aborted) onAbort()
+    try {
+      const request = Promise.resolve().then(() =>
+        doFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Api-Key": apiKey!, "X-Secret-Key": secretKey! },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }),
+      )
+      request.catch(() => {})
+      const response = await Promise.race([request, aborted])
+      if (!response.ok) {
+        log(`collector returned HTTP ${response.status}`)
+        return "failed"
+      }
+      return "ok"
+    } catch (error) {
+      // Never echo URLs, headers or payloads: they can hold credentials or content.
+      log(`export failed: ${(error as Error)?.name ?? "Error"}`)
+      return timedOut || stop.signal.aborted ? "timeout" : "failed"
+    } finally {
+      clearTimeout(timer)
+      stop.signal.removeEventListener("abort", onStop)
+      controller.signal.removeEventListener("abort", onAbort)
+    }
+  }
+
+  // Sends the buffered spans plus fresh copies of the open spans: the session,
+  // and the running prompt and turn if any (same ids and start times, marked
+  // pi.incomplete, so their finished turns and calls always have a parent; the
+  // latest copy wins). A failed batch is retried once with a later export.
+  function exportNow(): Promise<void> {
+    const spans = buffer
+    buffer = []
+    dirty = false
+    const t = now()
+    const open: Span[] = []
+    if (run) open.push(promptSpan(run, t, run.aborted === true, true))
+    if (turn) open.push(turnSpan(turn, t, true))
+    const task = (async () => {
+      const result = await post([...spans, ...open, rootSpan(t)])
+      lastResult = result
+      if (result !== "ok") {
+        const again = spans.filter((s) => !retried.has(s))
+        again.forEach((s) => retried.add(s))
+        buffer.unshift(...again)
+      }
+    })()
+    inFlight = task
+    void task.then(() => {
+      if (inFlight === task) inFlight = undefined
+      if (dirty && !shutDown) void flush()
+    })
+    return task
+  }
+
+  function flush(): Promise<void> {
+    if (flushTimer) clearTimeout(flushTimer)
+    flushTimer = undefined
+    // A session with no prompt (Pi opened and closed) exports nothing.
+    if (!sessionId || runCount === 0 || buffer.length === 0) return inFlight ?? Promise.resolve()
+    if (inFlight) {
+      dirty = true
+      return inFlight
+    }
+    return exportNow()
+  }
+
+  // Export finished turns of a long run without waiting for it to settle, but
+  // coalesce with the settle flush when the run ends right after.
+  function scheduleFlush() {
+    if (flushTimer || shutDown) return
+    flushTimer = setTimeout(() => void flush(), TURN_FLUSH_DELAY_MS)
+    flushTimer.unref?.()
+  }
+
+  function startRun() {
+    runCount += 1
+    run = { spanId: newSpanId(), index: runCount, start: now(), attempts: 1, turns: 0, promptBytes: 0 }
+  }
+
+  // A turn ends at its last event (assistant message or tool end). Pi does not
+  // need a turn_end handler for that: the next turn_start, agent_end,
+  // agent_settled or session_shutdown closes it.
+  function closeTurn(end: number, incomplete = false) {
+    if (!turn) return
+    const t = turn
+    turn = undefined
+    const unfinished = incomplete || t.outcome === undefined
+    buffer.push(turnSpan(t, unfinished ? end : (t.last ?? end), unfinished))
+    if (!shutDown) scheduleFlush()
+  }
+
+  function closeRun(end: number, aborted: boolean, incomplete = false) {
+    if (!run) return
+    const r = run
+    run = undefined
+    // Cancelling is not a failure: only a provider error ends a prompt in ERROR.
+    if (r.errorType) failedRuns += 1
+    if (capture && r.output) lastOutput = r.output
+    buffer.push(promptSpan(r, r.end ?? end, aborted || r.aborted === true, incomplete))
   }
 
   function toolSpan(t: ToolState, end: number, result: unknown, isError: boolean, incomplete = false) {
@@ -366,7 +470,8 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
         "pi.tool.output.bytes": output === undefined ? undefined : byteLength(output),
         "pi.incomplete": incomplete || undefined,
         "input.value": capture ? t.input : undefined,
-        "input.mime_type": capture && t.input ? "application/json" : undefined,
+        "input.mime_type": capture && t.input ? (t.inputIsJson ? "application/json" : "text/plain") : undefined,
+        // A failed tool's result is its error text: content, so opt-in only.
         "output.value": capture && output ? bounded(output) : undefined,
         "output.mime_type": capture && output ? "text/plain" : undefined,
         "error.type": isError ? "ToolError" : undefined,
@@ -427,7 +532,7 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
   pi.on("turn_start", async (event) => {
     if (!sessionId) return
     if (!run) startRun()
-    if (turn) closeTurn(now(), undefined, true)
+    closeTurn(now())
     turnSeq += 1
     run!.turns += 1
     turn = {
@@ -436,16 +541,20 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
       seq: turnSeq,
       start: typeof event.timestamp === "number" ? event.timestamp : now(),
       runSpanId: run!.spanId,
+      runIndex: run!.index,
     }
   })
 
   pi.on("message_end", async (event) => {
     if (!sessionId || !run) return
     const message: any = event.message
+    if (turn) turn.last = now()
     if (message?.role === "user") {
       const text = textOf(message.content)
       run.promptBytes += byteLength(text)
-      if (capture) {
+      // The prompt span shows the message that started the run; steering and
+      // follow-up messages still count in pi.prompt.bytes.
+      if (capture && run.prompt === undefined) {
         run.prompt = bounded(text)
         if (firstPrompt === undefined) firstPrompt = run.prompt
       }
@@ -461,7 +570,8 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     const start = typeof message.timestamp === "number" ? message.timestamp : now()
     const end = typeof message.durationMs === "number" ? start + message.durationMs : now()
     const stop: string | undefined = message.stopReason
-    const failed = stop === "error" || stop === "aborted"
+    const failed = stop === "error"
+    const aborted = stop === "aborted"
     const text = (message.content ?? [])
       .filter((p: any) => p?.type === "text")
       .map((p: any) => p.text)
@@ -471,11 +581,13 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     inputTokens += input
     outputTokens += output
     if (callCost > 0) cost += callCost
-    if (failed) run.errorType = stop === "aborted" ? "Aborted" : "ProviderError"
-    else {
-      run.errorType = undefined
-      if (text) run.output = capture ? bounded(text) : run.output
-    }
+    // Same mapping Pi uses for a turn's outcome.
+    if (turn) turn.outcome = failed ? "error" : aborted ? "aborted" : "completed"
+    // The latest attempt decides the prompt's status.
+    run.errorType = failed ? "ProviderError" : undefined
+    if (aborted) run.aborted = true
+    if (!failed && !aborted && text && capture) run.output = bounded(text)
+    const errorText = typeof message.errorMessage === "string" ? message.errorMessage : undefined
     push({
       spanId: newSpanId(),
       parentSpanId: turn?.spanId ?? run.spanId,
@@ -504,17 +616,20 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
         "pi.llm.tool_calls": toolCalls || undefined,
         "pi.response.bytes": byteLength(text),
         "pi.turn.index": turn?.index,
+        "pi.incomplete": aborted || undefined,
         "output.value": capture && text ? bounded(text) : undefined,
         "output.mime_type": capture && text ? "text/plain" : undefined,
-        "error.type": failed ? (stop === "aborted" ? "Aborted" : "ProviderError") : undefined,
+        "error.type": failed ? "ProviderError" : undefined,
       }),
-      status: failed ? { code: 2, message: OMITTED } : { code: 1 },
+      // Provider error bodies can carry paths and account names: opt-in only.
+      status: failed ? { code: 2, message: capture && errorText ? bounded(errorText) : OMITTED } : { code: 1 },
     })
   })
 
   pi.on("tool_execution_start", async (event) => {
     if (!sessionId) return
     const parentTool = event.parentToolCallId ? tools.get(event.parentToolCallId) : undefined
+    const input = capture ? clip(event.args) : undefined
     tools.set(event.toolCallId, {
       spanId: newSpanId(),
       parentSpanId: parentTool?.spanId ?? turn?.spanId ?? run?.spanId ?? rootSpanId,
@@ -523,7 +638,9 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
       parentCallId: event.parentToolCallId,
       start: now(),
       inputBytes: byteLength(event.args),
-      input: capture ? bounded(event.args) : undefined,
+      input: input?.text,
+      // Truncated JSON is no longer JSON.
+      inputIsJson: typeof event.args !== "string" && input?.truncated !== true,
     })
     toolCount += 1
   })
@@ -533,27 +650,20 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     if (!sessionId || !t) return
     tools.delete(event.toolCallId)
     const end = now()
+    if (turn) turn.last = end
     if (typeof event.durationMs === "number") t.start = Math.min(t.start, end - event.durationMs)
     toolSpan(t, end, event.result, event.isError === true)
   })
 
-  pi.on("turn_end", async (event) => {
-    if (!sessionId) return
-    closeTurn(now(), event.outcome)
-    // Export finished turns of a long run without waiting for it to settle,
-    // but coalesce with the settle flush when the run ends right after.
-    if (!flushTimer) {
-      flushTimer = setTimeout(() => void flush(), TURN_FLUSH_DELAY_MS)
-      flushTimer.unref?.()
-    }
-  })
-
   pi.on("agent_end", async () => {
+    if (!sessionId) return
+    closeTurn(now())
     if (run) run.end = now()
   })
 
   pi.on("agent_settled", async (event) => {
     if (!sessionId) return
+    closeTurn(now())
     closeRun(now(), event.aborted === true)
     void flush()
   })
@@ -561,14 +671,31 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
   pi.on("session_shutdown", async () => {
     if (!sessionId || shutDown) return
     shutDown = true
+    if (flushTimer) clearTimeout(flushTimer)
+    flushTimer = undefined
     const end = now()
     for (const t of tools.values()) toolSpan(t, end, undefined, false, true)
     tools.clear()
-    closeTurn(end, undefined, true)
+    closeTurn(end, true)
     closeRun(end, false, true)
-    await flush()
-    // One retry for a batch that failed during the session or just now.
-    if (buffer.length) await flush()
+    // Hard deadline: abort the request in flight and send nothing after it.
+    let expired = false
+    const deadline = setTimeout(() => {
+      expired = true
+      stop.abort()
+    }, shutdownBudgetMs)
+    const timeUp = new Promise<void>((resolve) => stop.signal.addEventListener("abort", () => resolve(), { once: true }))
+    try {
+      if (inFlight) await Promise.race([inFlight, timeUp])
+      // Final export, then one retry if it failed fast (never after a timeout).
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (expired || runCount === 0 || buffer.length === 0) break
+        if (attempt > 0 && lastResult === "timeout") break
+        await Promise.race([exportNow(), timeUp])
+      }
+    } finally {
+      clearTimeout(deadline)
+    }
   })
 
   return true

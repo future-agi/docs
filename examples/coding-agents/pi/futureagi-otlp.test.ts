@@ -26,8 +26,9 @@ const BASE_ENV = {
 }
 
 type Call = { url: string; init: any; body: any }
+type HarnessOpts = { status?: number; fail?: number; fetch?: (url: string, init: any) => Promise<Response> }
 
-function harness(env: Record<string, string> = BASE_ENV, opts: { status?: number; fail?: number } = {}) {
+function harness(env: Record<string, string> = BASE_ENV, opts: HarnessOpts = {}) {
   const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>()
   const pi: any = {
     on(name: string, handler: (event: any, ctx: any) => unknown) {
@@ -36,10 +37,12 @@ function harness(env: Record<string, string> = BASE_ENV, opts: { status?: number
     },
   }
   const calls: Call[] = []
+  const returns: unknown[] = []
   let failures = opts.fail ?? 0
   let clock = 1_800_000_000_000
   const fetch = async (url: string, init: any) => {
     calls.push({ url, init, body: JSON.parse(init.body) })
+    if (opts.fetch) return opts.fetch(url, init)
     if (failures > 0) {
       failures -= 1
       throw new Error(`connect failed ${url} ${init.headers["X-Api-Key"]}`)
@@ -60,14 +63,18 @@ function harness(env: Record<string, string> = BASE_ENV, opts: { status?: number
         },
       }
     }
-    for (const handler of handlers.get(event.type) ?? []) await handler(event, ctx)
+    for (const handler of handlers.get(event.type) ?? []) {
+      const result = await handler(event, ctx)
+      if (result !== undefined) returns.push(result)
+    }
   }
+  // Latest copy of each span id wins, as in Future AGI.
   const spans = () => {
     const byId = new Map<string, any>()
     for (const call of calls) for (const span of call.body.resourceSpans[0].scopeSpans[0].spans) byId.set(span.spanId, span)
     return [...byId.values()]
   }
-  return { handlers, calls, emit, spans, active }
+  return { handlers, calls, returns, emit, spans, active }
 }
 
 async function replay(h: ReturnType<typeof harness>, rows = FIXTURE) {
@@ -124,6 +131,10 @@ test("real 1.2.0 session becomes one trace: session > prompt > turn > llm/tool",
   // A model id on a non-LLM span would make Future AGI label it LLM.
   for (const s of [root, prompt, ...turns, ...tools]) assert.equal(attr(s, "gen_ai.request.model"), undefined)
   for (const s of spans) assert.equal(s.status.code, 1)
+  for (const s of spans) assert.equal(attr(s, "pi.incomplete"), undefined, s.name)
+  for (const t of turns) assert.equal(attr(t, "pi.turn.outcome"), "completed")
+  // Observe-only: no handler returned a result Pi could act on.
+  assert.deepEqual(h.returns, [])
 
   const call = h.calls[0]
   assert.equal(call.url, BASE_ENV.FI_OTLP_ENDPOINT)
@@ -164,16 +175,30 @@ test("FI_CAPTURE_CONTENT=true exports bounded content with secrets redacted", as
   assert.equal(attr(root, "pi.cwd"), "/tmp/proj")
 })
 
-test("content is capped at 4 KiB", async () => {
+test("content is capped at 4096 characters; truncated JSON is labeled text/plain", async () => {
   const h = harness({ ...BASE_ENV, FI_CAPTURE_CONTENT: "true" })
-  const rows = FIXTURE.map((row) =>
-    row.event.type === "tool_execution_end" ? { ...row, event: { ...row.event, result: "x".repeat(10_000) } } : row,
-  )
+  const rows = FIXTURE.map((row) => {
+    if (row.event.type === "tool_execution_end") return { ...row, event: { ...row.event, result: "x".repeat(10_000) } }
+    // 4095 ASCII characters, then an emoji (a surrogate pair) across the cut.
+    if (row.event.type === "tool_execution_start" && row.event.toolName === "bash") {
+      return { ...row, event: { ...row.event, args: { command: "y".repeat(4083) + "\u{1F600}" + "z".repeat(100) } } }
+    }
+    return row
+  })
   await replay(h, rows)
   for (const tool of byName(h.spans(), "execute_tool ")) {
     assert.equal(attr(tool, "output.value").length, 4096)
     assert.equal(attr(tool, "pi.tool.output.bytes"), 10_000)
   }
+  const [bash] = byName(h.spans(), "execute_tool bash")
+  const input = attr(bash, "input.value")
+  // `{"command":"` is 12 characters, so the emoji would straddle the cut; it is dropped whole.
+  assert.equal(input.length, 4095)
+  assert.ok(!/[\uD800-\uDBFF]$/.test(input))
+  assert.equal(attr(bash, "input.mime_type"), "text/plain")
+  const [read] = byName(h.spans(), "execute_tool read")
+  assert.equal(attr(read, "input.mime_type"), "application/json")
+  assert.doesNotThrow(() => JSON.parse(attr(read, "input.value")))
 })
 
 test("provider error and failed tool are ERROR without error text", async () => {
@@ -308,17 +333,206 @@ test("default endpoint is the Future AGI cloud traces URL", async () => {
   assert.equal(h2.calls[0].url, "https://fi.example.com/tracer/v1/traces")
 })
 
-test("a finished turn is exported after a short delay while the run continues", async () => {
+test("a finished turn is exported after a short delay, with provisional copies of the open prompt and turn", async () => {
   const h = harness()
-  const firstTurnEnd = FIXTURE.findIndex((r) => r.event.type === "turn_end")
-  await replay(h, FIXTURE.slice(0, firstTurnEnd + 1))
+  const secondTurnStart = FIXTURE.findIndex((r) => r.event.type === "turn_start" && r.event.turnIndex === 1)
+  await replay(h, FIXTURE.slice(0, secondTurnStart + 1))
   assert.equal(h.calls.length, 0)
   await new Promise((resolve) => setTimeout(resolve, 2200))
   assert.equal(h.calls.length, 1)
-  const names = h.calls[0].body.resourceSpans[0].scopeSpans[0].spans.map((s: any) => s.name).sort()
-  assert.deepEqual(names, ["chat gpt-6-luna", "execute_tool bash", "execute_tool read", "pi.session", "pi.turn"])
-  await replay(h, FIXTURE.slice(firstTurnEnd + 1))
-  // the second turn and the prompt go out together when the run settles
+  const first = h.calls[0].body.resourceSpans[0].scopeSpans[0].spans
+  assert.deepEqual(first.map((s: any) => s.name).sort(), [
+    "chat gpt-6-luna",
+    "execute_tool bash",
+    "execute_tool read",
+    "pi.prompt",
+    "pi.session",
+    "pi.turn",
+    "pi.turn",
+  ])
+  const provisional = first.find((s: any) => s.name === "pi.prompt")
+  assert.equal(attr(provisional, "pi.incomplete"), true)
+  const openTurn = first.find((s: any) => s.name === "pi.turn" && attr(s, "pi.turn.index") === 1)
+  assert.equal(attr(openTurn, "pi.incomplete"), true)
+  await replay(h, FIXTURE.slice(secondTurnStart + 1))
+  // the second turn and the final prompt go out together when the run settles
   assert.equal(h.calls.length, 2)
-  assert.equal(byName(h.spans(), "pi.prompt").length, 1)
+  // No export ever references a parent that has not been sent yet.
+  const sent = new Set<string>()
+  for (const call of h.calls) {
+    const batch = call.body.resourceSpans[0].scopeSpans[0].spans
+    for (const s of batch) sent.add(s.spanId)
+    for (const s of batch) if (s.parentSpanId) assert.ok(sent.has(s.parentSpanId), `${s.name} orphaned`)
+  }
+  // The final copies replace the provisional ones (same id and start).
+  const [prompt] = byName(h.spans(), "pi.prompt")
+  assert.equal(prompt.spanId, provisional.spanId)
+  assert.equal(prompt.startTimeUnixNano, provisional.startTimeUnixNano)
+  assert.equal(attr(prompt, "pi.incomplete"), undefined)
+  const finalTurn = h.spans().find((s) => s.spanId === openTurn.spanId)
+  assert.equal(attr(finalTurn, "pi.incomplete"), undefined)
+  assert.equal(attr(finalTurn, "pi.turn.outcome"), "completed")
+})
+
+test("subscribes only to observe-only events and not to turn_end", async () => {
+  const h = harness()
+  assert.deepEqual([...h.handlers.keys()].sort(), [
+    "agent_end",
+    "agent_settled",
+    "agent_start",
+    "message_end",
+    "session_info_changed",
+    "session_shutdown",
+    "session_start",
+    "tool_execution_end",
+    "tool_execution_start",
+    "turn_start",
+  ])
+})
+
+test("a cancelled run is OK with pi.prompt.aborted, not an error", async () => {
+  const h = harness()
+  const rows = FIXTURE.map((row) => {
+    const e = row.event
+    if (e.type === "message_end" && e.message.role === "assistant" && e.message.stopReason === "stop") {
+      return { ...row, event: { ...e, message: { ...e.message, stopReason: "aborted" } } }
+    }
+    if (e.type === "agent_settled") return { ...row, event: { ...e, aborted: true } }
+    return row
+  })
+  await replay(h, rows)
+  const spans = h.spans()
+  for (const s of spans) assert.equal(s.status.code, 1, s.name)
+  for (const s of spans) assert.equal(attr(s, "error.type"), undefined, s.name)
+  const [prompt] = byName(spans, "pi.prompt")
+  assert.equal(attr(prompt, "pi.prompt.aborted"), true)
+  assert.equal(attr(prompt, "pi.incomplete"), undefined)
+  const cut = byName(spans, "chat ").find((s) => attr(s, "pi.turn.index") === 1)
+  assert.equal(attr(cut, "pi.incomplete"), true)
+  assert.deepEqual(attr(cut, "gen_ai.response.finish_reasons"), { values: [{ stringValue: "aborted" }] })
+  const turn = byName(spans, "pi.turn").find((s) => attr(s, "pi.turn.index") === 1)
+  assert.equal(attr(turn, "pi.turn.outcome"), "aborted")
+  assert.equal(attr(turn, "pi.incomplete"), true)
+})
+
+test("error text with local paths and user names stays out of the default export", async () => {
+  const toolError = "bash: /Users/alice-fixture/private/build.sh: Permission denied (user alice-fixture)"
+  const providerError = "401 from gateway: key file /home/alice-fixture/.pi/agent/models.json not valid for alice-fixture"
+  const rows = FIXTURE.map((row) => {
+    const e = row.event
+    if (e.type === "tool_execution_end" && e.toolName === "bash") {
+      return { ...row, event: { ...e, isError: true, result: { content: [{ type: "text", text: toolError }] } } }
+    }
+    if (e.type === "message_end" && e.message.role === "assistant" && e.message.stopReason === "stop") {
+      return { ...row, event: { ...e, message: { ...e.message, stopReason: "error", errorMessage: providerError } } }
+    }
+    return row
+  })
+  const h = harness()
+  await replay(h, rows)
+  const wire = JSON.stringify(h.calls.map((c) => c.body))
+  for (const needle of ["alice-fixture", "/Users/", "/home/", "Permission denied", "401 from gateway"]) {
+    assert.ok(!wire.includes(needle), `${needle} leaked`)
+  }
+  const failed = h.spans().filter((s) => s.status.code === 2)
+  assert.deepEqual(failed.map((s) => attr(s, "error.type")).sort(), ["PromptError", "ProviderError", "ProviderError", "ToolError", "TurnError"])
+  // Opt-in: a failed tool's result is its error text, and the provider message goes on the chat span status.
+  const c = harness({ ...BASE_ENV, FI_CAPTURE_CONTENT: "true" })
+  await replay(c, rows)
+  const [bash] = byName(c.spans(), "execute_tool bash")
+  assert.equal(attr(bash, "output.value"), toolError)
+  const chat = byName(c.spans(), "chat ").find((s) => s.status.code === 2)
+  assert.equal(chat.status.message, providerError)
+  for (const s of c.spans().filter((x) => x.status.code === 2 && !x.name.startsWith("chat "))) {
+    assert.equal(s.status.message, "error details omitted by default")
+  }
+})
+
+// Drives one short run per call to `runs`, each ending in agent_settled (one flush each).
+async function settleRuns(h: ReturnType<typeof harness>, count: number) {
+  for (let i = 0; i < count; i++) {
+    await h.emit({ type: "agent_start" })
+    await h.emit({ type: "turn_start", turnIndex: 0, timestamp: 1 })
+    await h.emit({
+      type: "message_end",
+      message: { role: "assistant", content: [], model: "m", provider: "p", usage: { input: 1, output: 1 }, stopReason: "stop", timestamp: 1, durationMs: 1 },
+    })
+    await h.emit({ type: "agent_end", messages: [] })
+    await h.emit({ type: "agent_settled", aborted: false })
+  }
+}
+
+function slowCollector(delayMs: number) {
+  const stats = { active: 0, maxActive: 0 }
+  const fetch = async () => {
+    stats.active += 1
+    stats.maxActive = Math.max(stats.maxActive, stats.active)
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    stats.active -= 1
+    return { ok: true, status: 200 } as Response
+  }
+  return { fetch, stats }
+}
+
+// A blackholed collector: the request never answers. With honorAbort it ends only when aborted.
+function blackhole(honorAbort: boolean) {
+  return (_url: string, init: any) =>
+    new Promise<Response>((_, reject) => {
+      if (honorAbort) init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })))
+    })
+}
+
+test("at most one export is in flight; flushes requested meanwhile coalesce into one follow-up", async () => {
+  const collector = slowCollector(150)
+  const h = harness(BASE_ENV, { fetch: collector.fetch })
+  await h.emit(FIXTURE[0].event, FIXTURE[0].ctx)
+  await settleRuns(h, 4)
+  assert.equal(h.calls.length, 1)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  assert.equal(collector.stats.maxActive, 1)
+  assert.equal(h.calls.length, 2)
+  assert.equal(byName(h.spans(), "pi.prompt").length, 4)
+})
+
+for (const [label, env, budget, honorAbort] of [
+  ["default timeout: 3000 ms", BASE_ENV, 3000, true],
+  ["FI_OTLP_TIMEOUT_MS=400", { ...BASE_ENV, FI_OTLP_TIMEOUT_MS: "400" }, 400, true],
+  ["fetch that ignores abort, FI_OTLP_TIMEOUT_MS=400", { ...BASE_ENV, FI_OTLP_TIMEOUT_MS: "400" }, 400, false],
+] as const) {
+  test(`shutdown against a blackholed collector waits at most min(FI_OTLP_TIMEOUT_MS, 3000) ms (${label})`, async () => {
+    const h = harness(env as Record<string, string>, { fetch: blackhole(honorAbort) })
+    await h.emit(FIXTURE[0].event, FIXTURE[0].ctx)
+    // Eight settled runs: the first export hangs, the rest only mark the buffer dirty.
+    await settleRuns(h, 8)
+    await h.emit({ type: "agent_start" })
+    await h.emit({ type: "turn_start", turnIndex: 0, timestamp: 1 })
+    const started = performance.now()
+    await h.emit({ type: "session_shutdown", reason: "new" })
+    const waited = performance.now() - started
+    assert.ok(waited >= budget - 25, `returned before the deadline: ${waited} ms`)
+    assert.ok(waited < budget + 250, `waited ${Math.round(waited)} ms, budget ${budget} ms`)
+    if (budget < 3000) {
+      // The hanging request timed out just before the deadline; the final export
+      // started and was aborted at the deadline. No retry after a timeout.
+      assert.ok(h.calls.length <= 2, `${h.calls.length} requests`)
+    } else {
+      // Only the hanging request was sent: nothing after the deadline.
+      assert.equal(h.calls.length, 1)
+    }
+  })
+}
+
+test("shutdown with spans buffered and a blackholed collector sends once and does not retry after the timeout", async () => {
+  const h = harness({ ...BASE_ENV, FI_OTLP_TIMEOUT_MS: "300" }, { fetch: blackhole(true) })
+  await replay(h, [
+    FIXTURE[0],
+    { event: { type: "agent_start" } },
+    { event: { type: "turn_start", turnIndex: 0, timestamp: 1 } },
+    { event: { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "sleep 100" } } },
+  ])
+  const started = performance.now()
+  await h.emit({ type: "session_shutdown", reason: "quit" })
+  const waited = performance.now() - started
+  assert.ok(waited < 300 + 250, `waited ${Math.round(waited)} ms`)
+  assert.equal(h.calls.length, 1)
 })

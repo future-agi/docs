@@ -15,12 +15,14 @@
 #
 # The prompt carries a unique marker. With the default settings the marker
 # must NOT reach Future AGI; rerun with FI_CAPTURE_CONTENT=true to see it.
-# Set FI_OTLP_ENDPOINT for a self-hosted collector, e.g.
-# http://localhost:14338/v1/traces.
+# For a self-hosted Future AGI, set FI_BASE_URL (the extension posts to
+# $FI_BASE_URL/tracer/v1/traces) or the full FI_OTLP_ENDPOINT.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${1:-$(mktemp -d)}"
+# Absolute, so PI_CODING_AGENT_DIR still resolves after `cd "$WORK/project"`.
+mkdir -p "$WORK" && WORK="$(cd "$WORK" && pwd)"
 : "${FI_API_KEY:?set FI_API_KEY}" "${FI_SECRET_KEY:?set FI_SECRET_KEY}"
 : "${PI_MODEL:?set PI_MODEL, e.g. anthropic/claude-sonnet-4-5}"
 export FI_PROJECT_NAME="${FI_PROJECT_NAME:-pi-e2e}"
