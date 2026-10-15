@@ -20,11 +20,12 @@ This is not the same as:
 
 - **Kiro CLI.** The CLI has its own setup and adapter: see [Kiro CLI](https://docs.futureagi.com/docs/integrations/coding-agents/kiro-cli).
 - **Kiro enterprise OpenTelemetry.** That admin feature pushes daily usage metrics (credits, message and conversation counts) once a day. It has no per-session trace and is not used here.
+- **This recipe is observe-only.** It does not register on Kiro's gating hooks (`PreToolUse` or `PreTaskExec`); tool/spec-task spans are emitted after completion.
 - **Model-call tracing.** Kiro calls models on AWS; hooks do not expose the model, tokens, or cost.
 
 | | |
 | --- | --- |
-| Tested with | Kiro IDE 1.2.37 (macOS, Apple silicon): hook payloads as built by the shipped `kiro.kiro-agent` extension |
+| Checked with | Kiro IDE 1.2.37 (macOS, Apple silicon): payload contract and hook-file schema checked against the shipped `kiro.kiro-agent` extension; live session pending sign-in |
 | Kiro docs used | [Hooks](https://kiro.dev/docs/hooks/), [Hook types](https://kiro.dev/docs/hooks/types/), [Hook actions](https://kiro.dev/docs/hooks/actions/), read 2026-10-14 |
 | Requires | Kiro IDE 1.0 or later (`.kiro/hooks/*.json` format), Python 3.9+ on the `PATH` Kiro uses. No packages. |
 | Source | [examples/coding-agents/kiro-ide](https://github.com/future-agi/docs/tree/main/examples/coding-agents/kiro-ide) and [hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp) |
@@ -44,7 +45,7 @@ To trace every project on this machine, install global hooks into `~/.kiro/` ins
 fi-docs/examples/coding-agents/kiro-ide/install.sh --user
 ```
 
-The hook file registers one command hook per trigger. Each entry looks like this (the file lists `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreTaskExec`, `PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Stop`, and `SessionEnd`):
+The hook file registers one command hook per observed trigger. It intentionally excludes gating triggers (`PreToolUse`, `PreTaskExec`). Each entry looks like this (the file lists `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Stop`, and `SessionEnd`):
 
 ```json
 {
@@ -53,7 +54,7 @@ The hook file registers one command hook per trigger. Each entry looks like this
     {
       "name": "Future AGI tracing: tool end",
       "trigger": "PostToolUse",
-      "action": { "type": "command", "command": "python3 .kiro/fi-hook-to-otlp/emit.py kiro_ide" },
+      "action": { "type": "command", "command": "python3 .kiro/fi-hook-to-otlp/emit.py kiro_ide || true" },
       "timeout": 10
     }
   ]
@@ -63,7 +64,7 @@ The hook file registers one command hook per trigger. Each entry looks like this
 Command hooks run in the project root, so the path starts with `.kiro/`. Hooks activate when a session starts. You can see and toggle them in the **Agent Hooks** section of the Kiro panel.
 
 <Note>
-The emitter only observes. It always exits `0` and prints nothing, so on `PreToolUse` Kiro runs the tool as usual (exit `0` means "allow"; only exit `2` blocks), and nothing is added to the agent's context on `SessionStart` or `UserPromptSubmit`. `PreToolUse` is registered only to time the tool call, because `PostToolUse` carries no duration.
+The emitter only observes. The commands are guarded with `|| true`, so a missing emitter cannot block a prompt or tool. The adapter prints nothing, and this recipe does not register `PreToolUse` or `PreTaskExec`; completed hooks are used instead, without vendor duration.
 </Note>
 
 ## 2. Add your Future AGI keys
@@ -94,14 +95,14 @@ Open **Observe** in Future AGI and select the project (`kiro-ide-sessions` above
 | --- | --- | --- |
 | `SessionStart` | **Kiro IDE session** (root) | `session.id` = Kiro `session_id` |
 | `UserPromptSubmit` | **Kiro IDE turn** start | prompt length |
-| `PreToolUse` | tool span start, named after the tool (`read_file`, `execute_bash`, `mcp_<server>_<tool>`, ...) | `gen_ai.tool.name` |
-| `PostToolUse` | tool span end | status `ERROR` when `tool_response.success` is `false` |
-| `PreTaskExec` / `PostTaskExec` | **Spec task** | task success, `ERROR` when the task failed |
-| `PostFileCreate` / `PostFileSave` / `PostFileDelete` | **File created** / **File saved** / **File deleted** | event only, no path |
+| `PostToolUse` | completed tool span, named after the tool (`read_file`, `execute_bash`, `@<server>/<tool>`, ...) | `gen_ai.tool.name`; no vendor duration |
+| `PostToolUse` with failed response | tool span | status `ERROR` when `tool_response.success` is `false` |
+| `PostTaskExec` | **Spec task** | task success, `ERROR` when the task failed; no pre-task gating hook |
+| `PostFileCreate` / `PostFileSave` / `PostFileDelete` | **File created** / **File saved** / **File deleted** | event only, no path. Kiro may emit both File created and File saved for one agent-created file. |
 | `Stop` | **Kiro IDE turn** end | user decision on a confirm prompt, when set |
-| `SessionEnd` | **Kiro IDE session** end | end reason |
+| `SessionEnd` | session metadata update | Kiro fires this when it unloads/reloads a persisted session; it is not a terminal chat end |
 
-Kiro sends no turn id and no tool call id. The emitter pairs a `Stop` with the open turn and a `PostToolUse` with the oldest open `PreToolUse` of the same tool.
+Kiro sends no turn id and no tool call id. The emitter pairs a `Stop` with the open turn. It observes `PostToolUse` directly, so blocked or denied tools do not create orphan FIFO entries.
 
 ## What is not available
 
@@ -121,7 +122,7 @@ Kiro CLI V3 also loads `.kiro/hooks/*.json`. If you run Kiro CLI in a project th
 By default only structure and metadata leave your machine: session id, tool names, prompt length, statuses, and timing.
 
 - **Not exported by default:** prompt text, tool input, tool output, spec and task names, file paths.
-- **Never exported:** `cwd`. The emitter reads only the stdin payload. It does not read the `USER_PROMPT` environment variable Kiro also sets for prompt hooks, and it never opens files named in a payload.
+- **Never exported:** `cwd`. The emitter reads only the stdin payload. Legacy Kiro 0.x hooks exposed `USER_PROMPT`; this v1 emitter never reads it, and it never opens files named in a payload.
 
 To include content, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. The prompt becomes the turn's `input.value`, tool input and output go on the tool span, a failed tool's response becomes its status message, and file events carry the path. Each field is capped at 4096 characters and common key formats are replaced with `[REDACTED]`. See [Privacy](/docs/integrations/coding-agents/hook-to-otlp#privacy).
 
@@ -129,7 +130,7 @@ To include content, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. The prompt 
 
 **No trace appears.**
 1. Check that the hooks are listed and enabled in the **Agent Hooks** section of the Kiro panel, and that the workspace is trusted.
-2. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and send another prompt. No lines: Kiro did not run the command (check the path in the hook file). `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
+2. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and send another prompt. No lines: Kiro did not run the command, or `FI_API_KEY` / `FI_SECRET_KEY` are not set (the emitter is a silent no-op without both). `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
 3. `python3` must resolve for Kiro. Use an absolute interpreter path such as `/opt/homebrew/bin/python3` in the hook file if it does not.
 
 **Tools appear directly under the session.** A tool hook arrived without an open turn, for example when hooks were installed in the middle of a chat. It is attached to the session rather than guessed.

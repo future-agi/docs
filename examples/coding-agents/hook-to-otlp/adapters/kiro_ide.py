@@ -7,11 +7,11 @@ with ``session_id``, ``hook_event_name`` and ``cwd``; per trigger:
 
     SessionStart        -> session start
     UserPromptSubmit    -> turn start            prompt = content
-    PreToolUse          -> tool start            tool_input = content
-    PostToolUse         -> tool end              tool_response = content,
-                                                 ERROR when tool_response.success is false
-    PreTaskExec         -> spec task start       spec/task names = content
-    PostTaskExec        -> spec task end         ERROR when task_success is false
+    PostToolUse         -> tool span              tool_response = content,
+                                                  ERROR when tool_response.success is false
+    PostTaskExec        -> spec task span         ERROR when task_success is false
+
+Permission and pre-task hooks are intentionally not registered: this recipe is observe-only.
     PostFileCreate/Save/Delete -> "File ..." event   file path = content
     Stop                -> turn end
     SessionEnd          -> session end           reason kept when it is an enum value
@@ -25,12 +25,11 @@ Ignored: ``AgentSpawn`` / ``agentSpawn`` (Kiro CLI names, not an IDE event),
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import Any, Dict, List
 
 from adapters.base import (
-    END, ERROR, EVENT, INSTANT, OK, SESSION, START, TOOL, TURN, SpanEvent, compact, first,
+    END, ERROR, EVENT, INSTANT, OK, SESSION, START, TOOL, TURN, UPDATE, SpanEvent, compact, first,
 )
 
 APP = "kiro_ide"
@@ -43,7 +42,7 @@ _ENUM = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
 
 def respond(event: str, payload: Dict[str, Any]) -> str:
     # Kiro adds a successful hook's stdout to the agent context on
-    # SessionStart, UserPromptSubmit and PreTaskExec: answer with nothing.
+    # SessionStart, UserPromptSubmit and PostTaskExec: answer with nothing.
     return ""
 
 
@@ -56,11 +55,6 @@ def _tool_failed(response: Any) -> bool:
     return isinstance(response, dict) and response.get("success") is False
 
 
-def _task_key(payload: Dict[str, Any]) -> str:
-    raw = f"{payload.get('spec_name')}\x1f{payload.get('task_name')}"
-    return "task-" + hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
-
-
 def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
     session = first(payload, "session_id")
     if not session:
@@ -71,7 +65,9 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         return [SpanEvent(START, SESSION, sid)]
 
     if event == "SessionEnd":
-        return [SpanEvent(END, SESSION, sid, status=OK,
+        # Kiro fires this when it unloads/reloads a persisted session. Keep the
+        # state and turn sequence: SessionEnd is not a terminal chat end.
+        return [SpanEvent(UPDATE, SESSION, sid,
                           attributes=compact({"kiro.session.end_reason": _enum(payload.get("reason"))}))]
 
     if event == "UserPromptSubmit":
@@ -81,15 +77,11 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         }))]
 
     if event == "Stop":
-        return [SpanEvent(END, TURN, sid, status=OK, attributes=compact({
-            "kiro.stop.user_decision": _enum(payload.get("user_decision")),
-        }))]
+        return [SpanEvent(END, TURN, sid, status=OK)]
 
-    if event in ("PreToolUse", "PostToolUse"):
+    if event == "PostToolUse":
         tool = str(first(payload, "tool_name") or "tool")
         attrs = {"kiro.tool.name": tool}
-        if event == "PreToolUse":
-            return [SpanEvent(START, TOOL, sid, name=tool, input=payload.get("tool_input"), attributes=attrs)]
         response = payload.get("tool_response")
         failed = _tool_failed(response)
         return [SpanEvent(
@@ -102,14 +94,12 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
             attributes=attrs,
         )]
 
-    if event in ("PreTaskExec", "PostTaskExec"):
+    if event == "PostTaskExec":
+        # Observe the completed task only. PreTaskExec is a gating hook.
         names = {"spec": payload.get("spec_name"), "task": payload.get("task_name")}
-        if event == "PreTaskExec":
-            return [SpanEvent(START, EVENT, sid, key=_task_key(payload), name="Spec task", input=names,
-                              attributes={"kiro.event": "spec_task"})]
         success = payload.get("task_success")
         failed = success is False
-        return [SpanEvent(END, EVENT, sid, key=_task_key(payload), name="Spec task", input=names,
+        return [SpanEvent(INSTANT, EVENT, sid, name="Spec task", input=names,
                           status=ERROR if failed else OK,
                           status_message="spec task failed" if failed else None,
                           attributes=compact({"kiro.event": "spec_task",

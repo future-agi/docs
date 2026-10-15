@@ -6,6 +6,9 @@ the Kiro IDE 1.2.37 ``kiro.kiro-agent`` extension.
 from __future__ import annotations
 
 import json
+import os
+import pathlib
+import subprocess
 import tempfile
 import unittest
 
@@ -41,7 +44,7 @@ class KiroIdeAdapterTest(unittest.TestCase):
         root_id = emit.span_id("kiro_ide", SID, SESSION, "")
         root = latest(spans, root_id)
         self.assertEqual(root["name"], "Kiro IDE session")
-        self.assertEqual(attrs(root)["kiro.session.end_reason"], "other")
+        self.assertNotIn("kiro.session.end_reason", attrs(root))
         turns = [s for s in spans if s["name"] == "Kiro IDE turn"]
         self.assertEqual(len({t["spanId"] for t in turns}), 1)
         turn = turns[-1]
@@ -55,7 +58,8 @@ class KiroIdeAdapterTest(unittest.TestCase):
         read, = by_name(spans, "read_file")
         bash, = by_name(spans, "execute_bash")
         self.assertEqual(attrs(read)["gen_ai.tool.name"], "read_file")
-        self.assertEqual(int(read["endTimeUnixNano"]) - int(read["startTimeUnixNano"]), 1_000_000_000)
+        # Observe-only PostToolUse has no vendor duration; start and end are the hook time.
+        self.assertEqual(int(read["endTimeUnixNano"]) - int(read["startTimeUnixNano"]), 0)
         self.assertEqual(read["status"]["code"], 1)
         self.assertEqual(bash["status"], {"code": 2, "message": "tool reported failure"})
         self.assertNotIn("coding_agent.incomplete", attrs(read))
@@ -63,7 +67,7 @@ class KiroIdeAdapterTest(unittest.TestCase):
     def test_spec_task_pairs_on_names(self):
         task, = by_name(self.spans(), "Spec task")
         self.assertEqual(attrs(task)["kiro.task.success"], True)
-        self.assertEqual(int(task["endTimeUnixNano"]) - int(task["startTimeUnixNano"]), 1_000_000_000)
+        self.assertEqual(int(task["endTimeUnixNano"]) - int(task["startTimeUnixNano"]), 0)
 
     def test_default_export_has_no_content_or_paths(self):
         encoded = json.dumps(self.spans())
@@ -92,8 +96,37 @@ class KiroIdeAdapterTest(unittest.TestCase):
         ev, = kiro_ide.parse("SessionEnd", {"session_id": "s", "reason": "the user closed it because..."})
         self.assertNotIn("kiro.session.end_reason", ev.attributes)
 
+    def test_pre_gating_hooks_are_not_mapped(self):
+        payload = {"session_id": "s", "tool_name": "read_file", "tool_input": {"path": "/tmp/a"}}
+        self.assertEqual(kiro_ide.parse("PreToolUse", payload), [])
+        self.assertEqual(kiro_ide.parse("PreTaskExec", payload), [])
+
+    def test_session_end_keeps_state_for_resume(self):
+        first = self.spans()
+        later = list(self.records)
+        # A runtime unload/reload uses the same session id and starts a new turn.
+        later.extend([
+            {"event": "SessionEnd", "payload": {"session_id": SID, "reason": "other"}},
+            {"event": "UserPromptSubmit", "payload": {"session_id": SID, "prompt": "second"}},
+            {"event": "Stop", "payload": {"session_id": SID}},
+        ])
+        resumed = replay(kiro_ide, config("kiro_ide", self.tmp.name), later)
+        turns = [s for s in resumed if s["name"] == "Kiro IDE turn"]
+        self.assertGreaterEqual(len({s["spanId"] for s in turns}), 2)
+
+    def test_shipped_commands_fail_open_when_emitter_is_missing(self):
+        root = pathlib.Path(__file__).resolve().parents[2] / "kiro-ide"
+        for path in (root / "fi-hook-to-otlp.json", root / "fi-hook-to-otlp.user.json"):
+            doc = json.loads(path.read_text())
+            for hook in doc["hooks"]:
+                command = hook["action"]["command"]
+                result = subprocess.run(["sh", "-c", command], input="{}", text=True,
+                                        capture_output=True, cwd=tempfile.mkdtemp())
+                self.assertEqual(result.returncode, 0, (path, command, result.stderr))
+                self.assertEqual(result.stdout, "", (path, command, result.stdout))
+
     def test_stdout_adds_nothing_to_agent_context(self):
-        for event in ("SessionStart", "UserPromptSubmit", "PreTaskExec", "Stop"):
+        for event in ("SessionStart", "UserPromptSubmit", "PostTaskExec", "Stop"):
             self.assertEqual(kiro_ide.respond(event, {}), "")
 
 

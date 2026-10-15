@@ -22,6 +22,12 @@ else
   exit 2
 fi
 
+HOOK_FILE="$KIRO_DIR/hooks/fi-hook-to-otlp.json"
+if [[ -e "$HOOK_FILE" ]] && grep -q 'kiro_cli' "$HOOK_FILE"; then
+  echo "refusing to install Kiro IDE hooks: $HOOK_FILE is configured for Kiro CLI" >&2
+  echo "Use one Kiro adapter per hook scope, or add the IDE hooks manually under a separate project scope." >&2
+  exit 1
+fi
 DEST="$KIRO_DIR/fi-hook-to-otlp"
 mkdir -p "$DEST/adapters" "$KIRO_DIR/hooks"
 cp "$EMITTER/emit.py" "$DEST/emit.py"
