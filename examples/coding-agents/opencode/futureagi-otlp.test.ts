@@ -67,6 +67,9 @@ test("default export: one trace, session > turn > llm > tool, no bodies", async 
     // Privacy default: nothing from any prompt, argument, output, answer or title.
     assert.ok(!r.raw.includes("SECRET-MARKER"), "a body leaked into the default export")
     assert.ok(!r.raw.includes("input.value") && !r.raw.includes("output.value"))
+    // No local paths (they carry the OS user name).
+    assert.ok(!r.raw.includes("/home/dev"), "a local path leaked into the default export")
+    assert.ok(!r.raw.includes("opencode.directory"))
   }
 
   assert.equal(new Set(spans.map((s) => s.traceId)).size, 1, "one trace per session")
@@ -122,6 +125,7 @@ test("FI_CAPTURE_CONTENT=true exports bounded, redacted bodies", async () => {
   assert.match(attr(tools[0], "output.value"), /SECRET-MARKER-tool-output/)
   assert.ok(!attr(tools[0], "output.value").includes("sk-abcdefghijklmnop"), "secret pattern redacted")
   assert.match(attr(root, "opencode.session.title"), /SECRET-MARKER-title/)
+  assert.equal(attr(root, "opencode.directory"), "/home/dev/demo")
   // Tool metadata previews are never exported, even with content on.
   assert.ok(!requests.some((r) => r.raw.includes("SECRET-MARKER-preview")))
 })

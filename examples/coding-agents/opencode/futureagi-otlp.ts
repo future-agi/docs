@@ -206,7 +206,8 @@ export const FutureAGITracing: Plugin = async (ctx, options) => {
         "opencode.version": info.version,
         "opencode.session.slug": info.slug,
         "opencode.project.id": info.projectID,
-        "opencode.directory": info.directory,
+        // The project path contains the OS user name, so it is content.
+        "opencode.directory": capture ? info.directory : undefined,
       }
       if (info.title) s.title = info.title
     }
