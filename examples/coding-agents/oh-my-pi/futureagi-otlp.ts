@@ -218,7 +218,8 @@ export function createFutureAGIHook(options: HookOptions = {}) {
       const agent = ctx?.agent ?? {}
       const seen: Attrs = {
         "omp.mode": ctx?.mode,
-        "omp.cwd": typeof ctx?.cwd === "string" ? ctx.cwd : undefined,
+        // The working directory contains the OS user name, so it is content.
+        "omp.cwd": capture && typeof ctx?.cwd === "string" ? ctx.cwd : undefined,
         "omp.agent.kind": agent.kind,
         "omp.agent.id": agent.id,
         "omp.agent.name": agent.name,

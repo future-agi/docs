@@ -88,6 +88,9 @@ test("default export: one trace, session > prompt > turn > llm/tool, no content"
   assert.ok(!body.includes("FIXTURE-SECRET"), "no prompt, answer, thinking, tool args, intents or results by default")
   assert.ok(!body.includes("input.value") && !body.includes("output.value"))
   assert.ok(!body.includes("sk-fixture"))
+  // No local paths (they carry the OS user name).
+  assert.ok(!body.includes("/tmp/omp-fixture-project"), "the working directory leaked into the default export")
+  assert.ok(!body.includes("omp.cwd"))
 })
 
 test("LLM spans carry model, provider, tokens (cache reads counted in input) and omp's cost", async () => {
@@ -122,6 +125,7 @@ test("FI_CAPTURE_CONTENT=true exports bounded content and redacts obvious secret
   assert.match(attr(read, "input.value"), /FIXTURE-SECRET-TOOL-ARG/)
   assert.match(attr(read, "output.value"), /FIXTURE-SECRET-TOOL-RESULT/)
   assert.match(attr(read, "omp.tool.intent"), /FIXTURE-SECRET-INTENT/)
+  assert.equal(attr(root, "omp.cwd"), "/tmp/omp-fixture-project")
   const body = JSON.stringify(h.requests.map((r) => r.body))
   assert.ok(!body.includes("sk-fixturefixturefixture123"), "API-key-shaped strings are redacted")
   assert.ok(!body.includes("FIXTURE-SECRET-THINKING"), "thinking blocks are never exported")
