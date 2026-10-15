@@ -17,13 +17,23 @@ import os
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
-from tests.helpers import ROOT, Receiver
+from tests.helpers import ROOT, Receiver, all_spans
 
 APP_DIR = ROOT.parent / "devin-desktop"
 HOOKS = json.loads((APP_DIR / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+PAGE = (ROOT.parents[2] / "src/pages/docs/integrations/coding-agents/devin-desktop.mdx").read_text(encoding="utf-8")
+BASH = shutil.which("bash") or "/bin/bash"
+
+
+def page_bash_block(after: str) -> str:
+    """The first ```bash block on the page after the heading or text ``after``, dedented."""
+    section = PAGE.split(after, 1)[1]
+    block = section.split("```bash\n", 1)[1].split("```", 1)[0]
+    return textwrap.dedent(block)
 EXPECTED = {"pre_user_prompt", "post_read_code", "post_write_code", "post_run_command",
             "post_mcp_tool_use", "post_cascade_response"}
 # Cascade uses bash; /bin/sh is the POSIX baseline.
@@ -71,8 +81,7 @@ class DevinDesktopHooksConfigTest(unittest.TestCase):
             self.assertTrue(entry["command"].endswith(f" devin_desktop {event} 2>/dev/null || true)"), event)
 
     def test_page_shows_the_shipped_hooks_json(self):
-        page = (ROOT.parents[2] / "src/pages/docs/integrations/coding-agents/devin-desktop.mdx").read_text(encoding="utf-8")
-        block = page.split("```json\n", 1)[1].split("\n```", 1)[0]
+        block = PAGE.split("```json\n", 1)[1].split("\n```", 1)[0]
         self.assertEqual(json.loads(block)["hooks"], HOOKS)
 
     def test_missing_emitter_never_blocks(self):
@@ -95,11 +104,111 @@ class DevinDesktopHooksConfigTest(unittest.TestCase):
         finally:
             shutil.rmtree(empty_bin, ignore_errors=True)
 
+    def install(self) -> subprocess.CompletedProcess:
+        result = subprocess.run([BASH, str(APP_DIR / "install.sh")], capture_output=True, text=True,
+                                env={"PATH": os.environ.get("PATH", ""), "HOME": self.home}, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def write_env_file(self, receiver: Receiver) -> Path:
+        """The page's env file, pointed at a local receiver instead of Future AGI."""
+        env_file = Path(self.home, ".config/fi-hook-to-otlp/env")
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text(f"FI_API_KEY=k\nFI_SECRET_KEY=s\nFI_HOOK_SYNC=1\n"
+                            f"FI_OTLP_ENDPOINT={receiver.url}/v1/traces\n"
+                            f"FI_HOOK_LOG_FILE={self.home}/fi-hook.log\n", encoding="utf-8")
+        return env_file
+
+    def tmpdir(self) -> str:
+        """A TMPDIR with a trailing slash, as macOS sets it."""
+        path = os.path.join(self.home, "tmp")
+        os.mkdir(path)
+        return path + "/"
+
+    def log_lines(self) -> list:
+        log = Path(self.home, "fi-hook.log")
+        return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+    def test_page_manual_hook_run_sends_one_test_trace_unless_disabled(self):
+        self.install()
+        receiver = Receiver()
+        try:
+            self.write_env_file(receiver)
+            tmp = self.tmpdir()
+            command = page_bash_block("Run one hook by hand")
+            self.assertIn("put `FI_HOOK_DISABLED=1` in front of `python3`", PAGE)
+            disabled = command.replace("| python3 ", "| FI_HOOK_DISABLED=1 python3 ", 1)
+            self.assertNotEqual(disabled, command)
+            result = run(disabled, BASH, "stdin", self.home, "", TMPDIR=tmp)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            self.assertEqual((receiver.requests, self.log_lines()), ([], []), "disabled: nothing sent or logged")
+            self.assertEqual(list(Path(tmp).rglob("*.json")), [], "disabled: no state written")
+
+            result = run(command, BASH, "stdin", self.home, "", TMPDIR=tmp)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            receiver.wait_for(1)
+            self.assertEqual(len(receiver.requests), 1)
+            spans = all_spans(receiver.requests[0][2])
+            self.assertEqual(sorted(s["name"] for s in spans), ["Cascade session", "read_code"])
+            self.assertIn("one test trace to your project (a **Cascade session** with session id `fi-hook-test`"
+                          " and one **read_code** span)", PAGE)
+            for span in spans:
+                sid = [a["value"]["stringValue"] for a in span["attributes"] if a["key"] == "session.id"]
+                self.assertEqual(sid, ["fi-hook-test"], span["name"])
+            lines = self.log_lines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn("http=200", lines[0])
+        finally:
+            receiver.close()
+
+    def test_no_keys_means_no_log_lines(self):
+        # Troubleshooting step 1: without keys (or with FI_HOOK_DISABLED=1) the emitter logs nothing.
+        self.install()
+        receiver = Receiver()
+        try:
+            env_file = self.write_env_file(receiver)
+            keyed = env_file.read_text(encoding="utf-8")
+            command = HOOKS["post_read_code"][0]["command"]
+            for label, text in (("no keys", keyed.replace("FI_API_KEY=k\nFI_SECRET_KEY=s\n", "")),
+                                ("disabled", keyed + "FI_HOOK_DISABLED=1\n")):
+                env_file.write_text(text, encoding="utf-8")
+                result = run(command, BASH, "stdin", self.home, payload("post_read_code"),
+                             FI_HOOK_STATE_DIR=os.path.join(self.home, "state"))
+                self.assertEqual((result.returncode, result.stdout), (0, ""), label)
+                self.assertEqual((receiver.requests, self.log_lines()), ([], []), label)
+        finally:
+            receiver.close()
+
+    def test_page_uninstall_removes_emitter_state_and_keys(self):
+        install = self.install()
+        self.assertIn("~/.config/fi-hook-to-otlp/env", install.stdout)
+        self.assertIn(f"fi-hook-to-otlp-{os.getuid()}/devin_desktop", install.stdout)
+        receiver = Receiver()
+        try:
+            env_file = self.write_env_file(receiver)
+            tmp = self.tmpdir()
+            for event in ("pre_user_prompt", "post_read_code"):  # default state dir under TMPDIR
+                result = run(HOOKS[event][0]["command"], BASH, "stdin", self.home, payload(event), TMPDIR=tmp)
+                self.assertEqual(result.returncode, 0, event)
+        finally:
+            receiver.close()
+        state_dir = Path(tmp, f"fi-hook-to-otlp-{os.getuid()}", "devin_desktop")
+        self.assertTrue(list(state_dir.glob("*.json")), "a hook left a state file")
+        emitter_dir = Path(self.home, ".codeium/windsurf/fi-hook-to-otlp")
+        self.assertTrue(emitter_dir.is_dir())
+
+        result = run(page_bash_block("## Uninstall"), BASH, "stdin", self.home, "", TMPDIR=tmp)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertFalse(emitter_dir.exists())
+        self.assertFalse(state_dir.exists())
+        self.assertFalse(env_file.exists())
+        self.assertTrue(Path(self.home, ".codeium/windsurf/hooks.json").exists(), "hooks.json is edited by hand")
+        # A second run (nothing left to delete) still succeeds.
+        result = run(page_bash_block("## Uninstall"), BASH, "stdin", self.home, "", TMPDIR=tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_installed_commands_read_the_payload_and_print_nothing(self):
-        install = subprocess.run([shutil.which("bash") or "/bin/bash", str(APP_DIR / "install.sh")],
-                                 capture_output=True, text=True,
-                                 env={"PATH": os.environ.get("PATH", ""), "HOME": self.home}, timeout=30)
-        self.assertEqual(install.returncode, 0, install.stderr)
+        self.install()
         installed = json.loads(Path(self.home, ".codeium/windsurf/hooks.json").read_text())["hooks"]
         self.assertEqual(installed, HOOKS)
         for shell in SHELLS:

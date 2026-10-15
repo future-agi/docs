@@ -67,6 +67,30 @@ class DevinDesktopAdapterTest(unittest.TestCase):
         self.assertEqual(write["devin_desktop.model_label"], "Claude Sonnet 4")
         self.assertNotIn("devin_desktop.action", write)  # duplicates coding_agent.hook.event
 
+    def test_common_fields_are_on_tool_and_turn_spans_not_the_root(self):
+        # The page: every tool and turn span carries the hook name, the turn id and the model
+        # label; the Cascade session span has no turn id and carries the model as llm.model_name.
+        spans = self.spans()
+        root_id = emit.span_id("devin_desktop", SID, SESSION, "")
+        known_model_turn = "fixture-exec-0001"
+        for span in spans:
+            a = attrs(span)
+            self.assertIn("coding_agent.hook.event", a, span["name"])
+            if span["spanId"] == root_id:
+                self.assertNotIn("coding_agent.turn.id", a)
+                self.assertNotIn("devin_desktop.model_label", a)
+                self.assertEqual(a["llm.model_name"], "Claude Sonnet 4")
+                continue
+            self.assertIn("coding_agent.turn.id", a, span["name"])
+            if a["coding_agent.turn.id"] == known_model_turn:
+                self.assertEqual(a["devin_desktop.model_label"], "Claude Sonnet 4", span["name"])
+                if span["name"] == "Cascade turn":
+                    self.assertEqual(a["llm.model_name"], "Claude Sonnet 4")
+        tools = [s for s in spans if s["spanId"] != root_id and s["name"] != "Cascade turn"]
+        self.assertTrue(tools)
+        for span in tools:
+            self.assertNotIn("llm.model_name", attrs(span), span["name"])
+
     def test_tool_status(self):
         spans = self.spans()
         # Read, write and MCP hooks fire after a successful action; a command's outcome is unknown.

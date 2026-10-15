@@ -32,4 +32,6 @@ echo
 echo "Credentials: put FI_API_KEY, FI_SECRET_KEY and FI_PROJECT_NAME in"
 echo "~/.config/fi-hook-to-otlp/env (chmod 600). Devin Desktop started from the"
 echo "Dock may not see variables exported in your shell."
-echo "To uninstall: remove the entries from $HOOK_DIR/hooks.json first, then delete $DEST."
+echo "To uninstall: remove the entries from $HOOK_DIR/hooks.json first, then delete $DEST,"
+echo "the state files in \${TMPDIR:-/tmp}/fi-hook-to-otlp-$(id -u)/devin_desktop and, if no other"
+echo "app's hook uses it, ~/.config/fi-hook-to-otlp/env."

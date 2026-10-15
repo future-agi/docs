@@ -92,15 +92,15 @@ Open **Observe** in Future AGI and select the project (`cascade-sessions` above)
 | `post_mcp_tool_use` | tool span named after `mcp_tool_name`, status OK | MCP server and tool name |
 | `post_cascade_response` | **Cascade turn** end | |
 
-Every span also carries the hook name (`coding_agent.hook.event`), the turn's `execution_id` (`coding_agent.turn.id`), and the model label. Cascade fires the read, write, and MCP post-hooks after a successful action, so those spans are OK. `post_run_command` carries no exit code, so a command span's status is left unset rather than shown as successful.
+Every tool and turn span also carries the hook name (`coding_agent.hook.event`), the turn's `execution_id` (`coding_agent.turn.id`), and the model label (`devin_desktop.model_label`). The **Cascade session** span has no turn id; it carries the model as `llm.model_name`. Cascade fires the read, write, and MCP post-hooks after a successful action, so those spans are OK. `post_run_command` carries no exit code, so a command span's status is left unset rather than shown as successful.
 
-The model is Cascade's `model_name`, the label shown in the model selector (for example `Claude Sonnet 4`). It is recorded as `llm.model_name` and `devin_desktop.model_label`, but it is a display name that Devin Desktop may change, not a stable model id. When Cascade reports `Unknown`, no model is recorded.
+The model is Cascade's `model_name`, the label shown in the model selector (for example `Claude Sonnet 4`). It is recorded as `llm.model_name` on the session and turn spans and as `devin_desktop.model_label` on the turn and tool spans. It is a display name that Devin Desktop may change, not a stable model id. When Cascade reports `Unknown`, no model is recorded.
 
 ## What is not available
 
 - **Token counts, cost, and model request spans.** Cascade hooks do not report them.
 - **Tool duration, tool call ids, and command exit codes.** Post-hooks carry none of them, so tool spans mark when the action finished and a failed command is not marked as an error.
-- **Session start and end.** Cascade has no session hook. The session span starts at the first prompt and is re-sent, with a later end time, whenever a turn or tool span is sent. The emitter's per-conversation state file is therefore not deleted at the end of a conversation; it is swept after 24 hours (`FI_HOOK_STATE_TTL_HOURS`).
+- **Session start and end.** Cascade has no session hook. The session span starts at the first prompt and is re-sent, with a later end time, whenever a turn or tool span is sent. The emitter's per-conversation state file is therefore not deleted at the end of a conversation. Instead, each new prompt (in any conversation) deletes state files unused for 24 hours (`FI_HOOK_STATE_TTL_HOURS`). The sweep runs only when a hook runs, so see [Uninstall](#uninstall) for the files left behind when you remove the hooks.
 - **Turn status.** There is no hook for a cancelled or failed turn. If Cascade never sends `post_cascade_response` for a turn, the emitter closes that turn when your next prompt starts and marks it `coding_agent.incomplete=true`; if the response hook arrives later after all, the turn is re-sent complete.
 - **Devin Local and hosted Devin.** See [About](#about).
 
@@ -120,20 +120,33 @@ Devin Desktop 3.8.20 was downloaded and its bundled Cascade language server was 
 ## Troubleshooting
 
 **No trace appears.**
-1. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and send another prompt. No lines: Cascade did not run the command (check that `python3` resolves and the emitter path exists, and that the workspace is not in Restricted Mode). `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
+1. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env`, send another prompt, and let Cascade finish. Each hook that sends spans writes one line; the turn start alone writes none.
+   - No lines: either Cascade did not run the command (check that `python3` resolves, that the emitter path exists, and that the workspace is not in Restricted Mode), or the emitter is not sending. It sends and logs nothing when it finds no keys or `FI_HOOK_DISABLED=1` is set. Check that `FI_API_KEY` and `FI_SECRET_KEY` are in `~/.config/fi-hook-to-otlp/env` at exactly that path, because the app may not see keys exported only in your shell.
+   - `error=` lines: the collector is unreachable.
+   - `http=401`/`403`: wrong keys.
 2. Run one hook by hand. The guard hides errors, so drop it while testing:
    ```bash
-   echo '{"agent_action_name":"post_read_code","trajectory_id":"t1","execution_id":"e1","tool_info":{}}' \
+   echo '{"agent_action_name":"post_read_code","trajectory_id":"fi-hook-test","execution_id":"e1","tool_info":{}}' \
      | python3 -B ~/.codeium/windsurf/fi-hook-to-otlp/emit.py devin_desktop post_read_code
    ```
-   It should exit 0 without output. A `can't open file` error means the emitter is not installed at that path.
+   It should exit 0 without output. A `can't open file` error means the emitter is not installed at that path. With keys in the env file, this sends one test trace to your project (a **Cascade session** with session id `fi-hook-test` and one **read_code** span) and writes an `http=` line to the log from step 1. To check only that the emitter runs, without sending anything, put `FI_HOOK_DISABLED=1` in front of `python3`.
 3. If your organization also deploys hooks from the Devin Desktop dashboard or a system-level `hooks.json`, they run before yours (dashboard, system, user, then workspace).
 
 **A turn is marked incomplete.** Cascade did not send `post_cascade_response` for that turn before the next prompt (for example, the turn was cancelled). If the last turn of a conversation has no turn span at all, check that `post_cascade_response` is in `hooks.json`: Cascade has no session-end hook to close it.
 
 ## Uninstall
 
-Remove the Future AGI entries from `~/.codeium/windsurf/hooks.json` first, then delete `~/.codeium/windsurf/fi-hook-to-otlp/`. To pause tracing without editing the hook file, set `FI_HOOK_DISABLED=1` in the env file.
+Remove the Future AGI entries from `~/.codeium/windsurf/hooks.json` first. Then delete the emitter and the files it leaves behind. Once the hooks stop running, nothing sweeps the state files:
+
+```bash
+rm -rf ~/.codeium/windsurf/fi-hook-to-otlp                       # the emitter
+rm -rf "${TMPDIR:-/tmp}/fi-hook-to-otlp-$(id -u)/devin_desktop"   # per-conversation state files
+rm -f ~/.config/fi-hook-to-otlp/env                              # your keys; keep it if another app's hook still uses it
+```
+
+The state files hold turn ids, the model label, and timing. While content capture is on, they also hold the open turn's prompt and the content of turns closed as incomplete. If you set `FI_HOOK_STATE_DIR`, they are in `$FI_HOOK_STATE_DIR/devin_desktop` instead.
+
+To pause tracing without editing the hook file, set `FI_HOOK_DISABLED=1` in the env file.
 
 ## Next Steps
 
