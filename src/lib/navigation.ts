@@ -961,6 +961,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:claude-code
               // coding-agents:claude-cowork
               // coding-agents:codex
+              { title: 'Codex', href: '/docs/integrations/coding-agents/codex' },
               // coding-agents:codex-sdk
               // coding-agents:cursor
               { title: 'Cursor', href: '/docs/integrations/coding-agents/cursor' },
