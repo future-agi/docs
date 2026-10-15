@@ -29,6 +29,9 @@ Observed on real Cursor 3.24.18 payloads (not in the docs):
   ``cache_read_tokens``, ``cache_write_tokens`` for the turn. They go on the
   "Agent response" LLM span as standard token counts (the turn keeps them as
   ``cursor.usage.*`` so trace totals are not counted twice).
+- ``tool_use_id`` can be two ids joined by a newline (Cursor's ``call-...``
+  id, then the provider's function-call id). The first line is the call id;
+  the second is kept as ``cursor.tool.provider_call_id``.
 - ``afterAgentThought`` fires twice per thinking block, once with a
   ``generation_id`` suffixed ``-<n>-<4 chars>``. Suffixes are stripped and the
   pair maps to one span id.
@@ -124,6 +127,17 @@ def _usage(payload: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     return compact(usage)
 
 
+def _tool_call_ids(payload: Dict[str, Any]) -> "tuple[str, Optional[str]]":
+    """(call id, provider call id) from a possibly newline-joined ``tool_use_id``."""
+    raw = first(payload, "tool_use_id")
+    if raw is None:
+        return "", None
+    parts = [part.strip() for part in str(raw).splitlines() if part.strip()]
+    if not parts:
+        return "", None
+    return parts[0], (parts[1] if len(parts) > 1 else None)
+
+
 def _digest(*parts: Any) -> str:
     raw = "\x1f".join("" if p is None else str(p) for p in parts)
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
@@ -195,9 +209,10 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         tool_name = str(first(payload, "tool_name") or "tool")
         failed = event == "postToolUseFailure"
         failure_type = payload.get("failure_type") if failed else None
+        call_id, provider_call_id = _tool_call_ids(payload)
         return [SpanEvent(
             END, TOOL, sid,
-            key=str(first(payload, "tool_use_id") or ""),
+            key=call_id,
             turn_id=turn,
             name=tool_name,
             duration_ms=number(payload.get("duration")),
@@ -208,6 +223,7 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
             error_message=payload.get("error_message") if failed else None,
             attributes=compact({
                 "cursor.tool.name": tool_name,
+                "cursor.tool.provider_call_id": provider_call_id,
                 "cursor.tool.duration_ms": number(payload.get("duration")),
                 "cursor.tool.failure_type": failure_type,
                 "cursor.tool.is_interrupt": payload.get("is_interrupt") if failed else None,

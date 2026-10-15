@@ -143,6 +143,10 @@ class CursorAdapterTest(unittest.TestCase):
                          ("38779", "306", "39085"))
         self.assertEqual(a["llm.token_count.prompt_details.cache_read"], "24192")
         self.assertEqual(a["llm.model_name"], "grok-4.6")
+        read = [s for s in spans if s["name"] == "Read"][0]
+        self.assertEqual(attrs(read)["gen_ai.tool.call.id"], "call-f3e41504-16cd-4345-9614-dccb061cbdd4-1")
+        self.assertEqual(attrs(read)["cursor.tool.provider_call_id"], "fc_cdbfcc58-3e58-9ca2-92f0-366509226caf_1")
+        self.assertFalse(any("\n" in str(v) for s in spans for v in attrs(s).values()))
         turn = latest(spans, turn_id)
         self.assertEqual(attrs(turn)["cursor.usage.input_tokens"], "38779")
         self.assertNotIn("llm.token_count.prompt", attrs(turn))
