@@ -3,20 +3,25 @@
 ``session.jsonl`` is a sanitized capture from a real grok 1.0.52 session
 (ids, paths and bodies replaced, keys kept). ``edge.jsonl`` is shaped as
 https://docs.x.ai/build/features/hooks and the bundled hooks guide document
-the failure, denial, compaction and cancel events.
+the failure, denial, compaction and cancel events, plus shell results with
+a non-zero exit, a timeout, and a truncated (string) result, using the
+``toolResult`` keys of a real grok 1.0.52 ``run_terminal_command``.
 """
 from __future__ import annotations
 
 import builtins
+import io
 import json
+import os
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.helpers import FIXTURES, attrs, by_name, config, latest, load_jsonl, replay
 
 import emit
 from adapters import grok_build
-from adapters.base import SESSION, SUBAGENT, TOOL, TURN
+from adapters.base import OK, SESSION, SUBAGENT, TOOL, TURN
 
 SESSION_FIXTURE = FIXTURES / "grok_build" / "session.jsonl"
 EDGE_FIXTURE = FIXTURES / "grok_build" / "edge.jsonl"
@@ -26,8 +31,13 @@ MARKERS = ("PROMPT_MARKER_GROK", "TOOL_INPUT_MARKER_GROK", "TOOL_OUTPUT_MARKER_G
            "RESPONSE_MARKER_GROK", "SUBAGENT_TASK_MARKER_GROK", "ERROR_MARKER_GROK")
 # Never exported, even with content capture on.
 NEVER = ("fixture-transcript-CANARY", "NOTIFICATION_MARKER_GROK")
-# Paths only appear inside opted-in content, never as metadata.
-DEFAULT_ONLY = ("/Users/fixture/project",)
+# Paths only appear inside opted-in content, never as metadata; the
+# error-details path (with a user name) only with content capture on.
+DEFAULT_ONLY = ("/Users/fixture/project", "/Users/alice")
+
+
+def by_call_id(spans, call_id):
+    return [s for s in spans if attrs(s).get("gen_ai.tool.call.id") == call_id]
 
 
 class GrokBuildAdapterTest(unittest.TestCase):
@@ -107,7 +117,7 @@ class GrokBuildAdapterTest(unittest.TestCase):
         failed = by_name(spans, "github__search_repositories")[0]
         self.assertEqual(failed["status"], {"code": 2, "message": "tool failed"})
         self.assertEqual(attrs(failed)["grok_build.tool.outcome"], "failure")
-        denied = by_name(spans, "run_terminal_command")[0]
+        denied = by_call_id(spans, "call_fixture_edge_2")[0]
         self.assertEqual(denied["status"], {"code": 2, "message": "permission denied"})
         turn1 = latest(spans, emit.span_id("grok_build", "fixture-grok-session-0101", TURN, "fixture-grok-prompt-0101"))
         self.assertEqual(turn1["status"], {"code": 2, "message": "rate_limit"})
@@ -118,6 +128,24 @@ class GrokBuildAdapterTest(unittest.TestCase):
         self.assertEqual(attrs(turn2)["grok_build.stop.cancelled_by"], "user")
         self.assertEqual(attrs(by_name(spans, "Context compaction")[0])["grok_build.compaction.trigger"], "auto")
         self.assertEqual(len({s["traceId"] for s in spans}), 1)
+
+    def test_shell_exit_code_and_timeout(self):
+        spans = self.spans(EDGE_FIXTURE)
+        exit1 = by_call_id(spans, "call_fixture_edge_exit1")[0]
+        self.assertEqual(exit1["status"], {"code": 2, "message": "exit code 1"})
+        self.assertEqual(attrs(exit1)["grok_build.tool.exit_code"], "1")
+        self.assertEqual(attrs(exit1)["grok_build.tool.outcome"], "failure")
+        timeout = by_call_id(spans, "call_fixture_edge_timeout")[0]
+        self.assertEqual(timeout["status"], {"code": 2, "message": "timed out"})
+        self.assertIs(attrs(timeout)["grok_build.tool.timed_out"], True)
+        self.assertEqual(attrs(timeout)["grok_build.tool.signal"], "SIGKILL")
+        truncated = attrs(by_call_id(spans, "call_fixture_edge_truncated")[0])
+        self.assertNotIn("grok_build.tool.exit_code", truncated)  # string result: not parsed
+        self.assertEqual(truncated["grok_build.tool.outcome"], "success")
+        # A real capture's shell call (exit 0) stays OK.
+        ok = [s for s in self.spans() if s["name"] == "run_terminal_command"]
+        self.assertTrue(ok)
+        self.assertEqual({s["status"]["code"] for s in ok}, {1})
 
     def test_default_export_has_no_content_or_paths(self):
         encoded = json.dumps(self.spans() + self.spans(EDGE_FIXTURE))
@@ -134,27 +162,50 @@ class GrokBuildAdapterTest(unittest.TestCase):
         self.assertIn("TOOL_OUTPUT_MARKER_GROK", read["output.value"])
         edge = json.dumps(self.spans(EDGE_FIXTURE, capture=True))
         self.assertIn("ERROR_MARKER_GROK_DETAILS", edge)
+        # Opted-in error text keeps the path but not the user name in it.
+        self.assertNotIn("/Users/alice", edge)
+        self.assertIn("/Users/<user>/work/.grok/config.toml", edge)
         encoded = json.dumps(spans) + edge
         for marker in NEVER:
             self.assertNotIn(marker, encoded, marker)
 
     def test_transcript_path_is_never_opened(self):
-        real_open = builtins.open
         opened = []
 
-        def guard(path, *args, **kwargs):
-            opened.append(str(path))
-            return real_open(path, *args, **kwargs)
+        def spy(real):
+            def wrapper(path, *args, **kwargs):
+                opened.append(str(path))
+                return real(path, *args, **kwargs)
+            return wrapper
 
-        builtins.open = guard
-        try:
+        with mock.patch("builtins.open", spy(builtins.open)), mock.patch("io.open", spy(io.open)), \
+                mock.patch("os.open", spy(os.open)):
             self.spans(capture=True)
-        finally:
-            builtins.open = real_open
+            self.spans(EDGE_FIXTURE, capture=True)
+        self.assertTrue(opened)  # the spies saw the state files
         self.assertFalse([p for p in opened if "CANARY" in p], opened)
 
+    def test_free_text_never_becomes_metadata(self):
+        base = {"sessionId": "s1", "promptId": "p1"}
+        (failure,) = grok_build.parse("StopFailure", dict(
+            base, error="429 from /Users/alice/proj", errorDetails="ERROR_DETAILS /Users/alice/x"))
+        self.assertEqual((failure.status_message, failure.attributes["grok_build.stop.error"]),
+                         ("unknown", "unknown"))
+        self.assertEqual(failure.error_message, "ERROR_DETAILS /Users/alice/x")  # content, opt-in only
+        (stop,) = grok_build.parse("Stop", dict(base, reason="stopped in /Users/alice/proj"))
+        self.assertNotIn("grok_build.stop.reason", stop.attributes)
+        (end,) = grok_build.parse("SessionEnd", dict(base, reason="shutdown"))
+        self.assertEqual(end.attributes["grok_build.session.end_reason"], "shutdown")
+        (tool,) = grok_build.parse("PostToolUse", dict(
+            base, toolName="run_terminal_command", toolUseId="t1",
+            toolResult={"exit_code": 0, "signal": "killed by /Users/alice/x", "timed_out": False}))
+        self.assertNotIn("grok_build.tool.signal", tool.attributes)
+        self.assertEqual(tool.status, OK)
+
     def test_missing_session_id_is_dropped(self):
-        self.assertEqual(grok_build.parse("PreToolUse", {"toolName": "read_file", "toolUseId": "x"}), [])
+        payload = {"hook_event_name": "PostToolUse", "toolName": "read_file", "toolUseId": "x", "durationMs": 3}
+        self.assertEqual(grok_build.parse("PostToolUse", payload), [])
+        self.assertTrue(grok_build.parse("PostToolUse", dict(payload, sessionId="s1")))
 
 
 if __name__ == "__main__":

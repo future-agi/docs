@@ -32,3 +32,4 @@ echo
 echo "Credentials: put FI_API_KEY, FI_SECRET_KEY and FI_PROJECT_NAME in"
 echo "~/.config/fi-hook-to-otlp/env (chmod 600), or export them before starting grok."
 echo "Check the hooks loaded with: grok inspect"
+echo "To uninstall: delete $GROK_DIR/hooks/futureagi.json first, then $DEST."

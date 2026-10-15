@@ -12,7 +12,9 @@ Mapped events:
     SessionStart        -> session start
     UserPromptSubmit    -> turn start (key promptId)     prompt = content
     PostToolUse         -> tool span (key toolUseId), start = end - durationMs
-                           toolInput / toolResult = content
+                           toolInput / toolResult = content; for shell tools
+                           the result's exit_code / timed_out are metadata
+                           and a non-zero exit or a timeout is ERROR
     PostToolUseFailure  -> tool end, ERROR               error = content
     PermissionDenied    -> tool end, ERROR "permission denied"
     Stop                -> turn end (only with promptId; the session-end
@@ -38,9 +40,15 @@ own run time.
 
 Never exported: ``cwd``, ``workspaceRoot``, ``transcriptPath`` (never
 opened). Grok sends no model id, token counts, or cost in hook payloads.
+Reason-like fields (stop reason, cancel source, end reason, start source,
+permission mode, compaction trigger, signal) are exported only when they are
+a short enum-like token; the ``StopFailure`` status message is one of grok's
+documented error types (anything else reads ``unknown``). Free text, such as
+``errorDetails``, a tool ``error`` or a denial ``reason``, is content.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from adapters.base import (
@@ -51,6 +59,11 @@ from adapters.base import (
 APP = "grok_build"
 DISPLAY_NAME = "Grok Build"
 SERVICE_NAME = "grok-build"
+
+# Documented ``StopFailure`` error types (bundled hooks guide, grok 1.0.52).
+STOP_ERRORS = frozenset({"rate_limit", "authentication_failed", "invalid_request", "server_error",
+                         "max_output_tokens", "unknown"})
+_TOKEN = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 # grok's own snake_case names (``hookEventName``) -> Claude-style names.
 _PASCAL = {
@@ -75,9 +88,14 @@ def event_name(argv_event: Optional[str], payload: Dict[str, Any]) -> Optional[s
     return _PASCAL.get(str(snake), str(snake)) if snake else None
 
 
+def _token(value: Any) -> Optional[str]:
+    """A vendor enum value (reason, source, mode, signal); free text is never metadata."""
+    return value if isinstance(value, str) and _TOKEN.fullmatch(value) else None
+
+
 def _base_attrs(payload: Dict[str, Any]) -> Dict[str, Any]:
     return compact({
-        "grok_build.permission_mode": first(payload, "permissionMode", "permission_mode"),
+        "grok_build.permission_mode": _token(first(payload, "permissionMode", "permission_mode")),
         "grok_build.subagent.type": payload.get("subagentType"),
     })
 
@@ -90,6 +108,23 @@ def _tool_attrs(payload: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
         "grok_build.tool.input_truncated": payload.get("toolInputTruncated"),
         "grok_build.tool.result_truncated": payload.get("toolResultTruncated"),
         "grok_build.tool.backgrounded": payload.get("isBackgrounded"),
+    })
+
+
+def _shell_outcome(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """exit_code / timed_out / signal from a shell tool's result (metadata).
+
+    Only read from a dict result: a truncated result arrives as a string.
+    """
+    result = first(payload, "toolResult", "tool_response")
+    if not isinstance(result, dict):
+        return {}
+    exit_code = result.get("exit_code")
+    signal = result.get("signal")
+    return compact({
+        "grok_build.tool.exit_code": exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+        "grok_build.tool.timed_out": result.get("timed_out") if isinstance(result.get("timed_out"), bool) else None,
+        "grok_build.tool.signal": signal if isinstance(signal, int) and not isinstance(signal, bool) else _token(signal),
     })
 
 
@@ -115,7 +150,7 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
     if event == "SessionStart":
         return [SpanEvent(START, SESSION, sid, attributes=compact({
             **_base_attrs(payload),
-            "grok_build.session.source": payload.get("source"),
+            "grok_build.session.source": _token(payload.get("source")),
         }))]
 
     if event == "SessionEnd":
@@ -125,7 +160,7 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
             name=f"{DISPLAY_NAME} subagent session: {subagent_type}" if subagent_type else None,
             attributes=compact({
                 **_base_attrs(payload),
-                "grok_build.session.end_reason": payload.get("reason"),
+                "grok_build.session.end_reason": _token(payload.get("reason")),
             }),
         )]
 
@@ -143,20 +178,23 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
             return []
         failed = event == "StopFailure"
         cancelled = event == "StopCancelled"
-        error_type = payload.get("error") if failed else None
+        error_type = None
+        if failed:
+            raw = payload.get("error")
+            error_type = raw if isinstance(raw, str) and raw in STOP_ERRORS else "unknown"
         return [SpanEvent(
             END, TURN, sid, key=turn,
             status=ERROR if failed else (None if cancelled else OK),
-            status_message=str(error_type or "unknown") if failed else None,
+            status_message=error_type,
             output=None if (failed or cancelled) else payload.get("lastAssistantMessage"),
             error_message=payload.get("errorDetails") if failed else None,
             attributes=compact({
                 **_base_attrs(payload),
                 "grok_build.prompt_id": turn,
                 "grok_build.stop.event": event,
-                "grok_build.stop.reason": payload.get("reason"),
+                "grok_build.stop.reason": _token(payload.get("reason")),
                 "grok_build.stop.error": error_type,
-                "grok_build.stop.cancelled_by": payload.get("cancelledBy") if cancelled else None,
+                "grok_build.stop.cancelled_by": _token(payload.get("cancelledBy")) if cancelled else None,
             }),
         )]
 
@@ -164,19 +202,28 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         tool_name = str(first(payload, "toolName", "tool_name") or "tool")
         failed = event != "PostToolUse"
         denied = event == "PermissionDenied"
+        shell = {} if failed else _shell_outcome(payload)
+        exit_code = shell.get("grok_build.tool.exit_code")
+        message = ("permission denied" if denied else "tool failed") if failed else None
+        if shell.get("grok_build.tool.timed_out"):
+            message = "timed out"
+        elif exit_code not in (None, 0):
+            message = f"exit code {exit_code}"
+        outcome = "permission_denied" if denied else ("failure" if (failed or message) else "success")
         return [SpanEvent(
             END, TOOL, sid,
             key=str(first(payload, "toolUseId", "tool_use_id") or ""),
             name=tool_name,
             duration_ms=number(payload.get("durationMs")),
-            status=ERROR if failed else OK,
-            status_message=("permission denied" if denied else "tool failed") if failed else None,
+            status=ERROR if message else OK,
+            status_message=message,
             input=first(payload, "toolInput", "tool_input"),
             output=None if failed else first(payload, "toolResult", "tool_response"),
             error_message=first(payload, "error", "reason") if failed else None,
             attributes=compact({
                 **_tool_attrs(payload, tool_name),
-                "grok_build.tool.outcome": "permission_denied" if denied else ("failure" if failed else "success"),
+                **shell,
+                "grok_build.tool.outcome": outcome,
             }),
         )]
 
@@ -197,7 +244,7 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
     if event == "PostCompact":
         return [SpanEvent(INSTANT, EVENT, sid, name="Context compaction", attributes=compact({
             **_base_attrs(payload),
-            "grok_build.compaction.trigger": payload.get("trigger"),
+            "grok_build.compaction.trigger": _token(payload.get("trigger")),
         }))]
 
     return []
