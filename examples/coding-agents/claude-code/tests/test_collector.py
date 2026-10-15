@@ -140,10 +140,15 @@ class CollectorConfigTest(unittest.TestCase):
         self.assertEqual(kinds, {
             "claude_code.interaction": "AGENT",
             "claude_code.llm_request": "LLM",
-            "claude_code.tool": "TOOL",
+            "Bash": "TOOL",  # tool spans are renamed after tool_name
+            "Read": "TOOL",
             "claude_code.tool.blocked_on_user": "CHAIN",
             "claude_code.tool.execution": "CHAIN",
         })
+        for _, s, a in spans:
+            if a.get("fi.span.kind") == "TOOL":
+                self.assertEqual(s["name"], a["tool_name"])
+                self.assertEqual(a["span.type"], "tool")
         for _, _, a in self.by_name(spans, "claude_code.llm_request"):
             self.assertEqual(a["gen_ai.usage.input_tokens"],
                              a["input_tokens"] + a["cache_read_tokens"] + a["cache_creation_tokens"])
@@ -174,7 +179,7 @@ class CollectorConfigTest(unittest.TestCase):
         spans = self.send(json.loads(CONTENT_FIXTURE.read_text()))
         (_, _, interaction), = self.by_name(spans, "claude_code.interaction")
         self.assertIn("MARKER-FIXTURE-OPTIN", interaction["input.value"])
-        tools = {a["tool_name"]: a for _, _, a in self.by_name(spans, "claude_code.tool")}
+        tools = {s["name"]: a for _, s, a in spans if a.get("fi.span.kind") == "TOOL"}
         self.assertEqual(tools["Bash"]["input.value"], tools["Bash"]["full_command"])
         self.assertTrue(tools["Bash"]["output.value"])
         self.assertTrue(tools["Read"]["input.value"].endswith("README.md"))
