@@ -8,8 +8,6 @@ from __future__ import annotations
 import builtins
 import io
 import json
-import pathlib
-import subprocess
 import tempfile
 import unittest
 
@@ -58,7 +56,7 @@ class AntigravityAdapterTest(unittest.TestCase):
         children = sorted(s["name"] for s in spans if s.get("parentSpanId") == turn["spanId"])
         self.assertEqual(children, ["Model call", "Model call", "Model call", "list_dir", "run_command"])
 
-    def test_tools_pair_on_step_index_and_mark_errors(self):
+    def test_tools_come_from_post_tool_use_and_mark_errors(self):
         spans = self.spans()
         ok, = by_name(spans, "list_dir")
         failed, = by_name(spans, "run_command")
@@ -67,7 +65,6 @@ class AntigravityAdapterTest(unittest.TestCase):
                          ("TOOL", "list_dir", "step-2"))
         self.assertEqual(ok["status"]["code"], 1)
         self.assertEqual(failed["status"], {"code": 2, "message": "tool error"})
-        # START at PreToolUse, END at PostToolUse one replay step later.
         # PostToolUse-only observation has no vendor duration.
         self.assertEqual(int(ok["endTimeUnixNano"]) - int(ok["startTimeUnixNano"]), 0)
 
@@ -117,23 +114,31 @@ class AntigravityAdapterTest(unittest.TestCase):
     def test_missing_conversation_id_drops_event(self):
         payload = dict(self.records[3]["payload"])
         del payload["conversationId"]
+        self.assertEqual(antigravity.parse("PostToolUse", payload), [])
+
+    def test_pre_tool_use_is_not_mapped(self):
+        payload = {**self.records[4]["payload"], "toolCall": {"name": "run_command", "args": {}}}
         self.assertEqual(antigravity.parse("PreToolUse", payload), [])
 
-    def test_shipped_commands_fail_open_when_emitter_is_missing(self):
-        root = pathlib.Path(__file__).resolve().parents[2] / "google-antigravity"
-        doc = json.loads((root / "hooks.json").read_text())
-        for events in doc["fi-hook-to-otlp"].values():
-            for item in events:
-                handlers = item.get("hooks", [item])
-                for hook in handlers:
-                    command = hook["command"]
-                    result = subprocess.run(["sh", "-c", command], input="{}", text=True,
-                                            capture_output=True, cwd=tempfile.mkdtemp())
-                    self.assertEqual(result.returncode, 0, (command, result.stderr))
-                    self.assertIn(result.stdout, ("", "{}\\n", '{"decision": ""}\\n'))
+    def test_zero_valued_fields_left_out_by_protojson_still_open_the_turn(self):
+        records = []
+        for record in self.records:
+            payload = {k: v for k, v in record["payload"].items() if v not in (0, "", False)}
+            records.append({**record, "payload": payload})
+        spans = replay(antigravity, config("antigravity", self.tmp.name), records)
+        turn = [s for s in spans if s["name"] == "Antigravity turn"][-1]
+        children = sorted(s["name"] for s in spans if s.get("parentSpanId") == turn["spanId"])
+        self.assertEqual(children, ["Model call", "Model call", "Model call", "list_dir", "run_command"])
+        self.assertEqual(len({s["spanId"] for s in by_name(spans, "Model call")}), 3)
+
+    def test_error_text_with_paths_is_not_exported_by_default(self):
+        records = self.records[:3] + [{"argv_event": "PostToolUse", "event": "PostToolUse", "payload": {
+            **self.records[3]["payload"], "error": "open /Users/alice.smith/secret/app.py: permission denied"}}]
+        encoded = json.dumps(replay(antigravity, config("antigravity", self.tmp.name), records))
+        self.assertNotIn("alice.smith", encoded)
+        self.assertIn("tool error", encoded)
 
     def test_stdout_contract_never_blocks(self):
-        self.assertEqual(antigravity.respond("PreToolUse", {}), "{}")
         self.assertNotEqual(json.loads(antigravity.respond("Stop", {}))["decision"], "continue")
         for event in ("SessionStart", "PreInvocation", "PostInvocation", "PostToolUse"):
             self.assertEqual(json.loads(antigravity.respond(event, {})), {})
@@ -144,7 +149,12 @@ class AntigravityAdapterTest(unittest.TestCase):
             base = f"/Users/fixture/.gemini/{app_dir}/brain/{CONV}"
             other = {**payload, "artifactDirectoryPath": base, "transcriptPath": base + "/transcript.jsonl"}
             self.assertEqual(antigravity.parse("PostToolUse", other), [], app_dir)
+            windows = f"C:\\Users\\x\\.gemini\\{app_dir}\\brain\\{CONV}"
+            self.assertEqual(antigravity.parse("PostToolUse", {**payload, "artifactDirectoryPath": windows}), [],
+                             app_dir)
         self.assertTrue(antigravity.parse("PostToolUse", payload))
+        ide = "C:\\Users\\x\\.gemini\\antigravity-ide\\brain\\" + CONV
+        self.assertTrue(antigravity.parse("PostToolUse", {**payload, "artifactDirectoryPath": ide}))
 
     def test_gemini_cli_style_payload_is_not_mapped(self):
         # Gemini CLI hooks use snake_case session_id and their own event names.

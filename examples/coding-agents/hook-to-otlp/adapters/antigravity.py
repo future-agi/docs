@@ -11,11 +11,14 @@ do NOT name the event, so the hook command passes it on argv
     PreInvocation   -> model call start (key = initialNumSteps + invocationNum);
                        invocationNum 0 also opens a turn (one user message)
     PostInvocation  -> model call end
-    PostToolUse     -> tool span (key = stepIdx)     toolCall.args/result = content,
-                                                       ERROR when ``error`` is set
-
-Permission PreToolUse is intentionally not registered: this recipe is observe-only.
+    PostToolUse     -> completed tool span            toolCall.args/result = content,
+                       (gen_ai.tool.call.id = step-<stepIdx>), ERROR when ``error`` is set
     Stop            -> turn end                        ERROR when terminationReason is "error"
+
+PreToolUse is a permission hook (its ``decision`` can auto-allow, deny or ask), so
+the recipe does not register it and the adapter ignores it: tool spans come from
+PostToolUse alone, without a duration. The payloads are protojson, which may
+leave out zero values, so a missing ``invocationNum`` is read as 0.
 
 Antigravity has no session-end hook, so the session span is re-exported with
 every batch and stays open in between.
@@ -24,8 +27,8 @@ The Antigravity app, CLI and IDE share this hook schema but keep conversations
 in different app data directories (``~/.gemini/antigravity``,
 ``~/.gemini/antigravity-cli``, ``~/.gemini/antigravity-ide``). This adapter is
 for the IDE: an event whose ``artifactDirectoryPath`` / ``transcriptPath``
-sits under the app or CLI directory is dropped. The path is only compared as
-a string; it is never opened or exported.
+sits under the app or CLI directory is dropped (POSIX or Windows separators).
+The path is only compared as a string; it is never opened or exported.
 
 Never exported and never opened: ``transcriptPath``, ``artifactDirectoryPath``,
 ``workspacePaths``. ``lastUserInput``, ``result``, ``modelOutput`` and
@@ -66,8 +69,14 @@ def _int(value: Any) -> Optional[int]:
     return int(n) if n is not None else None
 
 
+def _num(payload: Dict[str, Any], key: str) -> int:
+    """protojson omits zero-valued scalars: a missing counter is 0."""
+    value = _int(payload.get(key))
+    return value if value is not None else 0
+
+
 def _llm_key(payload: Dict[str, Any]) -> str:
-    return f"inv-{_int(payload.get('initialNumSteps'))}-{_int(payload.get('invocationNum'))}"
+    return f"inv-{_num(payload, 'initialNumSteps')}-{_num(payload, 'invocationNum')}"
 
 
 def _tool(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -79,7 +88,7 @@ def _other_surface(payload: Dict[str, Any]) -> bool:
     for key in ("artifactDirectoryPath", "transcriptPath"):
         value = payload.get(key)
         if isinstance(value, str):
-            normalized = value.replace("\\\\", "/")
+            normalized = value.replace("\\", "/")
             if any(marker in normalized for marker in OTHER_SURFACES):
                 return True
     return False
@@ -97,21 +106,21 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         return [SpanEvent(START, SESSION, sid, model=model)]
 
     if event == "PreInvocation":
-        invocation = _int(payload.get("invocationNum"))
+        invocation = _num(payload, "invocationNum")
         events = []
         if invocation == 0:
             events.append(SpanEvent(START, TURN, sid, model=model, input=payload.get("lastUserInput")))
         events.append(SpanEvent(START, LLM, sid, key=_llm_key(payload), name="Model call", model=model,
                                 attributes=compact({
                                     "antigravity.invocation.num": invocation,
-                                    "antigravity.initial_num_steps": _int(payload.get("initialNumSteps")),
+                                    "antigravity.initial_num_steps": _num(payload, "initialNumSteps"),
                                 })))
         return events
 
     if event == "PostInvocation":
         return [SpanEvent(END, LLM, sid, key=_llm_key(payload), name="Model call", model=model, status=OK,
                           output=payload.get("modelOutput"),
-                          attributes=compact({"antigravity.invocation.num": _int(payload.get("invocationNum"))}))]
+                          attributes=compact({"antigravity.invocation.num": _num(payload, "invocationNum")}))]
 
     if event == "PostToolUse":
         call = _tool(payload)
