@@ -959,6 +959,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Hook-to-OTLP Emitter', href: '/docs/integrations/coding-agents/hook-to-otlp' },
               // coding-agents:augment-code
               // coding-agents:claude-code
+              { title: 'Claude Code', href: '/docs/integrations/coding-agents/claude-code' },
               // coding-agents:claude-cowork
               // coding-agents:codex
               // coding-agents:codex-sdk
