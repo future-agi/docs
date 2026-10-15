@@ -958,6 +958,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Hook-to-OTLP Emitter', href: '/docs/integrations/coding-agents/hook-to-otlp' },
               // coding-agents:augment-code
+              { title: 'Augment Code (Auggie CLI)', href: '/docs/integrations/coding-agents/augment-code' },
               // coding-agents:claude-code
               // coding-agents:claude-cowork
               // coding-agents:codex
