@@ -8,6 +8,8 @@ Usage (as a hook command):
 ``<app>`` selects ``adapters/<app>.py``. ``<event>`` is the hook name when
 the host does not put it in the payload. The script reads one JSON object
 from stdin, prints what the host expects on stdout, and always exits 0.
+If the adapter cannot be loaded or the script fails, it prints nothing
+(the same as a missing emitter behind the guarded hook command).
 
 One agent session becomes one trace (the trace id is derived from the
 session id). Turns, tools, subagents, and model responses become child
@@ -65,10 +67,13 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{12,}"),
     re.compile(r"(?i)\b((?:api[_-]?key|secret[_-]?key|access[_-]?token|password|passwd|token)\b[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+"),
 )
-# Opted-in content keeps paths but not the account name inside them.
+# Opted-in content keeps paths but not the account name inside them. A name
+# may contain spaces when a path separator follows it ("/Users/Jo Ann/x").
+_NAME = r"(?:[^/\\\s\"']+(?: [^/\\\s\"']+)*(?=[/\\])|[^/\\\s\"']+)"
 HOME_PATTERNS = (
-    re.compile(r"(/Users/|/home/)[^/\s\"'\\]+"),
-    re.compile(r"([A-Za-z]:(?:\\\\|\\|/)+Users(?:\\\\|\\|/)+)[^\\/\s\"']+"),
+    re.compile(r"(/Users/|/home/)" + _NAME),
+    re.compile(r"([A-Za-z]:(?:\\\\|\\|/)+Users(?:\\\\|\\|/)+)" + _NAME),
+    re.compile(r"((?<![\w~])~)[A-Za-z_][A-Za-z0-9._-]*(?=/)"),
 )
 MAX_ENDED_TURNS = 64
 MAX_ENDED_RECS = 8
@@ -174,8 +179,20 @@ def redact(text: str) -> str:
     return text
 
 
+def _own_home() -> Optional[Tuple[str, str]]:
+    """This machine's home directory and its <user> form, if it is a usual one."""
+    home = os.path.expanduser("~")
+    match = re.fullmatch(r"(/Users/|/home/|[A-Za-z]:\\Users\\)([^/\\]+)", home or "")
+    return (home, match.group(1) + "<user>") if match else None
+
+
 def scrub_home(text: str) -> str:
     """Replace the user name in home-directory paths with <user>."""
+    own = _own_home()
+    if own:  # this machine's home first: catches a spaced name at the end of a string
+        home, scrubbed = own
+        for raw, repl in {home: scrubbed, json.dumps(home)[1:-1]: json.dumps(scrubbed)[1:-1]}.items():
+            text = re.sub(re.escape(raw) + r"(?![^/\\\s\"'])", lambda _m, r=repl: r, text)
     for pattern in HOME_PATTERNS:
         text = pattern.sub(lambda m: m.group(1) + "<user>", text)
     return text
@@ -625,7 +642,9 @@ def respond(adapter: Any, event: str, payload: Dict[str, Any]) -> str:
     try:
         out = fn(event, payload)
     except Exception:
-        return "{}"
+        # Print nothing, like a missing emitter: "{}" can be invalid output for
+        # a hook that decides something (Cursor blocks permission hooks on it).
+        return ""
     # None means "use the default"; "" means "print nothing" (hosts that add
     # hook stdout to the model context).
     return "{}" if out is None else str(out)
@@ -776,7 +795,9 @@ def run(argv: List[str], stdin_text: str, env: Mapping[str, str]) -> str:
     try:
         adapter = load_adapter(app)
     except Exception:
-        return "{}"
+        # Without the adapter we cannot tell an observation hook from a
+        # permission hook, so print nothing (same as a missing emitter).
+        return ""
     try:
         payload = json.loads(stdin_text) if stdin_text.strip() else {}
     except ValueError:
@@ -819,7 +840,7 @@ def main() -> int:
     try:
         out = run(sys.argv[1:], stdin_text, os.environ)
     except Exception:
-        out = "{}"
+        out = ""
     with contextlib.suppress(Exception):
         _write_stdout(out)
     return 0

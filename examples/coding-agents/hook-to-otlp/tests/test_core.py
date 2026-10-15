@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.helpers import Receiver, all_spans, attrs, base_env, config, latest, run_cli
 
@@ -181,6 +184,9 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "")
             module.respond = lambda event, payload: None
             self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "{}")
+            module.respond = lambda event, payload: 1 / 0
+            self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "",
+                             "a failing respond() prints nothing, never a default answer")
         finally:
             del sys.modules["adapters.fake_quiet"]
 
@@ -236,6 +242,23 @@ class CoreTest(unittest.TestCase):
         for name in ("alice", "bob", "carol"):
             self.assertNotIn(name, text)
         self.assertIn("/Users/<user>/p/a.md", text)
+
+    def test_home_path_scrub_handles_spaced_and_tilde_names(self):
+        cases = {
+            "C:\\Users\\John Smith\\x": "C:\\Users\\<user>\\x",
+            "/Users/Hank Smith/notes.txt": "/Users/<user>/notes.txt",
+            "see /Users/alice and /tmp": "see /Users/<user> and /tmp",
+            "~bob/x and ~/y": "~<user>/x and ~/y",
+        }
+        for raw, want in cases.items():
+            self.assertEqual(emit.render_content(raw, 0), want)
+            self.assertEqual(json.loads(emit.render_content({"p": raw}, 0))["p"], want)
+        with mock.patch.dict(os.environ, {"HOME": "/Users/Jo Ann"}):
+            text = emit.render_content({"cwd": "/Users/Jo Ann", "cmd": "cd /Users/Jo Ann && ls"}, 0)
+        self.assertNotIn("Jo Ann", text)
+        self.assertNotIn("Ann", text)
+        with mock.patch.dict(os.environ, {"HOME": "/Users/al"}):
+            self.assertEqual(emit.render_content("/Users/alice/x", 0), "/Users/<user>/x")
 
     def test_default_timeout_is_short_when_the_send_is_inline(self):
         fork = os.fork
@@ -422,7 +445,22 @@ class CliTest(unittest.TestCase):
             result = run_cli(["cursor", "beforeSubmitPrompt"], stdin, env)
             self.assertEqual((result.returncode, result.stdout.strip()), (0, '{"continue": true}'))
         result = run_cli(["no-such-app"], "{}", env)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "{}"))
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+        self.assertEqual(self.rx.requests, [])
+
+    def test_adapter_that_fails_to_load_prints_nothing_even_on_a_permission_hook(self):
+        # A broken install (adapter file missing) must not answer "{}": Cursor
+        # blocks a permission hook on that. No output is a failed hook (fail-open).
+        broken = Path(self.tmp.name, "broken")
+        shutil.copytree(Path(emit.__file__).parent, broken,
+                        ignore=shutil.ignore_patterns("tests", "__pycache__", "cursor.py"))
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": self.tmp.name,
+               **base_env(self.tmp.name, endpoint=self.rx.url + "/v1/traces")}
+        for event in ("preToolUse", "beforeSubmitPrompt", "stop"):
+            result = subprocess.run([sys.executable, "-B", str(broken / "emit.py"), "cursor", event],
+                                    input=json.dumps(self.payload()), capture_output=True, text=True,
+                                    env=env, timeout=20)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""), event)
         self.assertEqual(self.rx.requests, [])
 
     def test_missing_credentials_is_a_noop(self):
