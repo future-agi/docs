@@ -967,6 +967,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:cursor-sdk
               // coding-agents:devin
               // coding-agents:devin-desktop
+              { title: 'Devin Desktop (Cascade)', href: '/docs/integrations/coding-agents/devin-desktop' },
               // coding-agents:gemini-cli
               // coding-agents:github-copilot
               // coding-agents:google-antigravity
