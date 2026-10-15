@@ -1,0 +1,92 @@
+# OpenTelemetry Collector between Gemini CLI and Future AGI.
+#
+# Gemini CLI exports OTLP traces, logs and metrics to this collector. The
+# collector keeps the traces, removes prompt-shaped attributes, labels the span
+# kinds Future AGI shows, and forwards the traces with your Future AGI keys.
+# Logs and metrics are dropped: the Future AGI collector accepts traces only.
+#
+#   FI_API_KEY=... FI_SECRET_KEY=... otelcol-contrib --config otel-collector.yaml
+#
+# Environment:
+#   FI_API_KEY, FI_SECRET_KEY  required
+#   FI_BASE_URL                default https://api.futureagi.com (traces go to $FI_BASE_URL/tracer/v1/traces)
+#   FI_PROJECT_NAME            default gemini-cli
+#   GEMINI_OTLP_LISTEN         default 127.0.0.1:4318 (Gemini CLI's otlpEndpoint must match)
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: ${env:GEMINI_OTLP_LISTEN:-127.0.0.1:4318}
+
+processors:
+  transform/gemini-cli:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["project_name"], "${env:FI_PROJECT_NAME:-gemini-cli}")
+          # Node's process detector records the full command line, which for
+          # `gemini -p "..."` contains the prompt.
+          - delete_key(attributes, "process.command_args")
+          - delete_key(attributes, "process.command")
+      - context: span
+        statements:
+          # Gemini CLI names its operations llm_call, tool_call, agent_call and
+          # schedule_tool_calls. Map them to the span kinds Future AGI uses.
+          - set(attributes["gen_ai.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "llm_call"
+          - set(attributes["gen_ai.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "tool_call"
+          - set(attributes["gen_ai.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "agent_call"
+          - set(attributes["gen_ai.span.kind"], "CHAIN") where attributes["gen_ai.operation.name"] == "schedule_tool_calls"
+          # Name tool spans after the tool instead of "tool_call".
+          - set(name, attributes["gen_ai.tool.name"]) where name == "tool_call" and attributes["gen_ai.tool.name"] != nil
+          # Every span carries the Gemini CLI session id; as session.id it groups
+          # the session's traces into one Future AGI session.
+          - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
+          # Only present with the content opt-in (logPrompts: true): show the
+          # messages as the span's input and output in Future AGI.
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil
+
+  # Privacy default. With logPrompts false Gemini CLI already leaves out the
+  # message attributes; this also drops the system prompt (it embeds your
+  # GEMINI.md memory) and the tool schemas. Remove this processor from the
+  # pipeline below only to opt in to content.
+  transform/strip-content:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "gen_ai.input.messages")
+          - delete_key(attributes, "gen_ai.output.messages")
+          - delete_key(attributes, "input.value")
+          - delete_key(attributes, "output.value")
+          - delete_key(attributes, "gen_ai.system_instructions")
+          - delete_key(attributes, "gen_ai.tool.definitions")
+
+  batch:
+    timeout: 2s
+
+exporters:
+  otlphttp/futureagi:
+    traces_endpoint: ${env:FI_BASE_URL:-https://api.futureagi.com}/tracer/v1/traces
+    # The Future AGI collector reads the request body as-is; the exporter's
+    # default gzip encoding is answered with HTTP 400.
+    compression: none
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+  nop: {}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/gemini-cli, transform/strip-content, batch]
+      exporters: [otlphttp/futureagi]
+    logs:
+      receivers: [otlp]
+      exporters: [nop]
+    metrics:
+      receivers: [otlp]
+      exporters: [nop]

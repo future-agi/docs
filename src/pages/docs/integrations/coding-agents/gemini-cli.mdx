@@ -1,0 +1,152 @@
+---
+title: "Gemini CLI session tracing with Future AGI"
+description: "Trace Gemini CLI sessions in Future AGI with Gemini CLI's built-in OpenTelemetry export and a local OpenTelemetry Collector: model calls with tokens, tool calls, errors, grouped by session. Prompt and tool content stay off by default."
+---
+
+## About
+
+Gemini CLI has [built-in OpenTelemetry](https://geminicli.com/docs/cli/telemetry/). With traces turned on it emits a span for every model call and every tool call. This page sends those spans through a small OpenTelemetry Collector running next to Gemini CLI, which forwards them to Future AGI:
+
+```
+Gemini CLI  ──OTLP/HTTP──▶  otelcol-contrib (localhost:4318)  ──▶  Future AGI
+                            keeps traces, drops logs and metrics,
+                            strips prompt-shaped attributes,
+                            labels span kinds, adds your keys
+```
+
+One Gemini CLI session shows up in Future AGI as one **session** made of several traces:
+
+```
+llm_call                      one model request: model, input/output tokens, status
+schedule_tool_calls           one batch of tool calls the model asked for
+├── list_directory            tool call: name, call id, duration, status
+└── read_file
+llm_call                      the next model request
+```
+
+Gemini CLI does not emit a root span for a session or a turn, so each model call and each tool batch is its own trace. Every span carries the Gemini CLI session id, which the collector copies to `session.id`, so the **Sessions** tab groups them.
+
+This is not the same as:
+
+- **The Google GenAI SDK instrumentor** (`traceAI-google-genai`), which traces your own code that calls the Gemini API. It does not see Gemini CLI's tool scheduler or session.
+- **Google Antigravity** or Gemini in other IDEs. Those are separate integrations.
+- **Gemini CLI's `target: "gcp"` export**, which sends telemetry to Google Cloud, not to Future AGI.
+
+| | |
+| --- | --- |
+| Tested with | Gemini CLI 0.64.0 (`@google/gemini-cli`, macOS), OpenTelemetry Collector Contrib 0.162.0 |
+| Gemini CLI docs used | [Observability with OpenTelemetry](https://geminicli.com/docs/cli/telemetry/) and [configuration](https://www.geminicli.com/docs/reference/configuration), read 2026-10-14 |
+| Requires | [`otelcol-contrib`](https://github.com/open-telemetry/opentelemetry-collector-releases/releases) (the contrib build: the config uses the `transform` processor) |
+| Source | [examples/coding-agents/gemini-cli](https://github.com/future-agi/docs/tree/main/examples/coding-agents/gemini-cli) |
+
+## 1. Run the collector
+
+Download the example collector config and start `otelcol-contrib` with your Future AGI keys:
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+export FI_API_KEY=your-futureagi-api-key
+export FI_SECRET_KEY=your-futureagi-secret-key
+export FI_PROJECT_NAME=gemini-cli
+otelcol-contrib --config fi-docs/examples/coding-agents/gemini-cli/otel-collector.yaml
+```
+
+It listens on `127.0.0.1:4318` (set `GEMINI_OTLP_LISTEN` to change it) and sends traces to `$FI_BASE_URL/tracer/v1/traces` (default `https://api.futureagi.com`; set `FI_BASE_URL` for a self-hosted Future AGI). Keep it running while you use Gemini CLI, or run it as a service.
+
+The collector does four things Gemini CLI cannot do on its own:
+
+| Step | Why |
+| --- | --- |
+| Adds `X-Api-Key`, `X-Secret-Key` and `project_name` | Gemini CLI 0.64.0 has no setting for OTLP headers. (Gemini CLI's main-branch docs list an `otlpHeaders` setting that is not in 0.64.0; the other three steps still need the collector.) |
+| Drops logs and metrics | Gemini CLI always exports all three signals; Future AGI ingests traces. |
+| Deletes `gen_ai.system_instructions`, `gen_ai.tool.definitions`, message attributes and `process.command_args` | Privacy default, see [Privacy](#privacy). |
+| Sets `gen_ai.span.kind` from Gemini CLI's operation names, names tool spans after the tool, copies the session id to `session.id` | Gemini CLI uses its own operation names (`llm_call`, `tool_call`), which Future AGI does not map by itself. |
+
+It also sends uncompressed: the Future AGI collector answers gzip-encoded OTLP requests with HTTP 400.
+
+## 2. Turn on Gemini CLI telemetry
+
+Add the `telemetry` block to `~/.gemini/settings.json` (all projects) or `.gemini/settings.json` in one project:
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "target": "local",
+    "otlpEndpoint": "http://127.0.0.1:4318",
+    "otlpProtocol": "http",
+    "traces": true,
+    "logPrompts": false
+  }
+}
+```
+
+- `traces: true` is required. With it off, Gemini CLI still emits the spans but drops every attribute except the operation name, the agent name and the session id: no model, no tokens, no tool names.
+- `logPrompts: false` is not Gemini CLI's default. The vendor default is `true`, which puts prompts, responses, tool arguments and tool results on the spans. Keep it `false` unless you opt in to content.
+- Do not set `outfile` (it replaces the OTLP export) or `target: "gcp"`.
+
+The same settings exist as environment variables (`GEMINI_TELEMETRY_ENABLED`, `GEMINI_TELEMETRY_TRACES_ENABLED`, `GEMINI_TELEMETRY_TARGET`, `GEMINI_TELEMETRY_OTLP_ENDPOINT`, `GEMINI_TELEMETRY_OTLP_PROTOCOL`, `GEMINI_TELEMETRY_LOG_PROMPTS`), which override the file.
+
+Optionally also export `OTEL_NODE_RESOURCE_DETECTORS=env` in the shell that runs `gemini`. Node's default resource detectors record the full command line, which for `gemini -p "..."` contains the prompt. The collector deletes it either way; this setting keeps it from leaving the Gemini CLI process at all.
+
+## 3. Run a session
+
+Start `gemini` in a project and send one prompt that uses a tool, for example *"List the files in this folder and read README.md"*. Exit Gemini CLI, or wait a few seconds: spans are batched.
+
+Open **Observe** in Future AGI and select the project (`gemini-cli` above). The **Trace** tab lists `llm_call` and `schedule_tool_calls` traces. The **Sessions** tab groups them by Gemini CLI session.
+
+`run_e2e.sh` in the examples folder does all three steps against a throwaway `HOME`, so it does not touch your own `~/.gemini`:
+
+```bash
+FI_API_KEY=... FI_SECRET_KEY=... GEMINI_API_KEY=... \
+  fi-docs/examples/coding-agents/gemini-cli/run_e2e.sh
+```
+
+## What is captured
+
+| Gemini CLI span | Future AGI span kind | Fields |
+| --- | --- | --- |
+| `llm_call` | `LLM` | `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.prompt.name` (Gemini CLI's prompt id), status `ERROR` when the API call fails (a retried 503 shows up as its own `ERROR` span) |
+| `schedule_tool_calls` | `CHAIN` | parent of the tool calls the model requested in one response |
+| `tool_call`, renamed to the tool (`read_file`, `list_directory`, `run_shell_command`, ...) | `TOOL` | `gen_ai.tool.name`, `gen_ai.tool.call_id`, `gen_ai.tool.description`, duration, status |
+| `agent_call` | `AGENT` | subagent name and description. Present in Gemini CLI 0.64.0's source; not exercised in our test |
+| every span | | `gen_ai.conversation.id` and `session.id` = Gemini CLI session id; resource `service.name=gemini-cli` |
+
+## What is not available
+
+- **One trace per session or turn.** Gemini CLI has no session or turn span; use the **Sessions** tab.
+- **Cost.** Gemini CLI reports tokens, not cost. Future AGI computes cost from the model name only when it has pricing for that model.
+- **Cached, thinking and tool-use token counts.** Only input and output tokens are on the spans.
+- **Gemini CLI logs and metrics** (`gemini_cli.user_prompt`, `gemini_cli.api_request`, token and latency metrics). The collector drops them; Future AGI ingests traces only.
+- **Telemetry in sandbox mode** was not tested.
+
+## Privacy
+
+With the settings above, only structure and metadata leave your machine: model, token counts, tool names, call ids, tool descriptions (static text from Gemini CLI), durations, statuses, and the session id.
+
+- **Not exported by default:** prompts and responses, tool arguments and results (Gemini CLI leaves them out with `logPrompts: false`), the system prompt, which includes your `GEMINI.md` memory, and the tool schemas (the collector deletes them), and the command line.
+- **Never forwarded:** Gemini CLI's logs and metrics.
+
+To include content:
+
+1. Set `"logPrompts": true` in the `telemetry` block.
+2. In `otel-collector.yaml`, remove `transform/strip-content` from the traces pipeline:
+
+   ```yaml
+   processors: [transform/gemini-cli, batch]
+   ```
+
+Model spans then carry the request and response messages, and tool spans the call request and result, as `gen_ai.input.messages` / `gen_ai.output.messages`; the collector also copies them to the span's input and output in Future AGI. Gemini CLI truncates each value to 10,000 characters. The system prompt and tool schemas are exported too in this mode.
+
+## Troubleshooting
+
+**No traces appear.**
+1. Check that the collector is running and listening on the `otlpEndpoint` port. With `otlpProtocol: "http"` Gemini CLI posts to `<otlpEndpoint>/v1/traces`; the default protocol is `grpc`, which this collector config does not accept.
+2. Check the collector's output for `Exporting failed`. `401`/`403` means wrong keys. `400` means a request the Future AGI collector could not decode: keep `compression: none` on the exporter.
+3. `telemetry.enabled` must be `true`. `useCollector` together with `useCliAuth` disables telemetry.
+
+**Spans have no model, tokens or tool names.** `telemetry.traces` is `false` (or `GEMINI_TELEMETRY_TRACES_ENABLED` overrides it).
+
+**Tool spans show as `unknown` and are named `tool_call`.** The spans did not go through the `transform/gemini-cli` processor; send Gemini CLI's export to the collector, not straight to Future AGI.
+
+**Prompts show up although you did not opt in.** `logPrompts` defaults to `true` in Gemini CLI. Set it to `false`, and keep `transform/strip-content` in the pipeline.
