@@ -24,28 +24,33 @@ echo '{"conversation_id":"c1","generation_id":"g1","tool_name":"Shell","duration
 
 `python3 emit.py <app> [<event>] [--env-file PATH]` reads one JSON object on
 stdin, prints what the host expects on stdout (`{}` unless the adapter says
-otherwise), and always exits 0. On macOS and Linux the network send happens in a
+otherwise; nothing if the adapter cannot be loaded or the script fails), and exits 0. On macOS and Linux the network send happens in a
 detached child process so the host is not kept waiting. Windows has no fork: the
 send is inline (default timeout 3 s) and state files are not locked.
 
 ### Registering the hook (canonical guarded form)
 
-Every app ships its hook commands in this form, so a missing emitter, a missing
+Every app that uses this emitter ships its hook commands in this form, so a missing emitter, a missing
 `python3`, or a crash can never return exit code 2 (which many hosts treat as
 "block") and never prints a decision:
 
 ```bash
-python3 -B <path-to>/emit.py <app> <EventName> 2>/dev/null || true
+(python3 -B <path-to>/emit.py <app> <EventName> 2>/dev/null || true)
 ```
 
-`|| true` makes every failure exit 0 with empty stdout; `2>/dev/null` keeps Python's
-own error text out of host logs (the emitter never writes to stderr); `-B` keeps
-`__pycache__` out of the customer's repo. Pass the event name explicitly. Do not add
-`echo` fallbacks (a second JSON object is invalid output). The form needs a POSIX shell;
-document the equivalent on hosts whose hook runner is not one. Add a config test like
-`tests/test_cursor_hooks_config.py`: run every shipped command through `sh -c` with the
+`|| true` makes every failure exit 0 with empty stdout. The parentheses make it a
+subshell, so the payload reaches `python3` whether the host pipes it to stdin or
+appends it as a trailing heredoc (Cursor's headless agent host runs
+`<command> <<'CURSOR_HOOK_EOF'`); without them the heredoc binds to `true` and the
+emitter reads nothing. `2>/dev/null` keeps Python's own error text out of host logs
+(the emitter never writes to stderr); `-B` keeps `__pycache__` out of the customer's
+repo. Pass the event name explicitly. Do not add `echo` fallbacks (a second JSON object
+is invalid output). The form needs a POSIX shell; document the equivalent on hosts whose
+hook runner is not one (and note that a host that execs the command without a shell gets
+no guard). Add a config test like `tests/test_cursor_hooks_config.py`: run every shipped
+command through `sh -c` with the payload on stdin and as a trailing heredoc, with the
 emitter missing, with `python3` missing, and installed, and assert exit 0 plus the
-expected (or empty) stdout.
+expected (or empty) stdout and that the installed emitter received the payload.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -80,7 +85,8 @@ expected (or empty) stdout.
   from the payload, else the hook time, never earlier than the root's start once the
   root has been sent. A turn opens on the first event that names it.
 - A tool/subagent/llm/event span without `turn_id` goes under the open turn and gets
-  `coding_agent.turn.inferred=true`; with no open turn it goes under the session.
+  `coding_agent.turn.inferred=true`; with no open turn it goes under the session with no
+  turn marker.
 - A turn end closes still-open children of that turn (`coding_agent.incomplete=true`);
   a session end closes everything and deletes the state file.
 - One turn is open per session: a turn START closes any other open turn (and its
@@ -92,7 +98,14 @@ expected (or empty) stdout.
   spans add `llm.model_name` when the payload names a model (the root uses the last model
   reported by a session, turn or llm event).
 - Opted-in content keeps paths but replaces the user name in home-directory paths with
-  `<user>` (`/Users/<user>/...`, `/home/<user>/...`, `C:\Users\<user>\...`).
+  `<user>` (`/Users/<user>/...`, `/home/<user>/...`, `C:\Users\<user>\...`, `~<user>/...`).
+  The name is the one directory component after the prefix; it stops at whitespace,
+  quotes, and punctuation no account name uses, so the rest of a command stays intact
+  (`cd /Users/<user> && ls src/x`). This machine's own user name (the last component of
+  `os.path.expanduser("~")`) is matched literally, so it is replaced in full even when it
+  contains spaces. Limitation: another account's name with spaces (for example from a
+  log pasted from another machine) keeps the part after the first space
+  (`/Users/<user> Smith/...`).
 
 ## Writing an adapter
 
@@ -159,4 +172,7 @@ adapter and its test are the reference.
 python3 -m unittest discover -s tests -t .
 # replay a recorded session into a real collector with a fresh session id
 python3 replay.py cursor tests/fixtures/cursor/session.jsonl --replace fixture-conv-0001=run-$(date +%s)
+# same, through the commands of an installed hooks file, payload as a trailing heredoc
+python3 replay.py cursor tests/fixtures/cursor/session.jsonl --replace fixture-conv-0001=run-$(date +%s) \
+  --hooks-json /path/to/project/.cursor/hooks.json --cwd /path/to/project --transport heredoc
 ```

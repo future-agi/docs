@@ -14,6 +14,10 @@
 # Set FI_HOOK_CAPTURE_CONTENT=1 to exercise the content opt-in.
 # REPLAY_SLEEP (default 1s) spaces the hooks out so the fixture's reported
 # tool durations fit inside the turn, as they would in a real session.
+# HOOK_TRANSPORT=stdin|heredoc installs the hooks into a temporary project
+# with install.sh and runs the shipped hooks.json commands through $SHELL -c,
+# passing the payload on stdin (IDE agent) or as a trailing heredoc (Cursor's
+# headless agent host), instead of calling emit.py directly.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -35,7 +39,15 @@ PY
 
 REPLACE=(--replace "$SRC_CONV=$CONV")
 if [ "$SRC_GEN" != "-" ]; then REPLACE+=(--replace "$SRC_GEN=$GEN"); fi
-python3 -B "$EMITTER/replay.py" cursor "$FIXTURE" "${REPLACE[@]}" \
+VIA=()
+if [ -n "${HOOK_TRANSPORT:-}" ]; then
+  PROJECT="$(mktemp -d)"
+  trap 'rm -rf "$PROJECT"' EXIT
+  "$HERE/install.sh" "$PROJECT" >/dev/null
+  VIA=(--hooks-json "$PROJECT/.cursor/hooks.json" --cwd "$PROJECT" --transport "$HOOK_TRANSPORT")
+  echo "via installed hooks.json, transport=$HOOK_TRANSPORT"
+fi
+python3 -B "$EMITTER/replay.py" cursor "$FIXTURE" "${REPLACE[@]}" ${VIA[@]+"${VIA[@]}"} \
   --sleep "${REPLAY_SLEEP:-1}" ${@+"$@"}
 
 TRACE_ID="$(cd "$EMITTER" && python3 -B -c 'import sys, emit; print(emit.trace_id("cursor", sys.argv[1]))' "$CONV")"

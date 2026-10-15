@@ -8,6 +8,8 @@ Usage (as a hook command):
 ``<app>`` selects ``adapters/<app>.py``. ``<event>`` is the hook name when
 the host does not put it in the payload. The script reads one JSON object
 from stdin, prints what the host expects on stdout, and always exits 0.
+If the adapter cannot be loaded or the script fails, it prints nothing
+(the same as a missing emitter behind the guarded hook command).
 
 One agent session becomes one trace (the trace id is derived from the
 session id). Turns, tools, subagents, and model responses become child
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import importlib
 import json
@@ -65,10 +68,21 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{12,}"),
     re.compile(r"(?i)\b((?:api[_-]?key|secret[_-]?key|access[_-]?token|password|passwd|token)\b[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+"),
 )
-# Opted-in content keeps paths but not the account name inside them.
+# Opted-in content keeps paths but not the account name inside them: the one
+# directory component after /Users/, /home/ or C:\Users\ (raw, JSON-escaped or
+# with forward slashes). A component stops at whitespace, quotes and characters
+# no macOS, Linux or Windows account name uses (shell and sentence punctuation),
+# and does not end with a dot, so text after the path ("&& ls src/x", "),")
+# stays as it was. Names with spaces are matched only for this machine's own
+# home directory (see _own_home_pattern).
+_HOME_PREFIX = r"(/Users/|/home/|[A-Za-z]:(?:\\\\|\\|/)+Users(?:\\\\|\\|/)+)"
+_NAME_CHAR = r"[^\s/\\\"'`\[\]:;|=,+*?<>(){}&]"
+_NAME = _NAME_CHAR + r"*(?:(?!\.)" + _NAME_CHAR + r")"
+# Own name at a boundary: not followed by more name characters (al vs alice).
+_NAME_END = r"(?!\.*(?:(?!\.)" + _NAME_CHAR + r"))"
 HOME_PATTERNS = (
-    re.compile(r"(/Users/|/home/)[^/\s\"'\\]+"),
-    re.compile(r"([A-Za-z]:(?:\\\\|\\|/)+Users(?:\\\\|\\|/)+)[^\\/\s\"']+"),
+    re.compile(_HOME_PREFIX + _NAME),
+    re.compile(r"((?<![\w~])~)[A-Za-z_][A-Za-z0-9._-]*(?=/)"),
 )
 MAX_ENDED_TURNS = 64
 MAX_ENDED_RECS = 8
@@ -174,8 +188,24 @@ def redact(text: str) -> str:
     return text
 
 
+@functools.lru_cache(maxsize=4)
+def _own_home_pattern(home: str) -> Optional["re.Pattern[str]"]:
+    """The basename of this machine's home directory after any home prefix.
+
+    Matched literally, so a name the generic pattern cannot take whole (one
+    with spaces, quotes or parentheses) is still replaced in full.
+    """
+    name = re.split(r"[/\\]", home.rstrip("/\\"))[-1]
+    if not name or name in (".", ".."):
+        return None
+    return re.compile(_HOME_PREFIX + re.escape(name) + _NAME_END)
+
+
 def scrub_home(text: str) -> str:
     """Replace the user name in home-directory paths with <user>."""
+    own = _own_home_pattern(os.path.expanduser("~"))
+    if own:  # this machine's own name first: it may contain spaces
+        text = own.sub(lambda m: m.group(1) + "<user>", text)
     for pattern in HOME_PATTERNS:
         text = pattern.sub(lambda m: m.group(1) + "<user>", text)
     return text
@@ -625,7 +655,9 @@ def respond(adapter: Any, event: str, payload: Dict[str, Any]) -> str:
     try:
         out = fn(event, payload)
     except Exception:
-        return "{}"
+        # Print nothing, like a missing emitter: "{}" can be invalid output for
+        # a hook that decides something (Cursor blocks permission hooks on it).
+        return ""
     # None means "use the default"; "" means "print nothing" (hosts that add
     # hook stdout to the model context).
     return "{}" if out is None else str(out)
@@ -776,7 +808,9 @@ def run(argv: List[str], stdin_text: str, env: Mapping[str, str]) -> str:
     try:
         adapter = load_adapter(app)
     except Exception:
-        return "{}"
+        # Without the adapter we cannot tell an observation hook from a
+        # permission hook, so print nothing (same as a missing emitter).
+        return ""
     try:
         payload = json.loads(stdin_text) if stdin_text.strip() else {}
     except ValueError:
@@ -819,7 +853,7 @@ def main() -> int:
     try:
         out = run(sys.argv[1:], stdin_text, os.environ)
     except Exception:
-        out = "{}"
+        out = ""
     with contextlib.suppress(Exception):
         _write_stdout(out)
     return 0
