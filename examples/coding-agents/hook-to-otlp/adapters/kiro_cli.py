@@ -11,14 +11,24 @@ camelCase event names are mapped too.
 
     SessionStart | AgentSpawn | agentSpawn -> session start
     UserPromptSubmit | userPromptSubmit    -> turn start        prompt = content
-    PreToolUse | preToolUse                -> tool start        tool_input = content
-    PostToolUse | postToolUse              -> tool end          tool_response = content,
+    PostToolUse | postToolUse              -> tool span         tool_input/tool_response = content,
                                               ERROR when tool_response.success is false
     Stop | stop                            -> turn end          assistant_response = content
-    SessionEnd                             -> session end (CLI V3)
+    SessionEnd (CLI 2.25+, V3)             -> closes a still-open turn
+                                              (kiro.turn.ended_by=SessionEnd); the
+                                              session itself stays open (see below)
 
-Kiro sends no turn id and no tool call id, so turns and tools pair with the
-open turn / the oldest open tool of the same name (empty ``key``).
+PreToolUse / preToolUse is a gating hook (exit 2 blocks the tool), so the
+recipe does not register it and the adapter ignores it: tool spans come from
+PostToolUse, without a vendor duration.
+
+SessionEnd fires when a V3 session shuts down, but ``kiro-cli chat --resume`` /
+``--resume-id`` continue the same session id later, so it is not a terminal
+end: the per-session state (turn sequence) is kept and a resumed chat continues
+with the next turn number in the same trace.
+
+Kiro sends no turn id and no tool call id: a Stop applies to the open turn and
+every PostToolUse is its own span under that turn.
 
 Not mapped: file and spec-task triggers (no session/turn/tool meaning), and
 ``Manual``. Never exported: ``cwd`` and anything under ``KIRO_HOME``; the
@@ -28,7 +38,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from adapters.base import END, ERROR, OK, SESSION, START, TOOL, TURN, SpanEvent, compact, first
+from adapters.base import END, ERROR, OK, SESSION, START, TOOL, TURN, UPDATE, SpanEvent, compact, first
 
 APP = "kiro_cli"
 DISPLAY_NAME = "Kiro CLI"
@@ -37,7 +47,6 @@ SERVICE_NAME = "kiro-cli"
 ALIASES = {
     "SessionStart": "SessionStart", "AgentSpawn": "SessionStart", "agentSpawn": "SessionStart",
     "UserPromptSubmit": "UserPromptSubmit", "userPromptSubmit": "UserPromptSubmit",
-    "PreToolUse": "PreToolUse", "preToolUse": "PreToolUse",
     "PostToolUse": "PostToolUse", "postToolUse": "PostToolUse",
     "Stop": "Stop", "stop": "Stop",
     "SessionEnd": "SessionEnd",
@@ -62,7 +71,10 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         return [SpanEvent(START, SESSION, sid, attributes=attrs)]
 
     if canonical == "SessionEnd":
-        return [SpanEvent(END, SESSION, sid, status=OK)]
+        # Not terminal (a resumed chat reuses the session id): close a turn that
+        # is still open, e.g. after Ctrl+C, and keep the session state.
+        return [SpanEvent(END, TURN, sid, attributes={"kiro.turn.ended_by": "SessionEnd"}),
+                SpanEvent(UPDATE, SESSION, sid)]
 
     if canonical == "UserPromptSubmit":
         prompt = payload.get("prompt")
@@ -74,9 +86,7 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         return [SpanEvent(END, TURN, sid, status=OK, output=payload.get("assistant_response"), attributes=attrs)]
 
     tool = str(first(payload, "tool_name") or "tool")
-    tool_attrs = {**attrs, "kiro.tool.name": tool}
-    if canonical == "PreToolUse":
-        return [SpanEvent(START, TOOL, sid, name=tool, input=payload.get("tool_input"), attributes=tool_attrs)]
+    tool_attrs = dict(attrs)
     response = payload.get("tool_response")
     failed = isinstance(response, dict) and response.get("success") is False
     return [SpanEvent(

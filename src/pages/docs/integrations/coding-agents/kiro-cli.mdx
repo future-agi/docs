@@ -10,7 +10,7 @@ Kiro CLI (`kiro-cli chat`) runs [hooks](https://kiro.dev/docs/hooks/) when a ses
 ```
 Kiro CLI session               one kiro-cli chat session (session_id)
 └── Kiro CLI turn              one prompt, from Prompt Submit to Agent Stop
-    ├── glob                   tool call: name, status, timing from Pre/Post Tool Use
+    ├── file_search            tool call (Post Tool Use): name, status
     └── read_file              ERROR when the tool reports failure
 ```
 
@@ -24,31 +24,33 @@ This is not the same as:
 | | |
 | --- | --- |
 | Checked with | Kiro CLI 2.31.1 (macOS, Apple silicon): hook field names checked in the shipped `kiro-cli-chat` binary; payloads were replayed per the vendor docs, live hook delivery pending sign-in |
-| Requires | Kiro CLI 2.27.1+ with the V3 agent and standalone hooks. Kiro CLI 2.27.1 is the documented minimum for V3 headless hooks. |
-| Kiro docs used | [Hooks](https://kiro.dev/docs/hooks/), [Hook types](https://kiro.dev/docs/hooks/types/), [Hook actions](https://kiro.dev/docs/hooks/actions/), [CLI 3.0 hooks migration](https://kiro.dev/docs/cli/v3/hooks-migration/), [Headless mode](https://kiro.dev/docs/cli/headless/), read 2026-10-14 |
+| Requires | Kiro CLI 2.27.1+ with the V3 agent and standalone hooks. Kiro CLI 2.27.1 is the documented minimum for V3 headless hooks; the `SessionEnd` trigger arrived in [CLI 2.25.0](https://kiro.dev/changelog/cli/2-25). |
+| Kiro docs used | [Hooks](https://kiro.dev/docs/hooks/), [Hook types](https://kiro.dev/docs/hooks/types/), [Hook actions](https://kiro.dev/docs/hooks/actions/), [CLI 3.0 hooks migration](https://kiro.dev/docs/cli/v3/hooks-migration/), [Headless mode](https://kiro.dev/docs/cli/headless/), [Agent configuration](https://kiro.dev/docs/custom-agents/configuration-reference/#hooks-field), read 2026-10-14 and 2026-10-15 |
 | Runtime | Python 3.9+ on the PATH Kiro uses. No packages. |
 | Source | [examples/coding-agents/kiro-cli](https://github.com/future-agi/docs/tree/main/examples/coding-agents/kiro-cli) and [hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp) |
 
 <Note>
-In CLI V3, `SessionStart` is the canonical start trigger, and `AgentSpawn` / `agentSpawn` are accepted spellings of it. CLI 2.x embedded hooks in the agent config with camelCase names (`agentSpawn`, `userPromptSubmit`, `preToolUse`, `postToolUse`, `stop`). The adapter maps both. To move 2.x hooks to the V3 format, run `kiro-cli agent migrate` yourself; this setup does not rewrite your agent configs.
+In CLI V3, `SessionStart` is the canonical start trigger, and `AgentSpawn` / `agentSpawn` are accepted spellings of it. CLI 2.x embedded hooks in the agent config with camelCase names (`agentSpawn`, `userPromptSubmit`, `preToolUse`, `postToolUse`, `stop`). The adapter maps both. To move 2.x hooks to the V3 format, run `/upgrade-agent` in a chat (or `kiro-cli agent upgrade`) yourself; this setup does not rewrite your agent configs.
 </Note>
 
 ## 1. Install the hook
 
-Clone the examples and run the installer against your project. It copies the emitter and the Kiro CLI adapter into `.kiro/fi-hook-to-otlp/` and writes `.kiro/hooks/fi-hook-to-otlp.json`. An existing file with that name is left alone.
+Clone the examples and run the installer against your project. It copies the emitter and the Kiro CLI adapter into `.kiro/fi-hook-to-otlp-kiro-cli/` and writes `.kiro/hooks/fi-hook-to-otlp-kiro-cli.json`. An existing file with that name is left alone (the installer says when it differs from the current template).
 
 ```bash
 git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
 fi-docs/examples/coding-agents/kiro-cli/install.sh /path/to/your/project
 ```
 
-To trace every project, install global hooks into `~/.kiro/` (or `$KIRO_HOME`) instead:
+To trace every project, install global hooks into `~/.kiro/` instead (or into `$KIRO_HOME` when it is set; the installer then writes that path into the commands):
 
 ```bash
 fi-docs/examples/coding-agents/kiro-cli/install.sh --user
 ```
 
-The hook file registers guarded, observe-only commands for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, and `SessionEnd`. It intentionally does not register `PreToolUse`, because that trigger can gate tools. `|| true` is required: a missing emitter must never block a Kiro action.
+Install either `--user` or per project, not both: Kiro runs global and project hooks side by side, so every event would be exported twice. The installer refuses a project install when the global file exists.
+
+The hook file registers guarded, observe-only commands for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, and `SessionEnd`, and passes the trigger name to the emitter. It intentionally does not register `PreToolUse`, because that trigger can gate tools. Each entry looks like this:
 
 ```json
 {
@@ -57,7 +59,8 @@ The hook file registers guarded, observe-only commands for `SessionStart`, `User
     {
       "name": "Future AGI tracing: tool end",
       "trigger": "PostToolUse",
-      "action": { "type": "command", "command": "python3 .kiro/fi-hook-to-otlp-kiro-cli/emit.py kiro_cli || true" },
+      "matcher": ".*",
+      "action": { "type": "command", "command": "(python3 -B .kiro/fi-hook-to-otlp-kiro-cli/emit.py kiro_cli PostToolUse 2>/dev/null || true)" },
       "timeout": 10
     }
   ]
@@ -65,21 +68,72 @@ The hook file registers guarded, observe-only commands for `SessionStart`, `User
 ```
 
 <Note>
-The emitter only observes. It always exits `0` and prints nothing, so `PreToolUse` never blocks a tool (only exit `2` blocks) and nothing is added to the agent's context on `SessionStart` or `UserPromptSubmit`. `PreToolUse` is registered only to time the tool call.
+The emitter only observes, and every command is guarded. Kiro blocks a tool when a `PreToolUse` command exits with code `2` and adds a command's output to the agent's context on `SessionStart` and `UserPromptSubmit`. `|| true` turns any failure (emitter file missing, `python3` missing, crash) into exit `0`, `2>/dev/null` keeps Python's error text away from Kiro and the model, and the adapter prints nothing. The parentheses run the command in a subshell, so the payload reaches `python3` whether it arrives on stdin or as a trailing heredoc. `-B` keeps `__pycache__` out of your repository. Project hooks run in the workspace, so the path starts with `.kiro/`; the global file uses `"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py"` and works from any directory.
 </Note>
 
-### Keep CLI and IDE sessions apart
+On macOS and Linux, Kiro runs each command through a POSIX shell. Native Windows is not tested; there, use WSL or write the equivalent for the shell Kiro uses, and keep it exiting `0` with no output on failure.
 
-Kiro IDE also runs `.kiro/hooks/*.json` files. If you use Kiro IDE in the same project, IDE sessions would be exported as Kiro CLI sessions. Put the hooks in a CLI agent profile instead: the `hooks` field of a custom agent runs only in CLI V3 ([agent configuration reference](https://kiro.dev/docs/custom-agents/configuration-reference/#hooks-field)). Add the same entries to the profile you use, without the `version` wrapper:
+### Kiro IDE in the same project
+
+Kiro IDE also loads `.kiro/hooks/*.json` and `~/.kiro/hooks/*.json`. With this hook file in a project (or after `--user`), Kiro IDE sessions there are exported as **Kiro CLI** sessions, and the [Kiro IDE](https://docs.futureagi.com/docs/integrations/coding-agents/kiro-ide) recipe has the same reach in the other direction. The installer refuses when it finds the Kiro IDE hook file in the project or in `~/.kiro/hooks/`, because both files would fire in every session and export it twice.
+
+If you use Kiro IDE in the project without tracing it, put the hooks in a CLI agent profile instead. The `hooks` field of a custom agent adds profile-scoped hooks in CLI V3 ([agent configuration reference](https://kiro.dev/docs/custom-agents/configuration-reference/#hooks-field)) and runs only in sessions that use that agent. Install the emitter without a hook file:
+
+```bash
+fi-docs/examples/coding-agents/kiro-cli/install.sh --agent-profile
+```
+
+Then add these entries (also printed by the installer, from `agent-profile-hooks.json`) to the `hooks` array of the agent profile, for example `~/.kiro/agents/<name>.json`, and start the CLI with `kiro-cli chat --agent <name>`:
 
 ```json
 {
   "hooks": [
-    { "name": "fi-session-start", "trigger": "SessionStart", "action": { "type": "command", "command": "python3 \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli || true" } },
-    { "name": "fi-prompt",        "trigger": "UserPromptSubmit", "action": { "type": "command", "command": "python3 \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli || true" } },
-    { "name": "fi-tool-end",      "trigger": "PostToolUse", "action": { "type": "command", "command": "python3 \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli || true" } },
-    { "name": "fi-stop",          "trigger": "Stop", "action": { "type": "command", "command": "python3 \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli || true" } },
-    { "name": "fi-session-end",   "trigger": "SessionEnd", "action": { "type": "command", "command": "python3 \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli || true" } }
+    {
+      "name": "Future AGI tracing: session start",
+      "trigger": "SessionStart",
+      "action": {
+        "type": "command",
+        "command": "(python3 -B \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli SessionStart 2>/dev/null || true)"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "Future AGI tracing: prompt",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "(python3 -B \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli UserPromptSubmit 2>/dev/null || true)"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "Future AGI tracing: tool end",
+      "trigger": "PostToolUse",
+      "matcher": ".*",
+      "action": {
+        "type": "command",
+        "command": "(python3 -B \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli PostToolUse 2>/dev/null || true)"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "Future AGI tracing: agent stop",
+      "trigger": "Stop",
+      "action": {
+        "type": "command",
+        "command": "(python3 -B \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli Stop 2>/dev/null || true)"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "Future AGI tracing: session end",
+      "trigger": "SessionEnd",
+      "action": {
+        "type": "command",
+        "command": "(python3 -B \"$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py\" kiro_cli SessionEnd 2>/dev/null || true)"
+      },
+      "timeout": 10
+    }
   ]
 }
 ```
@@ -115,7 +169,7 @@ Headless, for example in CI (needs `KIRO_API_KEY`, see [Headless mode](https://k
 kiro-cli chat --v3 --no-interactive --trust-tools=read_file,list_directory,file_search "List the files in this folder and read README.md"
 ```
 
-V3 tool ids are `file_search` and `list_directory`; `glob` is the CLI 2.x spelling. In hook payloads, MCP tools use the documented `@<server>/<tool>` name form.
+V3 tool ids are `file_search` and `list_directory`; `glob` is the CLI 2.x spelling. In hook payloads, MCP tools use the documented `@<server>/<tool>` name form. A tool you do not trust in a non-interactive run is denied, and a denied or blocked tool has no `PostToolUse`, so it does not appear in the trace.
 
 Open **Observe** in Future AGI and select the project (`kiro-cli-sessions` above). The session appears as one trace named **Kiro CLI session**, with one **Kiro CLI turn** per prompt.
 
@@ -123,23 +177,23 @@ Open **Observe** in Future AGI and select the project (`kiro-cli-sessions` above
 
 | Kiro CLI trigger | Future AGI span | Fields |
 | --- | --- | --- |
-| `SessionStart` (or `AgentSpawn`, `agentSpawn`) | **Kiro CLI session** (root) | `session.id` = Kiro `session_id`; the trigger spelling when it is not `SessionStart` |
+| `SessionStart` (or `AgentSpawn`, `agentSpawn`) | **Kiro CLI session** (root) | `session.id` = Kiro `session_id` |
 | `UserPromptSubmit` | **Kiro CLI turn** start | prompt length |
-| `PostToolUse` | tool span, named after the tool (`read_file`, `file_search`, `execute_bash`, `@<server>/<tool>`, ...) | `gen_ai.tool.name` |
-| `PostToolUse` | tool span end | status `ERROR` when `tool_response.success` is `false` |
+| `PostToolUse` | completed tool span, named after the tool (`read_file`, `file_search`, `execute_bash`, `@<server>/<tool>`, ...) | `gen_ai.tool.name`; status `ERROR` when `tool_response.success` is `false`; no vendor duration |
 | `Stop` | **Kiro CLI turn** end | |
-| `SessionEnd` | **Kiro CLI session** end | |
+| `SessionEnd` | closes a turn that is still open (`kiro.turn.ended_by=SessionEnd`) | Fires when a V3 session shuts down. It is not a terminal end: `kiro-cli chat --resume` or `--resume-id` continue the same session id, and the resumed chat continues in the same trace with the next turn number. |
 
-Kiro sends no turn id and no tool call id. The emitter pairs a `Stop` with the open turn and a `PostToolUse` with the oldest open `PreToolUse` of the same tool.
+When a hook fires under a CLI 2.x camelCase name (`agentSpawn`, `userPromptSubmit`, `postToolUse`, `stop`), every span it produces also carries `kiro.hook.trigger` with that spelling.
+
+Kiro sends no turn id and no tool call id. A `Stop` closes the open turn, and each `PostToolUse` becomes its own span under that turn, marked `coding_agent.turn.inferred=true` because the turn was matched by time rather than by an id.
 
 ## What is not available
 
 - **Model, token counts, and cost.** Kiro hook payloads do not include them.
 - **Model request spans.** There is no hook per model call.
-- **Tool call ids.** Tool spans have a name but no vendor call id.
+- **Tool call ids and tool duration.** Tool spans have a name but no vendor call id, and no duration: `PreToolUse` is a gating hook and is not registered.
 - **File and spec-task triggers.** They are not mapped; tool spans already cover the agent's file writes.
 - **Session history.** The emitter never reads `~/.kiro` or `$KIRO_HOME` session stores; it only sees hook payloads as they fire.
-- **Global and project hooks are merged.** Install either `--user` or a project hook, not both, or the same event will be exported twice.
 - **Daily usage metrics** from Kiro enterprise OpenTelemetry are not joined to sessions.
 
 ## Privacy
@@ -160,4 +214,17 @@ To include content, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. The prompt 
 
 **Tools appear directly under the session.** A tool hook arrived without an open turn. It is attached to the session rather than guessed.
 
-**The turn is marked incomplete.** The session ended before `Stop` fired for that turn, for example when you pressed Ctrl+C. The turn is closed with `coding_agent.incomplete=true`.
+**A turn has `kiro.turn.ended_by=SessionEnd`.** The session shut down before `Stop` fired for that turn, for example when you pressed Ctrl+C and exited. The turn was closed at that point.
+
+**The turn is marked incomplete.** You sent a new prompt in the same session before `Stop` fired for the previous turn. The previous turn is closed with `coding_agent.incomplete=true`.
+
+## Uninstall
+
+Remove the hook file first, then the emitter, so Kiro never runs a hook whose emitter is gone:
+
+```bash
+rm /path/to/your/project/.kiro/hooks/fi-hook-to-otlp-kiro-cli.json
+rm -r /path/to/your/project/.kiro/fi-hook-to-otlp-kiro-cli
+```
+
+For a `--user` install, remove `~/.kiro/hooks/fi-hook-to-otlp-kiro-cli.json` and then `~/.kiro/fi-hook-to-otlp-kiro-cli` (under `$KIRO_HOME` if you set it). For `--agent-profile`, delete the entries from the agent profile first. The guarded commands make the reverse order safe too: a hook whose emitter is missing exits `0` and does nothing.
