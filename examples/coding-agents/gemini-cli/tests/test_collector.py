@@ -28,6 +28,10 @@ CONFIG = HERE.parent / "otel-collector.yaml"
 OVERRIDES = HERE / "collector-test-overrides.yaml"
 FIXTURE = HERE / "fixtures" / "gemini-cli-0.64.0-traces.json"
 MARKER = "FIXTURE-CONTENT-MARKER"
+# Added by Node's process and host resource detectors when
+# OTEL_NODE_RESOURCE_DETECTORS is not set to env: paths, user and machine name.
+LOCAL_IDENTITY = ("process.command_args", "process.command", "process.executable.path",
+                  "process.executable.name", "process.owner", "host.name", "host.id")
 OTELCOL = os.environ.get("OTELCOL_BIN") or shutil.which("otelcol-contrib")
 
 
@@ -93,12 +97,17 @@ class CollectorTest(unittest.TestCase):
     def test_default_strips_content_and_labels_kinds(self):
         text, requests = self.run_collector()
         self.assertNotIn(MARKER, text)
+        self.assertNotIn("/Users/", text)
+        self.assertNotIn("fixture-user", text)
         spans = self.spans(requests)
         self.assertEqual(len(spans), 5)
         kinds = {}
         for resource, name, a in spans:
             self.assertEqual(resource["project_name"], "gemini-cli-test")
-            self.assertNotIn("process.command_args", resource)
+            for key in LOCAL_IDENTITY:
+                self.assertNotIn(key, resource)
+            self.assertEqual(resource["host.arch"], "arm64")
+            self.assertEqual(resource["process.runtime.name"], "nodejs")
             for key in ("gen_ai.input.messages", "gen_ai.output.messages", "input.value",
                         "output.value", "gen_ai.system_instructions", "gen_ai.tool.definitions"):
                 self.assertNotIn(key, a)
@@ -120,8 +129,11 @@ class CollectorTest(unittest.TestCase):
         for _, _, a in self.spans(requests):
             self.assertIn("gen_ai.input.messages", a["input.value"])
             self.assertIn("gen_ai.output.messages", a["output.value"])
-        # The command line is removed either way.
+        # The command line, local paths, user and machine name are removed either way.
         self.assertNotIn("prompt on the command line", text)
+        self.assertNotIn("fixture-user", text)
+        # The opt-in exports the system prompt and tool schemas (documented).
+        self.assertIn(MARKER + " gen_ai.system_instructions", text)
 
 
 if __name__ == "__main__":
