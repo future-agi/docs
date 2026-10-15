@@ -13,8 +13,9 @@ Mapped events:
     UserPromptSubmit    -> turn start (key promptId)     prompt = content
     PostToolUse         -> tool span (key toolUseId), start = end - durationMs
                            toolInput / toolResult = content; for shell tools
-                           the result's exit_code / timed_out are metadata
-                           and a non-zero exit or a timeout is ERROR
+                           the result's exit_code / timed_out / signal are
+                           metadata, and a non-zero exit, a timeout, or a
+                           kill by a signal is ERROR
     PostToolUseFailure  -> tool end, ERROR               error = content
     PermissionDenied    -> tool end, ERROR "permission denied"
     Stop                -> turn end (only with promptId; the session-end
@@ -41,10 +42,11 @@ own run time.
 Never exported: ``cwd``, ``workspaceRoot``, ``transcriptPath`` (never
 opened). Grok sends no model id, token counts, or cost in hook payloads.
 Reason-like fields (stop reason, cancel source, end reason, start source,
-permission mode, compaction trigger, signal) are exported only when they are
-a short enum-like token; the ``StopFailure`` status message is one of grok's
-documented error types (anything else reads ``unknown``). Free text, such as
-``errorDetails``, a tool ``error`` or a denial ``reason``, is content.
+permission mode, compaction trigger, signal) and the subagent type are
+exported only when they are a short enum-like token; the ``StopFailure``
+status message is one of grok's documented error types (anything else reads
+``unknown``). Free text, such as ``errorDetails``, a tool ``error`` or a
+denial ``reason``, is content.
 """
 from __future__ import annotations
 
@@ -93,10 +95,23 @@ def _token(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and _TOKEN.fullmatch(value) else None
 
 
+def _subagent_type(payload: Dict[str, Any]) -> Optional[str]:
+    """An agent type name (``explore``, ``my-plugin:reviewer``); anything else is dropped."""
+    return _token(payload.get("subagentType"))
+
+
+def _subagent_session_name(payload: Dict[str, Any]) -> Optional[str]:
+    """Root name for a subagent's own session (``subagentType`` present), else None."""
+    if not payload.get("subagentType"):
+        return None
+    subagent_type = _subagent_type(payload)
+    return f"{DISPLAY_NAME} subagent session: {subagent_type}" if subagent_type else f"{DISPLAY_NAME} subagent session"
+
+
 def _base_attrs(payload: Dict[str, Any]) -> Dict[str, Any]:
     return compact({
         "grok_build.permission_mode": _token(first(payload, "permissionMode", "permission_mode")),
-        "grok_build.subagent.type": payload.get("subagentType"),
+        "grok_build.subagent.type": _subagent_type(payload),
     })
 
 
@@ -130,12 +145,11 @@ def _shell_outcome(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
     events = _parse(event, payload)
-    subagent_type = payload.get("subagentType")
-    if events and subagent_type and event != "SubagentStart":
+    root_name = _subagent_session_name(payload)
+    if events and root_name and event != "SubagentStart":
         # Inside a subagent's own session (SubagentStart fires in the parent):
         # name its root from the first exported span on.
-        events.append(SpanEvent(UPDATE, SESSION, events[0].session_id,
-                                name=f"{DISPLAY_NAME} subagent session: {subagent_type}"))
+        events.append(SpanEvent(UPDATE, SESSION, events[0].session_id, name=root_name))
     return events
 
 
@@ -154,10 +168,9 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         }))]
 
     if event == "SessionEnd":
-        subagent_type = payload.get("subagentType")
         return [SpanEvent(
             END, SESSION, sid,
-            name=f"{DISPLAY_NAME} subagent session: {subagent_type}" if subagent_type else None,
+            name=_subagent_session_name(payload),
             attributes=compact({
                 **_base_attrs(payload),
                 "grok_build.session.end_reason": _token(payload.get("reason")),
@@ -204,11 +217,15 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         denied = event == "PermissionDenied"
         shell = {} if failed else _shell_outcome(payload)
         exit_code = shell.get("grok_build.tool.exit_code")
+        signal = shell.get("grok_build.tool.signal")
         message = ("permission denied" if denied else "tool failed") if failed else None
         if shell.get("grok_build.tool.timed_out"):
             message = "timed out"
         elif exit_code not in (None, 0):
             message = f"exit code {exit_code}"
+        elif exit_code is None and signal not in (None, 0):
+            # Killed by a signal: no exit code (grok sends ``signal: null`` otherwise).
+            message = f"signal {signal}"
         outcome = "permission_denied" if denied else ("failure" if (failed or message) else "success")
         return [SpanEvent(
             END, TOOL, sid,
@@ -228,7 +245,7 @@ def _parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         )]
 
     if event == "SubagentStart":
-        subagent_type = payload.get("subagentType") or "subagent"
+        subagent_type = _subagent_type(payload) or "subagent"
         return [SpanEvent(
             INSTANT, SUBAGENT, sid,
             key=str(first(payload, "subagentId") or ""),

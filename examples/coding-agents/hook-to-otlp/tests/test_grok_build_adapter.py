@@ -4,8 +4,9 @@
 (ids, paths and bodies replaced, keys kept). ``edge.jsonl`` is shaped as
 https://docs.x.ai/build/features/hooks and the bundled hooks guide document
 the failure, denial, compaction and cancel events, plus shell results with
-a non-zero exit, a timeout, and a truncated (string) result, using the
-``toolResult`` keys of a real grok 1.0.52 ``run_terminal_command``.
+a non-zero exit, a timeout, a kill by a signal, and a truncated (string)
+result, using the ``toolResult`` keys of a real grok 1.0.52
+``run_terminal_command``.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from tests.helpers import FIXTURES, attrs, by_name, config, latest, load_jsonl, 
 
 import emit
 from adapters import grok_build
-from adapters.base import OK, SESSION, SUBAGENT, TOOL, TURN
+from adapters.base import ERROR, OK, SESSION, SUBAGENT, TOOL, TURN
 
 SESSION_FIXTURE = FIXTURES / "grok_build" / "session.jsonl"
 EDGE_FIXTURE = FIXTURES / "grok_build" / "edge.jsonl"
@@ -139,6 +140,11 @@ class GrokBuildAdapterTest(unittest.TestCase):
         self.assertEqual(timeout["status"], {"code": 2, "message": "timed out"})
         self.assertIs(attrs(timeout)["grok_build.tool.timed_out"], True)
         self.assertEqual(attrs(timeout)["grok_build.tool.signal"], "SIGKILL")
+        killed = by_call_id(spans, "call_fixture_edge_signal")[0]
+        self.assertEqual(killed["status"], {"code": 2, "message": "signal SIGTERM"})
+        self.assertEqual(attrs(killed)["grok_build.tool.signal"], "SIGTERM")
+        self.assertNotIn("grok_build.tool.exit_code", attrs(killed))
+        self.assertEqual(attrs(killed)["grok_build.tool.outcome"], "failure")
         truncated = attrs(by_call_id(spans, "call_fixture_edge_truncated")[0])
         self.assertNotIn("grok_build.tool.exit_code", truncated)  # string result: not parsed
         self.assertEqual(truncated["grok_build.tool.outcome"], "success")
@@ -146,6 +152,67 @@ class GrokBuildAdapterTest(unittest.TestCase):
         ok = [s for s in self.spans() if s["name"] == "run_terminal_command"]
         self.assertTrue(ok)
         self.assertEqual({s["status"]["code"] for s in ok}, {1})
+
+    def test_shell_signal_rules(self):
+        def tool(result):
+            (ev,) = grok_build.parse("PostToolUse", {"sessionId": "s1", "toolName": "run_terminal_command",
+                                                     "toolUseId": "t1", "toolResult": result})
+            return ev.status, ev.status_message
+        # A numeric signal with no exit code is a kill.
+        self.assertEqual(tool({"exit_code": None, "timed_out": False, "signal": 9}), (ERROR, "signal 9"))
+        # A timeout or a non-zero exit names the cause, not the signal.
+        self.assertEqual(tool({"exit_code": None, "timed_out": True, "signal": 9}), (ERROR, "timed out"))
+        self.assertEqual(tool({"exit_code": 2, "timed_out": False, "signal": 9}), (ERROR, "exit code 2"))
+        # grok's normal result (signal null), signal 0, and an exit code of 0 stay OK.
+        self.assertEqual(tool({"exit_code": 0, "timed_out": False, "signal": None}), (OK, None))
+        self.assertEqual(tool({"exit_code": None, "timed_out": False, "signal": None}), (OK, None))
+        self.assertEqual(tool({"exit_code": None, "timed_out": False, "signal": 0}), (OK, None))
+        self.assertEqual(tool({"exit_code": 0, "timed_out": False, "signal": 15}), (OK, None))
+
+    def test_subagent_type_is_a_token_or_dropped(self):
+        base = {"sessionId": "s1", "subagentId": "child-1"}
+        (start,) = grok_build.parse("SubagentStart", dict(base, subagentType="my-plugin:reviewer"))
+        self.assertEqual((start.name, start.attributes["grok_build.subagent.type"]),
+                         ("Subagent: my-plugin:reviewer", "my-plugin:reviewer"))
+        (start,) = grok_build.parse("SubagentStart", dict(base, subagentType="/Users/alice/agent x"))
+        self.assertEqual((start.name, start.attributes["grok_build.subagent.type"]),
+                         ("Subagent: subagent", "subagent"))
+        # Inside the child session: still named as a subagent session, without the free text.
+        child = {"sessionId": "child-1", "promptId": "p1", "subagentType": "/Users/alice/agent x"}
+        events = grok_build.parse("UserPromptSubmit", child)
+        self.assertNotIn("grok_build.subagent.type", events[0].attributes)
+        self.assertEqual(events[-1].name, "Grok Build subagent session")
+        end = grok_build.parse("SessionEnd", dict(child, reason="shutdown"))[0]
+        self.assertEqual(end.name, "Grok Build subagent session")
+        for e in events + [end, start]:
+            self.assertNotIn("/Users/alice", json.dumps([e.name, e.attributes]))
+
+    def test_resumed_session_keeps_trace_and_restarts_root(self):
+        # Documented on the page ("One start time for a resumed session"): the
+        # state of a session is dropped at SessionEnd, so a resume (source=load)
+        # re-opens the same root span id with the resume time as its start.
+        sid = "fixture-grok-resume-0001"
+        ev = lambda event, **kw: {"event": event, "payload": dict({"sessionId": sid}, **kw)}  # noqa: E731
+        spans = replay(grok_build, config("grok_build", self.tmp.name), [
+            ev("SessionStart", source="new"),
+            ev("UserPromptSubmit", promptId="p1"),
+            ev("Stop", promptId="p1", reason="end_turn"),
+            ev("SessionEnd", reason="shutdown"),
+            ev("SessionStart", source="load"),
+            ev("UserPromptSubmit", promptId="p2"),
+            ev("Stop", promptId="p2", reason="end_turn"),
+            ev("SessionEnd", reason="shutdown"),
+        ])
+        self.assertEqual({s["traceId"] for s in spans}, {emit.trace_id("grok_build", sid)})
+        root_id = emit.span_id("grok_build", sid, SESSION, "")
+        root = latest(spans, root_id)
+        self.assertEqual(attrs(root)["grok_build.session.source"], "load")
+        turn1 = latest(spans, emit.span_id("grok_build", sid, TURN, "p1"))
+        turn2 = latest(spans, emit.span_id("grok_build", sid, TURN, "p2"))
+        self.assertEqual((turn1["parentSpanId"], turn2["parentSpanId"]), (root_id, root_id))
+        # The root's last export starts at the resume, after turn 1.
+        self.assertGreater(int(root["startTimeUnixNano"]), int(turn1["endTimeUnixNano"]))
+        self.assertLessEqual(int(root["startTimeUnixNano"]), int(turn2["startTimeUnixNano"]))
 
     def test_default_export_has_no_content_or_paths(self):
         encoded = json.dumps(self.spans() + self.spans(EDGE_FIXTURE))
