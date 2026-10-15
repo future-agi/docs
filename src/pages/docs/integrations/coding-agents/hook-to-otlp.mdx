@@ -43,7 +43,7 @@ How the emitter builds the tree:
 - Span ids are derived the same way from the session, the span type, and the app's id for it (turn id, tool call id). A repeated hook overwrites its span instead of duplicating it.
 - Apps that do not report turn or tool call ids still get a tree: each prompt hook opens the next turn, and each tool end is paired with the oldest unfinished start of the same tool.
 - A new turn closes a previous turn that never reported its end, marking it `coding_agent.incomplete=true` (corrected if the end arrives later).
-- Durations come from a matching start hook when the app has one, otherwise from the duration the app reports in the end hook. A small state file per session (in your temp directory, mode 0600) keeps start times between hook processes. It is deleted when the session ends.
+- Durations come from a matching start hook when the app has one, otherwise from the duration the app reports in the end hook. A small state file per session (in your temp directory, mode 0600) keeps start times between hook processes. With content capture on, it also holds the content of spans that have not ended yet (for example the open turn's prompt) and of turns closed as incomplete; a turn that ends normally leaves no content in it. It is deleted when the session ends, and files untouched for 24 hours are removed.
 - The session span is re-sent with the same id and start time whenever a child span is sent, so it always covers the whole conversation. A conversation that was opened and closed without any activity is not exported.
 
 ## Privacy
@@ -54,8 +54,10 @@ By default the emitter exports structure and metadata only: ids, names, model, d
 | --- | --- | --- |
 | Session, turn, tool call ids, tool names, model, durations, status | exported | exported |
 | Prompt text, tool arguments, tool output, model response and thinking text | **not exported** | exported as `input.value` / `output.value`, capped at 4096 characters per field, common key and token formats replaced with `[REDACTED]` |
-| Tool error text | **not exported** (status message is the failure type, for example `timeout`) | exported as `exception.message` |
-| User email, file and workspace paths, transcript paths | **never exported** | **never exported** |
+| Tool error text | **not exported** (status message is the failure type, for example `timeout`) | exported as `exception.message` and the status message, with the user name in home-directory paths replaced by `<user>` |
+| File and workspace paths as metadata (`cwd`, workspace roots, transcript paths) | **never exported** | **never exported** |
+| Paths inside prompts, tool input, and tool output (for example a Read tool's `file_path`) | **not exported** | exported as part of that content, with the user name in home-directory paths replaced by `<user>` (`/Users/<user>/project/README.md`) |
+| User email | **never exported** | **never exported** |
 
 The emitter never reads files named in a payload (for example a transcript path) and never reads the app's local database or logs. It only sees the JSON the app passes to the hook.
 
@@ -75,15 +77,30 @@ Set these in the environment that starts the agent, or in `~/.config/fi-hook-to-
 | `FI_OTLP_ENDPOINT` | none | Full traces URL, overrides `FI_BASE_URL` (self-hosted collectors). |
 | `FI_HOOK_CAPTURE_CONTENT` | off | `1` exports prompts, tool input/output, and model text. |
 | `FI_HOOK_MAX_CONTENT_CHARS` | `4096` | Per-field cap when content is on. |
-| `FI_HOOK_TIMEOUT` | `3` | HTTP timeout in seconds. |
+| `FI_HOOK_TIMEOUT` | `10` (`3` on Windows) | HTTP timeout in seconds. On macOS and Linux the send runs in the background, so this never delays the agent. |
 | `FI_HOOK_LOG_FILE` | none | Writes one line per hook (event, span count, HTTP status). No content, no keys. |
 | `FI_HOOK_DUMP_FILE` | none | Appends every OTLP body exactly as sent, to check what leaves the machine. |
 | `FI_HOOK_DISABLED` | off | `1` turns the hook into a no-op. |
 
+## Registering the hook
+
+Every app page uses the same guarded command, so a missing emitter or a missing `python3` can never block the agent (many apps treat exit code 2 from a hook as "block this action"):
+
+```bash
+python3 -B <path-to>/emit.py <app> <EventName> 2>/dev/null || true
+```
+
+- `|| true` turns any failure (emitter file missing, `python3` missing, crash) into exit code 0 with empty output, which apps treat as "no decision".
+- `2>/dev/null` keeps Python's own error text out of the app's logs. The emitter itself never writes to stderr.
+- `-B` stops Python from writing `__pycache__` into your project.
+- The event name is passed explicitly, so the emitter works even if the app leaves it out of the payload.
+
+This form needs a POSIX shell (`sh`, `bash`, `zsh`). On macOS and Linux, Cursor runs each hook command with `$SHELL -c` (falling back to `/bin/sh`). The commands and installers on these pages are not tested on native Windows; there, use WSL or write the equivalent for the shell your app runs hooks with, and keep it exiting 0 with no output on failure.
+
 ## Safety for the host app
 
 - The script always exits 0 and prints the response the app expects (for most hooks `{}`), so it never blocks or changes the agent's behaviour.
-- The HTTP request runs in a detached background process, so the agent does not wait for the network. A down collector, a wrong key, or bad JSON is logged (if `FI_HOOK_LOG_FILE` is set) and otherwise ignored.
+- On macOS and Linux the HTTP request runs in a detached background process, so the agent does not wait for the network. On Windows there is no background send: the request runs inline with a 3-second timeout, and hooks of the same session are not locked against each other, so a start time can occasionally be lost. A down collector, a wrong key, or bad JSON is logged (if `FI_HOOK_LOG_FILE` is set) and otherwise ignored.
 - Register it only on hooks that observe. Do not use it as the deciding hook for permission prompts.
 - Requirements: Python 3.9 or newer on the `PATH` the app uses. No packages to install.
 
@@ -101,6 +118,6 @@ Adding an app is one adapter file: see [the adapter guide](https://github.com/fu
 
 **Keys are set in my shell but nothing is sent.** Desktop apps started from the Dock or Start menu do not see shell variables. Put the variables in `~/.config/fi-hook-to-otlp/env`, or start the app from a terminal.
 
-**Spans show up under the session but not under a turn.** The app did not report a turn id for that event, so the span is attached to the session. This is expected for apps or hooks without turn ids.
+**A span has `coding_agent.turn.inferred=true`.** The app did not report a turn id for that event, so the span was attached to the turn that was open at the time. If no turn was open, the span sits directly under the session.
 
 **I want to check exactly what is sent.** Set `FI_HOOK_DUMP_FILE=/tmp/fi-hook-dump.jsonl` and search it for a phrase from your prompt. With content capture off it must not appear.

@@ -184,6 +184,68 @@ class CoreTest(unittest.TestCase):
         finally:
             del sys.modules["adapters.fake_quiet"]
 
+    def test_children_never_start_before_the_exported_root(self):
+        adapter = scripted({
+            "tool1": [SpanEvent(END, TOOL, "S", key="c1", turn_id="g", name="Read", duration_ms=10)],
+            "tool2": [SpanEvent(END, TOOL, "S", key="c2", turn_id="g", name="Shell", duration_ms=5000)],
+            "stop": [SpanEvent(END, TURN, "S", key="g")],
+        })
+        spans = self.run_hooks(adapter, [(1000, "tool1"), (2000, "tool2"), (2100, "stop")])
+        root_start = int(latest(spans, emit.span_id("fake", "S", SESSION, ""))["startTimeUnixNano"])
+        self.assertTrue(all(int(s["startTimeUnixNano"]) >= root_start for s in spans))
+
+    def test_root_model_comes_from_session_turn_and_llm_events_only(self):
+        adapter = scripted({
+            "t": [SpanEvent(START, TURN, "S", key="g", model="turn-model")],
+            "tool": [SpanEvent(END, TOOL, "S", key="c", turn_id="g", name="Read", model="tool-model")],
+            "stop": [SpanEvent(END, TURN, "S", key="g")],
+        })
+        spans = self.run_hooks(adapter, [(0, "t"), (10, "tool"), (20, "stop")])
+        root = latest(spans, emit.span_id("fake", "S", SESSION, ""))
+        self.assertEqual(attrs(root)["llm.model_name"], "turn-model")
+
+    def test_tool_without_turn_id_is_marked_as_attached_to_open_turn(self):
+        adapter = scripted({
+            "t": [SpanEvent(START, TURN, "S", key="g1")],
+            "tool": [SpanEvent(END, TOOL, "S", key="c", name="Shell")],
+            "tool-known": [SpanEvent(END, TOOL, "S", key="d", turn_id="g1", name="Read")],
+        })
+        spans = self.run_hooks(adapter, [(0, "t"), (10, "tool"), (20, "tool-known")])
+        shell = [s for s in spans if s["name"] == "Shell"][0]
+        self.assertEqual(shell["parentSpanId"], emit.span_id("fake", "S", TURN, "g1"))
+        self.assertTrue(attrs(shell)["coding_agent.turn.inferred"])
+        read = [s for s in spans if s["name"] == "Read"][0]
+        self.assertNotIn("coding_agent.turn.inferred", attrs(read))
+
+    def test_state_keeps_no_content_of_completed_turns_and_ignores_duplicate_ends(self):
+        cfg = config("fake", self.tmp.name, FI_HOOK_CAPTURE_CONTENT="1")
+        adapter = scripted({
+            "t": [SpanEvent(START, TURN, "S", key="g", input="PROMPT_IN_STATE")],
+            "reply": [SpanEvent(UPDATE, TURN, "S", key="g", output="REPLY_IN_STATE")],
+            "stop": [SpanEvent(END, TURN, "S", key="g")],
+        })
+        self.run_hooks(adapter, [(0, "t"), (10, "reply"), (20, "stop")], cfg=cfg)
+        state_text = "".join(p.read_text() for p in cfg.state_dir.glob("*.json"))
+        self.assertNotIn("PROMPT_IN_STATE", state_text)
+        self.assertNotIn("REPLY_IN_STATE", state_text)
+        self.assertEqual(self.run_hooks(adapter, [(30, "stop")], cfg=cfg), [], "duplicate end is ignored")
+
+    def test_opted_in_content_drops_the_user_name_from_home_paths(self):
+        text = emit.render_content({"file_path": "/Users/alice/p/a.md", "cwd": "/home/bob/x",
+                                    "win": "C:\\Users\\carol\\y"}, 0)
+        for name in ("alice", "bob", "carol"):
+            self.assertNotIn(name, text)
+        self.assertIn("/Users/<user>/p/a.md", text)
+
+    def test_default_timeout_is_short_when_the_send_is_inline(self):
+        fork = os.fork
+        try:
+            del os.fork
+            self.assertEqual(emit.Config.from_env("fake", {}).timeout, 3.0)
+        finally:
+            os.fork = fork
+        self.assertEqual(emit.Config.from_env("fake", {}).timeout, 10.0)
+
     def test_end_without_start_uses_vendor_duration(self):
         adapter = scripted({"post": [SpanEvent(END, TOOL, "S", key="c", name="Read", duration_ms=250)]})
         spans = self.run_hooks(adapter, [(1000, "post")])
