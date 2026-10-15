@@ -400,7 +400,8 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     rootAttrs = {
       "pi.session.start_reason": event.reason,
       "pi.session.parent": header?.parentSession ? "true" : undefined,
-      "pi.cwd": ctx.cwd,
+      // The working directory contains the OS user name, so it is content.
+      "pi.cwd": capture ? ctx.cwd : undefined,
       "pi.mode": ctx.mode,
     }
     serviceVersion = (await (deps.version ?? piVersion)()) ?? "unknown"

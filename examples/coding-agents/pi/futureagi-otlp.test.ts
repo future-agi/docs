@@ -141,6 +141,9 @@ test("default export drops prompt, answer, tool args and tool results", async ()
   const wire = JSON.stringify(h.calls.map((c) => c.body))
   for (const marker of [...MARKERS, SECRET]) assert.ok(!wire.includes(marker), `${marker} leaked`)
   assert.ok(!wire.includes("input.value") && !wire.includes("output.value"))
+  // No local paths (they carry the OS user name).
+  assert.ok(!wire.includes("/tmp/proj"), "the working directory leaked into the default export")
+  assert.ok(!wire.includes("pi.cwd"))
   const [prompt] = byName(h.spans(), "pi.prompt")
   assert.ok(attr(prompt, "pi.prompt.bytes") > 0)
   const [tool] = byName(h.spans(), "execute_tool read")
@@ -158,6 +161,7 @@ test("FI_CAPTURE_CONTENT=true exports bounded content with secrets redacted", as
   const [root] = byName(h.spans(), "pi.session")
   assert.match(attr(root, "input.value"), /FIXTURE-PROMPT-MARKER/)
   assert.match(attr(root, "output.value"), /FIXTURE-ANSWER-MARKER/)
+  assert.equal(attr(root, "pi.cwd"), "/tmp/proj")
 })
 
 test("content is capped at 4 KiB", async () => {
