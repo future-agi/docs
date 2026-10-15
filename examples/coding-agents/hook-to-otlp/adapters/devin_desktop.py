@@ -14,10 +14,15 @@ Mapped events:
     pre_user_prompt        -> turn start (key execution_id)  user_prompt = content
     post_read_code         -> tool span "read_code"          file_path = content
     post_write_code        -> tool span "write_code"         file_path, edits = content
-    post_run_command       -> tool span "run_command"        command_line, cwd = content
+    post_run_command       -> tool span "run_command"        command_line = content
+                              (status left unset: the hook carries no exit code)
     post_mcp_tool_use      -> tool span named by mcp_tool_name
                               mcp_tool_arguments / mcp_result = content
     post_cascade_response  -> turn end                       response = content
+
+Cascade has no session hook, so ``pre_user_prompt`` also touches the
+session (a SESSION UPDATE exports nothing) so that the core sweeps state
+files of old conversations after FI_HOOK_STATE_TTL_HOURS.
 
 There is no hook for a cancelled turn. If ``post_cascade_response`` never
 arrives, the core closes that turn as incomplete when the next
@@ -27,14 +32,17 @@ tools keep their parent.
 Pre-hooks other than ``pre_user_prompt`` (they can block an action and
 carry no id to pair them with the post-hook) and ``post_setup_worktree``
 are not mapped. ``post_cascade_response_with_transcript`` is never mapped
-and its ``transcript_path`` is never opened. This adapter covers Cascade
-only, not the Devin Local agent or hosted Devin sessions.
+and its ``transcript_path`` is never opened. ``respond`` prints nothing:
+Cascade decides on the exit code, and the hook command in hooks.json is
+guarded (``2>/dev/null || true``) so it exits 0 even without the emitter.
+This adapter covers Cascade only, not the Devin Local agent or hosted
+Devin sessions.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from adapters.base import END, OK, START, TOOL, TURN, SpanEvent, compact, first
+from adapters.base import END, OK, SESSION, START, TOOL, TURN, UPDATE, SpanEvent, compact, first
 
 APP = "devin_desktop"
 DISPLAY_NAME = "Cascade"
@@ -52,18 +60,20 @@ def event_name(argv_event: Optional[str], payload: Dict[str, Any]) -> Optional[s
     return argv_event or payload.get("agent_action_name")
 
 
+def respond(event: str, payload: Dict[str, Any]) -> str:
+    return ""
+
+
 def _model(payload: Dict[str, Any]) -> Optional[str]:
     label = payload.get("model_name")
     return str(label) if label not in (None, "", "Unknown") else None
 
 
-def _common(event: str, payload: Dict[str, Any], turn: Optional[str]) -> Dict[str, Any]:
-    return compact({
-        "devin_desktop.action": event,
-        "devin_desktop.execution_id": turn,
-        # A display label ("Claude Sonnet 4"), not a stable model id.
-        "devin_desktop.model_label": _model(payload),
-    })
+def _common(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # The hook name and execution_id are already on every span as
+    # coding_agent.hook.event and coding_agent.turn.id.
+    # model_name is a display label ("Claude Sonnet 4"), not a stable model id.
+    return compact({"devin_desktop.model_label": _model(payload)})
 
 
 def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
@@ -79,18 +89,22 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
     if event == "pre_user_prompt":
         if turn is None:
             return []
-        return [SpanEvent(START, TURN, sid, key=turn, model=model, input=info.get("user_prompt"),
-                          attributes=_common(event, payload, turn))]
+        return [
+            SpanEvent(UPDATE, SESSION, sid),
+            SpanEvent(START, TURN, sid, key=turn, model=model, input=info.get("user_prompt"),
+                      attributes=_common(payload)),
+        ]
 
     if event == "post_cascade_response":
         if turn is None:
             return []
         return [SpanEvent(END, TURN, sid, key=turn, model=model, status=OK,
-                          output=info.get("response"), attributes=_common(event, payload, turn))]
+                          output=info.get("response"), attributes=_common(payload))]
 
     if event in TOOL_EVENTS:
         name = TOOL_EVENTS[event]
-        attributes = _common(event, payload, turn)
+        attributes = _common(payload)
+        status: Optional[str] = OK  # the vendor fires these hooks after a successful action
         tool_input: Any = None
         output: Any = None
         if event == "post_read_code":
@@ -100,14 +114,15 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
             tool_input = {"file_path": info.get("file_path"), "edits": edits}
             attributes["devin_desktop.write.edit_count"] = len(edits) if isinstance(edits, list) else None
         elif event == "post_run_command":
-            tool_input = {"command_line": info.get("command_line"), "cwd": info.get("cwd")}
+            tool_input = {"command_line": info.get("command_line")}
+            status = None  # no exit code in the hook input: outcome unknown
         else:
             name = str(info.get("mcp_tool_name") or name)
             attributes["devin_desktop.mcp.server"] = info.get("mcp_server_name")
             attributes["devin_desktop.mcp.tool"] = info.get("mcp_tool_name")
             tool_input = info.get("mcp_tool_arguments")
             output = info.get("mcp_result")
-        return [SpanEvent(END, TOOL, sid, turn_id=turn, name=name, status=OK,
+        return [SpanEvent(END, TOOL, sid, turn_id=turn, name=name, status=status,
                           input=tool_input, output=output, attributes=compact(attributes))]
 
     return []

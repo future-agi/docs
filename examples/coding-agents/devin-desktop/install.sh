@@ -31,4 +31,5 @@ fi
 echo
 echo "Credentials: put FI_API_KEY, FI_SECRET_KEY and FI_PROJECT_NAME in"
 echo "~/.config/fi-hook-to-otlp/env (chmod 600). Devin Desktop started from the"
-echo "Dock does not see variables exported in your shell."
+echo "Dock may not see variables exported in your shell."
+echo "To uninstall: remove the entries from $HOOK_DIR/hooks.json first, then delete $DEST."

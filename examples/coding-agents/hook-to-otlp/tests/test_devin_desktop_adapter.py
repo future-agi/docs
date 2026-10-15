@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import builtins
+import io
 import json
+import os
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.helpers import FIXTURES, attrs, by_name, config, latest, load_jsonl, replay
 
@@ -56,11 +59,34 @@ class DevinDesktopAdapterTest(unittest.TestCase):
     def test_tool_metadata(self):
         spans = self.spans()
         mcp = attrs(by_name(spans, "list_commits")[0])
-        self.assertEqual((mcp["fi.span.kind"], mcp["devin_desktop.mcp.server"], mcp["devin_desktop.action"]),
+        self.assertEqual((mcp["fi.span.kind"], mcp["devin_desktop.mcp.server"], mcp["coding_agent.hook.event"]),
                          ("TOOL", "github", "post_mcp_tool_use"))
         write = attrs(by_name(spans, "write_code")[0])
         self.assertEqual(write["devin_desktop.write.edit_count"], "1")
-        self.assertEqual(write["devin_desktop.execution_id"], "fixture-exec-0001")
+        self.assertEqual(write["coding_agent.turn.id"], "fixture-exec-0001")
+        self.assertEqual(write["devin_desktop.model_label"], "Claude Sonnet 4")
+        self.assertNotIn("devin_desktop.action", write)  # duplicates coding_agent.hook.event
+
+    def test_tool_status(self):
+        spans = self.spans()
+        # Read, write and MCP hooks fire after a successful action; a command's outcome is unknown.
+        for name in ("read_code", "write_code", "list_commits"):
+            self.assertEqual(by_name(spans, name)[0]["status"], {"code": 1}, name)
+        for span in by_name(spans, "run_command"):
+            self.assertEqual(span["status"], {"code": 0})
+
+    def test_respond_prints_nothing(self):
+        for record in self.records:
+            self.assertEqual(devin_desktop.respond(record["event"], record["payload"]), "")
+
+    def test_stale_state_of_old_conversations_is_swept(self):
+        cfg = config("devin_desktop", self.tmp.name, FI_HOOK_STATE_TTL_HOURS="0")
+        replay(devin_desktop, cfg, self.records)
+        old_state = cfg.state_dir / (emit._hex("state", "devin_desktop", SID, length=32) + ".json")
+        self.assertTrue(old_state.exists())
+        second = dict(self.records[0], payload=dict(self.records[0]["payload"], trajectory_id="fixture-traj-0002"))
+        replay(devin_desktop, cfg, [second])
+        self.assertFalse(old_state.exists())
 
     def test_pre_hooks_transcript_and_worktree_are_not_mapped(self):
         for record in self.records:
@@ -82,18 +108,18 @@ class DevinDesktopAdapterTest(unittest.TestCase):
             self.assertNotIn(marker, encoded, marker)
 
     def test_transcript_path_is_never_opened(self):
-        real_open = builtins.open
         opened = []
 
-        def guard(path, *args, **kwargs):
-            opened.append(str(path))
-            return real_open(path, *args, **kwargs)
+        def spy(real):
+            def wrapper(path, *args, **kwargs):
+                opened.append(str(path))
+                return real(path, *args, **kwargs)
+            return wrapper
 
-        builtins.open = guard
-        try:
+        with mock.patch("builtins.open", spy(builtins.open)), mock.patch("io.open", spy(io.open)), \
+                mock.patch("os.open", spy(os.open)):
             self.spans(capture=True)
-        finally:
-            builtins.open = real_open
+        self.assertTrue(opened)  # the spies saw the state file
         self.assertFalse([p for p in opened if "CANARY" in p], opened)
 
     def test_hosted_devin_payload_is_not_a_cascade_event(self):
