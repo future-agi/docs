@@ -258,6 +258,24 @@ class CoworkBridgeTest(unittest.TestCase):
         tools = sorted((s["name"], a.get("cowork.decision", "")) for _, s, a in spans if a["fi.span.kind"] == "TOOL")
         self.assertEqual(tools, [("Read", ""), ("Read", "reject")])
 
+    def test_result_without_a_decision_does_not_consume_a_reject(self):
+        # No tool_use_id and no decision_type: the result cannot say which decision it belongs to,
+        # so it pairs with none and the earlier reject keeps its span.
+        for result in (rec("tool_result", 3, 3, tool_name="Bash", success="true", duration_ms="100"),
+                       rec("tool_result", 3, 3, tool_name="Bash", success="true", tool_use_id="toolu_9")):
+            with self.subTest(tool_use_id="tool_use_id" in json.dumps(result)):
+                self.sink.payloads.clear()
+                spans = self.mapped(rec("user_prompt", 0, 0),
+                                    rec("tool_decision", 1, 1, tool_name="Bash", decision="reject", source="config"),
+                                    rec("tool_decision", 2, 2, tool_name="Bash", decision="accept",
+                                        source="user_temporary"),
+                                    result)
+                tools = sorted((s["name"], a.get("cowork.decision", "")) for _, s, a in spans
+                               if a["fi.span.kind"] == "TOOL")
+                self.assertEqual(tools, [("Bash", ""), ("Bash", "reject")])
+                root = [a for _, s, a in spans if "parentSpanId" not in s][0]
+                self.assertEqual(root["cowork.tool_calls"], 1)
+
     def test_prompt_error_only_when_the_last_model_request_failed(self):
         ok = self.mapped(rec("user_prompt", 0, 0, prompt=P1),
                          rec("api_error", 1, 1, prompt=P1, status_code="529", error="overloaded_error", attempt="1"),
@@ -318,6 +336,14 @@ class CoworkBridgeTest(unittest.TestCase):
             self.assertNotIn("cowork.skill_name", tools["Read"])  # a path is not a name
             self.assertEqual(tools["mcp__jira__create_issue"]["cowork.decision"], "reject")
             self.assertEqual(tools["mcp__jira__create_issue"]["gen_ai.tool.name"], "mcp__jira__create_issue")
+
+    def test_name_filter_is_the_rule_on_the_page(self):
+        # The page: at most 128 characters and no /, \, @, line break, or tab.
+        def names(value):
+            return bridge.tool_names({"tool_parameters": json.dumps({"skill_name": value})})
+        for bad in ("a/b", "a\\b", "a@b", "a\nb", "a\rb", "a\tb", "x" * 129, ""):
+            self.assertEqual(names(bad), {}, repr(bad))
+        self.assertEqual(names("x" * 128), {"cowork.skill_name": "x" * 128})
 
     def test_api_error_text_needs_content_opt_in(self):
         err = "rate_limit_error: proxy https://gw.internal/v1 for /Users/alice/project rejected the request"

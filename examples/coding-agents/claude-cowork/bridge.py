@@ -362,20 +362,22 @@ class CoworkMapper:
                             "tool_use_id": a.get("tool_use_id"), "time": t})
 
     def match_decision(self, p: Prompt, name: str, names: Dict[str, str], a: Dict[str, Any], t: int):
-        """The tool_decision event for this tool_result, if one is pending."""
+        """The tool_decision event for this tool_result, if one is pending: by tool_use_id, else by tool
+        name and decision_type. A result that carries neither pairs with nothing, so a pending reject
+        is never consumed by a guess and still gets its own span."""
         use_id = a.get("tool_use_id")
         if use_id:
             for d in p.decisions:
                 if d["tool_use_id"] == use_id:
                     return d
-        same = [d for d in p.decisions
-                if d["tool_name"] == name and d["time"] <= t
-                and not (use_id and d["tool_use_id"])
-                and all(d["names"].get(k) == v for k, v in names.items() if k in d["names"])]
         want = a.get("decision_type")
-        if want:  # a rejected call that the agent retried must keep its own reject span
-            return next((d for d in same if d["decision"] == want), None)
-        return same[0] if same else None
+        if not want:
+            return None
+        # A rejected call that the agent retried must keep its own reject span.
+        return next((d for d in p.decisions
+                     if d["tool_name"] == name and d["time"] <= t and d["decision"] == want
+                     and not (use_id and d["tool_use_id"])
+                     and all(d["names"].get(k) == v for k, v in names.items() if k in d["names"])), None)
 
     def tool_result(self, p: Prompt, a: Dict[str, Any], t: int, seq: int):
         dur = to_int(a.get("duration_ms")) or 0
