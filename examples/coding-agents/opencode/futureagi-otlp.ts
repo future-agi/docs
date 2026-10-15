@@ -21,7 +21,7 @@
 //   FI_OTLP_ENDPOINT     full traces URL (default: $FI_BASE_URL/tracer/v1/traces)
 //   FI_BASE_URL          default https://api.futureagi.com
 //   FI_CAPTURE_CONTENT   "true" to export bounded, redacted content (default off)
-//   FI_OTLP_TIMEOUT_MS   export timeout (default 5000)
+//   FI_OTLP_TIMEOUT_MS   export timeout (default 10000)
 //   FI_OTLP_DEBUG        "true" to print export failures to stderr
 //
 // This file must export exactly one function: OpenCode loads every export of
@@ -158,7 +158,7 @@ export const FutureAGITracing: Plugin = async (ctx, options) => {
 
   const capture = truthy(env.FI_CAPTURE_CONTENT)
   const debug = truthy(env.FI_OTLP_DEBUG)
-  const timeoutMs = Number(env.FI_OTLP_TIMEOUT_MS ?? "5000") || 5000
+  const timeoutMs = Number(env.FI_OTLP_TIMEOUT_MS ?? "10000") || 10000
   const endpoint =
     env.FI_OTLP_ENDPOINT || `${(env.FI_BASE_URL || "https://api.futureagi.com").replace(/\/+$/, "")}/tracer/v1/traces`
 
@@ -169,6 +169,7 @@ export const FutureAGITracing: Plugin = async (ctx, options) => {
   let buffer: Span[] = []
   let serviceVersion = "unknown"
   let pending: Promise<void> = Promise.resolve()
+  const retried = new WeakSet<Span>()
 
   const log = (message: string) => {
     if (debug) console.error(`[futureagi-otlp] ${message}`)
@@ -423,11 +424,16 @@ export const FutureAGITracing: Plugin = async (ctx, options) => {
           body,
           signal: AbortSignal.timeout(timeoutMs),
         })
-        if (!response.ok) log(`collector returned HTTP ${response.status}`)
+        if (response.ok) return
+        log(`collector returned HTTP ${response.status}`)
       } catch (error) {
         // Never surface payloads or header values; never break the session.
         log(`export failed: ${(error as Error)?.name ?? "Error"}`)
       }
+      // Give each span one more try with the next flush, then drop it.
+      const again = spans.filter((span) => !retried.has(span))
+      for (const span of again) retried.add(span)
+      buffer.unshift(...again)
     })
     return pending
   }
@@ -598,6 +604,7 @@ export const FutureAGITracing: Plugin = async (ctx, options) => {
     }),
     dispose: guard(async () => {
       for (const id of sessions.keys()) settle(id, true)
+      await flush()
       await flush()
     }),
   }

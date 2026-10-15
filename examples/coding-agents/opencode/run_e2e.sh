@@ -22,12 +22,13 @@ printf 'print("hello")\n' > "$project/main.py"
 git -C "$project" init -q 2>/dev/null || true
 
 marker="OPENCODE-MARKER-$(date +%s)-$RANDOM"
+# `opencode run` reads stdin until EOF when stdin is not a terminal, so stdin is closed below.
 model_args=()
 if [ -n "${OPENCODE_MODEL:-}" ]; then model_args=(--model "$OPENCODE_MODEL"); fi
 
 echo "opencode $(opencode --version) in $project"
 (cd "$project" && opencode run ${model_args[@]+"${model_args[@]}"} \
-  "$marker List the files in this folder and read README.md, then summarize the project in one sentence.")
+  "$marker List the files in this folder and read README.md, then summarize the project in one sentence." </dev/null)
 
 echo
 echo "marker=$marker"

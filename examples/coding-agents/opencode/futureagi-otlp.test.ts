@@ -11,10 +11,12 @@ const BASE_ENV = { FI_API_KEY: "test-api-key", FI_SECRET_KEY: "test-secret-key",
 
 type Request = { url: string; headers: Record<string, string>; body: any; raw: string }
 
-function harness(env: Record<string, string> = {}, failFetch = false) {
+function harness(env: Record<string, string> = {}, failFetch: boolean | number = false) {
   const requests: Request[] = []
+  let calls = 0
   const fakeFetch = async (url: string, init: any) => {
-    if (failFetch) throw new TypeError("network down")
+    calls += 1
+    if (failFetch === true || (typeof failFetch === "number" && calls <= failFetch)) throw new TypeError("network down")
     requests.push({ url, headers: init.headers, body: JSON.parse(init.body), raw: init.body })
     return { ok: true, status: 200 } as Response
   }
@@ -191,4 +193,12 @@ test("explicit endpoint and FI_BASE_URL are honoured", async () => {
   const b = harness({ FI_BASE_URL: "http://localhost:14338/" })
   await replay(await b.hooksPromise, fixture.steps)
   assert.ok(b.requests.every((r) => r.url === "http://localhost:14338/tracer/v1/traces"))
+})
+
+test("a failed export is retried once with the next flush", async () => {
+  const { requests, hooksPromise } = harness({}, 1)
+  await replay(await hooksPromise, fixture.steps)
+  const spans = spansOf(requests)
+  assert.equal(spans.length, 6, "spans from the failed first export arrive with a later flush")
+  assert.equal(new Set(spans.map((s) => s.spanId)).size, 6, "no span is sent twice")
 })
