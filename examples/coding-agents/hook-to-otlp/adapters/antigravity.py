@@ -11,8 +11,10 @@ do NOT name the event, so the hook command passes it on argv
     PreInvocation   -> model call start (key = initialNumSteps + invocationNum);
                        invocationNum 0 also opens a turn (one user message)
     PostInvocation  -> model call end
-    PreToolUse      -> tool start (key = stepIdx)      toolCall.args = content
-    PostToolUse     -> tool end                        ERROR when ``error`` is set
+    PostToolUse     -> tool span (key = stepIdx)     toolCall.args/result = content,
+                                                       ERROR when ``error`` is set
+
+Permission PreToolUse is intentionally not registered: this recipe is observe-only.
     Stop            -> turn end                        ERROR when terminationReason is "error"
 
 Antigravity has no session-end hook, so the session span is re-exported with
@@ -44,7 +46,7 @@ DISPLAY_NAME = "Antigravity"
 SERVICE_NAME = "antigravity-ide"
 
 OTHER_SURFACES = ("/.gemini/antigravity/", "/.gemini/antigravity-cli/")
-EVENTS = ("SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop")
+EVENTS = ("SessionStart", "PreInvocation", "PostInvocation", "PostToolUse", "Stop")
 _ENUM = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
 
 
@@ -53,11 +55,7 @@ def event_name(argv_event: Optional[str], payload: Dict[str, Any]) -> Optional[s
 
 
 def respond(event: str, payload: Dict[str, Any]) -> str:
-    # PreToolUse and Stop require a ``decision``. "allow" defers to the next
-    # hook or the default policy; any Stop decision other than "continue"
-    # lets the agent stop. The emitter never approves or blocks anything.
-    if event == "PreToolUse":
-        return '{"decision": "allow"}'
+    # Stop accepts a non-continue decision. The emitter never approves tools.
     if event == "Stop":
         return '{"decision": ""}'
     return "{}"
@@ -80,8 +78,10 @@ def _tool(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _other_surface(payload: Dict[str, Any]) -> bool:
     for key in ("artifactDirectoryPath", "transcriptPath"):
         value = payload.get(key)
-        if isinstance(value, str) and any(marker in value for marker in OTHER_SURFACES):
-            return True
+        if isinstance(value, str):
+            normalized = value.replace("\\\\", "/")
+            if any(marker in normalized for marker in OTHER_SURFACES):
+                return True
     return False
 
 
@@ -113,14 +113,12 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
                           output=payload.get("modelOutput"),
                           attributes=compact({"antigravity.invocation.num": _int(payload.get("invocationNum"))}))]
 
-    if event in ("PreToolUse", "PostToolUse"):
+    if event == "PostToolUse":
         call = _tool(payload)
         tool = str(call.get("name") or "tool")
         step = _int(payload.get("stepIdx"))
         key = f"step-{step}" if step is not None else ""
         attrs = compact({"antigravity.tool.name": tool, "antigravity.step.index": step})
-        if event == "PreToolUse":
-            return [SpanEvent(START, TOOL, sid, key=key, name=tool, input=call.get("args"), attributes=attrs)]
         error = payload.get("error")
         failed = bool(error)
         return [SpanEvent(END, TOOL, sid, key=key, name=tool,
