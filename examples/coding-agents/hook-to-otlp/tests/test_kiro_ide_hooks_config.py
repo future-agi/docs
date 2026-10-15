@@ -180,9 +180,10 @@ class KiroIdeHooksConfigTest(unittest.TestCase):
 
 
 class KiroIdeInstallerTest(unittest.TestCase):
-    def install(self, project, home, *args):
+    def install(self, project, home, *args, cwd=None):
         return subprocess.run([str(EXAMPLE / "install.sh"), *(args or (str(project),))], capture_output=True,
-                              text=True, env={"PATH": os.environ.get("PATH", ""), "HOME": str(home)})
+                              text=True, env={"PATH": os.environ.get("PATH", ""), "HOME": str(home)},
+                              cwd=cwd or project.parent)
 
     def test_refuses_when_the_kiro_cli_recipe_shares_a_scope(self):
         for where in ("project", "home"):
@@ -210,6 +211,39 @@ class KiroIdeInstallerTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("differs from the shipped template", result.stdout)
             self.assertEqual((hooks / "fi-hook-to-otlp.json").read_text(), old)
+
+    def test_warns_when_a_kiro_cli_agent_profile_runs_the_cli_recipe(self):
+        # The Kiro CLI recipe's --agent-profile entries, as pasted into a CLI agent profile.
+        cli_entries = json.dumps({"hooks": [{"trigger": "Stop", "action": {
+            "type": "command",
+            "command": '(python3 -B "$HOME/.kiro/fi-hook-to-otlp-kiro-cli/emit.py" kiro_cli Stop 2>/dev/null || true)'}}]})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()  # matches the installer's working-directory paths (/var -> /private/var)
+            project, home = root / "project", root / "home"
+            project.mkdir()
+            home.mkdir()
+            self.assertEqual(self.install(project, home).stderr, "")
+            (project / ".kiro/hooks/fi-hook-to-otlp.json").unlink()
+
+            profile = home / ".kiro/agents/team/reviewer.json"
+            profile.parent.mkdir(parents=True)
+            profile.write_text(cli_entries)
+            result = self.install(project, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"warning: {profile} is a Kiro CLI agent profile", result.stderr)
+            self.assertIn(f"sessions that use that agent in {project} also load this hook file", result.stderr)
+            self.assertTrue((project / ".kiro/hooks/fi-hook-to-otlp.json").exists(), "a warning, not a refusal")
+
+            local = project / ".kiro/agents/local.md"
+            local.parent.mkdir(parents=True)
+            local.write_text(f"---\nname: local\n---\n{cli_entries}")
+            result = self.install(project, home, "--user", cwd=project)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for path in (profile, local):
+                self.assertIn(f"warning: {path} is a Kiro CLI agent profile", result.stderr)
+            # From the home directory, ~/.kiro/agents is listed once, not again as a project's agents.
+            result = self.install(project, home, "--user", cwd=home)
+            self.assertEqual(result.stderr.count("warning:"), 1, result.stderr)
 
 
 if __name__ == "__main__":

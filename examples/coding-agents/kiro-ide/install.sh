@@ -9,7 +9,9 @@
 #
 # Kiro IDE and Kiro CLI V3 both load every .kiro/hooks/*.json file (project and
 # ~/.kiro/hooks/), so the Kiro IDE and Kiro CLI recipes cannot both be installed
-# where one session would load both: the installer refuses instead.
+# where one session would load both: the installer refuses instead. A Kiro CLI
+# agent profile that runs the Kiro CLI recipe (its --agent-profile setup) also
+# loads this hook file; the installer warns and names that profile.
 #
 # Uninstall: delete the hook file first, then the emitter directory:
 #   rm .kiro/hooks/fi-hook-to-otlp.json && rm -r .kiro/fi-hook-to-otlp
@@ -64,6 +66,28 @@ else
   cp "$TEMPLATE" "$HOOK_FILE"
   echo "hooks:   $HOOK_FILE"
 fi
+
+# Kiro CLI sessions that use an agent profile running the Kiro CLI recipe's hooks also load
+# this hook file. The installer cannot know where that agent is used, so it warns.
+if [[ "${1:-}" == "--user" ]]; then
+  project_agents="$PWD/.kiro/agents"
+  if [[ "$PWD/.kiro" -ef "$KIRO_DIR" ]]; then
+    project_agents=""
+  fi
+  where=""
+else
+  project_agents="$KIRO_DIR/agents"
+  where=" in $(dirname "$KIRO_DIR")"
+fi
+for dir in "$HOME/.kiro/agents" ${KIRO_HOME:+"$KIRO_HOME/agents"} "$project_agents"; do
+  if [[ -n "$dir" && -d "$dir" ]]; then
+    grep -rlF -e "fi-hook-to-otlp-kiro-cli/emit.py" -- "$dir" 2>/dev/null || true
+  fi
+done | sort -u | while IFS= read -r profile; do
+  echo "warning: $profile is a Kiro CLI agent profile that runs the Kiro CLI recipe's hooks." >&2
+  echo "  Kiro CLI sessions that use that agent$where also load this hook file, so they would be" >&2
+  echo "  exported twice (as Kiro IDE and as Kiro CLI): remove its Future AGI entries." >&2
+done
 
 echo
 echo "Credentials: put FI_API_KEY / FI_SECRET_KEY / FI_PROJECT_NAME in"
