@@ -40,6 +40,6 @@ PY
   sleep "${REPLAY_SLEEP:-0.3}"
 done
 
-TRACE_ID="$(cd "$EMITTER" && python3 -c 'import sys, emit; print(emit.trace_id("devin_desktop", sys.argv[1]))' "$RUN_ID")"
+TRACE_ID="$(cd "$EMITTER" && python3 -B -c 'import sys, emit; print(emit.trace_id("devin_desktop", sys.argv[1]))' "$RUN_ID")"
 echo "trajectory_id=$RUN_ID"
 echo "trace_id=$TRACE_ID"

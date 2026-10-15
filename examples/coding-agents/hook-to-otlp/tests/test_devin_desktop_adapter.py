@@ -106,6 +106,35 @@ class DevinDesktopAdapterTest(unittest.TestCase):
             self.assertIn(marker, encoded, marker)
         for marker in NEVER:
             self.assertNotIn(marker, encoded, marker)
+        # Paths inside opted-in tool input keep the path but not the account name.
+        self.assertIn("/Users/<user>/project", encoded)
+        self.assertNotIn("/Users/fixture/", encoded)
+
+    def test_error_text_with_path_and_user_is_content(self):
+        # An MCP tool error comes back in mcp_result; a command line can name a home path.
+        records = [
+            {"event": "pre_user_prompt", "payload": {"agent_action_name": "pre_user_prompt", "trajectory_id": "err-traj",
+                                                     "execution_id": "err-exec", "tool_info": {"user_prompt": "p"}}},
+            {"event": "post_mcp_tool_use", "payload": {
+                "agent_action_name": "post_mcp_tool_use", "trajectory_id": "err-traj", "execution_id": "err-exec",
+                "tool_info": {"mcp_server_name": "fs", "mcp_tool_name": "read_file",
+                              "mcp_tool_arguments": {"path": "/Users/alice-canary/secret.txt"},
+                              "mcp_result": "Error: ENOENT: no such file '/Users/alice-canary/secret.txt'"}}},
+            {"event": "post_run_command", "payload": {
+                "agent_action_name": "post_run_command", "trajectory_id": "err-traj", "execution_id": "err-exec",
+                "tool_info": {"command_line": "cat /home/alice-canary/.netrc", "cwd": "/home/alice-canary/repo"}}},
+            {"event": "post_cascade_response", "payload": {"agent_action_name": "post_cascade_response",
+                                                           "trajectory_id": "err-traj", "execution_id": "err-exec",
+                                                           "tool_info": {"response": "r"}}},
+        ]
+        default = json.dumps(replay(devin_desktop, config("devin_desktop", self.tmp.name), records))
+        for text in ("alice-canary", "ENOENT", "/Users/", "/home/"):
+            self.assertNotIn(text, default, text)
+        with tempfile.TemporaryDirectory() as tmp:
+            opted = json.dumps(replay(devin_desktop, config("devin_desktop", tmp, FI_HOOK_CAPTURE_CONTENT="1"), records))
+        self.assertIn("ENOENT", opted)
+        self.assertIn("/Users/<user>/secret.txt", opted)
+        self.assertNotIn("alice-canary", opted)  # user name scrubbed, cwd never captured
 
     def test_transcript_path_is_never_opened(self):
         opened = []

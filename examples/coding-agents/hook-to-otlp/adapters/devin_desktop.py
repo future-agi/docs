@@ -34,7 +34,8 @@ carry no id to pair them with the post-hook) and ``post_setup_worktree``
 are not mapped. ``post_cascade_response_with_transcript`` is never mapped
 and its ``transcript_path`` is never opened. ``respond`` prints nothing:
 Cascade decides on the exit code, and the hook command in hooks.json is
-guarded (``2>/dev/null || true``) so it exits 0 even without the emitter.
+guarded (``(python3 -B ... 2>/dev/null || true)``) so it exits 0 even
+without the emitter.
 This adapter covers Cascade only, not the Devin Local agent or hosted
 Devin sessions.
 """
