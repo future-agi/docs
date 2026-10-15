@@ -1,0 +1,154 @@
+---
+title: "Claude Cowork session tracing with Future AGI"
+description: "Trace Claude Cowork activity in Future AGI from Cowork's admin OpenTelemetry export: one trace per prompt with model requests, tool calls, approvals, tokens, cost, and errors. Prompt text, tool inputs, file paths, and emails are stripped before Future AGI stores anything."
+---
+
+## About
+
+Claude Cowork can stream OpenTelemetry events for every Cowork session in your organization to an endpoint an admin sets in the Claude admin console. Cowork sends these as log events (`user_prompt`, `api_request`, `tool_result`, ...), each tagged with the `prompt.id` of the prompt that caused it. Future AGI stores traces, so a small bridge (`bridge.py`, Python standard library only) receives the events and turns each prompt into one trace:
+
+```
+Cowork prompt                  one prompt.id (agent span), session.id
+├── Cowork model request       api_request: model, tokens, cache tokens, cost, duration
+├── Read                       tool_result: tool name, success, duration, approval decision
+├── Bash                       tool_decision with decision "reject" and no result
+└── Cowork model request       api_error: ERROR with the API's message
+```
+
+Cowork includes prompt text, model responses, tool inputs, and user emails in these events by default. The bridge builds spans from a fixed list of metadata fields and drops everything else, so that content never reaches Future AGI unless you turn it on in the bridge.
+
+This is not the same as:
+
+- **Claude Code.** Cowork's export does not cover the terminal CLI or the Desktop app's Code tab, and Claude Code's own telemetry settings do not cover Cowork. See the Claude Code integration page.
+- **Connecting Future AGI as an MCP server in Cowork.** That gives Cowork tools; it does not trace Cowork sessions.
+- **The Compliance API**, Anthropic's separate audit-log API.
+
+| | |
+| --- | --- |
+| Availability | Claude Team and Enterprise plans. Only an organization admin can turn the export on. Claude Desktop 1.22209.3 or later for cloud sessions, 1.1.4173 or later for local desktop sessions. |
+| Anthropic docs used | [Monitor Claude Cowork activity with OpenTelemetry](https://support.claude.com/en/articles/14477985-monitor-claude-cowork-activity-with-opentelemetry) and the [Cowork monitoring reference](https://claude.com/docs/cowork/monitoring), read 2026-10-14 |
+| Tested with | Event payloads built from Anthropic's monitoring reference, and the live event stream of Claude Code 2.1.300, which emits the same events with the same attributes. Not yet run against a live Cowork organization. |
+| Requires | Python 3.9+ on a host Cowork can reach over HTTPS. No packages. |
+| Source | [examples/coding-agents/claude-cowork](https://github.com/future-agi/docs/tree/main/examples/coding-agents/claude-cowork) |
+
+## 1. Run the bridge where Cowork can reach it
+
+Cowork's exporter runs inside the Cowork session's VM, and cloud sessions run on Anthropic's servers, so the bridge needs a public HTTPS address. Run it on a server, set a token that Cowork will send, and put it behind your HTTPS reverse proxy or load balancer:
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+
+export FI_API_KEY=your-futureagi-api-key
+export FI_SECRET_KEY=your-futureagi-secret-key
+export FI_PROJECT_NAME=cowork-sessions
+export FI_BRIDGE_TOKEN=$(openssl rand -hex 32)   # keep it; the admin form needs it
+export FI_BRIDGE_LISTEN=0.0.0.0:4320
+python3 fi-docs/examples/coding-agents/claude-cowork/bridge.py
+```
+
+With Caddy, for example, the HTTPS front is two lines in the Caddyfile:
+
+```
+otel.example.com {
+    reverse_proxy 127.0.0.1:4320
+}
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | none | Sent to Future AGI as `X-Api-Key` and `X-Secret-Key`. They stay on the bridge host; Cowork never sees them. |
+| `FI_PROJECT_NAME` | `claude-cowork` | Project for these traces. |
+| `FI_BASE_URL` | `https://api.futureagi.com` | Traces go to `$FI_BASE_URL/tracer/v1/traces`. |
+| `FI_OTLP_ENDPOINT` | none | Full traces URL, overrides `FI_BASE_URL` (self-hosted Future AGI). |
+| `FI_BRIDGE_LISTEN` | `127.0.0.1:4320` | Address to listen on. |
+| `FI_BRIDGE_TOKEN` | none | Requests must send `Authorization: Bearer <token>`. Required when the bridge listens on anything but loopback. |
+| `FI_BRIDGE_IDLE_SECONDS` | `10` | A prompt's trace is sent this long after its last event. Later events for the same `prompt.id` are added to the same trace. |
+| `FI_BRIDGE_CAPTURE_CONTENT` | off | `1` keeps prompt text, response text, and tool input. See [Privacy](#privacy). |
+| `FI_BRIDGE_MAX_CONTENT_CHARS` | `4096` | Per-field cap when content is on. |
+
+## 2. Point Cowork at the bridge (admin)
+
+In the Claude admin console, open the Cowork settings (**Admin settings > Cowork**; Anthropic's help center calls it **Organization settings > Cowork**) and fill in:
+
+| Field | Value |
+| --- | --- |
+| OTLP endpoint | `https://otel.example.com` |
+| OTLP protocol | `http/json` |
+| OTLP headers | `Authorization=Bearer <FI_BRIDGE_TOKEN>` |
+
+Save. Cowork loads these settings when a session starts, so sessions that are already open keep their old settings. Anthropic stores the headers encrypted. Don't paste the token into tickets or repositories.
+
+The bridge reads OTLP/JSON with no extra packages. If you choose `http/protobuf`, install `opentelemetry-proto` in the bridge's Python first.
+
+## 3. Check a session
+
+Start a new Cowork task that uses a tool, for example *"Summarize the files in this folder"*. The bridge prints one line per prompt:
+
+```
+[fi-cowork-bridge] prompt trace_id=c0a8f3e241d74b9a8e2c7d1f5a6b3c90 session.id=7f3c2a10-5b7e-4c1d-9a8e-2f6b1c0d4e51 spans=5 http=200
+```
+
+Open **Observe** in Future AGI and select the project (`cowork-sessions` above). Each prompt is a trace named **Cowork prompt**. The trace id is the prompt's `prompt.id` without dashes, so you can look up a prompt from your other Cowork tooling.
+
+To test the bridge before an admin changes anything, `run_e2e.sh` in the examples folder starts it on loopback and posts a recorded session shaped as Anthropic documents it:
+
+```bash
+FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=cowork-e2e fi-docs/examples/coding-agents/claude-cowork/run_e2e.sh
+```
+
+## What is captured
+
+| Cowork event | Future AGI span | Fields kept |
+| --- | --- | --- |
+| `user_prompt` | **Cowork prompt** (agent) | `session.id`, `prompt.id`, prompt length, account UUID as `user.id`, organization id |
+| `assistant_response` | **Cowork prompt** | model, response length |
+| `api_request` | **Cowork model request** (LLM) | model, input tokens (including cache reads and writes), output tokens, cache read and write tokens, `cost_usd` as `gen_ai.cost.total`, duration, speed |
+| `api_error` | **Cowork model request**, status `ERROR` | model, HTTP status code, the API's error message, attempt, duration |
+| `tool_result` | tool span named after `tool_name` | success, duration, approval decision and its source, result size, MCP server scope. `success: "false"` marks the span `ERROR` |
+| `tool_decision` | tool span, only when the decision is `reject` | decision and source (a rejected tool call has no `tool_result`) |
+
+The prompt span also carries the prompt's total tokens as `cowork.prompt.input_tokens` and `cowork.prompt.output_tokens`, and its tool-call count. Cost is Anthropic's estimate from the event, not your bill.
+
+## What is not available
+
+- **A span hierarchy below the prompt.** Cowork's events say which prompt they belong to, not which model request started which tool. Model requests and tools are all children of the prompt span, in time order.
+- **Skills and plugins as their own spans.** The reference documents no event for them. Anything Cowork reports as a `tool_result` shows up as a tool span.
+- **Cowork's beta trace export.** On third-party deployments of Claude Desktop, an `otlpTracesEnabled` setting (beta) adds trace spans; it is not covered here.
+- **Code tab and CLI sessions.** They are Claude Code, not Cowork.
+- **Live verification.** The bridge was tested with documented payloads and Claude Code's live events, not yet with a Cowork organization.
+
+## Privacy
+
+By default the bridge forwards metadata only, whatever Cowork sends. On a first-party deployment where the `otlpContentCapture` device setting is not set, Cowork's events include prompt text, response text, tool inputs, and tool parameters.
+
+| Field in Cowork's events | Default | With `FI_BRIDGE_CAPTURE_CONTENT=1` |
+| --- | --- | --- |
+| `prompt` (prompt text) | dropped | prompt span input |
+| `response` (model response text) | dropped | prompt span output |
+| `tool_input` (tool arguments) | dropped | tool span input |
+| `error` on a failed `tool_result` | dropped, status message is `tool failed` | status message |
+| `tool_parameters` (commands, file paths, MCP server and tool names) | dropped | dropped |
+| `user.email`, `user.account_id`, `workspace.host_paths`, `enduser.id`, `process.owner` | dropped | dropped |
+
+The bridge has no pass-through. A field that is not in the table above is not forwarded, so a new field Cowork adds later stays out until the bridge maps it.
+
+To stop content at the source as well, deploy the `otlpContentCapture` managed configuration key with the value `[]` to your users' devices (see Anthropic's [monitoring reference](https://claude.com/docs/cowork/monitoring)). Cowork then sends metadata only.
+
+## Troubleshooting
+
+**The bridge prints nothing.**
+1. Start a new Cowork session. Open sessions keep the settings they started with.
+2. The endpoint must be reachable from the internet over HTTPS. A `localhost` or private-network address does not work for cloud sessions.
+3. Check your reverse proxy's access log for requests from Cowork.
+
+**Requests get HTTP 401.** The `Authorization` header in the admin form does not match `FI_BRIDGE_TOKEN`. The form value must be `Authorization=Bearer <token>`.
+
+**Requests get HTTP 415.** The admin form is set to `http/protobuf`. Switch to `http/json`, or install `opentelemetry-proto` for the bridge.
+
+**The bridge logs `export failed: HTTP 401` or `403`.** Wrong Future AGI keys on the bridge host.
+
+## Next Steps
+
+- [Hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp): the shared emitter the hook-based coding agent integrations use.
+- [Sessions](/docs/observe/features/session): how Future AGI groups traces by `session.id`.
+- [Users](/docs/observe/features/users): per-user views from `user.id`.
