@@ -212,16 +212,24 @@ class KiroCliHooksConfigTest(unittest.TestCase):
 class KiroCliInstallerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.project, self.home = Path(self.tmp.name, "project"), Path(self.tmp.name, "home")
+        # Resolved, so paths match what the installer prints from its working directory (/var -> /private/var).
+        root = Path(self.tmp.name).resolve()
+        self.project, self.home = root / "project", root / "home"
         self.project.mkdir()
         self.home.mkdir()
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def install(self, *args):
+    def install(self, *args, cwd=None, **extra):
+        # Run from a neutral directory unless a test needs a project as the current directory.
         return subprocess.run([str(EXAMPLE / "install.sh"), *(args or (str(self.project),))], capture_output=True,
-                              text=True, env=base_env(str(self.home)))
+                              text=True, env=base_env(str(self.home), **extra), cwd=cwd or self.tmp.name)
+
+    def put(self, path, text='{"command": "emit.py kiro_ide"}'):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
 
     def test_refuses_when_the_kiro_ide_recipe_shares_a_scope(self):
         # A global install cannot see every project, so only the scopes it would share are checked.
@@ -235,9 +243,78 @@ class KiroCliInstallerTest(unittest.TestCase):
             self.assertIn("Kiro IDE recipe", result.stderr)
             self.assertEqual(list(Path(self.tmp.name).rglob("fi-hook-to-otlp-kiro-cli.json")), [])
             (hooks / "fi-hook-to-otlp.json").unlink()
-        # The agent-profile path does not load .kiro/hooks, so it is allowed.
-        (self.home / ".kiro" / "hooks" / "fi-hook-to-otlp.json").write_text('{"command": "emit.py kiro_ide"}')
-        self.assertEqual(self.install("--agent-profile").returncode, 0)
+
+    def test_agent_profile_refuses_when_global_hooks_already_run_in_every_session(self):
+        # A session that uses an agent profile still loads every ~/.kiro/hooks/*.json file.
+        ide = self.put(self.home / ".kiro/hooks/fi-hook-to-otlp.json")
+        for extra in ({}, {"KIRO_HOME": str(self.home / "kiro-home")}):
+            result = self.install("--agent-profile", **extra)
+            self.assertEqual(result.returncode, 1, extra)
+            self.assertIn(f"{ide} is the Kiro IDE recipe", result.stderr)
+            self.assertIn("exported twice", result.stderr)
+            self.assertNotIn('"hooks"', result.stdout, "no entries to paste")
+            self.assertEqual(list(Path(self.tmp.name).rglob("emit.py")), [], "nothing installed")
+        ide.unlink()
+
+        self.assertEqual(self.install("--user").returncode, 0)
+        result = self.install("--agent-profile")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already traces every Kiro CLI session", result.stderr)
+        self.assertNotIn('"hooks"', result.stdout)
+
+    def test_agent_profile_warns_when_the_current_project_loads_a_tracing_hook_file(self):
+        result = self.install("--agent-profile", cwd=self.project)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertIn("do not use it in a project that has", result.stdout)
+        for name in ("fi-hook-to-otlp.json", "fi-hook-to-otlp-kiro-cli.json"):
+            other = self.put(self.project / ".kiro/hooks" / name, '{"command": "emit.py kiro_ide kiro_cli"}')
+            result = self.install("--agent-profile", cwd=self.project)
+            self.assertEqual(result.returncode, 0, name)
+            self.assertIn(f"warning: {other} runs in every Kiro session", result.stderr)
+            self.assertIn("would be exported twice", result.stderr)
+            self.assertIn('"hooks"', result.stdout, "the entries are still printed")
+            other.unlink()
+
+    def test_user_install_warns_about_a_project_install_it_doubles(self):
+        self.assertEqual(self.install().returncode, 0)
+        project_file = self.project / ".kiro/hooks/fi-hook-to-otlp-kiro-cli.json"
+        result = self.install("--user", cwd=self.project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"warning: {project_file} is a project install of this recipe", result.stderr)
+        self.assertIn("exported twice", result.stderr)
+        self.assertTrue(project_file.exists(), "the project file is left for the user to remove")
+        # It cannot see other projects, so it always says what to remove there.
+        result = self.install("--user")
+        self.assertEqual(result.stderr, "")
+        self.assertIn("If you installed this recipe per project before", result.stdout)
+        # Run from the home directory, ~/.kiro is the global scope, not a project install.
+        for _ in range(2):
+            self.assertEqual(self.install("--user", cwd=self.home).stderr, "")
+
+    def test_user_install_warns_about_the_kiro_ide_recipe_in_the_current_project(self):
+        ide = self.put(self.project / ".kiro/hooks/fi-hook-to-otlp.json")
+        result = self.install("--user", cwd=self.project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"warning: {ide} is the Kiro IDE recipe", result.stderr)
+
+    def test_warns_when_an_agent_profile_already_runs_the_emitter(self):
+        hooks = (EXAMPLE / "agent-profile-hooks.json").read_text()
+        profile = self.put(self.home / ".kiro/agents/team/reviewer.json", hooks)
+        result = self.install("--user")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"warning: {profile} is an agent profile that runs this recipe's hooks", result.stderr)
+        (self.home / ".kiro/hooks/fi-hook-to-otlp-kiro-cli.json").unlink()
+
+        local = self.put(self.project / ".kiro/agents/local.md", f"---\nname: local\n---\n{hooks}")
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in (profile, local):
+            self.assertIn(f"warning: {path} is an agent profile", result.stderr)
+        self.assertIn(f"Sessions that use that agent in {self.project} would be exported twice",
+                      result.stderr)
+        profile.unlink()
+        local.unlink()
+        self.assertEqual(self.install().stderr, "")
 
     def test_refuses_a_project_install_when_the_global_one_exists(self):
         self.assertEqual(self.install("--user").returncode, 0)
