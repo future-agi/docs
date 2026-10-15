@@ -15,8 +15,11 @@
 # collector also writes what it forwards to a local file, which the script
 # checks: by default the marker string from the prompt, your user name, home
 # directory and machine name must not be in it; with CAPTURE_CONTENT=1 the
-# marker must be. The script exits non-zero if a check fails and then keeps its
-# work directory for inspection; on success it deletes it.
+# marker must be. It also fails if the port is already taken by another process
+# or the collector forwarded no spans. The script exits non-zero if a check
+# fails and then keeps its work directory for inspection; on success it deletes
+# it. It runs Gemini CLI non-interactively (-p), so there is no user_prompt turn
+# span; see the page for the interactive trace shape.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -27,6 +30,13 @@ OTELCOL_BIN="${OTELCOL_BIN:-otelcol-contrib}"
 PORT="${GEMINI_OTLP_PORT:-24318}"
 export FI_PROJECT_NAME="${FI_PROJECT_NAME:-gemini-cli}"
 export GEMINI_OTLP_LISTEN="127.0.0.1:$PORT"
+
+# Another process on the port would receive Gemini CLI's spans instead of this
+# collector, and the checks below would run on an empty capture.
+if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+  echo "FAIL: port $PORT is already in use by another process; set GEMINI_OTLP_PORT to a free port" >&2
+  exit 1
+fi
 
 WORK="$(mktemp -d)"
 fail() {
@@ -52,8 +62,11 @@ for _ in $(seq 1 50); do
   kill -0 "$COLLECTOR_PID" 2>/dev/null || break
   sleep 0.2
 done
-if [ "$listening" != 1 ]; then
+if [ "$listening" != 1 ] || ! kill -0 "$COLLECTOR_PID" 2>/dev/null; then
   tail -5 "$WORK/collector.log" >&2
+  if grep -q "address already in use" "$WORK/collector.log"; then
+    fail "port $PORT is already in use by another process; set GEMINI_OTLP_PORT to a free port"
+  fi
   fail "the collector is not listening on 127.0.0.1:$PORT (see $WORK/collector.log)"
 fi
 
@@ -93,13 +106,17 @@ echo "session_id=$SESSION_ID"
 echo "marker=$MARKER"
 echo "project=$FI_PROJECT_NAME"
 touch "$WORK/forwarded.json"
-python3 - "$WORK/forwarded.json" <<'EOF'
+SPANS_FORWARDED="$(python3 - "$WORK/forwarded.json" <<'EOF'
 import json, sys
 spans = [s for line in open(sys.argv[1]) if line.strip()
          for rs in json.loads(line)["resourceSpans"] for ss in rs["scopeSpans"] for s in ss["spans"]]
-print("spans_forwarded=%d" % len(spans))
-print("span_names=%s" % ",".join(sorted({s["name"] for s in spans})))
+print(len(spans))
+print("span_names=%s" % ",".join(sorted({s["name"] for s in spans})), file=sys.stderr)
 EOF
+)"
+echo "spans_forwarded=$SPANS_FORWARDED"
+# Zero spans would make the privacy checks below pass on nothing.
+[ "$SPANS_FORWARDED" -gt 0 ] || fail "the collector forwarded no spans (see $WORK/collector.log)"
 if [ "$LOG_PROMPTS" = true ]; then
   grep -q -F "$MARKER" "$WORK/forwarded.json" || fail "content opt-in: the marker was not forwarded"
   echo "privacy: content opt-in, marker forwarded"

@@ -1,11 +1,11 @@
 ---
 title: "Gemini CLI session tracing with Future AGI"
-description: "Trace Gemini CLI sessions in Future AGI with Gemini CLI's built-in OpenTelemetry export and a local OpenTelemetry Collector: model calls with tokens, tool calls, errors, grouped by session. Prompt, tool and error content stay off by default."
+description: "Trace Gemini CLI sessions in Future AGI with Gemini CLI's built-in OpenTelemetry export and a local OpenTelemetry Collector: turns, model calls with tokens, tool calls and errors, grouped by session. Prompt, tool and error content stay off by default."
 ---
 
 ## About
 
-Gemini CLI has [built-in OpenTelemetry](https://geminicli.com/docs/cli/telemetry/). With traces turned on it emits a span for every model call and every tool call. This page sends those spans through a small OpenTelemetry Collector running next to Gemini CLI, which forwards them to Future AGI:
+Gemini CLI has [built-in OpenTelemetry](https://geminicli.com/docs/cli/telemetry/). With traces turned on it emits a span for every model call and every tool call, and in interactive mode a span for every turn. This page sends those spans through a small OpenTelemetry Collector running next to Gemini CLI, which forwards them to Future AGI:
 
 ```
 Gemini CLI  ──OTLP/HTTP──▶  otelcol-contrib (localhost:4318)  ──▶  Future AGI
@@ -14,17 +14,33 @@ Gemini CLI  ──OTLP/HTTP──▶  otelcol-contrib (localhost:4318)  ──�
                             labels span kinds, adds your keys
 ```
 
-One Gemini CLI session shows up in Future AGI as one **session** made of several traces:
+One Gemini CLI session shows up in Future AGI as one **session**. How it splits into traces depends on how you run Gemini CLI.
+
+**Interactive `gemini`:** one trace per prompt you type, rooted at a `user_prompt` span:
 
 ```
-llm_call                      one model request: model, input/output tokens, status
-schedule_tool_calls           one batch of tool calls the model asked for
-├── list_directory            tool call: name, call id, duration, status
+user_prompt                   one turn: the prompt you typed
+├── llm_call                  one model request: model, input/output tokens, status
+├── schedule_tool_calls       the tool calls the model asked for
+│   ├── list_directory        tool call: name, call id, duration, status
+│   └── read_file
+└── system_prompt             follow-up turn: Gemini CLI sends the tool results back
+    └── llm_call              the next model request
+```
+
+Two cases in Gemini CLI 0.64.0 differ from that. A prompt you type while a turn is still running is queued and sent when that turn ends; in our test it then nested under the running turn, in the same trace, instead of starting its own. A slash command you type (`/quit`, `/stats`, ...) also starts a `user_prompt` trace, with no spans under it.
+
+**Non-interactive `gemini -p "..."`:** there is no turn span, so each model call and each tool batch is its own trace:
+
+```
+llm_call                      one model request
+schedule_tool_calls           one batch of tool calls
+├── list_directory
 └── read_file
 llm_call                      the next model request
 ```
 
-Gemini CLI does not emit a root span for a session or a turn, so each model call and each tool batch is its own trace. Every span carries the Gemini CLI session id, which the collector copies to `session.id`, so the **Sessions** tab groups them.
+Gemini CLI has no span for the whole session. Every span carries the Gemini CLI session id, which the collector copies to `session.id`, so the **Sessions** tab groups a session's traces in both modes.
 
 This is not the same as:
 
@@ -34,7 +50,7 @@ This is not the same as:
 
 | | |
 | --- | --- |
-| Tested with | Gemini CLI 0.64.0 (`@google/gemini-cli`, macOS), OpenTelemetry Collector Contrib 0.162.0 |
+| Tested with | Gemini CLI 0.64.0 (`@google/gemini-cli`, macOS; interactive and `-p`), OpenTelemetry Collector Contrib 0.162.0 |
 | Gemini CLI docs used | [Observability with OpenTelemetry](https://geminicli.com/docs/cli/telemetry/) and [configuration](https://www.geminicli.com/docs/reference/configuration), read 2026-10-14 |
 | Requires | [`otelcol-contrib`](https://github.com/open-telemetry/opentelemetry-collector-releases/releases) (the contrib build: the config uses the `transform` processor) |
 | Source | [examples/coding-agents/gemini-cli](https://github.com/future-agi/docs/tree/main/examples/coding-agents/gemini-cli) |
@@ -60,7 +76,7 @@ The collector does four things Gemini CLI cannot do on its own:
 | Adds `X-Api-Key`, `X-Secret-Key` and `project_name` | Gemini CLI 0.64.0 has no setting for OTLP headers. (Gemini CLI's main-branch docs list an `otlpHeaders` setting that is not in 0.64.0; the other three steps still need the collector.) |
 | Drops logs and metrics | Gemini CLI always exports all three signals; Future AGI ingests traces. |
 | Deletes `gen_ai.system_instructions`, `gen_ai.tool.definitions`, message attributes, error messages and stack traces, and the command line, executable paths, OS user name and machine name that Node's resource detectors add | Privacy default, see [Privacy](#privacy). |
-| Sets `gen_ai.span.kind` from Gemini CLI's operation names, names tool spans after the tool, copies the session id to `session.id` | Gemini CLI uses its own operation names (`llm_call`, `tool_call`), which Future AGI does not map by itself. |
+| Sets `gen_ai.span.kind` from Gemini CLI's operation names, names tool spans after the tool, copies the session id to `session.id` | Gemini CLI uses its own operation names (`user_prompt`, `llm_call`, `tool_call`, ...), which Future AGI does not map by itself. |
 
 It also sends uncompressed: the Future AGI collector answers gzip-encoded OTLP requests with HTTP 400.
 
@@ -93,9 +109,9 @@ Optionally also export `OTEL_NODE_RESOURCE_DETECTORS=env` in the shell that runs
 
 Start `gemini` in a project and send one prompt that uses a tool, for example *"List the files in this folder and read README.md"*. Exit Gemini CLI, or wait a few seconds: spans are batched.
 
-Open **Observe** in Future AGI and select the project (`gemini-cli` above). The **Trace** tab lists `llm_call` and `schedule_tool_calls` traces. The **Sessions** tab groups them by Gemini CLI session.
+Open **Observe** in Future AGI and select the project (`gemini-cli` above). For an interactive session the **Trace** tab lists one `user_prompt` trace per prompt; for `gemini -p` it lists separate `llm_call` and `schedule_tool_calls` traces. The **Sessions** tab groups them by Gemini CLI session.
 
-`run_e2e.sh` in the [examples folder](https://github.com/future-agi/docs/tree/main/examples/coding-agents/gemini-cli) does all three steps against a throwaway `HOME`, so it does not touch your own `~/.gemini`. It also checks what the collector forwarded: the prompt's marker string, your user name, home directory and machine name must not be in it (with `CAPTURE_CONTENT=1`, the marker must be). Its collector listens on port 24318 (`GEMINI_OTLP_PORT`):
+`run_e2e.sh` in the [examples folder](https://github.com/future-agi/docs/tree/main/examples/coding-agents/gemini-cli) does all three steps against a throwaway `HOME`, so it does not touch your own `~/.gemini`. It runs `gemini -p`, so its traces have no `user_prompt` span. It also checks what the collector forwarded: at least one span, and not the prompt's marker string, your user name, home directory or machine name (with `CAPTURE_CONTENT=1`, the marker must be there). It fails if another process already listens on its port, 24318 (`GEMINI_OTLP_PORT`):
 
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/future-agi/docs.git fi-docs
@@ -110,6 +126,8 @@ FI_API_KEY=... FI_SECRET_KEY=... GEMINI_API_KEY=... \
 
 | Gemini CLI span | Future AGI span kind | Fields |
 | --- | --- | --- |
+| `user_prompt` (interactive mode only) | `CHAIN` | one turn, the root of its model and tool spans: `gen_ai.agent.name=gemini-cli`, duration, status. No prompt text, even with the content opt-in: Gemini CLI 0.64.0 does not record it on this span (with the opt-in, the prompt is on the first `llm_call`) |
+| `system_prompt` (interactive mode only) | `CHAIN` | the follow-up turn Gemini CLI starts itself to send tool results back to the model, a child of `user_prompt`; same fields. It starts when `user_prompt` ends, so a turn's full duration is `user_prompt` plus its `system_prompt` children. Despite the name it does not hold the system prompt (that is `gen_ai.system_instructions` on `llm_call`, deleted by default) |
 | `llm_call` | `LLM` | `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.prompt.name` (Gemini CLI's prompt id), status `ERROR` when the API call fails, with the error class and HTTP status as the status message (for example `ApiError HTTP 503`; a retried 503 shows up as its own `ERROR` span) |
 | `schedule_tool_calls` | `CHAIN` | parent of the tool calls the model requested in one response |
 | `tool_call`, renamed to the tool (`read_file`, `list_directory`, `run_shell_command`, ...) | `TOOL` | `gen_ai.tool.name`, `gen_ai.tool.call_id`, `gen_ai.tool.description`, duration. Status `ERROR` (status message: the error class, for example `ENOENT`) only when the tool throws; see [What is not available](#what-is-not-available) |
@@ -118,7 +136,7 @@ FI_API_KEY=... FI_SECRET_KEY=... GEMINI_API_KEY=... \
 
 ## What is not available
 
-- **One trace per session or turn.** Gemini CLI has no session or turn span; use the **Sessions** tab.
+- **One trace per session.** Gemini CLI has no session span: interactive mode gives one trace per turn, `gemini -p` one trace per model call or tool batch. Use the **Sessions** tab for the whole session.
 - **Tool failures the tool reports itself.** A tool that returns an error instead of throwing (file not found, path outside the workspace, a shell execution error) ends its span with status `OK` in Gemini CLI 0.64.0. Only an exception thrown while the tool runs is marked `ERROR`. The failure is visible only in the tool result, which is exported only with the [content opt-in](#privacy).
 - **Error messages and stack traces** by default. The collector keeps the `ERROR` status and the error class (plus the HTTP status of a Gemini API error) and removes the text; see [Privacy](#privacy).
 - **Cost.** Gemini CLI reports tokens, not cost. Future AGI computes cost from the model name only when it has pricing for that model.
@@ -142,7 +160,7 @@ To include content:
    processors: [transform/gemini-cli, batch]
    ```
 
-Model spans then carry the request and response messages, and tool spans the call request and result, as `gen_ai.input.messages` / `gen_ai.output.messages`; the collector also copies them to the span's input and output in Future AGI. Gemini CLI truncates each value to 10,000 characters. The system prompt (with your `GEMINI.md` memory and local paths such as the working directory), the tool schemas and the full error messages (`exception.message` and the status message, which can contain file paths) are exported too in this mode. The command line, executable paths, user and machine name, and stack traces stay removed.
+Model spans then carry the request and response messages, and tool spans the call request and result, as `gen_ai.input.messages` / `gen_ai.output.messages`; the collector also copies them to the span's input and output in Future AGI. Gemini CLI truncates each value to 10,000 characters. The `user_prompt` and `system_prompt` turn spans stay without input and output: Gemini CLI 0.64.0 does not record content on them. The system prompt (with your `GEMINI.md` memory and local paths such as the working directory), the tool schemas and the full error messages (`exception.message` and the status message, which can contain file paths) are exported too in this mode. The command line, executable paths, user and machine name, and stack traces stay removed.
 
 ## Troubleshooting
 
@@ -158,6 +176,8 @@ Model spans then carry the request and response messages, and tool spans the cal
 
 **Error spans show only `ApiError HTTP 503` or `error`.** The collector removes error text by default. Remove `transform/strip-content` (the content opt-in) to keep full error messages.
 
-**Tool spans show as `unknown` and are named `tool_call`.** The spans did not go through the `transform/gemini-cli` processor; send Gemini CLI's export to the collector, not straight to Future AGI.
+**Tool spans show as `unknown` and are named `tool_call`, or `user_prompt` spans have no span kind.** The spans did not go through the `transform/gemini-cli` processor; send Gemini CLI's export to the collector, not straight to Future AGI.
+
+**No `user_prompt` traces, only separate `llm_call` and `schedule_tool_calls` traces.** Expected for `gemini -p` (non-interactive): Gemini CLI emits the turn span only in interactive mode.
 
 **Prompts show up although you did not opt in.** `logPrompts` defaults to `true` in Gemini CLI. Set it to `false`, and keep `transform/strip-content` in the pipeline.

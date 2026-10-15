@@ -2,11 +2,14 @@
 
 The input is spans recorded from Gemini CLI 0.64.0 with content capture on
 (``logPrompts: true``), with the content values replaced by a marker
-(tests/fixtures/gemini-cli-0.64.0-traces.json). Two error spans are appended:
-an ``llm_call`` that failed with a Gemini API error (status message, exception
-event and stack trace from a real 0.64.0 run, install path rewritten to
-/Users/fixture-user) and a synthetic ``tool_call`` that threw an fs error with
-a local path in its message. The Future AGI exporter is swapped for a file
+(tests/fixtures/gemini-cli-0.64.0-traces.json). Appended to that: two error
+spans, an ``llm_call`` that failed with a Gemini API error (status message,
+exception event and stack trace from a real 0.64.0 run, install path rewritten
+to /Users/fixture-user) and a synthetic ``tool_call`` that threw an fs error
+with a local path in its message; and the ``user_prompt`` turn span with its
+``system_prompt`` follow-up child from a real interactive 0.64.0 session
+(session id replaced). Gemini CLI puts no content on those two even with
+``logPrompts: true``. The Future AGI exporter is swapped for a file
 exporter (tests/collector-test-overrides.yaml); everything else is the shipped
 config.
 
@@ -122,7 +125,7 @@ class CollectorTest(unittest.TestCase):
         self.assertNotIn("file://", text)
         self.assertNotIn("NOT_FOUND", text)  # the API error body
         spans = self.spans(requests)
-        self.assertEqual(len(spans), 7)
+        self.assertEqual(len(spans), 9)
         kinds = {}
         for resource, name, a in spans:
             self.assertEqual(resource["project_name"], "gemini-cli-test")
@@ -135,9 +138,15 @@ class CollectorTest(unittest.TestCase):
             self.assertEqual(a["gen_ai.conversation.id"], "fixture-session-0001")
             self.assertEqual(a["session.id"], "fixture-session-0001")
             kinds.setdefault(name, set()).add(a.get("gen_ai.span.kind"))
+        # user_prompt / system_prompt: interactive mode's turn spans.
         self.assertEqual(kinds, {"llm_call": {"LLM"}, "list_directory": {"TOOL"},
-                                 "read_file": {"TOOL"}, "schedule_tool_calls": {"CHAIN"}})
+                                 "read_file": {"TOOL"}, "schedule_tool_calls": {"CHAIN"},
+                                 "user_prompt": {"CHAIN"}, "system_prompt": {"CHAIN"}})
         raw = self.raw_spans(requests)
+        turn, follow_up = raw["6e5f4a3b2c1d0e01"], raw["6e5f4a3b2c1d0e02"]
+        self.assertEqual((turn["name"], follow_up["name"]), ("user_prompt", "system_prompt"))
+        self.assertFalse(turn.get("parentSpanId"))
+        self.assertEqual(follow_up["parentSpanId"], turn["spanId"])
         ok_llm = [attrs(s["attributes"]) for s in raw.values()
                   if s["name"] == "llm_call" and s["status"].get("code") == 1]
         self.assertEqual(len(ok_llm), 2)
@@ -161,7 +170,12 @@ class CollectorTest(unittest.TestCase):
             "service.pipelines.traces.processors=[transform/gemini-cli,batch]")
         self.assertIn(MARKER + " gen_ai.input.messages", text)
         self.assertIn(MARKER + " gen_ai.output.messages", text)
-        for _, _, a in self.spans(requests):
+        for _, name, a in self.spans(requests):
+            if name in ("user_prompt", "system_prompt"):
+                # Gemini CLI 0.64.0 records no content on its turn spans.
+                self.assertEqual(a["gen_ai.span.kind"], "CHAIN")
+                self.assertNotIn("input.value", a)
+                continue
             self.assertIn("gen_ai.input.messages", a["input.value"])
             if "gen_ai.output.messages" in a:  # a failed model call has no output
                 self.assertIn("gen_ai.output.messages", a["output.value"])
