@@ -101,6 +101,19 @@ class DevinDesktopAdapterTest(unittest.TestCase):
         for event in (None, "post_cascade_response", "pre_user_prompt"):
             self.assertEqual(devin_desktop.parse(event or "", payload), [])
 
+    def test_skipped_turn_end_is_closed_by_next_prompt(self):
+        # Drop the first post_cascade_response, as a cancelled turn would.
+        first_end = next(i for i, r in enumerate(self.records) if r["event"] == "post_cascade_response")
+        records = self.records[:first_end] + self.records[first_end + 1:]
+        spans = replay(devin_desktop, config("devin_desktop", self.tmp.name), records)
+        turn1_id = emit.span_id("devin_desktop", SID, TURN, "fixture-exec-0001")
+        turn1 = latest(spans, turn1_id)
+        self.assertIsNotNone(turn1)
+        self.assertTrue(attrs(turn1)["coding_agent.incomplete"])
+        exported = {s["spanId"] for s in spans}
+        orphans = [s["name"] for s in spans if s.get("parentSpanId") and s["parentSpanId"] not in exported]
+        self.assertEqual(orphans, [])
+
     def test_missing_trajectory_is_dropped(self):
         self.assertEqual(devin_desktop.parse("post_read_code", {"execution_id": "x", "tool_info": {}}), [])
 

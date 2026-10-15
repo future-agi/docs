@@ -19,6 +19,11 @@ Mapped events:
                               mcp_tool_arguments / mcp_result = content
     post_cascade_response  -> turn end                       response = content
 
+There is no hook for a cancelled turn. If ``post_cascade_response`` never
+arrives, the core closes that turn as incomplete when the next
+``pre_user_prompt`` opens a new one (one open turn per session), so its
+tools keep their parent.
+
 Pre-hooks other than ``pre_user_prompt`` (they can block an action and
 carry no id to pair them with the post-hook) and ``post_setup_worktree``
 are not mapped. ``post_cascade_response_with_transcript`` is never mapped
