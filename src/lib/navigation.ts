@@ -972,6 +972,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:google-antigravity
               // coding-agents:goose
               // coding-agents:grok-build
+              { title: 'Grok Build', href: '/docs/integrations/coding-agents/grok-build' },
               // coding-agents:hermes-agent
               // coding-agents:kiro-cli
               // coding-agents:kiro-ide

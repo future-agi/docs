@@ -1,0 +1,163 @@
+---
+title: "Grok Build session tracing with Future AGI"
+description: "Trace xAI Grok Build (grok CLI and TUI) sessions in Future AGI with Grok hooks: one trace per session, with turns, tool calls, subagents, timing, and errors. Prompt and tool content stay off by default."
+---
+
+## About
+
+Grok Build, xAI's coding agent (the `grok` command), runs [hooks](https://docs.x.ai/build/features/hooks) at fixed points of a session and passes each one a JSON event on stdin. This page registers the Future AGI [hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp) on those hooks, so every Grok Build session shows up in Future AGI as one trace:
+
+```
+Grok Build session                one grok session (sessionId)
+└── Grok Build turn               one prompt (promptId): stop reason, status
+    ├── list_dir                  tool call (toolUseId): duration, status
+    ├── read_file
+    ├── spawn_subagent
+    └── Subagent: general-purpose subagent launch, linked to the subagent's own trace
+```
+
+A subagent runs as its own grok session, so it becomes its own trace (**Grok Build subagent session: &lt;type&gt;**) with its own turn and tool spans. The parent's subagent span carries the child's session id in `grok_build.subagent.id`.
+
+This is not the same as:
+
+- **xAI model tracing.** The `traceAI-xai` instrumentor traces calls your own code makes to the xAI API. It does not see a Grok Build session, its tools, or its subagents, and a session traced on this page does not include model-request spans.
+- **Grok Build's external OpenTelemetry stream** (`GROK_EXTERNAL_OTEL`, alpha). It exports usage metrics and log events only, no traces, and ignores `OTEL_RESOURCE_ATTRIBUTES`, so it cannot be sent to the Future AGI trace endpoint. It is not used here.
+- **Grok Bot**, xAI's cloud teammate, and the Grok model inside Cursor. Neither runs these hooks.
+
+| | |
+| --- | --- |
+| Tested with | grok 1.0.52 (macOS, Apple silicon) |
+| Grok docs used | [Hooks](https://docs.x.ai/build/features/hooks) and the hooks guide bundled with grok 1.0.52 (`~/.grok/docs/user-guide/10-hooks.md`), read 2026-10-14 |
+| Requires | Python 3.9+ on the `PATH` grok uses. No packages. |
+| Source | [examples/coding-agents/grok-build](https://github.com/future-agi/docs/tree/main/examples/coding-agents/grok-build) and [hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp) |
+
+## 1. Install the hook
+
+Clone the examples and run the installer. It copies the emitter and the Grok Build adapter into `~/.grok/fi-hook-to-otlp/` and writes the personal hook file `~/.grok/hooks/futureagi.json`. If that file already exists, the installer leaves it alone and prints the entries instead.
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+fi-docs/examples/coding-agents/grok-build/install.sh
+```
+
+The hook file registers the emitter on every observation event:
+
+```json
+{
+  "hooks": {
+    "SessionStart":       [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "PostToolUse":        [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "PermissionDenied":   [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "Stop":               [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "StopFailure":        [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "StopCancelled":      [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "SubagentStart":      [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "SubagentStop":       [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "PostCompact":        [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }],
+    "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "python3 \"$HOME/.grok/fi-hook-to-otlp/emit.py\" grok_build", "timeout": 5 }] }]
+  }
+}
+```
+
+Check that grok loaded it: `grok inspect` lists the 12 hooks with source `user`. In the TUI, `/hooks` shows the same list.
+
+<Note>
+`PreToolUse` is deliberately not registered: it is the event that can deny a tool, and grok waits for it before every tool call. Tool spans come from `PostToolUse`, using grok's own `durationMs`. `UserPromptSubmit` and `Stop` can also block; the emitter always answers `{}` and exits 0, which grok treats as "continue", so tracing never blocks a prompt or a stop. A crashed or timed-out hook is fail-open in grok.
+</Note>
+
+<Warning>
+Grok also runs hooks from Cursor (`.cursor/hooks.json`) and Claude Code (`.claude/settings.json`) files. If a project has the Future AGI [Cursor hooks](/docs/integrations/coding-agents/cursor) installed, grok sessions in that project are also sent as Cursor sessions. To stop that, turn off grok's hook compatibility in `~/.grok/config.toml` (`grok inspect` then shows those sources as disabled):
+
+```toml
+[compat.cursor]
+hooks = false
+
+[compat.claude]
+hooks = false
+```
+
+Use only `~/.grok/hooks/` for this integration.
+</Warning>
+
+## 2. Add your Future AGI keys
+
+Put the keys in the emitter's env file, so they work however grok is started:
+
+```bash
+mkdir -p ~/.config/fi-hook-to-otlp
+cat > ~/.config/fi-hook-to-otlp/env <<'EOF'
+FI_API_KEY=your-futureagi-api-key
+FI_SECRET_KEY=your-futureagi-secret-key
+FI_PROJECT_NAME=grok-build-sessions
+EOF
+chmod 600 ~/.config/fi-hook-to-otlp/env
+```
+
+Variables set in the environment grok runs in take precedence over the file. For a self-hosted Future AGI, also set `FI_BASE_URL` (traces go to `$FI_BASE_URL/tracer/v1/traces`). All settings are listed on the [hook-to-OTLP page](/docs/integrations/coding-agents/hook-to-otlp#configuration).
+
+## 3. Run a session
+
+Start grok in a repository and send one prompt that uses a tool, for example *"List the files in this folder and read README.md"*. Headless runs work the same way:
+
+```bash
+grok -p "List the files in this folder and read README.md"
+```
+
+Open **Observe** in Future AGI and select the project (`grok-build-sessions` above). The session appears as one trace named **Grok Build session**. Open it to see the turn and its tool spans. Later prompts in the same session are added to the same trace as new turns.
+
+## What is captured
+
+| Grok hook | Future AGI span | Fields |
+| --- | --- | --- |
+| `SessionStart` | **Grok Build session** (root) | `session.id` = `sessionId`, start source (`new` or `load`), permission mode |
+| `UserPromptSubmit` | **Grok Build turn** start | `promptId` |
+| `PostToolUse` | tool span named after the tool (`read_file`, `run_terminal_command`, `search_replace`, `<server>__<tool>` for MCP) | `gen_ai.tool.name`, `gen_ai.tool.call.id` (`toolUseId`), duration (`durationMs`), backgrounded flag, input- and result-truncated flags |
+| `PostToolUseFailure` | same tool span, status `ERROR` | status message `tool failed` (dispatch failure or MCP error result) |
+| `PermissionDenied` | same tool span, status `ERROR` | status message `permission denied` |
+| `Stop` | **Grok Build turn** end | stop reason (`end_turn`) |
+| `StopFailure` | turn end, status `ERROR` | status message = classified error (`rate_limit`, `authentication_failed`, `invalid_request`, `server_error`, `max_output_tokens`, `unknown`) |
+| `StopCancelled` | turn end, status unset | cancel reason (`user_interrupt`, `permission_rejected`, `max_turns`, ...), `cancelledBy` |
+| `SubagentStart` | **Subagent: &lt;type&gt;** | subagent type, `grok_build.subagent.id` (the subagent's session id) |
+| `SubagentStop` | the subagent session's turn end | subagent type |
+| `PostCompact` | **Context compaction** | trigger (`manual`, `auto`) |
+| `SessionEnd` | **Grok Build session** end | end reason |
+
+The `Stop` that grok fires at session teardown carries no `promptId` and is not treated as a turn end.
+
+## What is not available
+
+- **Model name, token counts, and cost.** Grok hook events do not include them.
+- **Model request spans.** There is no hook per model call.
+- **A single trace for a session and its subagents.** Subagent events carry the subagent's own session id and type, not the parent session id, so each subagent is its own trace, linked from the parent by `grok_build.subagent.id`.
+- **Bash-mode (`!`) commands and builtin slash commands.** Grok fires no hooks for them, so they are not in the trace.
+- **`Notification` and `PreCompact` events** are not mapped.
+- **Grok Build features outside hooks:** `grok export` Markdown transcripts, ACP (`grok agent stdio`), the session store under `~/.grok/sessions`, and Grok's own trace upload are not read.
+
+## Privacy
+
+By default only structure and metadata leave your machine: session, prompt and tool-call ids, tool names, permission mode, durations, stop reasons, and statuses.
+
+- **Not exported by default:** prompt text, tool input (`toolInput`), tool results (`toolResult`), the final assistant message, subagent task descriptions, and error details.
+- **Never exported:** `cwd`, `workspaceRoot`, and `transcriptPath` (the emitter never opens the transcript).
+
+To include content, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. The prompt becomes the turn's `input.value`, the final assistant message its `output.value`, tool input and results go on the tool span, and error details become the status message. Each field is capped at 4096 characters and common key formats are replaced with `[REDACTED]`. See [Privacy](/docs/integrations/coding-agents/hook-to-otlp#privacy) for details.
+
+## Troubleshooting
+
+**No trace appears.**
+1. Run `grok inspect` in the project. The `futureagi.json` hooks must be listed. If they are missing, check that the file is in `~/.grok/hooks/` and is valid JSON.
+2. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and run another prompt. No lines: grok did not run the command (check `python3` and the path in the hook file). `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
+3. A failing hook shows up in grok's scrollback as a hook error; the session continues.
+
+**Tools appear directly under the session.** Tool events carry no `promptId`; they attach to the turn that is open in that session. A tool that runs while no turn is open (for example a background task finishing after the turn ended) is attached to the session.
+
+**A turn is marked incomplete.** The session ended before grok sent `Stop`, `StopFailure`, or `StopCancelled` for it. Grok drops turn-end reports still queued when it exits; the turn is closed at session end with `coding_agent.incomplete=true`.
+
+**Each subagent is a separate trace.** That is expected; see [What is not available](#what-is-not-available).
+
+## Next steps
+
+- [Hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp): span model, configuration, and privacy details shared by all hook-based coding agents.
+- [Cursor](/docs/integrations/coding-agents/cursor): the same emitter for Cursor Agent sessions.
