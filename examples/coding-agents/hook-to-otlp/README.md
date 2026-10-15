@@ -35,7 +35,7 @@ process so the host is not kept waiting.
 | `FI_OTLP_ENDPOINT` | none | Full traces URL; overrides `FI_BASE_URL`. |
 | `FI_HOOK_CAPTURE_CONTENT` | off | `1` exports prompts, tool input/output, model text, error text. |
 | `FI_HOOK_MAX_CONTENT_CHARS` | `4096` | Per-field cap when content is on. |
-| `FI_HOOK_TIMEOUT` | `3` | HTTP timeout in seconds. |
+| `FI_HOOK_TIMEOUT` | `10` | HTTP timeout in seconds (the send runs in a detached process, so the host never waits on it). |
 | `FI_HOOK_SYNC` | off | `1` sends inline instead of in a detached child (tests, debugging). |
 | `FI_HOOK_STATE_DIR` | `$TMPDIR/fi-hook-to-otlp-<uid>` | Per-session state files (0600, removed at session end, swept after 24 h). |
 | `FI_HOOK_LOG_FILE` | none | One line per hook: event, span count, HTTP status. No content, no keys. |

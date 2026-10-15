@@ -100,7 +100,7 @@ class Config:
             project_name=env.get("FI_PROJECT_NAME") or app,
             capture_content=_truthy(env.get("FI_HOOK_CAPTURE_CONTENT")),
             max_content_chars=_int(env.get("FI_HOOK_MAX_CONTENT_CHARS"), 4096),
-            timeout=_float(env.get("FI_HOOK_TIMEOUT"), 3.0),
+            timeout=_float(env.get("FI_HOOK_TIMEOUT"), 10.0),
             sync=_truthy(env.get("FI_HOOK_SYNC")),
             state_dir=Path(state_root) / app,
             state_ttl_s=_float(env.get("FI_HOOK_STATE_TTL_HOURS"), 24.0) * 3600,
