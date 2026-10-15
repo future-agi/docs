@@ -21,6 +21,9 @@ export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=my-opencode-project
 opencode
 ```
 
-Content (prompts, answers, tool arguments and output, session titles) is off by
-default. Set `FI_CAPTURE_CONTENT=true` to export it, capped at 4 KiB per field with
-common key patterns redacted.
+Content (prompts, answers, tool arguments and output, error text, session titles,
+the project directory) is off by default. Set `FI_CAPTURE_CONTENT=true` to export it,
+capped at 4096 UTF-8 bytes per field with common key patterns redacted.
+
+Spans are sent each time a session goes idle, together with a fresh copy of the
+session span. At a normal exit, `dispose` sends whatever is still open.

@@ -5,7 +5,9 @@
 # Required: opencode on PATH, a working model provider in your OpenCode config,
 #           FI_API_KEY, FI_SECRET_KEY, FI_PROJECT_NAME.
 # Optional: FI_OTLP_ENDPOINT or FI_BASE_URL, FI_CAPTURE_CONTENT=true,
-#           OPENCODE_MODEL=<provider>/<model> (otherwise your default model).
+#           OPENCODE_MODEL=<provider>/<model> (otherwise your default model),
+#           RESUME=1 to continue the same session in a second OpenCode process
+#           (`opencode run --continue`), which shows how a resumed session is traced.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +31,13 @@ if [ -n "${OPENCODE_MODEL:-}" ]; then model_args=(--model "$OPENCODE_MODEL"); fi
 echo "opencode $(opencode --version) in $project"
 (cd "$project" && opencode run ${model_args[@]+"${model_args[@]}"} \
   "$marker List the files in this folder and read README.md, then summarize the project in one sentence." </dev/null)
+
+if [ -n "${RESUME:-}" ]; then
+  echo
+  echo "resuming the same session in a new OpenCode process"
+  (cd "$project" && opencode run --continue ${model_args[@]+"${model_args[@]}"} \
+    "$marker-resume Read main.py and say what it prints." </dev/null)
+fi
 
 echo
 echo "marker=$marker"
