@@ -5,7 +5,8 @@ OTLP/HTTP. Docs page: `src/pages/docs/integrations/coding-agents/oh-my-pi.mdx`.
 
 Only the omp.sh fork is supported: binary `omp`, npm package
 `@oh-my-pi/pi-coding-agent`, source `can1357/oh-my-pi`. Upstream Pi (`pi`) and
-other oh-my-pi forks are not.
+other oh-my-pi forks are not: the hook only acts on events whose context carries
+omp's agent identity (`ctx.agent`), so under `pi` it exports nothing.
 
 | File | Purpose |
 | --- | --- |
@@ -27,5 +28,11 @@ omp
 ```
 
 Content (prompts, answers, tool arguments and results, tool intents, error text)
-is off by default. Set `FI_CAPTURE_CONTENT=true` to export it, capped at 4 KiB per
-field with common key patterns redacted.
+is off by default. Set `FI_CAPTURE_CONTENT=true` to export it, cut at 4,096
+characters per field with common key patterns redacted.
+
+omp also has its own OpenTelemetry export, which starts whenever
+`OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. Do
+not point it at Future AGI while this hook is installed, or every model and tool
+call is stored twice: start omp with `OTEL_TRACES_EXPORTER=none`. The docs page
+compares the two.

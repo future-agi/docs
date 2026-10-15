@@ -20,11 +20,23 @@
 // a tool result, the context or a message. It never runs shell commands and
 // never reads omp's session files.
 //
+// The hook is inert outside omp: it handles an event only when the handler
+// context carries omp's agent identity (`ctx.agent`), which upstream Pi's
+// extension context does not have. A session with no prompt, model call or tool
+// call exports nothing, and events that arrive after `session_shutdown` are
+// ignored.
+//
+// omp also has its own OpenTelemetry export (OTEL_EXPORTER_OTLP_* env vars, on
+// by default whenever an endpoint is set). Do not point that at Future AGI while
+// this hook is installed, or every model and tool call is stored twice; start omp
+// with OTEL_TRACES_EXPORTER=none.
+//
 // Environment:
 //   FI_API_KEY, FI_SECRET_KEY, FI_PROJECT_NAME   required; the hook is inert without them
 //   FI_OTLP_ENDPOINT     full traces URL (default: $FI_BASE_URL/tracer/v1/traces)
 //   FI_BASE_URL          default https://api.futureagi.com
-//   FI_CAPTURE_CONTENT   "true" to export bounded, redacted content (default off)
+//   FI_CAPTURE_CONTENT   "true" to export bounded, redacted content (default off;
+//                        4096 characters per field)
 //   FI_OTLP_TIMEOUT_MS   export timeout (default 10000)
 //   FI_OTLP_DEBUG        "true" to print export failures to stderr
 //
@@ -34,13 +46,15 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent"
 import { randomBytes } from "node:crypto"
 
 const SCOPE = { name: "futureagi.oh-my-pi", version: "1.0.0" }
+// Content fields are cut at 4096 characters (UTF-16 code units), not bytes.
 const CONTENT_LIMIT = 4096
-// session_shutdown handlers get 2 s in omp 18.x; stay under it.
+// session_shutdown handlers get 2 s in omp 18.11.0; stay under it.
 const SHUTDOWN_BUDGET_MS = 1800
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/sk-[A-Za-z0-9_-]{12,}/g, "[REDACTED]"],
   [/(bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1[REDACTED]"],
-  [/(api[_-]?key\s*[:=]\s*)[^\s,}"']+/gi, "$1[REDACTED]"],
+  // `api_key=...`, `API_KEY: ...` and JSON-shaped `"x-api-key":"..."` (tool arguments are JSON).
+  [/(api[_-]?key["']?\s*[:=]\s*["']?)[^\s,}"']+/gi, "$1[REDACTED]"],
 ]
 const OMITTED = "error details omitted by default"
 
@@ -174,6 +188,8 @@ export function createFutureAGIHook(options: HookOptions = {}) {
 
     const sessions = new Map<string, SessionState>()
     const tools = new Map<string, ToolState>()
+    // Set by session_shutdown: late events must not open a new trace. A new session_start clears it.
+    let stopped = false
     let buffer: Span[] = []
     let pending: Promise<void> = Promise.resolve()
     const retried = new WeakSet<Span>()
@@ -192,6 +208,11 @@ export function createFutureAGIHook(options: HookOptions = {}) {
     }
 
     function session(ctx: any): SessionState | undefined {
+      if (stopped) return undefined
+      // Fork guard: omp's hook context always carries the agent identity (`ctx.agent`);
+      // upstream Pi's extension context has none. Without it the event is not omp's.
+      const agent = ctx?.agent
+      if (!agent || typeof agent !== "object") return undefined
       const id = sessionIdOf(ctx)
       // No session id from omp: drop the event rather than invent a key.
       if (!id) return undefined
@@ -215,7 +236,6 @@ export function createFutureAGIHook(options: HookOptions = {}) {
         }
         sessions.set(id, s)
       }
-      const agent = ctx?.agent ?? {}
       const seen: Attrs = {
         "omp.mode": ctx?.mode,
         // The working directory contains the OS user name, so it is content.
@@ -419,7 +439,9 @@ export function createFutureAGIHook(options: HookOptions = {}) {
           "omp.incomplete": end === undefined ? true : undefined,
           "omp.tool.intent": capture ? t.intent : undefined,
           "input.value": capture ? t.input : undefined,
-          "input.mime_type": capture && t.input !== undefined ? "application/json" : undefined,
+          // A cut-off JSON string is no longer valid JSON.
+          "input.mime_type":
+            capture && t.input !== undefined ? (t.input.length < CONTENT_LIMIT ? "application/json" : "text/plain") : undefined,
           "output.value": capture && output ? bounded(output) : undefined,
           "output.mime_type": capture && output ? "text/plain" : undefined,
           "error.type": isError ? "ToolError" : undefined,
@@ -457,7 +479,8 @@ export function createFutureAGIHook(options: HookOptions = {}) {
       closePrompt(s, undefined)
       s.end = now()
       s.closed = true
-      push(rootSpan(s))
+      // A session nobody used (omp opened and quit, or left by /new) exports nothing.
+      if (s.prompts + s.turns + s.llmCalls + s.toolCalls > 0) push(rootSpan(s))
     }
 
     function flush(): Promise<void> {
@@ -547,18 +570,24 @@ export function createFutureAGIHook(options: HookOptions = {}) {
       })
 
     on("session_start", (_e, ctx) => {
+      stopped = false
       session(ctx)
     })
 
-    on("session_switch", (_e, ctx) => {
-      // /new, /resume or /fork inside one process: this agent's previous session is done.
+    // /new, /resume and /fork (session_switch), and a branch into a new session file
+    // (session_branch: a promoted /btw answer, or an extension or RPC branch/fork) make
+    // another session current: this agent's previous session is done. TUI /branch and
+    // /rewind stay in the same session file and session id, so the trace continues.
+    const switched = (_e: any, ctx: any) => {
       const s = session(ctx)
       if (!s) return
       for (const other of sessions.values()) {
         if (other !== s && !other.closed && other.attrs["omp.agent.id"] === s.attrs["omp.agent.id"]) close(other)
       }
       scheduleFlush(0)
-    })
+    }
+    on("session_switch", switched)
+    on("session_branch", switched)
 
     on("agent_start", (_e, ctx) => {
       const s = session(ctx)
@@ -630,6 +659,7 @@ export function createFutureAGIHook(options: HookOptions = {}) {
     })
 
     on("session_shutdown", async () => {
+      stopped = true
       if (timer) clearTimeout(timer)
       timer = undefined
       due = Infinity
