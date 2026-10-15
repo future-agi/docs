@@ -971,6 +971,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:github-copilot
               // coding-agents:google-antigravity
               // coding-agents:goose
+              { title: 'Goose', href: '/docs/integrations/coding-agents/goose' },
               // coding-agents:grok-build
               // coding-agents:hermes-agent
               // coding-agents:kiro-cli

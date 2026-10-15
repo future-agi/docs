@@ -1,0 +1,92 @@
+# OpenTelemetry Collector between goose and Future AGI.
+#
+# goose exports its own OTLP traces to this collector. The collector removes
+# the OS user name and machine host name goose attaches to every export (goose
+# has no switch for them) and goose's log-line span events (they carry local
+# paths), labels goose's agent spans, sets the Future AGI project, and forwards
+# the traces with your Future AGI keys. Logs and metrics are dropped: the
+# Future AGI collector accepts traces only.
+#
+#   FI_API_KEY=... FI_SECRET_KEY=... otelcol-contrib --config otel-collector.yaml
+#
+# Needs otelcol-contrib 0.144.0 or later (tested with 0.162.0): the exporter
+# below uses the `otlp_http` name, which older collectors call `otlphttp`.
+#
+# Environment:
+#   FI_API_KEY, FI_SECRET_KEY  required
+#   FI_BASE_URL                default https://api.futureagi.com (traces go to $FI_BASE_URL/tracer/v1/traces)
+#   FI_PROJECT_NAME            default goose-sessions; used when goose sends no
+#                              project_name (goose's OTEL_RESOURCE_ATTRIBUTES=project_name=... wins)
+#   GOOSE_OTLP_LISTEN          default 127.0.0.1:4318 (goose's OTEL_EXPORTER_OTLP_TRACES_ENDPOINT must match).
+#                              Change it to run a second collector next to this one.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: ${env:GOOSE_OTLP_LISTEN:-127.0.0.1:4318}
+
+processors:
+  transform/goose:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          # A project_name goose sends (OTEL_RESOURCE_ATTRIBUTES) is kept, so
+          # one collector can serve goose runs for several projects.
+          - set(attributes["project_name"], "${env:FI_PROJECT_NAME:-goose-sessions}") where attributes["project_name"] == nil or attributes["project_name"] == ""
+          - set(attributes["project_type"], "observe")
+          # goose 1.54.0 always sets these from $USER and the machine's host name.
+          - delete_key(attributes, "user.name")
+          - delete_key(attributes, "host.name")
+      - context: span
+        statements:
+          # The same two values, copied onto goose's reply_stream span.
+          - delete_key(attributes, "session.user")
+          - delete_key(attributes, "session.host")
+          # goose's reply and reply_stream spans are invoke_agent spans; label
+          # them as agent spans so Future AGI does not show them as unknown.
+          - set(attributes["gen_ai.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+
+  # goose attaches its own log lines to spans as span events (for example
+  # `Loading config from: "/Users/<you>/.config/goose/config.yaml"`,
+  # `WAITING_TOOL_START: shell`). They can hold local paths, so they are
+  # dropped. Remove this processor from the pipeline below to keep them.
+  filter/goose-log-events:
+    error_mode: ignore
+    traces:
+      spanevent:
+        - "true"
+
+  batch:
+    timeout: 2s
+
+exporters:
+  otlp_http/futureagi:
+    traces_endpoint: ${env:FI_BASE_URL:-https://api.futureagi.com}/tracer/v1/traces
+    # The Future AGI collector reads the request body as-is; the exporter's
+    # default gzip encoding is answered with HTTP 400.
+    compression: none
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+  nop: {}
+
+service:
+  # No internal metrics endpoint. The collector's default serves them on
+  # localhost:8888, which collides with Jupyter or a second collector and makes
+  # the collector exit at start.
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/goose, filter/goose-log-events, batch]
+      exporters: [otlp_http/futureagi]
+    logs:
+      receivers: [otlp]
+      exporters: [nop]
+    metrics:
+      receivers: [otlp]
+      exporters: [nop]
