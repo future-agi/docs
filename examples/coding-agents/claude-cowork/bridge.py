@@ -442,7 +442,9 @@ class CoworkMapper:
                     p.root.attrs[key] = sum(c.attrs.get(src) or 0 for c in used)
             # A failed model request that Cowork retried successfully stays ERROR on its own span only.
             p.root.error = "model request failed" if llms and llms[-1].error is not None else None
-            p.root.attrs["cowork.tool_calls"] = sum(1 for c in p.children if c.from_result)
+            # Tools that ran: a tool_result whose decision was reject never executed.
+            p.root.attrs["cowork.tool_calls"] = sum(1 for c in p.children
+                                                    if c.from_result and c.attrs.get("cowork.decision") != "reject")
             out = [p.root] + [c for c in p.children if not c.sent]
             for c in out[1:]:  # session and user on every span, as the family emitter does
                 for k in IDENTITY:
@@ -554,7 +556,9 @@ def make_handler(bridge: Bridge):
 
         def do_POST(self):  # noqa: N802
             # Nothing is read from the body before the token and path are checked.
-            if token and not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
+            # Compared as bytes: compare_digest raises on non-ASCII str, which a client controls.
+            sent = self.headers.get("Authorization", "").encode("utf-8", "replace")
+            if token and not hmac.compare_digest(sent, ("Bearer " + token).encode("utf-8")):
                 return self.reject(401, "missing or wrong bearer token")
             if self.path.split("?")[0].rstrip("/") not in ("", "/v1/logs"):
                 return self.reject(404, "this bridge accepts OTLP logs on /v1/logs; enter the bare host as the "

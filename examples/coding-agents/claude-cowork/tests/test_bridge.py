@@ -240,6 +240,16 @@ class CoworkBridgeTest(unittest.TestCase):
         root = [a for _, s, a in spans if "parentSpanId" not in s][0]
         self.assertEqual(root["cowork.tool_calls"], 1)  # the rejected call never ran
 
+    def test_rejected_call_with_a_tool_result_is_one_span_and_not_counted(self):
+        spans = self.mapped(rec("user_prompt", 0, 0),
+                            rec("tool_decision", 1, 1, tool_name="Bash", decision="reject", source="user_reject"),
+                            rec("tool_result", 2, 2, tool_name="Bash", success="false", decision_type="reject",
+                                decision_source="user_reject"))
+        tools = [(s["name"], a["cowork.decision"]) for _, s, a in spans if a["fi.span.kind"] == "TOOL"]
+        self.assertEqual(tools, [("Bash", "reject")])
+        root = [a for _, s, a in spans if "parentSpanId" not in s][0]
+        self.assertEqual(root["cowork.tool_calls"], 0)
+
     def test_tool_use_id_pairs_decision_and_result(self):
         spans = self.mapped(rec("user_prompt", 0, 0),
                             rec("tool_decision", 1, 1, tool_name="Read", decision="accept", tool_use_id="toolu_1"),
@@ -379,6 +389,9 @@ class CoworkBridgeTest(unittest.TestCase):
         code = self.raw_post(port, {"Content-Type": "application/json", "Content-Length": 10**9})  # no body sent
         self.assertEqual(code, 401)
         self.assertLess(time.monotonic() - start, 3)
+        # A non-ASCII header is a wrong token, not a crash with no reply.
+        auth = {"Authorization": "Bearer téken", "Content-Type": "application/json", "Content-Length": 2}
+        self.assertEqual(self.raw_post(port, auth, b"{}"), 401)
 
     def test_bridge_will_not_start_without_a_token(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("FI_")}
