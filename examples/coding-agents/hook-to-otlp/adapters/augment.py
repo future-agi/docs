@@ -11,20 +11,33 @@ have no measured duration.
 
 Mapped events:
 
-    SessionStart  -> session start (root span exported, re-exported later)
+    SessionStart  -> opens the session (the root span is sent with the first
+                     child span; an empty session exports nothing)
     PostToolUse   -> tool span (ERROR when tool_error is set)
                      tool_input / tool_output / tool_error = content
     Stop          -> event span "Agent stop" (ERROR when the cause is
                      "error"); the last cause is also kept on the session
     SessionEnd    -> session end
 
-``PreToolUse`` is not mapped: without a tool call id it cannot be paired
-with ``PostToolUse``, and it is the one hook that can block a tool.
+``PreToolUse`` is deliberately not registered or mapped: it is the hook that
+can block a tool, and tracing never takes part in approving or blocking. As a
+result tool spans have no measured duration.
+
+``Stop`` carries ``agent_stop_cause``: ``end_turn``, ``interrupted``,
+``max_iterations``, ``error`` (documented) and ``empty_completion`` (0.36.0,
+undocumented). Every cause is recorded as-is; only ``error`` sets ERROR.
 
 Never exported, even with content capture on: ``workspace_roots``, the
 ``context`` object (``includeUserContext``: user email, model display name),
-the ``conversation`` object (``includeConversationData``), ``mcp_metadata``,
-and file contents from ``file_changes`` (only the count and change types).
+the ``conversation`` object (``includeConversationData``), ``user_prompt``
+(0.36.0 adds it to tool events when ``includeConversationData`` is on),
+``_exchange`` (0.36.0 passes this internal object on ``Stop``),
+``mcp_metadata``, and file paths and contents from ``file_changes`` (only the
+count and change types). MCP tool names are ``<tool>_<server>``, so the MCP
+server name is exported as part of the tool name.
+
+With content capture off, a tool error exports only the fixed status message
+``tool error``; the ``tool_error`` text is content.
 """
 from __future__ import annotations
 

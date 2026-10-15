@@ -12,7 +12,7 @@ Auggie session            one Auggie conversation (conversation_id), last stop c
 ├── launch-process        tool call: status, MCP flag
 ├── view
 ├── str-replace-editor    file-change count and change types
-└── Agent stop            stop cause (end_turn, interrupted, max_iterations, error)
+└── Agent stop            stop cause (end_turn, interrupted, max_iterations, empty_completion, error)
 ```
 
 Auggie hooks carry no turn id, tool call id, or timing, so tools and stops sit directly under the session in arrival order.
@@ -20,11 +20,11 @@ Auggie hooks carry no turn id, tool call id, or timing, so tools and stops sit d
 This is not the same as:
 
 - **Augment in VS Code or JetBrains.** Augment's settings table says the IDE extensions read `~/.augment/settings.json`, but Augment does not document that they fire the same hook events. Only the CLI is supported here.
-- **Augment's Context Engine** as a retrieval product, or the `auggie.log` debug log. Neither is read.
+- **Augment's Context Engine** as a retrieval product, or Auggie's debug log file. Neither is read.
 
 | | |
 | --- | --- |
-| Tested with | Auggie CLI 0.36.0 (`@augmentcode/auggie`), macOS. Hook configuration validated with Auggie's own validator; no signed-in session was run (see [Verification status](#verification-status)). |
+| Tested with | Auggie CLI 0.36.0 (`@augmentcode/auggie`), macOS. Hook configuration validated with Auggie's own validator; no signed-in session was run (see [Verification status](#verification-status)). Linux uses the same commands but was not tested. Windows is not supported: the hook is a `.sh` script and the installer needs bash. |
 | Augment docs used | [Hooks](https://docs.augmentcode.com/cli/hooks), read 2026-10-14 |
 | Requires | An Augment account signed in to Auggie (`auggie login`). Python 3.9+ on the `PATH` Auggie uses. No packages. |
 | Source | [examples/coding-agents/augment-code](https://github.com/future-agi/docs/tree/main/examples/coding-agents/augment-code) and [hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp) |
@@ -51,12 +51,20 @@ The hook entries it writes (with your home directory in place of `/Users/you`):
 }
 ```
 
-- Auggie only runs hook scripts with a `.sh` (or Windows `.ps1`, `.cmd`, `.bat`) extension, so the wrapper starts `python3 emit.py augment`. It discards the emitter's output, because Auggie adds `SessionStart` output to the agent's context, and it always exits 0.
+- Augment documents a hook command as the path to a script with a `.sh` extension (or Windows `.ps1`, `.cmd`, `.bat`), and Auggie runs that script directly, not through a shell. So the guard that other coding-agent pages put in the hook command lives inside `futureagi-hook.sh`: it runs `(python3 -B emit.py augment 2>/dev/null || true)` with its output discarded, and always exits 0. A missing `emit.py`, a missing `python3`, or an emitter crash therefore never reaches Auggie as an error or as output.
+- The wrapper prints nothing. That matters for two of these hooks: Auggie adds `SessionStart` output to the agent's context, and reads `{"decision": "block"}` on `Stop` as "keep working". With no output, `Stop` is observed and never blocked.
+- If your home directory contains a space or a shell character, the installer single-quotes the path, which Auggie accepts.
 - `timeout` is in milliseconds. The emitter sends in a background process and returns in well under a second.
-- No `metadata` block is set. Leave `includeUserContext` and `includeConversationData` off: the adapter ignores the `context` and `conversation` objects anyway, so turning them on only puts your email and conversation text into the hook input on your machine.
-- `PreToolUse` is not registered. It is the hook that can block a tool, and without a tool call id it cannot be paired with `PostToolUse`.
+- No `metadata` block is set. Leave `includeUserContext` and `includeConversationData` off: the adapter ignores the `context`, `conversation`, and `user_prompt` fields anyway, so turning them on only adds your email and conversation text to the hook input on your machine.
+- `PreToolUse` is deliberately not registered: it is the hook that can block a tool, and tracing never takes part in approving or blocking. As a result, tool spans have no measured duration.
 
-To trace one repository only, put the same entries in `<repo>/.augment/settings.local.json` instead (personal, not committed).
+`~/.augment/settings.json` is also read by the Augment VS Code and JetBrains extensions. To trace one repository only, and keep the hooks out of that shared file, install into the repository's workspace settings instead, which only the CLI reads:
+
+```bash
+fi-docs/examples/coding-agents/augment-code/install.sh --project /path/to/your/repo
+```
+
+This writes `<repo>/.augment/settings.local.json` (personal, not committed) and leaves `~/.augment/settings.json` alone. If you installed the user-level hooks earlier, remove their entries from `~/.augment/settings.json`, otherwise every repository is still traced. (Auggie 0.36.0 runs an identical hook command only once when several settings files register it, so keeping both does not send tool calls twice.)
 
 ## 2. Add your Future AGI keys
 
@@ -86,42 +94,50 @@ Open **Observe** in Future AGI and select the project (`auggie-sessions` above).
 
 | Auggie hook | Future AGI span | Fields |
 | --- | --- | --- |
-| `SessionStart` | **Auggie session** (root) | `session.id` = `conversation_id` |
-| `PostToolUse` | tool span named after the tool (`launch-process`, `view`, `str-replace-editor`, `save-file`, `codebase-retrieval`, MCP tool names) | `gen_ai.tool.name`, MCP flag (`is_mcp_tool`), file-change count and change types; status `ERROR` with message `tool error` when `tool_error` is set |
-| `Stop` | **Agent stop** | `agent_stop_cause`; status `ERROR` when the cause is `error`. The last cause is also kept on the session span. |
+| `SessionStart` | **Auggie session** (root) | `session.id` = `conversation_id`. The root span is sent with the first tool or stop span; a session with no activity sends nothing. |
+| `PostToolUse` | tool span named after the tool (`launch-process`, `view`, `str-replace-editor`, `save-file`, `codebase-retrieval`, MCP tool names) | `gen_ai.tool.name`, MCP flag (`is_mcp_tool`), file-change count and change types; status `ERROR` when `tool_error` is set, with the message `tool error` (with content capture on, the error text) |
+| `Stop` | **Agent stop** | `agent_stop_cause`; status `ERROR` when the cause is `error`. The last cause is also kept on the session span. Auggie 0.36.0 can also report `empty_completion` (not in Augment's docs); it is recorded as-is with status OK. |
 | `SessionEnd` | **Auggie session** end | |
 
 ## What is not available
 
-- **Turns.** Auggie hooks have no turn id or prompt event in the documented set, so there is no turn span. Each **Agent stop** marks the end of one agent response.
-- **Tool duration and tool call ids.** Hooks carry neither, so tool spans have no measured duration and repeated calls of the same tool are told apart only by arrival order.
+- **Turns.** Auggie hooks have no turn id or prompt event in the documented set, so there is no turn span. Each **Agent stop** marks the end of one agent response. (Auggie 0.36.0 also accepts an undocumented `PromptSubmit` hook, which carries the prompt text; it is not used.)
+- **Tool duration and tool call ids.** `PostToolUse` carries neither, and `PreToolUse` (which would mark the start) is not registered because it can block tools. Tool spans have no measured duration, and repeated calls of the same tool are told apart only by arrival order.
 - **Model name, token counts, and cost.** Not in the hook input. The model display name exists only inside the `includeUserContext` block, which this integration does not use.
-- **Prompt and response text.** Only available through `includeConversationData`, which this integration does not use, even with content capture on.
+- **Prompt and response text.** Not forwarded, even with content capture on.
 - **Augment IDE extensions, webhooks, and log files.** See [About](#about).
 
 ## Privacy
 
-By default only structure and metadata leave your machine: the conversation id, tool names, MCP flag, file-change counts and types, stop causes, and statuses.
+By default only structure and metadata leave your machine: the conversation id, tool names, MCP flag, file-change counts and types, stop causes, and statuses. A failed tool is marked with the fixed message `tool error`, never with the error text.
 
-- **Not exported by default:** tool input (`tool_input`), tool output (`tool_output`), and tool error text (`tool_error`).
-- **Never exported, even with content capture on:** `workspace_roots`; the `context` object (`userEmail`, model display name); the `conversation` object (prompt, response, code); `mcp_metadata`; and file paths and contents from `file_changes`.
+- **Not exported by default**: tool input (`tool_input`), tool output (`tool_output`), and tool error text (`tool_error`).
+- **Never exported, even with content capture on**: `workspace_roots`; the `context` object (`userEmail`, model display name); the `conversation` object (prompt, response, code); `user_prompt`, which Auggie 0.36.0 adds to tool events when `includeConversationData` is on; `_exchange`, an internal object Auggie 0.36.0 passes on `Stop`; `mcp_metadata`; and file paths and contents from `file_changes`.
+- **MCP server names.** Augment names MCP tools `<tool>_<server>`, so the server name is exported as part of the tool name.
 
-To include tool input, output, and error text, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. Each field is capped at 4096 characters and common key formats are replaced with `[REDACTED]`. See [Privacy](/docs/integrations/coding-agents/hook-to-otlp#privacy) for details.
+To include tool input, output, and error text, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. Paths inside that content (for example the `path` a `view` call reads, or a path in an error) are then exported too, with the user name in home-directory paths replaced by `<user>`. Each field is capped at 4096 characters and common key formats are replaced with `[REDACTED]`. See [Privacy](/docs/integrations/coding-agents/hook-to-otlp#privacy) for details.
 
 ## Verification status
 
-The configuration above passes the hook-configuration validator shipped inside Auggie 0.36.0, and the payload fields the adapter reads match the ones that build constructs. The adapter was tested end to end with payloads shaped exactly as Augment documents them, sent through `futureagi-hook.sh` into Future AGI. A signed-in Auggie session has not been traced yet: Auggie requires an Augment account before it starts a session or fires any hook.
+The configuration above passes the hook-configuration validator shipped inside Auggie 0.36.0, and the payload fields the adapter reads match the ones that build constructs. The hook commands were run the way Auggie 0.36.0 runs them, using the command-handling code from its bundle. The adapter was tested end to end with payloads shaped as Augment documents them, sent through `futureagi-hook.sh` into Future AGI. A signed-in Auggie session has not been traced yet: Auggie requires an Augment account before it starts a session or fires any hook. Still to check in a real session: the exact `Stop` payload, and what a resumed conversation (`auggie --continue`) sends.
 
 ## Troubleshooting
 
 **No trace appears.**
-1. Run `auggie --log-level debug --print "..."` and look for `Loaded hooks configuration` and `Hook execution completed` lines. `Invalid hooks configuration` names the field Auggie rejected.
+1. Run `auggie --log-level debug --log-file - --print "..."` and look for `Loaded hooks configuration` and `Hook execution completed` lines. `Invalid hooks configuration` names the field Auggie rejected. `--log-level` and `--log-file` are not listed in `auggie --help` in 0.36.0; without `--log-file -`, Auggie writes the log to `augment-log.txt` in your temp directory (`$TMPDIR` on macOS) instead of the terminal.
 2. Check that `futureagi-hook.sh` is executable (`chmod +x`) and that `python3` resolves for Auggie.
 3. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and run again. No lines: Auggie did not run the wrapper. `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
 
 **The agent context shows `{}`.** You are running `emit.py` directly as the `SessionStart` command. Use `futureagi-hook.sh`, which discards the output.
 
-## Next steps
+**A resumed conversation looks wrong.** Resuming with `auggie --continue` or `--resume` has not been verified. If Auggie reuses the conversation id, the new tool spans join the original trace, and the session span restarts at the resume time while the earlier tool spans keep their times.
+
+## Uninstall
+
+1. Remove the four hook entries from `~/.augment/settings.json` (or the workspace settings file). To pause tracing without editing settings, set `FI_HOOK_DISABLED=1` in `~/.config/fi-hook-to-otlp/env`.
+2. Then delete `~/.augment/fi-hook-to-otlp/`. If you delete the folder first, Auggie reports a failed hook on each event but keeps working: none of these hooks can block it.
+
+## Next Steps
 
 - [Hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp): span model, configuration, and privacy details shared by all hook-based coding agents.
 - [Cursor](/docs/integrations/coding-agents/cursor): the same emitter for Cursor Agent sessions.
