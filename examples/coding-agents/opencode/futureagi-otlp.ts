@@ -41,11 +41,21 @@ import { createHash } from "node:crypto"
 const SCOPE = { name: "futureagi.opencode", version: "1.1.0" }
 // Content fields are capped at this many UTF-8 bytes (4 KiB).
 const CONTENT_LIMIT_BYTES = 4096
+// Redaction runs on a prefix of the text, not the whole of it: first this many
+// UTF-16 code units, doubled while needed (see bounded()).
+const REDACT_WINDOW = 2 * CONTENT_LIMIT_BYTES
+// A secret cut by the end of that prefix may not be matched (an `sk-` key or
+// Bearer token with fewer than 12 characters left). Those characters are at the
+// prefix's very end, and bounded() never keeps its last REDACT_EDGE code units.
+const REDACT_EDGE = 64
 // Key-value secrets in text (`api_key=...`) and in JSON (`"api_key":"..."`).
 // Key names ending in api_key, secret_key, private_key, access_key (and
 // AWS-style secret_access_key), token, secret, password or passwd, with any
-// prefix (OPENAI_API_KEY, x-api-key, client_secret, access_token).
-const SECRET_KEY = String.raw`["']?[A-Za-z0-9_.-]*(?:api[_-]?key|(?:secret|private|access)(?:[_-]?access)?[_-]?key|token|secret|password|passwd)["']?`
+// prefix (OPENAI_API_KEY, x-api-key, client_secret, access_token): the pattern
+// is unanchored, so it matches at the keyword and the prefix stays as it is.
+// Do not add a prefix pattern such as `[A-Za-z0-9_.-]*`: it backtracks over a
+// whole alphanumeric run at every position, which is quadratic in its length.
+const SECRET_KEY = String.raw`(?:api[_-]?key|(?:secret|private|access)(?:[_-]?access)?[_-]?key|token|secret|password|passwd)["']?`
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/sk-[A-Za-z0-9_-]{12,}/g, "[REDACTED]"],
   [/(bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1[REDACTED]"],
@@ -89,9 +99,24 @@ const byteLength = (value: unknown) => {
 const errorName = (value: unknown) =>
   typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.]{0,63}$/.test(value) ? value : "Error"
 
-function bounded(value: unknown): string {
-  let text = typeof value === "string" ? value : JSON.stringify(value) ?? ""
+function redact(text: string): string {
   for (const [pattern, replacement] of SECRET_PATTERNS) text = text.replace(pattern, replacement)
+  return text
+}
+
+// Redacted text capped at CONTENT_LIMIT_BYTES. Only a prefix of the text is
+// redacted, so a large tool output costs no more than a small one. The prefix
+// must stay REDACT_EDGE code units longer than anything that can be kept (each
+// code unit is at least one UTF-8 byte), so a secret cut by the prefix's end is
+// never kept. Redaction shortens the prefix, so it doubles until that holds.
+function bounded(value: unknown): string {
+  const raw = typeof value === "string" ? value : JSON.stringify(value) ?? ""
+  let window = REDACT_WINDOW
+  let text = redact(raw.slice(0, window))
+  while (window < raw.length && text.length < CONTENT_LIMIT_BYTES + REDACT_EDGE) {
+    window *= 2
+    text = redact(raw.slice(0, window))
+  }
   const bytes = Buffer.from(text, "utf8")
   if (bytes.length <= CONTENT_LIMIT_BYTES) return text
   // Cut on a character boundary: never split a multi-byte character.
@@ -696,6 +721,11 @@ export const FutureAGITracing: Plugin = async (_ctx, options) => {
     }
     if (part.type === "tool" && part.callID) {
       if (finished.has(`tool:${part.sessionID}:${part.callID}`)) return
+      // Compaction pruning re-publishes old completed tool parts with
+      // time.compacted set. They are never new calls, and in a process that
+      // continues a session (`opencode run --continue`) they are not in
+      // `finished`, so they would become extra tool spans under the new turn.
+      if (part.state?.time?.compacted) return
       let t = tools.get(part.callID)
       // OpenCode's subtask command fires the hooks with the part id as call id.
       const hookOnly = part.id ? tools.get(part.id) : undefined

@@ -426,7 +426,9 @@ test("content capture redacts JSON-shaped secret keys in tool arguments", async 
 })
 
 test("content is capped at 4096 UTF-8 bytes without splitting a character", async () => {
-  const cases = ["x".repeat(10000), "é".repeat(5000), "😀".repeat(3000)]
+  // The last case is longer than the redaction prefix, which then ends in half
+  // of a surrogate pair.
+  const cases = ["x".repeat(10000), "é".repeat(5000), "😀".repeat(3000), "é".repeat(20000), "a" + "😀".repeat(5000)]
   for (const text of cases) {
     const { requests, hooksPromise } = harness({ FI_CAPTURE_CONTENT: "true" })
     const steps = structuredClone(fixture.steps)
@@ -438,6 +440,72 @@ test("content is capped at 4096 UTF-8 bytes without splitting a character", asyn
     assert.ok(bytes <= 4096 && bytes > 4090, `${bytes} bytes`)
     assert.ok(text.startsWith(value), "a prefix of the original, no replacement characters")
     assert.equal(attr(turn, "opencode.prompt.bytes"), Buffer.byteLength(text, "utf8"))
+  }
+})
+
+// One bash call with content capture on. Returns the exported tool span and how
+// long the plugin took for the whole call, including the awaited
+// tool.execute.after hook (OpenCode waits on it before it continues).
+async function captureTool(args: any, output: string) {
+  const { requests, hooksPromise } = harness({ FI_CAPTURE_CONTENT: "true" })
+  const h = await hooksPromise
+  const started = performance.now()
+  await replay(h, [
+    sessionCreated(),
+    userMsg("msg_u1", 2000),
+    assistant("msg_a1", "msg_u1", { created: 2001 }),
+    stepStart("msg_a1"),
+    toolPart("call_1", "msg_a1", { status: "running", input: args, time: { start: 2010 } }),
+    { hook: "tool.execute.after", input: { tool: "bash", sessionID: "ses_1", callID: "call_1", args }, output: { title: "", output, metadata: {} } },
+    toolPart("call_1", "msg_a1", { status: "completed", input: args, output, time: { start: 2010, end: 2020 } }),
+    assistant("msg_a1", "msg_u1", { created: 2001, completed: 2100 }, usage(1, 1)),
+    idle(),
+  ])
+  const ms = performance.now() - started
+  return { requests, tool: latest(requests).find((s) => s.name === "execute_tool bash"), ms }
+}
+
+test("content capture stays fast on a 1 MiB unbroken alphanumeric run", async () => {
+  // The earlier key pattern began with `[A-Za-z0-9_.-]*` and ran on the whole
+  // value: quadratic, 1.7 s for 50,000 characters; this test did not finish in 90 s.
+  const run = "a1".repeat(512 * 1024)
+  const { tool, ms } = await captureTool({ command: run }, run)
+  assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms`)
+  assert.equal(attr(tool, "input.value"), JSON.stringify({ command: run }).slice(0, 4096))
+  assert.equal(attr(tool, "output.value"), run.slice(0, 4096))
+  assert.equal(attr(tool, "opencode.tool.output.bytes"), run.length, "byte sizes are of the whole value")
+})
+
+test("redaction is linear when a long secret makes the redacted prefix grow", async () => {
+  // Redacting the 512 KiB secret leaves too little text, so the prefix grows to
+  // 1 MiB and then holds a 512 KiB unbroken run. The key pattern must be linear.
+  const text = "api_key=" + "v".repeat(2 ** 19) + " " + "a1".repeat(2 ** 18)
+  const { requests, tool, ms } = await captureTool({}, text)
+  assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms`)
+  const output: string = attr(tool, "output.value")
+  assert.equal(output, ("api_key=[REDACTED] " + "a1".repeat(2 ** 18)).slice(0, 4096))
+  assert.ok(!requests.some((r) => r.raw.includes("vvvv")), "no part of the secret is exported")
+})
+
+test("a secret cut by the 4096-byte cap or by the redacted prefix is not exported in part", async () => {
+  // Each secret value is 16 characters; an `sk-` key or Bearer token with fewer
+  // than 12 is not matched, so it must never be cut before it is redacted.
+  const cases = [
+    // The cap falls 6 characters into the key.
+    { text: "x".repeat(4086) + " sk-CUTQXZJWKPVMNBTR and more", secret: "CUTQX" },
+    // Redacting the 5,000-character token shortens the 8,192-character prefix,
+    // whose end falls 8 characters into the key, to 3,202 characters.
+    { text: "token=" + "V".repeat(5000) + " " + "y".repeat(3173) + " sk-EDGEQXZJWKPVMNBT" + " tail".repeat(10), secret: "EDGEQ", kept: " [REDACTED] tail" },
+    // The same with a Bearer token.
+    { text: "password=" + "V".repeat(5000) + " " + "y".repeat(3166) + " Bearer EDGEBQXZJWKPVMNB" + " tail".repeat(10), secret: "EDGEB", kept: " Bearer [REDACTED] tail" },
+  ]
+  for (const { text, secret, kept } of cases) {
+    const { requests, tool } = await captureTool({}, text)
+    const output: string = attr(tool, "output.value")
+    assert.ok(!requests.some((r) => r.raw.includes(secret)), `${secret} leaked: ...${output.slice(-40)}`)
+    assert.ok(Buffer.byteLength(output, "utf8") <= 4096)
+    assert.match(output, /\[REDACT/)
+    if (kept) assert.ok(output.includes(kept), output.slice(-80))
   }
 })
 
@@ -551,6 +619,28 @@ test("updates OpenCode re-publishes after a turn was sent do not add turns or to
   const tool = spans.find((s) => s.name === "execute_tool bash")
   assert.equal(tool.parentSpanId, llm.spanId, "the tool span is not re-sent under another parent")
   assert.equal(spansOf(requests).filter((s) => s.name !== "opencode.session").length, spans.length - 1, "no child span sent twice")
+})
+
+test("a tool part pruned by compaction in a continued session does not add a tool span", async () => {
+  // A new OpenCode process continues the session. After its turn, compaction
+  // pruning re-publishes a tool part from a turn of the earlier process.
+  const { requests, hooksPromise } = harness()
+  const h = await hooksPromise
+  await replay(h, [
+    ev("session.updated", { info: { id: "ses_1", version: "1.19.0", time: { created: 1000 } } }),
+    userMsg("msg_u2", 5000),
+    assistant("msg_a2", "msg_u2", { created: 5001 }),
+    stepStart("msg_a2"),
+    assistant("msg_a2", "msg_u2", { created: 5001, completed: 5900 }, { ...usage(10, 1), finish: "stop" }),
+    toolPart("call_old", "msg_a_old", { status: "completed", input: { command: "ls" }, output: "a", time: { start: 1100, end: 1200, compacted: 5950 } }),
+    idle(),
+  ])
+  await h.dispose()
+  const spans = latest(requests)
+  assert.equal(spans.filter((s) => s.name.startsWith("execute_tool")).length, 0)
+  const root = spans.find((s) => s.name === "opencode.session")
+  assert.equal(attr(root, "opencode.tool.count"), 0)
+  assert.equal(attr(root, "opencode.llm.count"), 1)
 })
 
 test("a subagent session joins its parent's trace", async () => {
