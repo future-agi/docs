@@ -960,6 +960,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:augment-code
               // coding-agents:claude-code
               // coding-agents:claude-cowork
+              { title: 'Claude Cowork', href: '/docs/integrations/coding-agents/claude-cowork' },
               // coding-agents:codex
               // coding-agents:codex-sdk
               // coding-agents:cursor
