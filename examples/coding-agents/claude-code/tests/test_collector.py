@@ -7,8 +7,9 @@ OTEL_LOG_TOOL_CONTENT set to 1. Each test starts the real otelcol-contrib
 binary with collector.yaml, posts a fixture to it, and checks what it forwards
 to a loopback stand-in for Future AGI.
 
-A third fixture is a default-flags run that called a tool on a stub stdio MCP
-server named "zzsecretcorp" (tool "zz_internal_lookup").
+Two more default-flags runs: one called a tool on a stub stdio MCP server
+named "zzsecretcorp" (tool "zz_internal_lookup"), one ran a Bash command and a
+Read that both failed. In every fixture user.id is replaced with zeros.
 
 Run: OTELCOL_BIN=/path/to/otelcol-contrib python3 -m unittest discover -s tests
 Skipped when no otelcol-contrib binary is found, unless REQUIRE_OTELCOL=1.
@@ -35,6 +36,10 @@ FIXTURES = HERE / "fixtures"
 DEFAULT_FIXTURE = FIXTURES / "claude-code-2.1.300-default.json"
 CONTENT_FIXTURE = FIXTURES / "claude-code-2.1.300-content-optin.json"
 MCP_FIXTURE = FIXTURES / "claude-code-2.1.300-mcp.json"
+TOOL_ERROR_FIXTURE = FIXTURES / "claude-code-2.1.300-tool-error.json"
+# Error text with a local path and user name, as a provider or gateway could
+# return it for a failed model request.
+SECRET_ERROR = "API Error: 500 cannot open /Users/probeuser/secret-project/.env (ERRMARK-77)"
 OTELCOL = os.environ.get("OTELCOL_BIN") or shutil.which("otelcol-contrib")
 if not OTELCOL and os.environ.get("REQUIRE_OTELCOL") == "1":
     raise RuntimeError("REQUIRE_OTELCOL=1 but no otelcol-contrib binary (set OTELCOL_BIN)")
@@ -84,8 +89,25 @@ class Sink:
         self.server.shutdown()
 
 
+def with_error_text(body: dict, error_class: str | None = "api_error") -> dict:
+    """Mark the model-request and tool-execution spans failed with SECRET_ERROR."""
+    for rs in body["resourceSpans"]:
+        for ss in rs["scopeSpans"]:
+            for s in ss["spans"]:
+                if s["name"] not in ("claude_code.llm_request", "claude_code.tool.execution"):
+                    continue
+                s["status"] = {"code": 2, "message": SECRET_ERROR}
+                s["attributes"] = [a for a in s["attributes"] if a["key"] != "success"]
+                s["attributes"] += [{"key": "success", "value": {"boolValue": False}},
+                                    {"key": "error", "value": {"stringValue": SECRET_ERROR}}]
+                if error_class:
+                    s["attributes"].append({"key": "error_class", "value": {"stringValue": error_class}})
+    return body
+
+
 @unittest.skipUnless(OTELCOL, "otelcol-contrib not found (set OTELCOL_BIN)")
-class CollectorConfigTest(unittest.TestCase):
+class CollectorCase(unittest.TestCase):
+    """Starts collector.yaml in otelcol-contrib for each test; no tests itself."""
     extra_env: dict = {}
 
     def setUp(self):
@@ -140,6 +162,10 @@ class CollectorConfigTest(unittest.TestCase):
 
     def by_name(self, spans, name):
         return [(r, s, a) for r, s, a in spans if s["name"] == name]
+
+
+class CollectorConfigTest(CollectorCase):
+    """collector.yaml with its defaults."""
 
     def test_span_kinds_tokens_and_project(self):
         spans = self.send(json.loads(DEFAULT_FIXTURE.read_text()))
@@ -233,17 +259,51 @@ class CollectorConfigTest(unittest.TestCase):
         spans = self.send(body)
         self.assertEqual({r["project_name"] for r, _, _ in spans}, {"per-dev"})
 
+    def test_error_text_dropped_by_default(self):
+        spans = self.send(with_error_text(json.loads(DEFAULT_FIXTURE.read_text())))
+        dump = json.dumps([[r, s] for r, s, _ in spans])
+        for needle in ("probeuser", "/Users/", "ERRMARK", "secret-project"):
+            self.assertNotIn(needle, dump)
+        failed = [(s, a) for _, s, a in spans
+                  if s["name"] in ("claude_code.llm_request", "claude_code.tool.execution")]
+        self.assertEqual(len(failed), 4)
+        for s, a in failed:
+            self.assertEqual(s["status"]["code"], 2, s["name"])
+            self.assertEqual(s["status"]["message"], "api_error")
+            self.assertEqual(a["error_class"], "api_error")
+            self.assertNotIn("error", a)
+
+    def test_error_text_without_class_gets_fixed_message(self):
+        spans = self.send(with_error_text(json.loads(DEFAULT_FIXTURE.read_text()), error_class=None))
+        self.assertNotIn("probeuser", json.dumps([[r, s] for r, s, _ in spans]))
+        for _, s, _ in self.by_name(spans, "claude_code.llm_request"):
+            self.assertEqual(s["status"], {"code": 2, "message": "error"})
+
+    def test_real_tool_errors_keep_status_and_class(self):
+        # Claude Code 2.1.300 reports failed tools by error class only.
+        spans = self.send(json.loads(TOOL_ERROR_FIXTURE.read_text()))
+        self.assertNotIn("ERRMARK", json.dumps([[r, s] for r, s, _ in spans]))
+        failed = {a["error_class"]: s["status"] for _, s, a in self.by_name(spans, "claude_code.tool.execution")}
+        self.assertEqual(failed, {"ShellError": {"code": 2, "message": "ShellError"},
+                                  "TelemetrySafeError": {"code": 2, "message": "TelemetrySafeError"}})
+        self.assertEqual({s["name"] for _, s, a in spans if a.get("fi.span.kind") == "TOOL"}, {"Bash", "Read"})
 
 
-class KeepMcpNamesTest(CollectorConfigTest):
-    """FI_KEEP_MCP_NAMES=1 keeps Claude Code's MCP names."""
-    extra_env = {"FI_KEEP_MCP_NAMES": "1"}
+class OptInTest(CollectorCase):
+    """FI_KEEP_MCP_NAMES=1 and FI_KEEP_ERROR_TEXT=1 keep what the defaults remove."""
+    extra_env = {"FI_KEEP_MCP_NAMES": "1", "FI_KEEP_ERROR_TEXT": "1"}
 
-    def test_mcp_names_replaced_by_default(self):
+    def test_mcp_names_kept(self):
         spans = self.send(json.loads(MCP_FIXTURE.read_text()))
         (mcp,) = [a for _, s, a in spans if s["name"] == "mcp__zzsecretcorp__zz_internal_lookup"]
         self.assertEqual(mcp["gen_ai.tool.name"], "zz_internal_lookup")
         self.assertEqual(mcp["anthropic.mcp.server.name"], "zzsecretcorp")
+
+    def test_error_text_kept(self):
+        spans = self.send(with_error_text(json.loads(DEFAULT_FIXTURE.read_text())))
+        for _, s, a in self.by_name(spans, "claude_code.llm_request"):
+            self.assertEqual(s["status"]["message"], SECRET_ERROR)
+            self.assertEqual(a["error"], SECRET_ERROR)
 
 
 if __name__ == "__main__":
