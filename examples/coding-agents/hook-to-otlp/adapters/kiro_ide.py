@@ -7,17 +7,27 @@ with ``session_id``, ``hook_event_name`` and ``cwd``; per trigger:
 
     SessionStart        -> session start
     UserPromptSubmit    -> turn start            prompt = content
-    PostToolUse         -> tool span              tool_response = content,
+    PostToolUse         -> tool span              tool_input/tool_response = content,
                                                   ERROR when tool_response.success is false
-    PostTaskExec        -> spec task span         ERROR when task_success is false
-
-Permission and pre-task hooks are intentionally not registered: this recipe is observe-only.
+    PostTaskExec        -> "Spec task" span       spec/task names = content,
+                                                  ERROR when task_success is false
     PostFileCreate/Save/Delete -> "File ..." event   file path = content
     Stop                -> turn end
-    SessionEnd          -> session end           reason kept when it is an enum value
+    SessionEnd          -> closes a still-open turn (kiro.turn.ended_by=SessionEnd)
+                           and records the reason on the session; the session
+                           itself stays open (see below)
 
-Kiro sends no turn id and no tool call id, so turns and tools pair with the
-open turn / the oldest open tool of the same name (empty ``key``).
+PreToolUse and PreTaskExec are gating hooks (exit 2 blocks, PreToolUse stdout can
+ask for permission), so the recipe does not register them: tool and spec-task
+spans are emitted when the step completes, without a vendor duration.
+
+Kiro 1.2.37 fires SessionEnd when it unloads a session runtime (chat closed,
+window reloaded, app quit) and later reloads the same session id, so SessionEnd
+is not a terminal end: the per-session state (turn sequence) is kept and a
+resumed chat continues with the next turn number.
+
+Kiro sends no turn id and no tool call id: a Stop applies to the open turn, and
+every tool / spec task / file event is its own span under that turn.
 
 Ignored: ``AgentSpawn`` / ``agentSpawn`` (Kiro CLI names, not an IDE event),
 ``Manual``. Never exported: ``cwd``, the ``USER_PROMPT`` environment variable
@@ -42,7 +52,8 @@ _ENUM = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
 
 def respond(event: str, payload: Dict[str, Any]) -> str:
     # Kiro adds a successful hook's stdout to the agent context on
-    # SessionStart, UserPromptSubmit and PostTaskExec: answer with nothing.
+    # SessionStart and UserPromptSubmit and parses Stop stdout for a decision:
+    # answer with nothing.
     return ""
 
 
@@ -65,10 +76,14 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         return [SpanEvent(START, SESSION, sid)]
 
     if event == "SessionEnd":
-        # Kiro fires this when it unloads/reloads a persisted session. Keep the
-        # state and turn sequence: SessionEnd is not a terminal chat end.
-        return [SpanEvent(UPDATE, SESSION, sid,
-                          attributes=compact({"kiro.session.end_reason": _enum(payload.get("reason"))}))]
+        # Kiro fires this when it unloads a session runtime and reloads the same
+        # session id later, so it is not a terminal end: close a turn that is
+        # still open (no-op otherwise) but keep the session state and turn sequence.
+        return [
+            SpanEvent(END, TURN, sid, attributes={"kiro.turn.ended_by": "SessionEnd"}),
+            SpanEvent(UPDATE, SESSION, sid,
+                      attributes=compact({"kiro.session.end_reason": _enum(payload.get("reason"))})),
+        ]
 
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt")

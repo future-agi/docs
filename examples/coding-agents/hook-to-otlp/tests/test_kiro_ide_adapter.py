@@ -53,21 +53,34 @@ class KiroIdeAdapterTest(unittest.TestCase):
         self.assertEqual(children, ["File saved", "Spec task", "execute_bash", "read_file"])
         self.assertGreaterEqual(int(root["endTimeUnixNano"]), int(turn["endTimeUnixNano"]))
 
-    def test_tools_pair_pre_and_post_and_mark_failures(self):
+    def test_tools_come_from_post_tool_use_and_mark_failures(self):
         spans = self.spans()
         read, = by_name(spans, "read_file")
         bash, = by_name(spans, "execute_bash")
         self.assertEqual(attrs(read)["gen_ai.tool.name"], "read_file")
+        self.assertNotIn("gen_ai.tool.call.id", attrs(read))
         # Observe-only PostToolUse has no vendor duration; start and end are the hook time.
         self.assertEqual(int(read["endTimeUnixNano"]) - int(read["startTimeUnixNano"]), 0)
         self.assertEqual(read["status"]["code"], 1)
         self.assertEqual(bash["status"], {"code": 2, "message": "tool reported failure"})
         self.assertNotIn("coding_agent.incomplete", attrs(read))
 
-    def test_spec_task_pairs_on_names(self):
+    def test_spec_task_is_a_completed_span(self):
         task, = by_name(self.spans(), "Spec task")
         self.assertEqual(attrs(task)["kiro.task.success"], True)
         self.assertEqual(int(task["endTimeUnixNano"]) - int(task["startTimeUnixNano"]), 0)
+
+    def test_retried_spec_task_keeps_the_failed_attempt(self):
+        task = {"session_id": SID, "spec_name": "auth", "task_name": "1. Add login form"}
+        records = self.records[:2] + [
+            {"event": "PostTaskExec", "payload": {**task, "task_success": False}},
+            {"event": "PostTaskExec", "payload": {**task, "task_success": True}},
+        ]
+        tasks = by_name(replay(kiro_ide, config("kiro_ide", self.tmp.name), records), "Spec task")
+        self.assertEqual(len({t["spanId"] for t in tasks}), 2)
+        self.assertEqual(sorted(t["status"]["code"] for t in tasks), [1, 2])
+        self.assertEqual([t["status"].get("message") for t in tasks if t["status"]["code"] == 2],
+                         ["spec task failed"])
 
     def test_default_export_has_no_content_or_paths(self):
         encoded = json.dumps(self.spans())
@@ -90,29 +103,61 @@ class KiroIdeAdapterTest(unittest.TestCase):
     def test_missing_session_id_drops_event(self):
         payload = dict(self.records[2]["payload"])
         del payload["session_id"]
-        self.assertEqual(kiro_ide.parse("PreToolUse", payload), [])
+        self.assertEqual(kiro_ide.parse("PostToolUse", payload), [])
 
     def test_free_text_reason_is_not_exported(self):
-        ev, = kiro_ide.parse("SessionEnd", {"session_id": "s", "reason": "the user closed it because..."})
-        self.assertNotIn("kiro.session.end_reason", ev.attributes)
+        events = kiro_ide.parse("SessionEnd", {"session_id": "s", "reason": "the user closed it because..."})
+        self.assertEqual([e.scope for e in events], ["turn", "session"])
+        for ev in events:
+            self.assertNotIn("kiro.session.end_reason", ev.attributes)
+        ev = kiro_ide.parse("SessionEnd", {"session_id": "s", "reason": "other"})[-1]
+        self.assertEqual(ev.attributes, {"kiro.session.end_reason": "other"})
 
     def test_pre_gating_hooks_are_not_mapped(self):
         payload = {"session_id": "s", "tool_name": "read_file", "tool_input": {"path": "/tmp/a"}}
         self.assertEqual(kiro_ide.parse("PreToolUse", payload), [])
         self.assertEqual(kiro_ide.parse("PreTaskExec", payload), [])
 
-    def test_session_end_keeps_state_for_resume(self):
-        first = self.spans()
-        later = list(self.records)
-        # A runtime unload/reload uses the same session id and starts a new turn.
-        later.extend([
-            {"event": "SessionEnd", "payload": {"session_id": SID, "reason": "other"}},
+    def test_session_end_keeps_state_so_a_reloaded_session_continues(self):
+        cfg = config("kiro_ide", self.tmp.name)
+        first = replay(kiro_ide, cfg, self.records)  # ends with SessionEnd (runtime unload)
+        root_id = emit.span_id("kiro_ide", SID, SESSION, "")
+        first_root = latest(first, root_id)
+        # Kiro reloads the same session id later; the chat continues.
+        resumed = replay(kiro_ide, cfg, [
             {"event": "UserPromptSubmit", "payload": {"session_id": SID, "prompt": "second"}},
+            {"event": "PostToolUse", "payload": {"session_id": SID, "tool_name": "read_file",
+                                                 "tool_response": {"success": True}}},
             {"event": "Stop", "payload": {"session_id": SID}},
         ])
-        resumed = replay(kiro_ide, config("kiro_ide", self.tmp.name), later)
-        turns = [s for s in resumed if s["name"] == "Kiro IDE turn"]
-        self.assertGreaterEqual(len({s["spanId"] for s in turns}), 2)
+        turn_ids = {s["spanId"] for s in first + resumed if s["name"] == "Kiro IDE turn"}
+        self.assertEqual(turn_ids, {emit.span_id("kiro_ide", SID, "turn", "turn-1"),
+                                    emit.span_id("kiro_ide", SID, "turn", "turn-2")})
+        root = latest(resumed, root_id)
+        # Same root (id and start), now covering both visits.
+        self.assertEqual(root["startTimeUnixNano"], first_root["startTimeUnixNano"])
+        self.assertEqual(attrs(root)["kiro.session.end_reason"], "other")
+
+    def test_session_end_closes_a_turn_that_is_still_open(self):
+        records = self.records[:3] + [{"event": "SessionEnd", "payload": {"session_id": SID, "reason": "other"}}]
+        spans = replay(kiro_ide, config("kiro_ide", self.tmp.name), records)
+        turn = [s for s in spans if s["name"] == "Kiro IDE turn"][-1]
+        self.assertEqual(attrs(turn)["kiro.turn.ended_by"], "SessionEnd")
+        tool, = by_name(spans, "read_file")
+        self.assertEqual(tool["parentSpanId"], turn["spanId"])
+        # A late Stop after the unload does not re-open or duplicate the turn.
+        late = replay(kiro_ide, config("kiro_ide", self.tmp.name), [{"event": "Stop", "payload": {"session_id": SID}}])
+        self.assertEqual([s for s in late if s["name"] == "Kiro IDE turn"], [])
+
+    def test_error_text_with_paths_is_not_exported_by_default(self):
+        failure = {"success": False, "result": ["open /Users/alice.smith/secret/app.py: permission denied"]}
+        records = self.records[:2] + [{"event": "PostToolUse", "payload": {
+            "session_id": SID, "tool_name": "execute_bash", "tool_input": {"command": "cat /Users/alice.smith/x"},
+            "tool_response": failure}}]
+        encoded = json.dumps(replay(kiro_ide, config("kiro_ide", self.tmp.name), records))
+        self.assertNotIn("alice.smith", encoded)
+        self.assertNotIn("/Users/", encoded)
+        self.assertIn("tool reported failure", encoded)
 
     def test_shipped_commands_fail_open_when_emitter_is_missing(self):
         root = pathlib.Path(__file__).resolve().parents[2] / "kiro-ide"
