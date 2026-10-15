@@ -47,7 +47,7 @@ process so the host is not kept waiting.
 
 | Scope | Parent | Default `fi.span.kind` | Exported when |
 | --- | --- | --- | --- |
-| session | none (root) | `AGENT` | session start, every turn end, session end (same span id and start time each time, so the latest export wins) |
+| session | none (root) | `AGENT` | with every batch that exports a child span, and at session end (same span id and start time each time, so the latest export wins). A session with no activity is never exported. |
 | turn | session | `CHAIN` | turn end |
 | tool | turn, else session | `TOOL` | tool end |
 | subagent | turn, else session | `AGENT` | subagent end |

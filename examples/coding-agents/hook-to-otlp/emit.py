@@ -453,16 +453,13 @@ class SpanBuilder:
 
     def _apply_session(self, ev: SpanEvent, event: str, session: Dict[str, Any]) -> None:
         self._merge(session, ev)
-        if ev.phase == START:
-            self._emit_root(event)
-        elif ev.phase in (END, INSTANT):
+        if ev.phase in (END, INSTANT):
             for slot, rec in list(self.state["open"].items()):
                 if rec["scope"] == TURN:
                     del self.state["open"][slot]
                     rec["incomplete"] = True
                     self._end_turn(rec["key"], rec, event)
             self._close_children(None, event)
-            self._emit_root(event)
             self.state["_delete"] = True
 
     def _apply_turn(self, ev: SpanEvent, event: str, start_ns: int) -> None:
@@ -487,6 +484,18 @@ class SpanBuilder:
                 rec = {"scope": TURN, "key": key, "start_ns": start_ns, "attrs": {}, "parent": self.root}
             self._merge(rec, ev)
             self._end_turn(key, rec, event)
+
+    def finish(self, event: str) -> None:
+        """Append the root session span to any batch that exported children.
+
+        The root is re-sent with the same id and start time each time, so it
+        always spans the whole conversation. A session that never had any
+        activity (opened and closed without a message) exports nothing.
+        """
+        session = self.state["session"]
+        if self.spans:
+            session["activity"] = True
+        if self.spans or (self.state.get("_delete") and session.get("activity")):
             self._emit_root(event)
 
 
@@ -554,6 +563,7 @@ def build_spans(adapter: Any, cfg: Config, event: str, payload: Dict[str, Any],
             builder = SpanBuilder(cfg, adapter, state, sid, now_ns)
             for ev in evs:
                 builder.apply(ev, event)
+            builder.finish(event)
             spans.extend(builder.spans)
         if any(ev.scope == SESSION for ev in evs):
             sweep_state(cfg)

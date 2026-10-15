@@ -112,6 +112,16 @@ class CursorAdapterTest(unittest.TestCase):
         del payload["conversation_id"]
         self.assertEqual(cursor.parse("postToolUse", payload), [])
 
+    def test_real_cursor_3_24_18_session_end_payload(self):
+        # Captured from the Cursor 3.24.18 Hooks output channel (empty chat closed with the window).
+        record = load_jsonl(FIXTURES / "cursor" / "real-3.24.18.jsonl")[0]
+        events = cursor.parse(record["event"], record["payload"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual((events[0].phase, events[0].scope), ("end", SESSION))
+        self.assertEqual(events[0].attributes["cursor.session.reason"], "window_close")
+        # An empty conversation is not exported.
+        self.assertEqual(replay(cursor, config("cursor", self.tmp.name), [record]), [])
+
     def test_stdout_contract(self):
         self.assertEqual(json.loads(cursor.respond("beforeSubmitPrompt", {})), {"continue": True})
         self.assertEqual(json.loads(cursor.respond("stop", {})), {})

@@ -86,6 +86,25 @@ class CoreTest(unittest.TestCase):
         # Session end removes the state file.
         self.assertEqual(list(self.cfg.state_dir.glob("*.json")), [])
 
+    def test_root_rides_along_with_every_child_export(self):
+        adapter = scripted({
+            "s": [SpanEvent(START, SESSION, "S")],
+            "tool": [SpanEvent(END, TOOL, "S", key="c1", name="Shell")],
+        })
+        self.assertEqual(self.run_hooks(adapter, [(0, "s")]), [], "session start alone exports nothing")
+        spans = self.run_hooks(adapter, [(500, "tool")])
+        root_id = emit.span_id("fake", "S", SESSION, "")
+        self.assertEqual([s["spanId"] for s in spans][-1], root_id)
+        self.assertEqual(int(spans[-1]["startTimeUnixNano"]), T0)
+
+    def test_session_without_activity_exports_nothing(self):
+        adapter = scripted({
+            "s": [SpanEvent(START, SESSION, "S")],
+            "e": [SpanEvent(END, SESSION, "S", duration_ms=0)],
+        })
+        self.assertEqual(self.run_hooks(adapter, [(0, "s"), (10, "e")]), [])
+        self.assertEqual(list(self.cfg.state_dir.glob("*.json")), [])
+
     def test_end_without_start_uses_vendor_duration(self):
         adapter = scripted({"post": [SpanEvent(END, TOOL, "S", key="c", name="Read", duration_ms=250)]})
         spans = self.run_hooks(adapter, [(1000, "post")])
@@ -234,7 +253,7 @@ class CliTest(unittest.TestCase):
         result = run_cli(["cursor", "postToolUse"], self.payload(), env)
         self.assertEqual((result.returncode, result.stdout.strip()), (0, "{}"))
         self.rx.wait_for(1)
-        self.assertEqual(len(self.rx.spans()), 1)
+        self.assertEqual(sorted(sp["name"] for sp in self.rx.spans()), ["Cursor session", "Shell"])
 
     def test_unreachable_collector_is_fast_and_silent(self):
         env = base_env(self.tmp.name, endpoint="http://127.0.0.1:9/v1/traces",
