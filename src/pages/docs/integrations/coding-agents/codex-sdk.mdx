@@ -5,7 +5,7 @@ description: "Trace @openai/codex-sdk threads in Future AGI with @traceai/codex-
 
 ## About
 
-The [OpenAI Codex SDK](https://developers.openai.com/codex/sdk) (`@openai/codex-sdk`) runs the Codex agent from your own TypeScript code: it starts the `codex` binary in a subprocess and streams the agent's events back to you. The `@traceai/codex-sdk` package turns that event stream into spans, so every `thread.run()` or `thread.runStreamed()` shows up in Future AGI as one trace:
+The [OpenAI Codex SDK](https://learn.chatgpt.com/docs/codex-sdk) (`@openai/codex-sdk`) runs the Codex agent from your own TypeScript code: it starts the `codex` binary in a subprocess and streams the agent's events back to you. The `@traceai/codex-sdk` package turns that event stream into spans, so every `thread.run()` or `thread.runStreamed()` shows up in Future AGI as one trace:
 
 ```
 codex.turn                     one run() / runStreamed(): session.id = thread id, model, tokens
@@ -16,7 +16,7 @@ codex.turn                     one run() / runStreamed(): session.id = thread id
 ├── codex.mcp_tool_call        TOOL: MCP server and tool, status
 ├── codex.web_search           TOOL
 ├── codex.todo_list            the agent's plan, items done
-└── codex.error                non-fatal error item, status ERROR
+└── codex.error                non-fatal error item (warning, deprecation, model reroute)
 ```
 
 All turns of one Codex thread share a `session.id`, so Future AGI groups them into one session.
@@ -29,8 +29,8 @@ This is not the same as:
 | | |
 | --- | --- |
 | Tested with | `@openai/codex-sdk` 0.162.1 and its bundled `codex` 0.162.1 (macOS, Node 22) |
-| Supported SDK versions | 0.44.0 or later, below 1.0 |
-| Codex docs used | [Codex SDK](https://developers.openai.com/codex/sdk), the SDK's published type definitions (`dist/index.d.ts`), read 2026-10-14 |
+| Supported SDK versions | 0.44.0 or later, below 1.0. The `Thread` shape the package patches was checked on 0.44.0, 0.80.0, 0.100.0, 0.140.0, and 0.162.1; per-turn token counts were verified on 0.162.1 only (see [Token usage](#token-usage)) |
+| Codex docs used | [Codex SDK](https://learn.chatgpt.com/docs/codex-sdk), the SDK's published type definitions (`dist/index.d.ts`), read 2026-10-14 |
 | Requires | Node 18 or later |
 | Source | [typescript/packages/traceai_codex_sdk](https://github.com/future-agi/traceAI/tree/main/typescript/packages/traceai_codex_sdk) in traceAI |
 
@@ -39,6 +39,19 @@ This is not the same as:
 ```bash
 npm install @traceai/codex-sdk @traceai/fi-core @openai/codex-sdk
 ```
+
+<Note>
+`@traceai/codex-sdk` ships with [traceAI PR #251](https://github.com/future-agi/traceAI/pull/251). Until it is released to npm, install it from source:
+
+```bash
+git clone --depth 1 --branch feat/th-8262-codex-sdk https://github.com/future-agi/traceAI.git
+cd traceAI/typescript
+pnpm install --filter "@traceai/codex-sdk..."
+cd packages/traceai_codex_sdk && pnpm run build && pnpm pack --pack-destination /tmp
+cd /path/to/your/app
+npm install /tmp/traceai-codex-sdk-0.1.0.tgz @traceai/fi-core @openai/codex-sdk
+```
+</Note>
 
 ## 2. Set environment variables
 
@@ -97,9 +110,11 @@ Open **Observe** in Future AGI and select the project (`codex-sdk-app` above). E
 
 | SDK event | Future AGI span | Fields |
 | --- | --- | --- |
-| `thread.started` | **codex.turn** (root, `AGENT`) | `session.id` and `gen_ai.conversation.id` = thread id, `codex.thread.resumed` |
+| your `run()` / `runStreamed()` call | **codex.turn** (root, `AGENT`), opened when the first event is read | prompt length, thread options, `codex.thread.resumed` |
+| `thread.started` | sets `session.id` and `gen_ai.conversation.id` = thread id on **codex.turn** | |
 | `turn.completed` | **codex.turn** end | token usage (see below), status `OK` |
-| `turn.failed`, `error` | **codex.turn** end, status `ERROR` | error message in `codex.error.message` |
+| `turn.failed` | **codex.turn** end, status `ERROR` | `codex.error.message` (see [Privacy](#privacy)) |
+| `error` | counted in `codex.stream_error.count`, one `codex.stream_error` span event each | Codex also sends `error` for errors it retries ("Reconnecting... 1/5"). A turn that still reaches `turn.completed` ends `OK`; one that does not ends `ERROR` |
 | `command_execution` item | **codex.command_execution** (`TOOL`) | exit code, output length, status; `failed` marks the span `ERROR` |
 | `file_change` item | **codex.file_change** (`TOOL`) | number of changes, kinds (`add`, `delete`, `update`), status |
 | `mcp_tool_call` item | **codex.mcp_tool_call** (`TOOL`) | `tool.name` = MCP tool, `codex.mcp.server`, status |
@@ -107,17 +122,21 @@ Open **Observe** in Future AGI and select the project (`codex-sdk-app` above). E
 | `agent_message` item | **codex.agent_message** (`LLM`) | model, text length |
 | `reasoning` item | **codex.reasoning** | text length |
 | `todo_list` item | **codex.todo_list** | item count, completed count (updated until the turn ends) |
-| `error` item | **codex.error**, status `ERROR` | Codex's error message |
+| `error` item | **codex.error**, status unset, `codex.warning=true` | message length. Codex 0.162.1 sends config warnings, deprecation notices, and model reroutes this way, so they do not mark the turn `ERROR` |
 
-The turn span also records the thread options you passed: `gen_ai.request.model`, `codex.sandbox_mode`, `codex.approval_policy`, `codex.model_reasoning_effort`, `codex.web_search_mode`. If your code stops reading `runStreamed()` events before `turn.completed`, or aborts with `TurnOptions.signal`, the turn and any open items end as `ERROR` with `codex.cancelled=true`. If the `codex` binary exits with an error, the SDK's error is recorded on the turn and then thrown to your code unchanged.
+The turn span also records the thread options you passed: `gen_ai.request.model`, `codex.sandbox_mode`, `codex.approval_policy`, `codex.model_reasoning_effort`, `codex.web_search_mode`. If you `break` out of the `for await` loop (or call `events.return()`) before `turn.completed`, or abort with `TurnOptions.signal`, the turn and any open items end as `ERROR` with `codex.cancelled=true`. A `runStreamed()` iterator that is neither read to the end nor closed never ends its turn, so nothing is exported for it. If the `codex` binary exits with an error, the turn ends `ERROR` with `codex.error.type` and a summary in `codex.error.message` (see [Privacy](#privacy)), and the SDK's error is thrown to your code unchanged.
 
 ### Token usage
 
 Tokens are recorded on the **codex.turn** span only: `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens`, `cache_read_tokens`, `cache_write_tokens`, and `output_tokens.reasoning`.
 
-The SDK's `turn.completed` usage is the thread's running total, not the turn's own spend: in our test a thread's second turn reported 39,318 input tokens after the first reported 19,378. So each turn span holds the difference from the last total seen in your process for that thread, and Future AGI's per-trace and per-session sums stay correct. The running totals are on `codex.cumulative.*`.
+The SDK's `turn.completed` usage is the thread's running total, not the turn's own spend: on 0.162.1 a thread's second turn reported 39,318 input tokens after the first reported 19,378. So each turn span holds the difference from the last total seen in your process for that thread, and Future AGI's per-trace and per-session sums stay correct. The running totals are on `codex.cumulative.*`.
 
 When a thread is resumed with `resumeThread(id)` in a process that has not seen it before (after a restart, or on another worker), the first turn has no earlier total to subtract. It records no `gen_ai.usage.*` and sets `codex.usage.baseline_unknown=true`; its later turns record their difference. Keep a thread's turns in one process for exact per-turn tokens.
+
+A turn that fails or is cancelled reports no usage, so its tokens are counted on the thread's next completed turn. A new thread starts at zero even when its first turn fails, so the next turn still records its difference. If the running total ever goes down, the reported value is recorded as is and `codex.usage.non_monotonic=true` is set.
+
+This running-total handling was measured on 0.162.1. Older SDK and `codex` versions were checked for the `Thread` shape only, not for how they report usage across turns.
 
 ## What is not available
 
@@ -125,13 +144,18 @@ When a thread is resumed with `resumeThread(id)` in a process that has not seen 
 - **Model chosen in `config.toml`.** The model is recorded only when you pass `model` in `startThread()` or `resumeThread()`; the SDK does not report which model the binary used.
 - **Reported cost.** Codex does not report cost and the package sends none. The cost Future AGI shows on a turn is its own estimate from the model and token counts, so it appears only when you pass `model` and Future AGI knows that model's price.
 - **Exact durations.** Span times are when each event reached your process. `agent_message` and `reasoning` arrive only when complete, so their spans start at the previous event. The binary reports a command's start and end close together, so command spans are short.
-- **Approval decisions and subagent internals.** The SDK event stream does not carry them.
+- **Approval decisions.** The SDK event stream does not carry them.
+- **Subagents.** Codex 0.162.1 also emits `collab_tool_call` items (a subagent spawn) that are not in the SDK's types. They appear as a generic `codex.collab_tool_call` span, with no link to the subagent's own work.
+- **The actual provider.** `gen_ai.provider.name` is always `openai`. The SDK does not report which `model_provider` the binary used, so an Azure, `--oss`, or other custom provider setup is still labelled `openai`.
 
 ## Privacy
 
-By default only structure and metadata are exported: thread id, item ids and types, statuses, exit codes, counts, lengths, tool and MCP server names, model, and token counts.
+By default only structure and metadata are exported: thread id, item ids and types, statuses, exit codes, counts, lengths, tool and MCP server names, model, token counts, and fixed error summaries:
 
-**Not exported by default:** the prompt, shell commands, command output, file paths in patches, MCP arguments and results, web search queries, reasoning text, agent messages, to-do text, and an MCP tool's error text.
+- A thrown error (for example the `codex` binary exiting non-zero) exports its class name in `codex.error.type` and only a fixed summary in `codex.error.message`, the span status, and the exception event: `Codex Exec exited with code N` (or `signal S`), `Failed to parse item`, or the class name. The exception event has no stack trace.
+- `turn.failed` exports the label `turn failed`, and a turn that had an `error` event and never reached `turn.completed` exports `stream error`.
+
+**Not exported by default:** the prompt, shell commands, command output, file paths in patches, MCP arguments and results, web search queries, reasoning text, agent messages, to-do text, and all error text: the SDK's full error message (on a non-zero exit it includes the `codex` binary's stderr, which can quote config lines, absolute paths, and your user name), the provider's error body from `turn.failed` and `error` events, the exception stack trace (local file paths), the text of `codex.error` items, and an MCP tool's error text.
 
 To include content, opt in when you create the instrumentation:
 
@@ -142,17 +166,23 @@ new CodexSDKInstrumentation({
 }).manuallyInstrument(CodexSDK);
 ```
 
-or set `FI_HIDE_INPUTS=false` and `FI_HIDE_OUTPUTS=false`. With inputs visible, the turn's `input.value` is the prompt and tool spans carry the command, file changes, MCP arguments, or search query. With outputs visible, the turn's `output.value` is the final agent message and items carry their output. Only the exact value `false` turns capture on: `1`, `yes`, or `true` keep content hidden.
+or set `FI_HIDE_INPUTS=false` and `FI_HIDE_OUTPUTS=false`. With inputs visible, the turn's `input.value` is the prompt and tool spans carry the command, the file changes including their paths, MCP arguments, or search query; any path in those is exported too. With outputs visible, the turn's `output.value` is the final agent message, items carry their output, and every error text listed above is exported, including the SDK's full error message with the binary's stderr and the exception stack trace. Only `false` (any case) turns capture on; `0`, `no`, or `off` keep content hidden.
 
 ## Troubleshooting
 
+**`register()` throws `FI_PROJECT_NAME is not set`.** Pass `projectName` to `register()` or set `FI_PROJECT_NAME`.
+
 **No trace appears.**
-1. `register()` needs a `projectName` (or `FI_PROJECT_NAME`); the collector drops spans without one.
-2. Pass the module namespace to `manuallyInstrument()`: `import * as CodexSDK from "@openai/codex-sdk"`. It returns `false` and logs a warning when it finds no `Thread` class.
-3. Call `await shutdown(tracerProvider)` before a short script exits, so the last spans are sent.
+1. Pass the module namespace to `manuallyInstrument()`: `import * as CodexSDK from "@openai/codex-sdk"`. It returns `false` when it finds no `Thread` class. Its warning is logged only when an OpenTelemetry diag logger is set, for example `diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN)` from `@opentelemetry/api`.
+2. Call `await shutdown(tracerProvider)` before a short script exits, so the last spans are sent.
+3. Read every `runStreamed()` iterator to the end, or close it with `break` or `events.return()`. An iterator that is dropped part way never ends its turn, so that turn is never exported.
 
-**A turn has no token counts.** Look for `codex.usage.baseline_unknown=true` on the turn: the thread was resumed in a process that had not seen it. `codex.cumulative.*` still has the thread's totals.
+**A turn has no token counts.** Look for `codex.usage.baseline_unknown=true` on the turn: the thread was resumed in a process that had not seen it. `codex.cumulative.*` still has the thread's totals. A failed or cancelled turn has no token counts either; its tokens are counted on the thread's next completed turn.
 
-**The turn is marked cancelled.** Your code stopped iterating `runStreamed()` events before `turn.completed`, or aborted the turn. Read the stream to the end (or let `run()` finish) to record the turn as completed.
+**The turn is marked cancelled.** Your code left the `for await` loop with `break` (or called `events.return()`) before `turn.completed`, or aborted the turn. Read the stream to the end (or let `run()` finish) to record the turn as completed.
+
+**An OK turn has `codex.stream_error.count`.** Codex hit a stream error, retried, and the turn completed. Nothing failed.
+
+**The error message only says `Codex Exec exited with code 1`.** The full message, with the binary's stderr, is content. Set `hideOutputs: false` (or `FI_HIDE_OUTPUTS=false`) while you debug, or read the error your code receives.
 
 **No model on the turn.** Pass `model` in the thread options.
