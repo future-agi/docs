@@ -1,0 +1,154 @@
+---
+title: "Kiro IDE agent session tracing with Future AGI"
+description: "Trace Kiro IDE agent sessions in Future AGI with Kiro agent hooks: one trace per chat session, with turns, tool calls, spec tasks, file events, and errors. Prompts, tool input, and file paths stay off by default."
+---
+
+## About
+
+Kiro IDE runs [agent hooks](https://kiro.dev/docs/hooks/) when its agent starts a session, receives a prompt, uses a tool, or stops, and passes each hook a JSON payload on stdin. This page registers the Future AGI [hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp) on those hooks, so every Kiro IDE chat session shows up in Future AGI as one trace:
+
+```
+Kiro IDE session               one Kiro chat session (session_id)
+└── Kiro IDE turn              one prompt, from Prompt Submit to Agent Stop
+    ├── read_file              tool call (Post Tool Use): name, status
+    ├── execute_bash           ERROR when the tool reports failure
+    ├── Spec task              Post Task Execution, task success
+    └── File saved             agent file create / save / delete
+```
+
+This is not the same as:
+
+- **Kiro CLI.** The CLI has its own setup and adapter: see [Kiro CLI](https://docs.futureagi.com/docs/integrations/coding-agents/kiro-cli).
+- **Kiro enterprise OpenTelemetry.** That admin feature pushes daily usage metrics (credits, message and conversation counts) once a day. It has no per-session trace and is not used here.
+- **This recipe is observe-only.** It does not register on Kiro's gating hooks (`PreToolUse` or `PreTaskExec`); tool/spec-task spans are emitted after completion.
+- **Model-call tracing.** Kiro calls models on AWS; hooks do not expose the model, tokens, or cost.
+
+| | |
+| --- | --- |
+| Checked with | Kiro IDE 1.2.37 (macOS, Apple silicon): payload contract and hook-file schema checked against the shipped `kiro.kiro-agent` extension; live session pending sign-in |
+| Kiro docs used | [Hooks](https://kiro.dev/docs/hooks/), [Hook types](https://kiro.dev/docs/hooks/types/), [Hook actions](https://kiro.dev/docs/hooks/actions/), read 2026-10-14 |
+| Requires | Kiro IDE 1.0 or later (`.kiro/hooks/*.json` format), Python 3.9+ on the `PATH` Kiro uses. No packages. |
+| Source | [examples/coding-agents/kiro-ide](https://github.com/future-agi/docs/tree/main/examples/coding-agents/kiro-ide) and [hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp) |
+
+## 1. Install the hook
+
+Clone the examples and run the installer against your project. It copies the emitter and the Kiro IDE adapter into `.kiro/fi-hook-to-otlp/` and writes `.kiro/hooks/fi-hook-to-otlp.json`. An existing file with that name is left alone.
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+fi-docs/examples/coding-agents/kiro-ide/install.sh /path/to/your/project
+```
+
+To trace every project on this machine, install global hooks into `~/.kiro/` instead:
+
+```bash
+fi-docs/examples/coding-agents/kiro-ide/install.sh --user
+```
+
+The hook file registers one command hook per observed trigger and passes the trigger name to the emitter. It intentionally excludes the gating triggers `PreToolUse` and `PreTaskExec`. Each entry looks like this (the file lists `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Stop`, and `SessionEnd`):
+
+```json
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Future AGI tracing: tool end",
+      "trigger": "PostToolUse",
+      "matcher": ".*",
+      "action": { "type": "command", "command": "(python3 -B .kiro/fi-hook-to-otlp/emit.py kiro_ide PostToolUse 2>/dev/null || true)" },
+      "timeout": 10
+    }
+  ]
+}
+```
+
+Command hooks run in the workspace folder, so the project file's path starts with `.kiro/`. The global file (`--user`) uses `"$HOME/.kiro/fi-hook-to-otlp/emit.py"` instead, so it works from any workspace. Hooks activate when a session starts. You can see and toggle them in the **Agent Hooks** section of the Kiro panel.
+
+<Note>
+The emitter only observes, and every command is guarded. Kiro blocks a prompt when a `UserPromptSubmit` command exits with code `2`, keeps the agent working when a `Stop` command exits with `1`, and adds a command's output to the agent's context. `|| true` turns any failure (emitter file missing, `python3` missing, crash) into exit `0`, `2>/dev/null` keeps Python's error text out of Kiro, and the adapter prints nothing. The parentheses run the command in a subshell, so the payload reaches `python3` whether it arrives on stdin (as in Kiro IDE) or as a trailing heredoc. `-B` keeps `__pycache__` out of your repository. The recipe does not register `PreToolUse` or `PreTaskExec`, so tool and spec-task spans come from the completed hooks, without a duration.
+</Note>
+
+Kiro runs each command with `/bin/sh` on macOS and Linux. Native Windows is not tested: Kiro uses `cmd.exe` there, which does not understand this guard; use WSL or write the `cmd` equivalent and keep it exiting `0` with no output on failure.
+
+## 2. Add your Future AGI keys
+
+Kiro may not see variables exported in your shell, depending on how it was started. Put the keys in the emitter's env file, which works either way:
+
+```bash
+mkdir -p ~/.config/fi-hook-to-otlp
+cat > ~/.config/fi-hook-to-otlp/env <<'EOF'
+FI_API_KEY=your-futureagi-api-key
+FI_SECRET_KEY=your-futureagi-secret-key
+FI_PROJECT_NAME=kiro-ide-sessions
+EOF
+chmod 600 ~/.config/fi-hook-to-otlp/env
+```
+
+For a self-hosted Future AGI, also set `FI_BASE_URL` (traces go to `$FI_BASE_URL/tracer/v1/traces`). All settings are on the [hook-to-OTLP page](/docs/integrations/coding-agents/hook-to-otlp#configuration).
+
+## 3. Run an agent session
+
+Open the project in Kiro, start a new chat session, and send one prompt that uses a tool, for example *"List the files in this folder and read README.md"*.
+
+Open **Observe** in Future AGI and select the project (`kiro-ide-sessions` above). The chat session appears as one trace named **Kiro IDE session**. Each prompt in the same chat adds a **Kiro IDE turn** to that trace.
+
+## What is captured
+
+| Kiro trigger | Future AGI span | Fields |
+| --- | --- | --- |
+| `SessionStart` | **Kiro IDE session** (root) | `session.id` = Kiro `session_id` |
+| `UserPromptSubmit` | **Kiro IDE turn** start | prompt length |
+| `PostToolUse` | completed tool span, named after the tool (`read_file`, `execute_bash`, `@<server>/<tool>`, ...) | `gen_ai.tool.name`; no vendor duration |
+| `PostToolUse` with failed response | tool span | status `ERROR` when `tool_response.success` is `false` |
+| `PostTaskExec` | **Spec task** | task success, `ERROR` when the task failed; no pre-task gating hook |
+| `PostFileCreate` / `PostFileSave` / `PostFileDelete` | **File created** / **File saved** / **File deleted** | event only, no path. Kiro may emit both File created and File saved for one agent-created file. |
+| `Stop` | **Kiro IDE turn** end | |
+| `SessionEnd` | closes a turn that is still open (`kiro.turn.ended_by=SessionEnd`); session end reason when it is a short code | Kiro fires this when it unloads a session (chat closed, window reloaded, Kiro quit) and reloads the same session id later. It is not a terminal end: a reopened chat continues in the same trace with the next turn number. |
+
+Kiro sends no turn id and no tool call id. A `Stop` closes the open turn, and each `PostToolUse`, `PostTaskExec`, and file event becomes its own span under that turn, marked `coding_agent.turn.inferred=true` because the turn was matched by time rather than by an id. Because only completed hooks are observed, a tool that Kiro blocked or that you denied does not appear.
+
+## What is not available
+
+- **Model, token counts, and cost.** Kiro hook payloads do not include them.
+- **Model request spans.** There is no hook per model call.
+- **Tool call ids.** Tool spans have a name but no vendor call id.
+- **Manual file edits.** File triggers fire only for changes the agent makes; your own saves are not traced.
+- **Kiro Web and cloud sessions.** Kiro Web stores hook configuration but does not run these triggers.
+- **Daily usage metrics** from Kiro enterprise OpenTelemetry are not joined to sessions, and the IAM Identity Center user id or email from that feed is never added.
+
+<Warning>
+**Kiro CLI in the same project.** Kiro CLI V3 also loads `.kiro/hooks/*.json` and `~/.kiro/hooks/*.json`. If you run Kiro CLI in a project that has this hook file, or anywhere after `install.sh --user`, those CLI sessions are exported as **Kiro IDE** sessions. The [Kiro CLI](https://docs.futureagi.com/docs/integrations/coding-agents/kiro-cli) recipe has the same reach in the other direction, so trace one Kiro surface per hook scope: installing both where one session would load both would export every session twice. The installer refuses when it finds the Kiro CLI hook file in the project or in `~/.kiro/hooks/`. Moving the Kiro CLI hooks into an agent profile (that recipe's `--agent-profile` setup) does not avoid this: CLI sessions that use the agent still load this hook file, so they are exported twice. The installer warns when a profile in `~/.kiro/agents/` or the project's `.kiro/agents/` runs the Kiro CLI emitter, and names it so you can remove its Future AGI entries.
+</Warning>
+
+## Privacy
+
+By default only structure and metadata leave your machine: session id, tool names, prompt length, statuses, and timing.
+
+- **Not exported by default:** prompt text, tool input, tool output, spec and task names, file paths.
+- **Never exported:** `cwd`. The emitter reads only the stdin payload. Legacy Kiro 0.x hooks exposed `USER_PROMPT`; this v1 emitter never reads it, and it never opens files named in a payload.
+
+To include content, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. The prompt becomes the turn's `input.value`, tool input and output go on the tool span, a failed tool's response becomes its status message, and file events carry the path. Each field is capped at 4096 characters and common key formats are replaced with `[REDACTED]`. See [Privacy](/docs/integrations/coding-agents/hook-to-otlp#privacy).
+
+## Troubleshooting
+
+**No trace appears.**
+1. Check that the hooks are listed and enabled in the **Agent Hooks** section of the Kiro panel, and that the workspace is trusted.
+2. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and send another prompt. No lines: Kiro did not run the command, or `FI_API_KEY` / `FI_SECRET_KEY` are not set (the emitter is a silent no-op without both). `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
+3. `python3` must resolve for Kiro. Use an absolute interpreter path such as `/opt/homebrew/bin/python3` in the hook file if it does not.
+
+**Tools appear directly under the session.** A tool hook arrived without an open turn, for example when hooks were installed in the middle of a chat. It is attached to the session rather than guessed.
+
+**A turn has `kiro.turn.ended_by=SessionEnd`.** Kiro unloaded the session (chat closed, window reloaded, or Kiro quit) before the agent stopped, so the turn was closed at that point.
+
+**The turn is marked incomplete.** You sent a new prompt in the same chat before Kiro sent `Stop` for the previous turn. The previous turn is closed with `coding_agent.incomplete=true`.
+
+## Uninstall
+
+Remove the hook file first, then the emitter, so Kiro never runs a hook whose emitter is gone:
+
+```bash
+rm /path/to/your/project/.kiro/hooks/fi-hook-to-otlp.json
+rm -r /path/to/your/project/.kiro/fi-hook-to-otlp
+```
+
+For a `--user` install, remove `~/.kiro/hooks/fi-hook-to-otlp.json` and then `~/.kiro/fi-hook-to-otlp`. The guarded commands make the reverse order safe too: a hook whose emitter is missing exits `0` and does nothing.
