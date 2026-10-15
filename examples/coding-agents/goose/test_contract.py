@@ -74,9 +74,11 @@ class SpanTreeContract(unittest.TestCase):
         for span in DEFAULT["spans"]:
             self.assertIn("session.id", span["attributes"], span["name"])
 
-    def test_project_resource_attributes_are_exported(self):
-        for key in ("project_name", "project_type", "service.name"):
-            self.assertIn(key, DEFAULT["resource_attribute_keys"])
+    def test_goose_identifies_itself_as_the_service(self):
+        # project_name and project_type are added by the collector, not goose;
+        # test_collector.py checks them.
+        for fixture in (DEFAULT, CONTENT, ANTHROPIC):
+            self.assertIn("service.name", fixture["resource_attribute_keys"])
 
 
 class PrivacyContract(unittest.TestCase):

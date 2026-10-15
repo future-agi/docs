@@ -4,12 +4,16 @@
 The input is rebuilt from the recorded goose 1.54.0 fixtures (span names,
 parents, attribute keys): every "<present>" value becomes a placeholder, the
 OS user name and host name goose exports become "fixture-user" and
-"fixture-host", and each span gets goose's real log-line span events. The Future AGI exporter is swapped for a file exporter
+"fixture-host", and each span gets goose's real log-line span events. The
+fixtures were recorded with project_name/project_type set on goose; under the
+shipped recipe goose sends neither, so they are left out unless a test adds
+them. The Future AGI exporter is swapped for a file exporter
 (collector-test-overrides.yaml); everything else is the shipped config.
 
     OTELCOL_BIN=/path/to/otelcol-contrib python3 test_collector.py
 
-Skipped when no otelcol-contrib binary is found.
+ShippedConfig runs without a collector binary; the rest is skipped when no
+otelcol-contrib binary is found.
 """
 from __future__ import annotations
 
@@ -38,9 +42,11 @@ def kv(key: str, value: str) -> dict:
     return {"key": key, "value": {"stringValue": value}}
 
 
-def otlp_payload(fixture: dict) -> bytes:
+def otlp_payload(fixture: dict, resource_extra: dict | None = None) -> bytes:
     """OTLP/JSON request with the fixture's tree and keys; placeholders for values."""
-    resource = [kv(k, IDENTITY.get(k, "fixture-" + k)) for k in fixture["resource_attribute_keys"]]
+    resource = [kv(k, IDENTITY.get(k, "fixture-" + k)) for k in fixture["resource_attribute_keys"]
+                if k not in ("project_name", "project_type")]
+    resource += [kv(k, v) for k, v in (resource_extra or {}).items()]
     ids = {}
     for i, span in enumerate(fixture["spans"]):
         ids.setdefault(span["name"], "%016x" % (i + 1))
@@ -82,9 +88,46 @@ def attrs(items) -> dict:
     return {a["key"]: next(iter(a["value"].values())) if a["value"] else None for a in items or []}
 
 
+def yaml_scalars(text: str) -> dict:
+    """Map 'a.b.c' -> scalar for the block-style YAML in otel-collector.yaml (stdlib only)."""
+    out, stack = {}, []
+    for raw in text.splitlines():
+        line = raw.split(" #", 1)[0].rstrip() if not raw.lstrip().startswith("#") else ""
+        if not line.strip() or line.lstrip().startswith("- ") or ":" not in line:
+            continue
+        indent = len(line) - len(line.lstrip())
+        key, _, value = line.strip().partition(":")
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        path = ".".join([k for _, k in stack] + [key])
+        if value.strip():
+            out[path] = value.strip()
+        else:
+            stack.append((indent, key))
+    return out
+
+
+class ShippedConfig(unittest.TestCase):
+    """Settings the shipped config must keep (no collector binary needed)."""
+
+    def setUp(self):
+        self.cfg = yaml_scalars(CONFIG.read_text())
+
+    def test_internal_metrics_endpoint_is_off(self):
+        # Otherwise the collector binds localhost:8888 and exits when Jupyter or
+        # a second collector already holds it.
+        self.assertEqual(self.cfg.get("service.telemetry.metrics.level"), "none")
+
+    def test_export_is_uncompressed(self):
+        # The Future AGI collector answers gzip-encoded OTLP with HTTP 400.
+        self.assertEqual(self.cfg.get("exporters.otlp_http/futureagi.compression"), "none")
+        self.assertEqual(self.cfg.get("service.pipelines.traces.exporters"), "[otlp_http/futureagi]")
+
+
 @unittest.skipUnless(OTELCOL, "otelcol-contrib not found (set OTELCOL_BIN)")
 class CollectorTest(unittest.TestCase):
-    def run_collector(self, fixture: dict):
+    def start_collector(self):
+        """Start the shipped config (plus the file-exporter overlay) on a free port."""
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, True)
         out = Path(tmp) / "out.json"
@@ -96,7 +139,12 @@ class CollectorTest(unittest.TestCase):
         self.addCleanup(proc.stderr.close)
         self.addCleanup(proc.wait, 10)
         self.addCleanup(proc.terminate)
-        body = otlp_payload(fixture)
+        return proc, port, out
+
+    def run_collector(self, fixture: dict, resource_extra: dict | None = None, collector=None,
+                      body: bytes | None = None):
+        proc, port, out = collector or self.start_collector()
+        body = body or otlp_payload(fixture, resource_extra)
         for _ in range(100):
             try:
                 req = urllib.request.Request("http://127.0.0.1:%d/v1/traces" % port, data=body,
@@ -121,6 +169,32 @@ class CollectorTest(unittest.TestCase):
                     for span in ss["spans"]:
                         spans.append((resource, span))
         return text, spans
+
+    def test_resolved_config_has_no_metrics_endpoint_and_no_compression(self):
+        env = dict(os.environ, FI_API_KEY="test-key", FI_SECRET_KEY="test-secret")
+        cfg = json.loads(subprocess.run([OTELCOL, "print-config", "--format=json", "--config", "file:" + str(CONFIG)],
+                                        env=env, capture_output=True, check=True, text=True).stdout)
+        self.assertEqual(cfg["service"]["telemetry"]["metrics"]["level"].lower(), "none")
+        self.assertEqual(cfg["exporters"]["otlp_http/futureagi"]["compression"], "none")
+
+    def test_two_collectors_run_side_by_side(self):
+        # Different GOOSE_OTLP_LISTEN ports, both started from the shipped
+        # config: neither may claim a second fixed port such as 8888.
+        first, second = self.start_collector(), self.start_collector()
+        for collector in (first, second):
+            _, spans = self.run_collector(DEFAULT, collector=collector)
+            self.assertEqual(len(spans), len(DEFAULT["spans"]))
+        self.assertIsNone(first[0].poll())
+        self.assertIsNone(second[0].poll())
+
+    def test_project_from_goose_is_kept(self):
+        # goose's OTEL_RESOURCE_ATTRIBUTES=project_name=... wins over FI_PROJECT_NAME.
+        _, spans = self.run_collector(DEFAULT, {"project_name": "goose-other-project"})
+        self.assertEqual({r["project_name"] for r, _ in spans}, {"goose-other-project"})
+        self.assertEqual({r["project_type"] for r, _ in spans}, {"observe"})
+        # An empty value falls back to FI_PROJECT_NAME.
+        _, spans = self.run_collector(DEFAULT, {"project_name": ""})
+        self.assertEqual({r["project_name"] for r, _ in spans}, {"goose-test"})
 
     def test_identity_removed_and_agent_spans_labelled(self):
         text, spans = self.run_collector(DEFAULT)
@@ -148,6 +222,28 @@ class CollectorTest(unittest.TestCase):
         self.assertTrue({"reply", "reply_stream", "stream_response_from_provider", "dispatch_tool_call"} <= names)
         chat = [attrs(s["attributes"]) for _, s in spans if s["name"] == "stream_response_from_provider"]
         self.assertTrue(all(a["gen_ai.request.model"] == "gpt-6-luna" for a in chat))
+
+    def test_error_text_with_path_and_user_is_dropped(self):
+        # A failed model call: goose 1.54.0 sets ERROR with an empty status
+        # message on reply_stream and logs the error text (which can carry
+        # local paths and the user name) as span events.
+        body = json.loads(otlp_payload(DEFAULT))
+        for span in body["resourceSpans"][0]["scopeSpans"][0]["spans"]:
+            if span["name"] == "reply_stream":
+                span["status"] = {"code": 2}
+                span["events"] += [
+                    {"timeUnixNano": span["endTimeUnixNano"],
+                     "name": "Failed to read recipe /Users/fixture-user/recipes/release.yaml: "
+                             "No such file or directory (os error 2)"},
+                    {"timeUnixNano": span["endTimeUnixNano"],
+                     "name": "Ran into this error: Request failed: Bad request (400): "
+                             "unknown provider for model no-such-model-xyz"}]
+        text, spans = self.run_collector(DEFAULT, body=json.dumps(body).encode())
+        for needle in ("fixture-user", "/Users/", "release.yaml", "no-such-model-xyz", "Ran into this error"):
+            self.assertNotIn(needle, text)
+        status = {span["name"]: span.get("status", {}) for _, span in spans}
+        self.assertEqual(status["reply_stream"].get("code"), 2, "the ERROR status is kept")
+        self.assertFalse(status["reply_stream"].get("message"))
 
     def test_content_opt_in_passes_through(self):
         # Content is goose's own switch; the collector forwards whatever goose sends.

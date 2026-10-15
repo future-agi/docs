@@ -5,10 +5,13 @@
 # Needs: a goose CLI with a working provider (`goose configure` done), the
 # developer extension enabled, otelcol-contrib, and FI_API_KEY / FI_SECRET_KEY
 # in the env.
-# Optional: FI_PROJECT_NAME (default goose-sessions),
+# Optional: FI_PROJECT_NAME (default goose-sessions; a project_name in
+#           OTEL_RESOURCE_ATTRIBUTES takes precedence, see the collector config),
 #           FI_BASE_URL (default https://api.futureagi.com),
 #           FI_CAPTURE_CONTENT=true to turn goose's content export on for this run,
-#           GOOSE_BIN (default goose), OTELCOL_BIN (default otelcol-contrib).
+#           GOOSE_BIN (default goose), OTELCOL_BIN (default otelcol-contrib),
+#           GOOSE_OTLP_LISTEN (default 127.0.0.1:4318; goose is pointed at the same
+#           address, for when 4318 is taken).
 #
 # Prints the marker string it put in the prompt. With content off, searching
 # the trace for that marker in Future AGI finds nothing.
@@ -22,6 +25,9 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # shellcheck source=futureagi-otel.env
 source "$ROOT/futureagi-otel.env"
+if [ -n "${GOOSE_OTLP_LISTEN:-}" ]; then
+  export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://$GOOSE_OTLP_LISTEN/v1/traces"
+fi
 if [ "${FI_CAPTURE_CONTENT:-}" = "true" ]; then
   export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
 else
@@ -49,7 +55,8 @@ printf '# Demo project\n\nA throwaway folder for the goose tracing check.\n' > "
 MARKER="GOOSE-MARKER-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 
 echo "goose $("$GOOSE_BIN" --version | tr -d ' ')"
-echo "project: ${FI_PROJECT_NAME:-goose-sessions}"
+echo "project: ${FI_PROJECT_NAME:-goose-sessions} (a project_name in OTEL_RESOURCE_ATTRIBUTES wins: ${OTEL_RESOURCE_ATTRIBUTES:-unset})"
+echo "collector: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
 echo "content capture: ${OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT:-off}"
 echo "marker: $MARKER"
 (cd "$WORK/project" && "$GOOSE_BIN" run -t "$MARKER List the files in this folder and read README.md, then summarize it in one sentence.")
