@@ -1,0 +1,190 @@
+---
+title: "OpenCode Session Tracing with Future AGI"
+description: "Export OpenCode coding-agent sessions, model steps, and tool calls to Future AGI with a project-local OpenCode plugin. Prompt and tool bodies stay off by default."
+---
+
+<TLDR>
+Copy one plugin file into `.opencode/plugins/`, set three environment variables, and every OpenCode session becomes one Future AGI trace: session, turns, model steps with token counts, and tool calls. Prompts, answers, tool arguments, and tool output are not exported unless you set `FI_CAPTURE_CONTENT=true`.
+</TLDR>
+
+## About
+
+[OpenCode](https://opencode.ai) is an open-source coding agent that runs in your terminal. This page adds a small OpenCode plugin that listens to OpenCode's documented [plugin events and hooks](https://opencode.ai/docs/plugins/) and sends them to Future AGI as OTLP traces. You see each OpenCode session as one trace, with every model step and tool call inside it.
+
+This is not the same as:
+
+- **Model SDK tracing.** A traceAI instrumentor on the provider SDK would show model calls without OpenCode's session, turns, or tools. This plugin traces the OpenCode application itself.
+- **OpenCode's built-in OpenTelemetry.** OpenCode can export its internal spans and AI SDK spans. They carry full prompts with no off switch and do not form one session tree. See [Why not OpenCode's built-in OpenTelemetry](#why-not-opencodes-built-in-opentelemetry).
+- **OpenCode Zen.** Which models or gateway OpenCode uses does not change this setup. The provider is recorded as an attribute.
+
+| | |
+| --- | --- |
+| Tested with | OpenCode 1.19.0 (`opencode-ai` on npm), macOS |
+| OpenCode docs used | [Plugins](https://opencode.ai/docs/plugins/), read 2026-10-14 |
+| Requires | OpenCode with plugin support. The plugin has no npm dependencies. |
+| Source | [examples/coding-agents/opencode](https://github.com/future-agi/docs/tree/main/examples/coding-agents/opencode) |
+
+## What you get
+
+```text
+opencode.session          AGENT   one per OpenCode session
+  opencode.turn           CHAIN   one per message you send
+    chat gpt-6-luna       LLM     one per model step, with token counts
+      execute_tool read   TOOL    one per tool call the step made
+      execute_tool bash   TOOL
+    chat gpt-6-luna       LLM     the step that wrote the answer
+```
+
+OpenCode runs tools inside the model step that requested them, so a tool span sits under that step and the step's duration includes its tools. Subagent sessions started by the `task` tool join the parent's trace under the parent session span.
+
+## Set up
+
+<Steps>
+
+<Step title="Add the plugin to your project">
+
+From the root of the project you open with OpenCode:
+
+```bash
+mkdir -p .opencode/plugins
+curl -fsSL https://raw.githubusercontent.com/future-agi/docs/main/examples/coding-agents/opencode/futureagi-otlp.ts \
+  -o .opencode/plugins/futureagi-otlp.ts
+```
+
+OpenCode loads every file in `.opencode/plugins/` at startup. The plugin only applies to this project. You can put the same file in `~/.config/opencode/plugins/` to trace every project, but do not install it in both places or each span is sent twice.
+
+</Step>
+
+<Step title="Set your Future AGI credentials">
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_PROJECT_NAME="my-opencode-project"
+```
+
+Keep these in your shell or a secrets manager, not in `opencode.json`, which is often committed. If any of the three is missing, the plugin does nothing.
+
+</Step>
+
+<Step title="Run OpenCode">
+
+```bash
+opencode
+# or, non-interactively:
+opencode run "List the files in this folder and read README.md"
+```
+
+The first start in a project with a local plugin takes longer: OpenCode writes `.opencode/package.json` and installs `@opencode-ai/plugin` into `.opencode/node_modules`.
+
+</Step>
+
+<Step title="Open the trace">
+
+In Future AGI, open **Observe**, select `my-opencode-project`, and open the newest trace. Turn, model, and tool spans are sent when the session goes idle after each message. The `opencode.session` span is sent when OpenCode exits.
+
+</Step>
+
+</Steps>
+
+## Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `FI_API_KEY` | none (required) | Future AGI API key, sent as `X-Api-Key`. |
+| `FI_SECRET_KEY` | none (required) | Future AGI secret key, sent as `X-Secret-Key`. |
+| `FI_PROJECT_NAME` | none (required) | Project the traces are filed under (`project_name` resource attribute). |
+| `FI_BASE_URL` | `https://api.futureagi.com` | Collector base URL. `/tracer/v1/traces` is appended. Set this for a self-hosted Future AGI. |
+| `FI_OTLP_ENDPOINT` | `$FI_BASE_URL/tracer/v1/traces` | Full OTLP/HTTP traces URL. Overrides `FI_BASE_URL`. |
+| `FI_CAPTURE_CONTENT` | `false` | `true` exports prompt, answer, tool argument, tool output, and session title text. |
+| `FI_OTLP_TIMEOUT_MS` | `5000` | Timeout for each export request. |
+| `FI_OTLP_DEBUG` | `false` | `true` prints export failures to stderr. Failures are silent otherwise. |
+
+The plugin posts OTLP/HTTP JSON with traces only. It never blocks or changes a tool call, never runs shell commands, and never reads OpenCode's session storage on disk. If the collector is down, spans for that flush are dropped and OpenCode keeps working.
+
+## What is captured
+
+| Span | Source event | Attributes |
+| --- | --- | --- |
+| `opencode.session` | `session.created`, `session.updated`, plugin `dispose` | `session.id`, `gen_ai.agent.name=opencode`, `opencode.version`, `opencode.project.id`, `opencode.directory`, `opencode.session.parent_id` (subagents), turn, model step, and tool counts, summed tokens, `error.type` |
+| `opencode.turn` | `chat.message` hook, `message.updated` (user) | `opencode.message.id`, `opencode.turn.index`, `opencode.agent`, `opencode.model.id`, `opencode.provider.id`, `opencode.prompt.bytes` |
+| `chat <model>` | `message.updated` (assistant) | `gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens` (includes cache reads and writes), `gen_ai.usage.output_tokens` (includes reasoning), `gen_ai.usage.total_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `opencode.usage.reasoning_tokens`, `opencode.cost`, `gen_ai.response.finish_reasons` |
+| `execute_tool <tool>` | `tool.execute.before`, `tool.execute.after`, `message.part.updated` (tool parts) | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `opencode.tool.status`, `opencode.tool.input.bytes`, `opencode.tool.output.bytes`, start and end times from OpenCode |
+
+Every span carries `session.id`, so the trace also appears under **Sessions**. A model error (for example `APIError`), a failed tool, or a `session.error` sets the span status to `ERROR` with the error type and the message `error details omitted by default`.
+
+## What is not available
+
+- **Full model input.** Plugin events do not include the messages OpenCode sends to the model (system prompt, history, tool schemas). With content capture on, you get your prompt text and the assistant's answer text, not the full request.
+- **The session-title model call.** OpenCode makes a short model call to title each session. It does not create an assistant message, so it has no span and its tokens are not counted.
+- **Streaming detail.** Token deltas (`message.part.delta`) and time to first token are not exported.
+- **A cancellation event.** OpenCode documents none. When you abort, OpenCode records a `MessageAbortedError` on the assistant message and the plugin marks that model span `ERROR` with that type.
+- **Cost for custom providers.** `opencode.cost` comes from OpenCode's model catalog. Providers without pricing report `0`.
+- **Hard kills.** The session span is sent from the plugin `dispose` hook. If OpenCode is killed before it disposes plugins, the session span is missing, while turns already sent at idle stay in the trace.
+- **Resumed sessions.** Turns from a later `opencode --continue` join the same trace. The session span keeps the end time of the first run that sent it.
+
+## Privacy
+
+By default the plugin exports ids, model and provider names, token counts, cost, timings, tool names, status, and byte sizes. It does not export:
+
+- your prompt text, the assistant's answers, or the generated session title;
+- tool arguments, tool output, or tool metadata previews;
+- error messages (only the error type).
+
+`opencode.directory`, the absolute path of the project, is exported. It is a path, not file content.
+
+To export content, set `FI_CAPTURE_CONTENT=true` before starting OpenCode. Prompts and answers go to `input.value` and `output.value` on the turn and model spans, tool arguments and output to the tool span, and the title to `opencode.session.title`. Each field is capped at 4 KiB, and strings that look like `sk-...` keys, `Bearer` tokens, or `api_key=...` values are replaced with `[REDACTED]`.
+
+<Warning>
+Tool arguments and output can contain file contents, shell output, and secrets. Pattern redaction is not a data-loss-prevention control. Turn content capture on only for projects whose data you are allowed to store in Future AGI.
+</Warning>
+
+The plugin runs inside OpenCode with your user's permissions and can see everything OpenCode sees. It is written to export only what the tables above list.
+
+## Why not OpenCode's built-in OpenTelemetry
+
+OpenCode 1.19.0 also has an OpenTelemetry exporter in its source. It starts when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and the `experimental.openTelemetry` config flag (marked deprecated in the config schema) adds AI SDK model and tool spans. It is not described on opencode.ai/docs. We tested it on one `opencode run` that read two files:
+
+| | Built-in exporter | This plugin |
+| --- | --- | --- |
+| Spans and traces | 975 spans across 17 traces, mostly internal (`sql.execute`, file system, config) | 6 spans in 1 trace |
+| Session root | None. Model and tool spans hang off internal spans | `opencode.session` |
+| Prompt and tool bodies | Always on (`ai.prompt.messages`, `ai.toolCall.args`, `ai.toolCall.result`), no setting to turn them off | Off unless `FI_CAPTURE_CONTENT=true` |
+| Other signals | Also posts OTLP logs, which the Future AGI collector does not accept | Traces only |
+
+If you already run the built-in exporter for another backend, keep it pointed there and use this plugin for Future AGI.
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="No traces appear">
+Check that `FI_API_KEY`, `FI_SECRET_KEY`, and `FI_PROJECT_NAME` are set in the shell that starts OpenCode. Start OpenCode from the project root so it finds `.opencode/plugins/futureagi-otlp.ts`. Set `FI_OTLP_DEBUG=true` to print collector errors such as `collector returned HTTP 401` to stderr. For a self-hosted Future AGI, set `FI_BASE_URL` or `FI_OTLP_ENDPOINT`.
+</Accordion>
+
+<Accordion title="OpenCode reports that a plugin export is not a function">
+OpenCode loads every export of a plugin file as a plugin. Do not add other exports to `futureagi-otlp.ts`. Put helpers in the same file without `export`.
+</Accordion>
+
+<Accordion title="Spans show up only after the answer finishes">
+Turn, model, and tool spans are sent when the session goes idle. The session span is sent when OpenCode exits. A long interactive session shows its turns as they finish and its root span at exit.
+</Accordion>
+
+<Accordion title="Every span appears twice">
+The plugin is installed both globally (`~/.config/opencode/plugins/`) and in the project (`.opencode/plugins/`). Keep one copy.
+</Accordion>
+
+<Accordion title="Token counts look higher than the provider's input count">
+`gen_ai.usage.input_tokens` includes cached input (`cache_read` plus `cache_creation`), following the OpenTelemetry GenAI conventions. OpenCode's own `tokens.input` excludes cached tokens. The cache counts are also exported separately.
+</Accordion>
+
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Sessions" href="/docs/observe/concepts/sessions" />
+  <Card title="Traces" href="/docs/observe/concepts/traces" />
+  <Card title="Spans" href="/docs/observe/concepts/spans" />
+  <Card title="Session view" href="/docs/observe/features/session" />
+</CardGroup>
