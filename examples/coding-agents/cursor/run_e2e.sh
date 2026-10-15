@@ -9,6 +9,8 @@
 # emit.py as its own process, exactly as Cursor runs a hook command. Every
 # run gets a fresh conversation id, printed at the end with its trace id.
 # Set FI_HOOK_CAPTURE_CONTENT=1 to exercise the content opt-in.
+# REPLAY_SLEEP (default 1s) spaces the hooks out so the fixture's reported
+# tool durations fit inside the turn, as they would in a real session.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,7 +23,7 @@ RUN_ID="cursor-e2e-$(date +%Y%m%d%H%M%S)-$$"
 python3 "$EMITTER/replay.py" cursor "$FIXTURE" \
   --replace "fixture-conv-0001=$RUN_ID" \
   --replace "fixture-gen-0001=$RUN_ID-gen-1" \
-  --sleep "${REPLAY_SLEEP:-0.3}"
+  --sleep "${REPLAY_SLEEP:-1}"
 
 TRACE_ID="$(cd "$EMITTER" && python3 -c 'import sys, emit; print(emit.trace_id("cursor", sys.argv[1]))' "$RUN_ID")"
 echo "conversation_id=$RUN_ID"
