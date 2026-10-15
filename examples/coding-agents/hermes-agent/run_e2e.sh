@@ -7,9 +7,10 @@
 #
 # Optional: FI_BASE_URL (default https://api.futureagi.com), FI_PROJECT_NAME
 # (default hermes-agent), HERMES_REF (Hermes Agent git tag, default v2026.9.24),
-# PLUGIN_SPEC (what to pip-install, default traceAI-hermes-agent; a path to
-# traceAI's python/frameworks/hermes-agent tests unreleased code),
-# CAPTURE_CONTENT=1 for the content opt-in. Needs git and uv.
+# PLUGIN_SPEC (what to pip-install, default traceAI-hermes-agent from PyPI;
+# until that is released, a path to a traceAI checkout's
+# python/frameworks/hermes-agent), CAPTURE_CONTENT=1 for the content opt-in.
+# Needs git and uv. The keys file is deleted when the script exits.
 #
 # Everything lives in a temporary directory: a Hermes Agent source checkout and
 # virtualenv, and HERMES_HOME. Your own ~/.hermes, its profiles and any running
@@ -30,6 +31,9 @@ uv pip install -q --python "$WORK/venv/bin/python" -e "$WORK/hermes-agent" "$PLU
 HERMES="$WORK/venv/bin/hermes"
 
 export HERMES_HOME="$WORK/hermes-home"
+# The keys are written to $HERMES_HOME/.env below; remove them however the
+# script ends. Hermes' logs stay in $HERMES_HOME for inspection.
+trap 'rm -f "$HERMES_HOME/.env"' EXIT
 mkdir -p "$HERMES_HOME" "$WORK/project"
 cat > "$HERMES_HOME/config.yaml" <<EOF
 model:
