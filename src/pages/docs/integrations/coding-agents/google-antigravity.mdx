@@ -1,0 +1,132 @@
+---
+title: "Google Antigravity IDE session tracing with Future AGI"
+description: "Trace Google Antigravity IDE agent conversations in Future AGI with Antigravity lifecycle hooks: one trace per conversation, with turns, model calls, tool calls, model name, and errors. Prompts, tool arguments, and transcripts stay off by default."
+---
+
+## About
+
+The Antigravity IDE runs [lifecycle hooks](https://antigravity.google/docs/hooks?tab=ide) before and after each model call and each tool call, when a conversation starts, and when the agent stops, and passes each hook a JSON payload on stdin. This page registers the Future AGI [hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp) on those hooks, so every Antigravity IDE conversation shows up in Future AGI as one trace:
+
+```
+Antigravity session            one conversation (conversationId), model name
+└── Antigravity turn           one user message, from the first model call to Stop
+    ├── Model call             PreInvocation to PostInvocation, model name
+    ├── list_dir               tool call: name, timing from Pre/Post Tool Use
+    ├── Model call
+    ├── run_command            ERROR when the tool returns an error
+    └── Model call
+```
+
+Antigravity has no OpenTelemetry export; hooks are its documented extension point, so this setup uses them.
+
+This is not the same as:
+
+- **Gemini CLI.** Gemini CLI has its own [OpenTelemetry settings](https://geminicli.com/docs/cli/telemetry/) and a separate integration. Its settings do not affect Antigravity, and its sessions are not labelled Antigravity.
+- **The Antigravity app and Antigravity CLI.** They share the hook schema but are not covered here. Their sessions are dropped by this adapter (see [What is not available](#what-is-not-available)).
+- **Google ADK and the Gemini API.** For tracing your own code that calls Gemini, use a [traceAI integration](/docs/integrations/traceai).
+
+| | |
+| --- | --- |
+| Tested with | Antigravity IDE 2.5.5 (macOS, Apple silicon): hook payloads as documented, checked against the hook schema shipped in the IDE |
+| Antigravity docs used | [Hooks](https://antigravity.google/docs/hooks?tab=ide) (IDE tab), read 2026-10-14 |
+| Requires | Python 3.9+ on the `PATH` Antigravity uses. No packages. |
+| Source | [examples/coding-agents/google-antigravity](https://github.com/future-agi/docs/tree/main/examples/coding-agents/google-antigravity) and [hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp) |
+
+## 1. Install the hook
+
+Clone the examples and run the installer against your project. It copies the emitter and the Antigravity adapter into `.agents/fi-hook-to-otlp/` and writes `.agents/hooks.json`. If the project already has a `hooks.json`, the installer leaves it alone and prints the entry to add.
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+fi-docs/examples/coding-agents/google-antigravity/install.sh /path/to/your/project
+```
+
+To trace every workspace, install global hooks into `~/.gemini/config/` instead:
+
+```bash
+fi-docs/examples/coding-agents/google-antigravity/install.sh --user
+```
+
+`hooks.json` maps a hook name to its events. Antigravity payloads do not name the event, so each command passes it as an argument:
+
+```json
+{
+  "fi-hook-to-otlp": {
+    "SessionStart":   [{ "type": "command", "command": "python3 fi-hook-to-otlp/emit.py antigravity SessionStart", "timeout": 10 }],
+    "PreInvocation":  [{ "type": "command", "command": "python3 fi-hook-to-otlp/emit.py antigravity PreInvocation", "timeout": 10 }],
+    "PostInvocation": [{ "type": "command", "command": "python3 fi-hook-to-otlp/emit.py antigravity PostInvocation", "timeout": 10 }],
+    "PreToolUse":  [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python3 fi-hook-to-otlp/emit.py antigravity PreToolUse", "timeout": 10 }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "python3 fi-hook-to-otlp/emit.py antigravity PostToolUse", "timeout": 10 }] }],
+    "Stop":           [{ "type": "command", "command": "python3 fi-hook-to-otlp/emit.py antigravity Stop", "timeout": 10 }]
+  }
+}
+```
+
+Antigravity runs hook commands in the folder that contains `hooks.json` (`.agents/` or `~/.gemini/config/`), so the emitter path is relative to that folder. You can see and disable the hook from **...** > **Customizations** > **Hooks** in the agent side panel.
+
+<Note>
+The emitter only observes. On `PreToolUse` it answers `{"decision": "allow"}`, which Antigravity defines as "proceed, delegating to the next hook or default policy": it does not auto-approve anything your permission settings would ask about. On `Stop` it never answers `"continue"`, so the agent stops as it normally would.
+</Note>
+
+## 2. Add your Future AGI keys
+
+Antigravity started from the Dock does not see variables exported in your shell. Put the keys in the emitter's env file:
+
+```bash
+mkdir -p ~/.config/fi-hook-to-otlp
+cat > ~/.config/fi-hook-to-otlp/env <<'EOF'
+FI_API_KEY=your-futureagi-api-key
+FI_SECRET_KEY=your-futureagi-secret-key
+FI_PROJECT_NAME=antigravity-sessions
+EOF
+chmod 600 ~/.config/fi-hook-to-otlp/env
+```
+
+For a self-hosted Future AGI, also set `FI_BASE_URL` (traces go to `$FI_BASE_URL/tracer/v1/traces`). All settings are on the [hook-to-OTLP page](/docs/integrations/coding-agents/hook-to-otlp#configuration).
+
+## 3. Run an agent conversation
+
+Open the project in the Antigravity IDE, start a new agent conversation, and send one message that uses a tool, for example *"List the files in this folder and read README.md"*.
+
+Open **Observe** in Future AGI and select the project (`antigravity-sessions` above). The conversation appears as one trace named **Antigravity session**, with one **Antigravity turn** per message.
+
+## What is captured
+
+| Antigravity hook | Future AGI span | Fields |
+| --- | --- | --- |
+| `SessionStart` | **Antigravity session** (root) | `session.id` = `conversationId`, model name |
+| `PreInvocation` with `invocationNum` 0 | **Antigravity turn** start | model name |
+| `PreInvocation` / `PostInvocation` | **Model call** (`LLM`) | model name (`modelName`), invocation number |
+| `PreToolUse` / `PostToolUse` | tool span named after the tool (`view_file`, `run_command`, `grep_search`, ...) | `gen_ai.tool.name`, step index as `gen_ai.tool.call.id`, `ERROR` when `error` is set |
+| `Stop` | **Antigravity turn** end | termination reason (`model_stop`, `max_steps_exceeded`, `error`; `error` marks the turn `ERROR`), execution number, idle flag |
+
+Antigravity has no session-end hook, so the session span stays open and is updated each time new spans arrive.
+
+## What is not available
+
+- **Token counts and cost.** Hook payloads do not include them.
+- **Tool call ids.** Antigravity gives a step index, not a call id; the step index is used to pair the start and end of a tool call.
+- **Session end.** There is no hook for closing a conversation.
+- **Subagent internals.** An `invoke_subagent` call appears as one tool span.
+- **The Antigravity app and Antigravity CLI.** They write conversations under `~/.gemini/antigravity` and `~/.gemini/antigravity-cli`. The adapter recognizes those locations in the payload and drops the event, so only IDE conversations (`~/.gemini/antigravity-ide`) are exported.
+- **Transcript and artifacts.** The payload names a `transcript.jsonl` file and an artifact directory. The emitter never opens or exports them.
+
+## Privacy
+
+By default only structure and metadata leave your machine: conversation id, model name, tool names, step and invocation numbers, statuses, and timing.
+
+- **Not exported by default:** the user message, model output, tool arguments (commands, file paths, search queries), tool results, error text.
+- **Never exported:** `transcriptPath`, `artifactDirectoryPath`, `workspacePaths`. The emitter never opens files named in a payload.
+
+To include content, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. Tool arguments and results go on the tool span, tool error text becomes its status message, and the user message and final model output go on the turn when Antigravity sends them (`lastUserInput`, `modelOutput`, `finalModelOutput` are part of the 2.5.5 hook schema but not of the docs page, so they may be empty). Each field is capped at 4096 characters and common key formats are replaced with `[REDACTED]`. See [Privacy](/docs/integrations/coding-agents/hook-to-otlp#privacy).
+
+## Troubleshooting
+
+**No trace appears.**
+1. Check that the hook is listed and enabled under **...** > **Customizations** > **Hooks**.
+2. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and send another message. No lines: Antigravity did not run the command (check the path in `hooks.json`). `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
+3. `python3` must resolve for Antigravity. Use an absolute interpreter path such as `/opt/homebrew/bin/python3` in `hooks.json` if it does not.
+
+**Spans appear but no turn.** Hooks were installed in the middle of a conversation, after its first model call. New messages create turns.
+
+**Events from the Antigravity app or CLI are missing.** That is intended; this setup is for the IDE.
