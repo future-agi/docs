@@ -1,0 +1,220 @@
+---
+title: "GitHub Copilot application session tracing"
+description: "Send GitHub Copilot CLI and VS Code Copilot Chat agent sessions to Future AGI with Copilot's built-in OpenTelemetry export. Prompts and tool arguments stay off by default."
+---
+
+## About
+
+GitHub Copilot can export every agent interaction as an OpenTelemetry trace: one `invoke_agent` span for the user message, one `chat` span per model call, and one `execute_tool` span per tool call. Point that export at Future AGI and each Copilot agent turn shows up as a trace in Observe, with model names, token counts, tool names, and timings. Prompts, responses, and tool arguments are not exported unless you turn content capture on.
+
+This page covers two Copilot surfaces that share the same span format:
+
+| Surface | How you turn it on | Service name in Future AGI |
+| --- | --- | --- |
+| GitHub Copilot CLI (`copilot`) | `OTEL_*` environment variables | `github-copilot` |
+| Copilot Chat agent mode in VS Code | `github.copilot.chat.otel.*` settings plus `OTEL_*` variables for headers | `copilot-chat` (and `github-copilot` for the Copilot agent it hosts) |
+
+Nothing is installed inside Copilot or VS Code. Copilot's own exporter sends OTLP/HTTP to the Future AGI collector.
+
+<Note>
+Tested on 2026-10-14 with GitHub Copilot CLI 1.0.98 (a real agent session exported to Future AGI) and VS Code 1.140.0 with the built-in Copilot Chat extension 0.68.0 (settings checked against the shipped extension). Vendor references: [Copilot CLI OpenTelemetry monitoring](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#opentelemetry-monitoring) and [Monitor agent usage with OpenTelemetry](https://code.visualstudio.com/docs/agents/guides/monitoring-agents).
+</Note>
+
+## What you get
+
+One Copilot agent turn becomes one trace. A Copilot CLI turn that lists a folder and reads a file looks like this in Future AGI:
+
+```text
+invoke_agent                       conversation id, total tokens, turn count
+├── chat gpt-6-luna                model, input/output/cached tokens, finish reason
+├── execute_tool glob              tool name, tool call id
+├── execute_tool bash bash         tool name, tool call id, exit code
+├── chat gpt-6-luna
+├── execute_tool view
+└── chat gpt-6-luna
+```
+
+| Span | Key attributes (content capture off) |
+| --- | --- |
+| `invoke_agent` | `gen_ai.conversation.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `github.copilot.turn_count`, `github.copilot.agent.type`, `error.type` on failure |
+| `chat <model>` | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.*` tokens (including cache read/write), `gen_ai.response.finish_reasons`, `gen_ai.response.time_to_first_chunk` |
+| `execute_tool <tool>` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `process.exit.code` for shell tools, `error.type` on failure |
+| `execute_hook` (VS Code) | hook type and decision; `copilot_chat.hook_command` may include the full local command path |
+| Span status / hook errors | Raw failure text may be present even with content capture off: status messages, `exception` events, or CLI `github.copilot.hook.error_message` |
+
+When the agent starts a subagent, the subagent's `invoke_agent` span is nested under the `execute_tool` span that started it, so the whole tree stays in one trace.
+
+## Prerequisites
+
+- A Future AGI account and your API key and secret key (**Settings** > **API Keys**).
+- GitHub Copilot access on your GitHub account. Any plan that includes Copilot CLI or Copilot Chat works.
+- For the CLI: `npm install -g @github/copilot`, then `copilot login` once.
+- For VS Code: VS Code with Copilot Chat signed in.
+
+## Set up the Copilot CLI
+
+<Steps>
+<Step title="Set the exporter variables">
+
+Set the exporter variables on the Copilot process only, with a `copilot` shell function (add it to `~/.zshrc` or `~/.bashrc`; it holds no keys):
+
+```bash
+copilot() {
+  OTEL_EXPORTER_OTLP_ENDPOINT="https://api.futureagi.com/tracer" \
+  OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=${FI_API_KEY},X-Secret-Key=${FI_SECRET_KEY}" \
+  OTEL_RESOURCE_ATTRIBUTES="project_name=my-copilot-sessions,project_type=observe" \
+  command copilot --secret-env-vars=FI_API_KEY,FI_SECRET_KEY,OTEL_EXPORTER_OTLP_HEADERS "$@"
+}
+```
+
+Setting `OTEL_EXPORTER_OTLP_ENDPOINT` turns Copilot's exporter on. Copilot appends `/v1/traces`, so the base URL ends at `/tracer`. `project_name` is required: Future AGI creates the project on the first export and rejects spans without it.
+
+`--secret-env-vars` removes the named variables from the shell commands and MCP servers Copilot starts, and redacts their values from Copilot's output. Copilot's own exporter still uses them. Copilot CLI 1.0.98 already keeps `OTEL_*` variables out of its shell commands; the flag is what keeps `FI_API_KEY` and `FI_SECRET_KEY` out. We ran this exact function against Future AGI with Copilot CLI 1.0.98: the trace arrived, and a script Copilot ran in its shell tool saw none of the key or `OTEL_*` variables.
+
+The function reads `FI_API_KEY` and `FI_SECRET_KEY` from the shell you run it in, so set them only for that terminal session (for example from your password manager's CLI), not in a shell profile. The trade-off: other programs you start from that terminal can still read the two keys, but only Copilot gets the exporter settings.
+
+Avoid the simpler `export OTEL_EXPORTER_OTLP_*` in your shell. Then every program started from that shell, including other OpenTelemetry-instrumented tools, sends its telemetry to Future AGI with your keys.
+
+</Step>
+<Step title="Run an agent session">
+
+```bash
+cd ~/code/my-project
+copilot -p "List the files in this folder and read README.md, then summarize it in one sentence." --allow-all-tools
+```
+
+`-p` requires `--allow-all-tools`, which auto-approves every tool call. Prefer an interactive session for real projects, or replace it with narrowly scoped `--allow-tool` rules.
+
+Interactive sessions (`copilot` with no `-p`) export the same way. Each message you send becomes its own `invoke_agent` trace.
+
+<Note>
+With `-p`, Copilot exits right after the answer and waits about one second for the exporter. In our test, the first `-p` run against a project that did not exist yet exported nothing (the Copilot log in `~/.copilot/logs/` shows `OTel host dispose did not finish within 1000ms`), most likely because Future AGI creates the project while handling that first request. Later runs exported complete traces. Create the project in Future AGI first, or start with an interactive session.
+</Note>
+
+</Step>
+<Step title="Find the trace">
+
+Open **Observe** in Future AGI and select the `my-copilot-sessions` project. The newest trace has an `invoke_agent` root with `chat` and `execute_tool` children. Filter on `gen_ai.conversation.id` to see every turn from one Copilot session.
+
+</Step>
+</Steps>
+
+The repository example [`examples/coding-agents/github-copilot`](https://github.com/future-agi/docs/tree/main/examples/coding-agents/github-copilot) has the same function in `copilot-otel.sh` and a `run_e2e.sh` script that runs one real session the same way in a throwaway folder.
+
+## Set up VS Code Copilot Chat
+
+<Steps>
+<Step title="Turn on the exporter in settings">
+
+Open **Preferences: Open User Settings (JSON)** and add:
+
+```json
+{
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.exporterType": "otlp-http",
+  "github.copilot.chat.otel.otlpEndpoint": "https://api.futureagi.com/tracer",
+  "github.copilot.chat.otel.captureContent": false
+}
+```
+
+</Step>
+<Step title="Pass your keys and project as environment variables">
+
+VS Code reads collector headers from the environment, not from documented settings. Quit VS Code fully, then start it with the headers and project set on the `code` command only:
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=${FI_API_KEY},X-Secret-Key=${FI_SECRET_KEY}" \
+OTEL_RESOURCE_ATTRIBUTES="project_name=my-copilot-sessions,project_type=observe" \
+code ~/code/my-project
+```
+
+VS Code passes its environment to integrated terminals, tasks, and debug sessions, so anything you run inside that VS Code instance can read the headers. VS Code has no equivalent of the CLI's `--secret-env-vars`. If that matters, use a separate VS Code instance or profile for traced Copilot sessions.
+
+Environment variables take precedence over the settings, so you can also set `OTEL_EXPORTER_OTLP_ENDPOINT` here instead of `otlpEndpoint`. `COPILOT_OTEL_ENDPOINT` wins over both, so make sure it is not already set to another collector.
+
+</Step>
+<Step title="Run one agent request">
+
+Open the Chat view, switch to **Agent** mode, and ask something that uses a tool, for example "List the files in this folder and read README.md". The trace arrives in the same project, with `service.name` set to `copilot-chat`.
+
+</Step>
+</Steps>
+
+Organizations can push the same configuration to every developer through Copilot enterprise-managed settings instead of per-machine variables. See [Manage OTel configuration for your organization](https://code.visualstudio.com/docs/agents/guides/monitoring-agents#_manage-otel-configuration-for-your-organization).
+
+## Privacy
+
+By default Copilot exports mostly metadata: model names, token counts, durations, tool names, and IDs. Prompt and tool message bodies are off by default. However, some vendor fields remain free text even when content capture is off, including hook command paths and raw failure text. We checked a real Copilot CLI 1.0.98 session: a unique marker string in the prompt and the contents of the file Copilot read were absent from every span stored in Future AGI.
+
+Other fields you should know about:
+
+| Field | When it is sent | Notes |
+| --- | --- | --- |
+| `enduser.pseudo.id` (CLI) | When available | Pseudonymous Copilot user ID, not an email or login |
+| `github.copilot.git.repository`, `.branch`, `.commit_sha` (CLI and VS Code) | When the workspace is a Git repository | Repository remote URL, current branch and commit; VS Code can also emit `github.copilot.github.org` and legacy `copilot_chat.repo.*` aliases |
+| `github.copilot.context.skills`, `.custom_agent_names`, `.mcp_server_names` (CLI) | When the session uses them | Skill names, custom agent names and hashed MCP server names |
+| `github.copilot.skill.invoked` event and `execute_tool skill <name>` span (CLI) | When the agent runs a skill | With content capture off: the skill name (`gen_ai.skill.name`), what triggered it (`github.copilot.skill.invocation_trigger`), and where it was loaded from (`github.copilot.skill.source`, for example `project`). The skill file's location (`gen_ai.skill.source.uri`, a local `file://` path), description, and body (`github.copilot.skill.content`) are added only when content capture is on. GitHub's reference also lists `github.copilot.skill.path`; Copilot CLI 1.0.98 did not send it in our test. |
+| `user.name`, `process.user.name`, `host.name` (VS Code) | When identity capture is on: the `github.copilot.chat.otel.captureIdentity` setting, `COPILOT_OTEL_CAPTURE_IDENTITY=true`, or your organization's Copilot policy | Off by default. The environment variable overrides the setting, and an explicit enterprise policy overrides both. Independent of content capture. |
+| `copilot_chat.hook_command` (VS Code hooks) | When a hook runs | Full hook command line, which may contain a local path |
+| Status messages and `github.copilot.hook.error_message` | On failures | Raw failure text can contain paths or hook/tool output |
+
+<Note>
+Teams with strict data rules can remove the hook command, status messages, and hook error text before they reach Future AGI. Point Copilot's exporter at your own OpenTelemetry Collector (`otelcol-contrib`, checked with 0.162.0) and add this `transform` processor to its traces pipeline. Spans keep their error status; only the text is removed.
+
+```yaml
+processors:
+  transform/copilot-redact:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "copilot_chat.hook_command")
+          - set(status.message, "") where status.message != ""
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "github.copilot.hook.error_message")
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+```
+
+Have the collector forward to `https://api.futureagi.com/tracer/v1/traces` with the `X-Api-Key` and `X-Secret-Key` headers and `compression: none`. The Future AGI collector does not accept gzip-encoded OTLP requests.
+</Note>
+
+To capture prompt and tool content, opt in explicitly and only in a trusted environment:
+
+| Surface | Opt-in |
+| --- | --- |
+| Copilot CLI | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true copilot` (one session, through the wrapper) |
+| VS Code Copilot Chat | `"github.copilot.chat.otel.captureContent": true`, or `COPILOT_OTEL_CAPTURE_CONTENT=true` on the `code` command |
+
+With content on, spans add `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, `gen_ai.tool.definitions`, `gen_ai.tool.call.arguments`, and `gen_ai.tool.call.result`. In Future AGI they appear in the span's **Attributes**, not in the trace list's Input and Output columns. They can contain source code, file contents, secrets that appear in your files, and local paths such as your working directory and skill file locations.
+
+## What is not available
+
+- **Inline completions (ghost text), next edit suggestions, and Copilot code review** do not produce these traces.
+- **The Copilot cloud agent** that works on GitHub and opens pull requests is not covered. Its sessions run on GitHub, not on your machine.
+- **Session grouping.** Future AGI's Sessions view groups traces by the `session.id` span attribute. In our Copilot CLI test, Copilot sent only `gen_ai.conversation.id`, so each user message was a separate trace and Sessions stayed empty. Filter on `gen_ai.conversation.id` to follow one conversation. VS Code Copilot Chat also sets a `session.id` resource attribute (one per VS Code window); we have not checked whether Sessions picks it up.
+- **Cost in currency.** `github.copilot.cost` is a billing multiplier and `github.copilot.nano_aiu` counts AI units. Neither is a dollar amount, and Future AGI does not convert them.
+- **Metrics and events.** Copilot also exports OTel metrics. The Future AGI collector accepts traces only, so metric exports are rejected with HTTP 404 (Copilot logs `HTTP export failed with status code: 404` at exit). Traces are not affected.
+- **Span type for `invoke_agent`.** Future AGI classifies `chat` spans as LLM and `execute_tool` spans as tools; the `invoke_agent` root shows type `unknown`.
+- **Standalone `custom_notification` traces.** Copilot CLI can export a one-span `custom_notification` trace for shell completion, idle, or permission notifications. Future AGI shows it as type unknown; it is safe to ignore or filter.
+- **The local file and SQLite exporters** (`COPILOT_OTEL_FILE_EXPORTER_PATH`, **Chat: Export Agent Traces DB**) are debugging aids, not the setup path.
+
+This page is about Copilot as an application. It is not a wrapper for GitHub Models or for model calls your own code makes; use a [traceAI integration](/docs/integrations/traceai) for those.
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| No trace appears | Check that `OTEL_EXPORTER_OTLP_ENDPOINT` (CLI) or `otel.enabled` (VS Code) is set in the process that runs Copilot. For the CLI wrapper, `type copilot` should report a shell function in the terminal you use, and `FI_API_KEY` and `FI_SECRET_KEY` must be set there. VS Code only reads the variables at start: quit it fully and relaunch from the shell. |
+| Spans rejected with 401 or 403 | `OTEL_EXPORTER_OTLP_HEADERS` must be `X-Api-Key=...,X-Secret-Key=...` with no spaces or quotes inside the value. |
+| Spans rejected with a `project_name` error | Add `project_name=...` to `OTEL_RESOURCE_ATTRIBUTES`. |
+| 404 from the collector | If no traces arrive and the 404 is for traces (not `meter shutdown`), the endpoint is a base URL. Use `https://api.futureagi.com/tracer`, not `.../tracer/v1/traces`. A meter-shutdown 404 is expected because Future AGI accepts traces only. |
+| Prompts are visible in spans | Content capture is on. Unset `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` or `COPILOT_OTEL_CAPTURE_CONTENT` and set `captureContent` to `false`. |
+
+To check your settings locally before sending anything, run one session with `COPILOT_OTEL_FILE_EXPORTER_PATH=/tmp/copilot-otel.jsonl` and check the file with `python3 check_spans.py /tmp/copilot-otel.jsonl` from the example folder. Unset the variable afterwards: while it is set, Copilot writes to the file instead of exporting.
+
+## Next steps
+
+- [Observe overview](/docs/observe) to filter, search, and evaluate traces.
+- [traceAI integrations](/docs/integrations/traceai) for tracing your own LLM application code.

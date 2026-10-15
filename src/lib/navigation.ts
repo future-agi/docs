@@ -969,6 +969,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:devin-desktop
               // coding-agents:gemini-cli
               // coding-agents:github-copilot
+              { title: 'GitHub Copilot', href: '/docs/integrations/coding-agents/github-copilot' },
               // coding-agents:google-antigravity
               // coding-agents:goose
               // coding-agents:grok-build
