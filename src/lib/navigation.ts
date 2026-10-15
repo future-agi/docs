@@ -978,6 +978,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:oh-my-pi
               // coding-agents:openclaw
               // coding-agents:opencode
+              { title: 'OpenCode', href: '/docs/integrations/coding-agents/opencode' },
               // coding-agents:pi
               // coding-agents:pi-sdk
             ]
