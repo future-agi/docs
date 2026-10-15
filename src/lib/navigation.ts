@@ -954,6 +954,35 @@ export const tabNavigation: NavTab[] = [
             ]
           },
           {
+            title: 'Coding Agents',
+            items: [
+              { title: 'Hook-to-OTLP Emitter', href: '/docs/integrations/coding-agents/hook-to-otlp' },
+              // coding-agents:augment-code
+              // coding-agents:claude-code
+              // coding-agents:claude-cowork
+              // coding-agents:codex
+              // coding-agents:codex-sdk
+              // coding-agents:cursor
+              { title: 'Cursor', href: '/docs/integrations/coding-agents/cursor' },
+              // coding-agents:cursor-sdk
+              // coding-agents:devin
+              // coding-agents:devin-desktop
+              // coding-agents:gemini-cli
+              // coding-agents:github-copilot
+              // coding-agents:google-antigravity
+              // coding-agents:goose
+              // coding-agents:grok-build
+              // coding-agents:hermes-agent
+              // coding-agents:kiro-cli
+              // coding-agents:kiro-ide
+              // coding-agents:oh-my-pi
+              // coding-agents:openclaw
+              // coding-agents:opencode
+              // coding-agents:pi
+              // coding-agents:pi-sdk
+            ]
+          },
+          {
             title: 'Voice & Realtime',
             items: [
               { title: 'LiveKit', href: '/docs/integrations/traceai/livekit' },
@@ -1121,7 +1150,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Inline Evals in Tracing', href: '/docs/cookbook/quickstart/inline-evals-tracing' },
               { title: 'Portkey Integration', href: '/docs/cookbook/portkey-integration' },
               { title: 'Debug Traces from IDE', href: '/docs/cookbook/mcp/debug-traces-from-ide' },
-              { title: 'Cursor Hook-to-OTLP Tracing', href: '/docs/cookbook/cursor-hook-to-otlp' },
               { title: 'Falcon AI Trace Debugging', href: '/docs/cookbook/falcon-ai/context-aware-debugging' },
               { title: 'Falcon AI End-to-End Workflow', href: '/docs/cookbook/falcon-ai/end-to-end' },
             ]

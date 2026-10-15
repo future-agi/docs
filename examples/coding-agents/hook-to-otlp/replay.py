@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Replay recorded hook payloads through emit.py, one subprocess per hook.
+
+Each line of the JSONL file is ``{"event": "<hook name>", "payload": {...}}``.
+The emitter runs exactly as a host app would run it (stdin payload, stdout
+response), with the current environment.
+
+    python3 replay.py cursor tests/fixtures/cursor/session.jsonl \
+        --replace fixture-conv-0001=my-run-123 --sleep 0.2
+
+``--replace OLD=NEW`` rewrites every string value equal to OLD (use it to
+give each run a fresh session id). Prints one line per hook: the event and
+the stdout the host would receive.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict
+
+EMIT = Path(__file__).resolve().parent / "emit.py"
+
+
+def rewrite(value: Any, mapping: Dict[str, str]) -> Any:
+    if isinstance(value, str):
+        return mapping.get(value, value)
+    if isinstance(value, list):
+        return [rewrite(v, mapping) for v in value]
+    if isinstance(value, dict):
+        return {k: rewrite(v, mapping) for k, v in value.items()}
+    return value
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("app")
+    ap.add_argument("jsonl")
+    ap.add_argument("--replace", action="append", default=[], metavar="OLD=NEW")
+    ap.add_argument("--sleep", type=float, default=0.0, help="seconds between hooks")
+    ap.add_argument("--pass-event", action="store_true", help="also pass the event name as argv")
+    args = ap.parse_args()
+    mapping = dict(item.split("=", 1) for item in args.replace)
+    for line in Path(args.jsonl).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        event = record["event"]
+        payload = rewrite(record["payload"], mapping)
+        argv = [sys.executable, str(EMIT), args.app] + ([event] if args.pass_event else [])
+        started = time.monotonic()
+        result = subprocess.run(argv, input=json.dumps(payload), capture_output=True, text=True, timeout=30)
+        took = (time.monotonic() - started) * 1000
+        print(f"{event:22s} exit={result.returncode} {took:6.0f}ms stdout={result.stdout.strip()}")
+        if args.sleep:
+            time.sleep(args.sleep)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
