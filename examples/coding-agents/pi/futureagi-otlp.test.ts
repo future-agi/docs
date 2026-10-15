@@ -74,7 +74,11 @@ function harness(env: Record<string, string> = BASE_ENV, opts: HarnessOpts = {})
     for (const call of calls) for (const span of call.body.resourceSpans[0].scopeSpans[0].spans) byId.set(span.spanId, span)
     return [...byId.values()]
   }
-  return { handlers, calls, returns, emit, spans, active }
+  // Pi's ctx.signal: the abort signal of the running agent run.
+  const setSignal = (signal: AbortSignal | undefined) => {
+    ctx.signal = signal
+  }
+  return { handlers, calls, returns, emit, spans, active, setSignal }
 }
 
 async function replay(h: ReturnType<typeof harness>, rows = FIXTURE) {
@@ -413,6 +417,67 @@ test("a cancelled run is OK with pi.prompt.aborted, not an error", async () => {
   const turn = byName(spans, "pi.turn").find((s) => attr(s, "pi.turn.index") === 1)
   assert.equal(attr(turn, "pi.turn.outcome"), "aborted")
   assert.equal(attr(turn, "pi.incomplete"), true)
+})
+
+// Event sequence of a real Pi 1.2.0 RPC run cancelled while bash was running:
+// the tool ends with isError ("Command aborted"), Pi starts the next turn, and
+// that model request fails before it is sent with stopReason "error"
+// ("This operation was aborted") while the run's abort signal is set.
+test("a model request cancelled before it is sent counts as a cancellation, not a provider error", async () => {
+  const assistant = (stopReason: string, extra: Record<string, unknown> = {}) => ({
+    type: "message_end",
+    message: { role: "assistant", content: [], model: "m", provider: "p", usage: { input: 0, output: 0 }, stopReason, timestamp: 1, durationMs: 0, ...extra },
+  })
+  const rows: any[] = [
+    { event: { type: "agent_start" } },
+    { event: { type: "turn_start", turnIndex: 0, timestamp: 1 } },
+    { event: assistant("toolUse") },
+    { event: { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "sleep 30" } } },
+    { abort: true },
+    { event: { type: "tool_execution_end", toolCallId: "c1", toolName: "bash", isError: true, result: { content: [{ type: "text", text: "Command aborted" }] } } },
+    { event: { type: "turn_start", turnIndex: 1, timestamp: 2 } },
+    { event: assistant("error", { errorMessage: "This operation was aborted" }) },
+    { event: { type: "agent_end", messages: [] } },
+    { event: { type: "agent_settled", aborted: true } },
+    { event: { type: "session_shutdown", reason: "new" } },
+  ]
+  for (const cancelled of [true, false]) {
+    const h = harness()
+    await h.emit(FIXTURE[0].event, FIXTURE[0].ctx)
+    const controller = new AbortController()
+    h.setSignal(controller.signal)
+    for (const row of rows) {
+      if ("abort" in row) {
+        if (cancelled) controller.abort()
+        continue
+      }
+      await h.emit(row.event)
+    }
+    const spans = h.spans()
+    const [prompt] = byName(spans, "pi.prompt")
+    const [root] = byName(spans, "pi.session")
+    const [bash] = byName(spans, "execute_tool bash")
+    const chat = byName(spans, "chat ").find((s) => attr(s, "pi.turn.index") === 1)
+    const turn = byName(spans, "pi.turn").find((s) => attr(s, "pi.turn.index") === 1)
+    // Pi reports the cancelled tool as failed.
+    assert.equal(bash.status.code, 2)
+    assert.equal(attr(bash, "error.type"), "ToolError")
+    assert.deepEqual(attr(chat, "gen_ai.response.finish_reasons"), { values: [{ stringValue: "error" }] })
+    if (cancelled) {
+      for (const s of [prompt, root, chat, turn]) assert.equal(s.status.code, 1, s.name)
+      for (const s of [prompt, root, chat, turn]) assert.equal(attr(s, "error.type"), undefined, s.name)
+      assert.equal(attr(prompt, "pi.prompt.aborted"), true)
+      assert.equal(attr(chat, "pi.incomplete"), true)
+      assert.equal(attr(turn, "pi.turn.outcome"), "aborted")
+    } else {
+      // Control: the same stop reason without a cancelled run is a provider error.
+      assert.equal(chat.status.code, 2)
+      assert.equal(attr(chat, "error.type"), "ProviderError")
+      assert.equal(attr(turn, "pi.turn.outcome"), "error")
+      assert.equal(attr(prompt, "error.type"), "ProviderError")
+      assert.equal(attr(root, "error.type"), "PromptError")
+    }
+  }
 })
 
 test("error text with local paths and user names stays out of the default export", async () => {

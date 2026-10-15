@@ -141,7 +141,7 @@ type TurnState = {
   start: number
   runSpanId: string
   runIndex: number
-  // From the stop reason of the turn's assistant message, as Pi computes it.
+  // From the stop reason of the turn's assistant message (see message_end).
   outcome?: "completed" | "aborted" | "error"
   last?: number
 }
@@ -156,6 +156,16 @@ type ToolState = {
   inputBytes: number
   input?: string
   inputIsJson: boolean
+}
+
+// True when the agent run that emitted the event was cancelled (Escape, or a
+// session switch during the run). ctx.signal is the run's abort signal.
+function runAborted(ctx: { signal?: AbortSignal } | undefined): boolean {
+  try {
+    return ctx?.signal?.aborted === true
+  } catch {
+    return false
+  }
 }
 
 async function piVersion(): Promise<string | undefined> {
@@ -545,7 +555,7 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     }
   })
 
-  pi.on("message_end", async (event) => {
+  pi.on("message_end", async (event, ctx) => {
     if (!sessionId || !run) return
     const message: any = event.message
     if (turn) turn.last = now()
@@ -570,8 +580,12 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     const start = typeof message.timestamp === "number" ? message.timestamp : now()
     const end = typeof message.durationMs === "number" ? start + message.durationMs : now()
     const stop: string | undefined = message.stopReason
-    const failed = stop === "error"
-    const aborted = stop === "aborted"
+    // Pi's providers report "aborted" when the run's abort signal is set. A
+    // request cancelled before it is sent (you cancel while a tool runs and Pi
+    // starts the next model request) ends with "error" instead, so the run's
+    // signal decides, as it does in Pi's providers.
+    const aborted = stop === "aborted" || (stop === "error" && runAborted(ctx))
+    const failed = stop === "error" && !aborted
     const text = (message.content ?? [])
       .filter((p: any) => p?.type === "text")
       .map((p: any) => p.text)
@@ -581,7 +595,7 @@ export function createTracer(pi: ExtensionAPI, deps: TracerDeps = {}) {
     inputTokens += input
     outputTokens += output
     if (callCost > 0) cost += callCost
-    // Same mapping Pi uses for a turn's outcome.
+    // Pi's turn outcome mapping, except that a cancelled request is "aborted".
     if (turn) turn.outcome = failed ? "error" : aborted ? "aborted" : "completed"
     // The latest attempt decides the prompt's status.
     run.errorType = failed ? "ProviderError" : undefined
