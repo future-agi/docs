@@ -12,6 +12,9 @@
 #   FI_BASE_URL                default https://api.futureagi.com (traces go to $FI_BASE_URL/tracer/v1/traces)
 #   FI_PROJECT_NAME            default gemini-cli
 #   GEMINI_OTLP_LISTEN         default 127.0.0.1:4318 (Gemini CLI's otlpEndpoint must match)
+#
+# The collector's own metrics endpoint (port 8888) is turned off at the end of
+# this file, so it does not collide with Jupyter or another collector.
 
 receivers:
   otlp:
@@ -53,11 +56,18 @@ processors:
           # messages as the span's input and output in Future AGI.
           - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil
           - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil
+      - context: spanevent
+        statements:
+          # Gemini CLI records every error as an "exception" event. Its stack
+          # trace lists file:// paths of your Gemini CLI install (home
+          # directory, OS user name) and no content, so it is dropped even
+          # with the content opt-in.
+          - delete_key(attributes, "exception.stacktrace")
 
   # Privacy default. With logPrompts false Gemini CLI already leaves out the
   # message attributes; this also drops the system prompt (it embeds your
-  # GEMINI.md memory) and the tool schemas. Remove this processor from the
-  # pipeline below only to opt in to content.
+  # GEMINI.md memory), the tool schemas and error text. Remove this processor
+  # from the pipeline below only to opt in to content.
   transform/strip-content:
     error_mode: ignore
     trace_statements:
@@ -69,6 +79,20 @@ processors:
           - delete_key(attributes, "output.value")
           - delete_key(attributes, "gen_ai.system_instructions")
           - delete_key(attributes, "gen_ai.tool.definitions")
+          # The status message of a failed span is the raw error text: an API
+          # error body, or for a tool that throws, file paths and command
+          # output. Keep the ERROR status, replace the text (refined from the
+          # exception event below).
+          - set(status.message, "error") where status.code == STATUS_CODE_ERROR
+          - set(status.message, "") where status.code != STATUS_CODE_ERROR
+      - context: spanevent
+        statements:
+          # Status message = the error class or code (ApiError, ENOENT, ...),
+          # plus the HTTP status for Gemini API errors ("ApiError HTTP 429").
+          - set(span.status.message, attributes["exception.type"]) where name == "exception" and span.status.code == STATUS_CODE_ERROR and IsMatch(attributes["exception.type"], "^[A-Za-z0-9_.:-]{1,80}$")
+          - set(span.status.message, Concat([attributes["exception.type"], ExtractPatterns(attributes["exception.message"], "\"code\\\\?\":\\s*(?P<code>[1-5][0-9][0-9])")["code"]], " HTTP ")) where name == "exception" and span.status.code == STATUS_CODE_ERROR and attributes["exception.type"] == "ApiError" and IsMatch(attributes["exception.message"], "\"code\\\\?\":\\s*[1-5][0-9][0-9]")
+          - delete_key(attributes, "exception.type") where not IsMatch(attributes["exception.type"], "^[A-Za-z0-9_.:-]{1,80}$")
+          - delete_key(attributes, "exception.message")
 
   batch:
     timeout: 2s
@@ -85,6 +109,9 @@ exporters:
   nop: {}
 
 service:
+  telemetry:
+    metrics:
+      level: none
   pipelines:
     traces:
       receivers: [otlp]

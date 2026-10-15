@@ -2,9 +2,13 @@
 
 The input is spans recorded from Gemini CLI 0.64.0 with content capture on
 (``logPrompts: true``), with the content values replaced by a marker
-(tests/fixtures/gemini-cli-0.64.0-traces.json). The Future AGI exporter is
-swapped for a file exporter (tests/collector-test-overrides.yaml); everything
-else is the shipped config.
+(tests/fixtures/gemini-cli-0.64.0-traces.json). Two error spans are appended:
+an ``llm_call`` that failed with a Gemini API error (status message, exception
+event and stack trace from a real 0.64.0 run, install path rewritten to
+/Users/fixture-user) and a synthetic ``tool_call`` that threw an fs error with
+a local path in its message. The Future AGI exporter is swapped for a file
+exporter (tests/collector-test-overrides.yaml); everything else is the shipped
+config.
 
     OTELCOL_BIN=/path/to/otelcol-contrib python3 -m unittest discover -s tests
 
@@ -33,12 +37,24 @@ MARKER = "FIXTURE-CONTENT-MARKER"
 LOCAL_IDENTITY = ("process.command_args", "process.command", "process.executable.path",
                   "process.executable.name", "process.owner", "host.name", "host.id")
 OTELCOL = os.environ.get("OTELCOL_BIN") or shutil.which("otelcol-contrib")
+CONTENT_KEYS = ("gen_ai.input.messages", "gen_ai.output.messages", "input.value",
+                "output.value", "gen_ai.system_instructions", "gen_ai.tool.definitions")
 
 
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+class ShippedConfigTest(unittest.TestCase):
+    def test_collector_metrics_off_and_uncompressed(self):
+        text = CONFIG.read_text()
+        # Port 8888 (the collector's own metrics) collides with Jupyter or a
+        # second collector; Future AGI answers gzip with HTTP 400.
+        self.assertRegex(text, r"(?m)^service:\n  telemetry:\n    metrics:\n      level: none$")
+        self.assertRegex(text, r"(?m)^    compression: none$")
+        self.assertNotIn("level: none", OVERRIDES.read_text())
 
 
 def attrs(items):
@@ -94,13 +110,19 @@ class CollectorTest(unittest.TestCase):
                         result.append((resource, span["name"], attrs(span["attributes"])))
         return result
 
+    def raw_spans(self, requests):
+        return {span["spanId"]: span for req in requests for rs in req["resourceSpans"]
+                for ss in rs["scopeSpans"] for span in ss["spans"]}
+
     def test_default_strips_content_and_labels_kinds(self):
         text, requests = self.run_collector()
         self.assertNotIn(MARKER, text)
         self.assertNotIn("/Users/", text)
         self.assertNotIn("fixture-user", text)
+        self.assertNotIn("file://", text)
+        self.assertNotIn("NOT_FOUND", text)  # the API error body
         spans = self.spans(requests)
-        self.assertEqual(len(spans), 5)
+        self.assertEqual(len(spans), 7)
         kinds = {}
         for resource, name, a in spans:
             self.assertEqual(resource["project_name"], "gemini-cli-test")
@@ -108,17 +130,30 @@ class CollectorTest(unittest.TestCase):
                 self.assertNotIn(key, resource)
             self.assertEqual(resource["host.arch"], "arm64")
             self.assertEqual(resource["process.runtime.name"], "nodejs")
-            for key in ("gen_ai.input.messages", "gen_ai.output.messages", "input.value",
-                        "output.value", "gen_ai.system_instructions", "gen_ai.tool.definitions"):
+            for key in CONTENT_KEYS:
                 self.assertNotIn(key, a)
             self.assertEqual(a["gen_ai.conversation.id"], "fixture-session-0001")
             self.assertEqual(a["session.id"], "fixture-session-0001")
             kinds.setdefault(name, set()).add(a.get("gen_ai.span.kind"))
         self.assertEqual(kinds, {"llm_call": {"LLM"}, "list_directory": {"TOOL"},
                                  "read_file": {"TOOL"}, "schedule_tool_calls": {"CHAIN"}})
-        llm = [a for _, name, a in spans if name == "llm_call"]
-        self.assertTrue(all(a["gen_ai.request.model"] == "gemini-3.8-flash" for a in llm))
-        self.assertTrue(all(int(a["gen_ai.usage.input_tokens"]) > 0 for a in llm))
+        raw = self.raw_spans(requests)
+        ok_llm = [attrs(s["attributes"]) for s in raw.values()
+                  if s["name"] == "llm_call" and s["status"].get("code") == 1]
+        self.assertEqual(len(ok_llm), 2)
+        self.assertTrue(all(a["gen_ai.request.model"] == "gemini-3.8-flash" for a in ok_llm))
+        self.assertTrue(all(int(a["gen_ai.usage.input_tokens"]) > 0 for a in ok_llm))
+        # Errors stay ERROR; only the error class (plus the HTTP status of a
+        # Gemini API error) is kept, not the message or the stack trace.
+        api_error, tool_error = raw["9b8a7c6d5e4f3a21"], raw["9b8a7c6d5e4f3a22"]
+        self.assertEqual(api_error["status"], {"code": 2, "message": "ApiError HTTP 404"})
+        self.assertEqual(tool_error["status"], {"code": 2, "message": "ENOENT"})
+        for span, error_type in ((api_error, "ApiError"), (tool_error, "ENOENT")):
+            self.assertEqual([(e["name"], attrs(e["attributes"])) for e in span["events"]],
+                             [("exception", {"exception.type": error_type})])
+        for span in raw.values():
+            if span["status"].get("code") != 2:
+                self.assertFalse(span["status"].get("message"))
 
     def test_opt_in_pipeline_keeps_messages(self):
         # The documented opt-in: drop transform/strip-content from the pipeline.
@@ -128,10 +163,24 @@ class CollectorTest(unittest.TestCase):
         self.assertIn(MARKER + " gen_ai.output.messages", text)
         for _, _, a in self.spans(requests):
             self.assertIn("gen_ai.input.messages", a["input.value"])
-            self.assertIn("gen_ai.output.messages", a["output.value"])
-        # The command line, local paths, user and machine name are removed either way.
+            if "gen_ai.output.messages" in a:  # a failed model call has no output
+                self.assertIn("gen_ai.output.messages", a["output.value"])
+        # Error text is content: kept with the opt-in. Stack traces are not
+        # (install paths only), with or without it.
+        raw = self.raw_spans(requests)
+        self.assertIn("NOT_FOUND", raw["9b8a7c6d5e4f3a21"]["status"]["message"])
+        self.assertIn("FIXTURE-CONTENT-MARKER.txt", raw["9b8a7c6d5e4f3a22"]["status"]["message"])
+        event = attrs(raw["9b8a7c6d5e4f3a22"]["events"][0]["attributes"])
+        self.assertEqual(sorted(event), ["exception.message", "exception.type"])
+        self.assertNotIn("file://", text)
+        # The command line, executable paths, user and machine name are removed
+        # either way. (The opted-in tool error message above carries a path.)
         self.assertNotIn("prompt on the command line", text)
-        self.assertNotIn("fixture-user", text)
+        self.assertNotIn("fixture-users-laptop", text)
+        self.assertNotIn(".nvm", text)
+        for resource, _, _ in self.spans(requests):
+            for key in LOCAL_IDENTITY:
+                self.assertNotIn(key, resource)
         # The opt-in exports the system prompt and tool schemas (documented).
         self.assertIn(MARKER + " gen_ai.system_instructions", text)
 
