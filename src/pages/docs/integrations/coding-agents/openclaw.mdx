@@ -1,16 +1,16 @@
 ---
 title: "OpenClaw agent tracing with Future AGI"
-description: "Trace OpenClaw agent turns in Future AGI with OpenClaw's official diagnostics-otel plugin: one trace per turn with model calls, tokens, tool executions and errors. Configuration only, no Future AGI code. Prompt and tool content stay off by default."
+description: "Trace OpenClaw agent runs in Future AGI with OpenClaw's official diagnostics-otel plugin: one trace per agent run with model calls, tokens, tool executions and errors. Configuration only, no Future AGI code. Prompt and tool content stay off by default."
 ---
 
 ## About
 
 OpenClaw ships an official OpenTelemetry exporter, the [`diagnostics-otel` plugin](https://docs.openclaw.ai/gateway/opentelemetry). It exports OTLP/HTTP traces to any endpoint with any headers, so it can send straight to Future AGI. This page is configuration only: no Future AGI plugin, no collector.
 
-Each agent turn becomes one trace:
+Each agent run becomes one trace. A turn that succeeds on the first model request is one run:
 
 ```
-openclaw.harness.run              one agent turn: outcome, provider, model, agent
+openclaw.harness.run              one agent run: outcome, provider, model, agent
 └── openclaw.run                  run lifecycle
     ├── openclaw.context.assembled    prompt and history sizes, token budget (no text)
     ├── openclaw.model.call           one model request: model, tokens, cache tokens, time to first byte
@@ -18,6 +18,8 @@ openclaw.harness.run              one agent turn: outcome, provider, model, agen
     ├── openclaw.tool.execution
     └── openclaw.model.call
 ```
+
+When a model request fails, OpenClaw retries it (up to 8 attempts) and each attempt is its own trace, so one failed turn can show up as several traces. See [Failures and retries](#failures-and-retries).
 
 This is not the same as:
 
@@ -27,8 +29,8 @@ This is not the same as:
 
 | | |
 | --- | --- |
-| Tested with | OpenClaw 2026.10.3 and `@openclaw/diagnostics-otel` 2026.10.3 (macOS), Gateway and `openclaw agent --local` |
-| OpenClaw docs used | [OpenTelemetry export](https://docs.openclaw.ai/gateway/opentelemetry), [setup](https://docs.openclaw.ai/gateway/opentelemetry/setup), [configuration](https://docs.openclaw.ai/gateway/opentelemetry/configuration), [privacy and trace context](https://docs.openclaw.ai/gateway/opentelemetry/privacy-and-trace-context), [environment](https://docs.openclaw.ai/help/environment), read 2026-10-14 |
+| Tested with | OpenClaw 2026.10.3 and `@openclaw/diagnostics-otel` 2026.10.3 (macOS), through `openclaw agent --local` and through a Gateway (`openclaw agent` sent to it). Channel, TUI, Control UI and cron turns were not run. |
+| OpenClaw docs used | [OpenTelemetry export](https://docs.openclaw.ai/gateway/opentelemetry), [setup](https://docs.openclaw.ai/gateway/opentelemetry/setup), [configuration](https://docs.openclaw.ai/gateway/opentelemetry/configuration), [privacy and trace context](https://docs.openclaw.ai/gateway/opentelemetry/privacy-and-trace-context), [spans and events](https://docs.openclaw.ai/gateway/opentelemetry/spans-and-events), [environment](https://docs.openclaw.ai/help/environment), read 2026-10-14 |
 | Source | [examples/coding-agents/openclaw](https://github.com/future-agi/docs/tree/main/examples/coding-agents/openclaw) |
 
 ## 1. Install the plugin
@@ -37,20 +39,23 @@ This is not the same as:
 openclaw plugins install clawhub:@openclaw/diagnostics-otel
 ```
 
+`openclaw plugins install` enables the plugin. If you use a `plugins.allow` list, it adds `diagnostics-otel` to it. Do not create an allow list just for this: it disables every other plugin.
+
 ## 2. Point it at Future AGI
 
-Apply the example patch. It enables the plugin and sets the `diagnostics.otel` block:
+Download the example patch and apply it. It sets the `diagnostics.otel` block and one environment variable:
 
 ```bash
-git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
-openclaw config patch --file fi-docs/examples/coding-agents/openclaw/futureagi.patch.json5
+curl -fsSLO https://raw.githubusercontent.com/future-agi/docs/main/examples/coding-agents/openclaw/futureagi.patch.json5
+openclaw config patch --file futureagi.patch.json5
 ```
 
 ```json5
 {
-  plugins: {
-    allow: ["diagnostics-otel"],
-    entries: { "diagnostics-otel": { enabled: true } },
+  env: {
+    vars: {
+      OTEL_NODE_RESOURCE_DETECTORS: "env",
+    },
   },
   diagnostics: {
     enabled: true,
@@ -74,7 +79,7 @@ openclaw config patch --file fi-docs/examples/coding-agents/openclaw/futureagi.p
 
 - `tracesEndpoint` is an exact URL: OpenClaw does not append a path to it. For a self-hosted Future AGI, replace the host and keep `/tracer/v1/traces`.
 - `metrics` and `logs` are off because Future AGI ingests traces only.
-- `plugins.allow` is the setup from OpenClaw's docs. If you already have an `allow` list, add `diagnostics-otel` to it instead (the patch replaces arrays).
+- `OTEL_NODE_RESOURCE_DETECTORS=env` is required for the privacy default. Without it, OpenClaw's OpenTelemetry SDK also exports the host name, host id, OS user name, the executable and script paths, and the full command line, which for `openclaw agent --local -m "..."` contains the prompt. The patch sets it in OpenClaw's config `env` block, which reaches the Gateway and the CLI. That block does not override: if the variable is already set in the process environment or a `.env` file, that value wins, so keep it `env` there too.
 
 Then put the keys and the project name in `~/.openclaw/.env` (OpenClaw's global env file, read by the Gateway and the CLI; see `env.example`):
 
@@ -82,10 +87,9 @@ Then put the keys and the project name in `~/.openclaw/.env` (OpenClaw's global 
 FI_API_KEY=your-futureagi-api-key
 FI_SECRET_KEY=your-futureagi-secret-key
 OTEL_RESOURCE_ATTRIBUTES=project_name=openclaw
-OTEL_NODE_RESOURCE_DETECTORS=env
 ```
 
-`OTEL_RESOURCE_ATTRIBUTES` sets the Future AGI project. `OTEL_NODE_RESOURCE_DETECTORS=env` turns off Node's process detector, which otherwise exports the full command line; for `openclaw agent --local -m "..."` that contains the prompt.
+`OTEL_RESOURCE_ATTRIBUTES` sets the Future AGI project.
 
 Check the config and restart the Gateway:
 
@@ -96,17 +100,20 @@ openclaw gateway restart
 
 ## 3. Run a turn
 
-Send one message that uses a tool, from a channel, the TUI, the Control UI, or the CLI:
+Send one message that uses a tool:
 
 ```bash
 openclaw agent -m "List the files in this folder and read README.md"
 ```
 
-Open **Observe** in Future AGI and select the project (`openclaw` above). The turn appears as a trace named **openclaw.harness.run**; open it for the model calls and tool executions. The Gateway batches spans, so allow a few seconds.
+Open **Observe** in Future AGI and select the project (`openclaw` above). The run appears as a trace named **openclaw.harness.run**; open it for the model calls and tool executions. The Gateway batches spans, so allow a few seconds.
 
-`run_e2e.sh` in the examples folder installs the plugin, applies the patch and runs one turn with `OPENCLAW_HOME` pointed at a temporary directory, so your own `~/.openclaw` and Gateway are untouched. Set `GATEWAY=1` to dispatch through a Gateway instead of `--local`:
+We tested CLI turns, with `--local` and through a Gateway. Turns from a channel, the TUI or the Control UI go through the same Gateway exporter but were not run. OpenClaw roots isolated cron agent turns at `openclaw.message.processed`, with the harness spans under it.
+
+`run_e2e.sh` in the examples folder installs the plugin, applies the patch and runs one turn with `OPENCLAW_HOME` pointed at a temporary directory, so your own `~/.openclaw` and Gateway are untouched. It deletes that directory on exit, because it holds your keys in `.openclaw/.env` and the session transcript (set `KEEP_WORK=1` to keep it). Set `GATEWAY=1` to dispatch through a Gateway instead of `--local`:
 
 ```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
 FI_API_KEY=... FI_SECRET_KEY=... \
 MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 MODEL_API_KEY=... MODEL_ID=... \
   fi-docs/examples/coding-agents/openclaw/run_e2e.sh
@@ -116,25 +123,32 @@ MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 MODEL_API_KEY=... MODE
 
 | OpenClaw span | Future AGI span kind | Fields |
 | --- | --- | --- |
-| `openclaw.harness.run` | root | `openclaw.outcome`, provider, model, agent, items started/completed |
-| `openclaw.run` | | outcome, provider, model, trigger, `openclaw.errorCategory` on failure |
+| `openclaw.harness.run` | | Trace root. `openclaw.outcome`, provider, model, agent, items started/completed; `openclaw.error` on failure |
+| `openclaw.run` | | outcome, provider, model, trigger; `openclaw.errorCategory` and `openclaw.error` on failure |
 | `openclaw.context.assembled` | | message count, history and prompt sizes in characters, system prompt size, token budget |
-| `openclaw.model.call` | `LLM` | `gen_ai.request.model`, `gen_ai.system` (the provider id), `gen_ai.usage.input_tokens` / `output_tokens`, cache read and write tokens, reasoning tokens, request and response bytes, time to first byte, prompt component sizes (no text), error category on failure |
-| `openclaw.tool.execution` | `TOOL` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, tool source and owner, status `ERROR` with `openclaw.errorCategory` when the tool fails, `openclaw.outcome=blocked` when policy denies it |
+| `openclaw.model.call` | `LLM` | `gen_ai.request.model`, `gen_ai.system` (the provider id), `gen_ai.usage.input_tokens` / `output_tokens`, cache read and write tokens, reasoning tokens, request and response bytes, time to first byte, prompt component sizes (no text); status `ERROR` with the error category when the request fails |
+| `openclaw.tool.execution` | `TOOL` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, tool source and owner, status `ERROR` with `openclaw.errorCategory` when the tool fails (including a tool that returns an error, such as a missing file), `openclaw.outcome=blocked` when policy denies it |
 | `openclaw.exec` | | shell exec target, mode, exit code, command length (no command text). From OpenClaw's span catalog; not exercised in our test |
 
 OpenClaw also exports, as separate traces:
 
-- `openclaw.model.usage`: run-level accounting for the turn (total tokens, provider, model, channel). Its token counts repeat the `openclaw.model.call` spans, so do not add the two together.
+- `openclaw.model.usage`: run-level accounting for a Gateway run (total tokens, provider, model, channel); `openclaw agent --local` runs did not export it in our test. Its token counts repeat the `openclaw.model.call` spans. Future AGI stores it as an LLM span too, so project-level token and LLM-call totals count each Gateway run twice. For per-call numbers, filter by span name `openclaw.model.call`.
 - `openclaw.gateway.rpc.*`: Gateway request handling phases.
 - `openclaw.message.processed` and `openclaw.message.delivery` for channel messages, `openclaw.webhook.*` for webhooks.
 - `openclaw.diagnostic.phase`: process startup phases, one short trace each, every time a Gateway or `openclaw agent --local` starts.
 
 The full span catalog is in OpenClaw's [spans and events](https://docs.openclaw.ai/gateway/opentelemetry/spans-and-events) page.
 
+### Failures and retries
+
+- A failed model request is marked `ERROR` on its `openclaw.model.call` span. The run's `openclaw.harness.run` and `openclaw.run` can still say `openclaw.outcome=completed` with no error status.
+- OpenClaw retries transient model failures, up to 8 attempts, and each attempt is its own trace. A turn whose model is unreachable shows as 8 traces whose roots look successful.
+- To find failed turns, filter for `openclaw.model.call` or `openclaw.tool.execution` spans with status `ERROR`, not by the status of the root.
+
 ## What is not available
 
-- **Session grouping.** OpenClaw never exports session ids or session keys, so turns are not grouped into Future AGI sessions.
+- **Session grouping.** OpenClaw never exports session ids or session keys, so runs are not grouped into Future AGI sessions.
+- **One trace per user turn when a model request is retried.** Each attempt is a separate trace (see above).
 - **`openclaw agent exec` runs.** They run embedded in the CLI and do not start the exporter. Gateway runs and `openclaw agent --local` do export.
 - **Cost.** `openclaw.model.call` carries tokens, not cost; OpenClaw's cost estimate is exported as a metric, which Future AGI does not ingest.
 - **The system prompt**, even with content capture on.
@@ -142,9 +156,11 @@ The full span catalog is in OpenClaw's [spans and events](https://docs.openclaw.
 
 ## Privacy
 
-With `captureContent: false` (the default), spans carry identifiers, model and provider names, token counts, sizes, durations and outcomes. OpenClaw states they never include prompt text, response text, tool inputs, tool outputs, skill file paths or session keys. With `OTEL_NODE_RESOURCE_DETECTORS=env`, the command line is not exported either.
+With `captureContent: false` (the default), spans carry identifiers, model and provider names, token counts, sizes, durations and outcomes. OpenClaw states they never include prompt text, response text, tool inputs, tool outputs, skill file paths or session keys. With `OTEL_NODE_RESOURCE_DETECTORS=env` (set by the patch), the host name, host id, OS user name, executable paths and command line are not exported either.
 
-To include content, set `captureContent: true` in `diagnostics.otel`. Model spans then carry bounded, redacted input and output messages (shown as the span's input and output in Future AGI) and tool spans carry `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` (also as `openclaw.content.tool_input` / `tool_output`). Tool definitions are included; the system prompt stays excluded.
+One exception: when a run fails, `openclaw.run` and `openclaw.harness.run` carry OpenClaw's error message (`openclaw.error` and the span status message, up to 4 KB, with secrets redacted) even with content capture off. It can contain file paths, URLs or provider error text. Channel `openclaw.message.processed` and `openclaw.webhook.error` spans carry their error text the same way. OpenClaw has no setting to turn this off.
+
+To include content, set `captureContent: true` in `diagnostics.otel`. Model spans then carry bounded, redacted input and output messages (shown as the span's input and output in Future AGI) and tool spans carry `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` (also as `openclaw.content.tool_input` / `tool_output`), which include file paths, command text and file contents. Tool definitions are included; the system prompt stays excluded.
 
 ## Troubleshooting
 
@@ -156,6 +172,10 @@ To include content, set `captureContent: true` in `diagnostics.otel`. Model span
 
 **Traces do not show up in the expected project.** Future AGI files traces under the `project_name` resource attribute. Check that `OTEL_RESOURCE_ATTRIBUTES=project_name=...` reaches the exporting process: set it in `~/.openclaw/.env` or the Gateway's service environment, then restart the Gateway.
 
-**Many short `openclaw.diagnostic.phase` traces.** These are startup phases; filter the trace list by name `openclaw.harness.run` to see turns only.
+**Traces show your host name, user name or command line.** `OTEL_NODE_RESOURCE_DETECTORS` is set to something other than `env` in the exporting process's environment or a `.env` file, which wins over the patch. Set it to `env` there and restart the Gateway.
 
-**The turn's root spans are missing.** `openclaw.harness.run` and `openclaw.run` end after the reply is delivered. If a Gateway or CLI process is killed right after a turn, they may not be flushed.
+**A failed turn shows as several successful traces.** Each model retry is its own trace and the roots can say `completed`. Look for `openclaw.model.call` spans with status `ERROR` (see [Failures and retries](#failures-and-retries)).
+
+**Many short `openclaw.diagnostic.phase` traces.** These are startup phases; filter the trace list by name `openclaw.harness.run` to see agent runs only. Cron turns are rooted at `openclaw.message.processed` instead.
+
+**The run's root spans are missing.** `openclaw.harness.run` and `openclaw.run` end after the reply is delivered. If a Gateway or CLI process is killed right after a turn, they may not be flushed.
