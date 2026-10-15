@@ -122,6 +122,39 @@ class CursorAdapterTest(unittest.TestCase):
         # An empty conversation is not exported.
         self.assertEqual(replay(cursor, config("cursor", self.tmp.name), [record]), [])
 
+    def test_real_cursor_3_24_18_agent_turn(self):
+        # One real IDE agent turn on the Hobby plan (beforeSubmitPrompt, thoughts, Read, Grep, response, stop).
+        records = load_jsonl(FIXTURES / "cursor" / "real-3.24.18-turn.jsonl")
+        spans = replay(cursor, config("cursor", self.tmp.name), records)
+        sid = records[0]["payload"]["conversation_id"]
+        gen = records[0]["payload"]["generation_id"]
+        self.assertEqual({s["traceId"] for s in spans}, {emit.trace_id("cursor", sid)})
+        turn_id = emit.span_id("cursor", sid, TURN, gen)
+        turns = {s["spanId"] for s in spans if attrs(s)["coding_agent.scope"] == "turn"}
+        self.assertEqual(turns, {turn_id}, "suffixed generation ids must not open extra turns")
+        children = {}
+        for span in spans:
+            if span.get("parentSpanId") == turn_id:
+                children[span["spanId"]] = span["name"]
+        self.assertEqual(sorted(children.values()), ["Agent response", "Agent thought", "Agent thought", "Grep", "Read"])
+        response = latest(spans, [k for k, v in children.items() if v == "Agent response"][0])
+        a = attrs(response)
+        self.assertEqual((a["llm.token_count.prompt"], a["llm.token_count.completion"], a["llm.token_count.total"]),
+                         ("38779", "306", "39085"))
+        self.assertEqual(a["llm.token_count.prompt_details.cache_read"], "24192")
+        self.assertEqual(a["llm.model_name"], "grok-4.6")
+        read = [s for s in spans if s["name"] == "Read"][0]
+        self.assertEqual(attrs(read)["gen_ai.tool.call.id"], "call-f3e41504-16cd-4345-9614-dccb061cbdd4-1")
+        self.assertEqual(attrs(read)["cursor.tool.provider_call_id"], "fc_cdbfcc58-3e58-9ca2-92f0-366509226caf_1")
+        self.assertFalse(any("\n" in str(v) for s in spans for v in attrs(s).values()))
+        turn = latest(spans, turn_id)
+        self.assertEqual(attrs(turn)["cursor.usage.input_tokens"], "38779")
+        self.assertNotIn("llm.token_count.prompt", attrs(turn))
+        encoded = json.dumps(spans)
+        for marker in ("PROMPT_MARKER_REAL", "THOUGHT_MARKER_REAL", "RESPONSE_MARKER_REAL",
+                       "TOOL_OUTPUT_MARKER_REAL") + NEVER + DEFAULT_ONLY:
+            self.assertNotIn(marker, encoded, marker)
+
     def test_stdout_contract(self):
         self.assertEqual(json.loads(cursor.respond("beforeSubmitPrompt", {})), {"continue": True})
         self.assertEqual(json.loads(cursor.respond("stop", {})), {})

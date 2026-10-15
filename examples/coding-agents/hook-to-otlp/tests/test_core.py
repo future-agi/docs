@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import time
 import types
@@ -104,6 +105,84 @@ class CoreTest(unittest.TestCase):
         })
         self.assertEqual(self.run_hooks(adapter, [(0, "s"), (10, "e")]), [])
         self.assertEqual(list(self.cfg.state_dir.glob("*.json")), [])
+
+    def test_keyless_turns_get_per_session_keys(self):
+        # Apps without turn ids (Kiro, Antigravity): START mints turn-N, END/UPDATE use the open turn.
+        adapter = scripted({
+            "prompt": [SpanEvent(START, TURN, "S", input="P")],
+            "tool": [SpanEvent(END, TOOL, "S", name="Shell", duration_ms=100)],
+            "reply": [SpanEvent(UPDATE, TURN, "S", output="R")],
+            "stop": [SpanEvent(END, TURN, "S", status=OK)],
+        })
+        spans = self.run_hooks(adapter, [(0, "prompt"), (500, "tool"), (600, "reply"), (700, "stop"),
+                                         (800, "prompt"), (900, "stop"), (950, "stop")])
+        turn1 = emit.span_id("fake", "S", TURN, "turn-1")
+        turn2 = emit.span_id("fake", "S", TURN, "turn-2")
+        tool = [s for s in spans if s["name"] == "Shell"][0]
+        self.assertEqual(tool["parentSpanId"], turn1)
+        t1 = latest(spans, turn1)
+        self.assertEqual(int(t1["endTimeUnixNano"]) - int(t1["startTimeUnixNano"]), 700 * MS)
+        self.assertEqual(attrs(t1)["coding_agent.turn.id"], "turn-1")
+        t2 = latest(spans, turn2)
+        self.assertEqual(int(t2["endTimeUnixNano"]) - int(t2["startTimeUnixNano"]), 100 * MS)
+        # The extra stop has no open turn and is ignored.
+        self.assertEqual(len([s for s in spans if s["spanId"] in (turn1, turn2)]), 2)
+
+    def test_keyless_tool_end_pairs_with_oldest_start_of_same_name(self):
+        # Apps whose pre/post tool hooks carry no call id: FIFO by tool name.
+        adapter = scripted({
+            "pre-read": [SpanEvent(START, TOOL, "S", turn_id="g", name="Read")],
+            "pre-shell": [SpanEvent(START, TOOL, "S", turn_id="g", name="Shell")],
+            "post-read": [SpanEvent(END, TOOL, "S", turn_id="g", name="Read")],
+            "post-shell": [SpanEvent(END, TOOL, "S", turn_id="g", name="Shell", status=ERROR)],
+        })
+        spans = self.run_hooks(adapter, [(0, "pre-read"), (100, "pre-read"), (200, "pre-shell"),
+                                         (300, "post-read"), (400, "post-shell"), (450, "post-read")])
+        reads = [s for s in spans if s["name"] == "Read"]
+        self.assertEqual([int(s["endTimeUnixNano"]) - int(s["startTimeUnixNano"]) for s in reads],
+                         [300 * MS, 350 * MS])
+        shell = [s for s in spans if s["name"] == "Shell"][0]
+        self.assertEqual(int(shell["endTimeUnixNano"]) - int(shell["startTimeUnixNano"]), 200 * MS)
+        self.assertEqual(shell["status"]["code"], 2)
+        self.assertNotIn("gen_ai.tool.call.id", attrs(shell))
+
+    def test_turn_start_closes_other_open_turn_and_late_end_corrects_it(self):
+        adapter = scripted({
+            "t1": [SpanEvent(START, TURN, "S", key="g1")],
+            "tool1": [SpanEvent(START, TOOL, "S", key="c1", turn_id="g1", name="Shell")],
+            "t2": [SpanEvent(START, TURN, "S", key="g2")],
+            "end1": [SpanEvent(END, TURN, "S", key="g1", status=OK)],
+            "end2": [SpanEvent(END, TURN, "S", key="g2")],
+        })
+        first = self.run_hooks(adapter, [(0, "t1"), (100, "tool1"), (500, "t2")])
+        g1 = emit.span_id("fake", "S", TURN, "g1")
+        incomplete = latest(first, g1)
+        self.assertTrue(attrs(incomplete)["coding_agent.incomplete"])
+        tool = [s for s in first if s["name"] == "Shell"][0]
+        self.assertTrue(attrs(tool)["coding_agent.incomplete"], "children of the closed turn are closed too")
+        # A late end for g1 re-sends it complete, same id and start, without the incomplete flag.
+        late = self.run_hooks(adapter, [(600, "end1")])
+        corrected = latest(late, g1)
+        self.assertEqual(corrected["startTimeUnixNano"], incomplete["startTimeUnixNano"])
+        self.assertNotIn("coding_agent.incomplete", attrs(corrected))
+        self.assertEqual(corrected["status"]["code"], 1)
+        # g2 is still the open turn.
+        rest = self.run_hooks(adapter, [(900, "end2")])
+        g2 = latest(rest, emit.span_id("fake", "S", TURN, "g2"))
+        self.assertEqual(int(g2["endTimeUnixNano"]) - int(g2["startTimeUnixNano"]), 400 * MS)
+
+    def test_empty_response_prints_nothing(self):
+        module = types.ModuleType("adapters.fake_quiet")
+        module.APP, module.DISPLAY_NAME = "fake_quiet", "Quiet"
+        module.parse = lambda event, payload: []
+        module.respond = lambda event, payload: ""
+        sys.modules["adapters.fake_quiet"] = module
+        try:
+            self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "")
+            module.respond = lambda event, payload: None
+            self.assertEqual(emit.run(["fake_quiet", "UserPromptSubmit"], "{}", {}), "{}")
+        finally:
+            del sys.modules["adapters.fake_quiet"]
 
     def test_end_without_start_uses_vendor_duration(self):
         adapter = scripted({"post": [SpanEvent(END, TOOL, "S", key="c", name="Read", duration_ms=250)]})

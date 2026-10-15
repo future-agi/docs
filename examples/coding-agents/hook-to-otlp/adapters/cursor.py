@@ -22,10 +22,24 @@ whether Cursor may run something):
 
 Never exported: ``user_email``, ``transcript_path`` (never opened),
 ``workspace_roots``, ``cwd``, attachment paths.
+
+Observed on real Cursor 3.24.18 payloads (not in the docs):
+
+- ``afterAgentResponse`` and ``stop`` carry ``input_tokens``, ``output_tokens``,
+  ``cache_read_tokens``, ``cache_write_tokens`` for the turn. They go on the
+  "Agent response" LLM span as standard token counts (the turn keeps them as
+  ``cursor.usage.*`` so trace totals are not counted twice).
+- ``tool_use_id`` can be two ids joined by a newline (Cursor's ``call-...``
+  id, then the provider's function-call id). The first line is the call id;
+  the second is kept as ``cursor.tool.provider_call_id``.
+- ``afterAgentThought`` fires twice per thinking block, once with a
+  ``generation_id`` suffixed ``-<n>-<4 chars>``. Suffixes are stripped and the
+  pair maps to one span id.
 """
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, Dict, List, Optional
 
 from adapters.base import (
@@ -78,6 +92,52 @@ def _model_params(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_SUFFIXED_GENERATION = re.compile(
+    r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-\d+-[a-z0-9]{4}$")
+
+
+def _generation(payload: Dict[str, Any]) -> Optional[str]:
+    """The turn id: ``generation_id`` without Cursor's per-phase suffix."""
+    gen = first(payload, "generation_id")
+    if gen is None:
+        return None
+    gen = str(gen)
+    match = _SUFFIXED_GENERATION.match(gen)
+    return match.group(1) if match else gen
+
+
+def _usage(payload: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    tokens_in = payload.get("input_tokens")
+    tokens_out = payload.get("output_tokens")
+    if not isinstance(tokens_in, int) and not isinstance(tokens_out, int):
+        return {}
+    usage: Dict[str, Any] = {}
+    if prefix == "llm":
+        usage = {
+            "llm.token_count.prompt": tokens_in,
+            "llm.token_count.completion": tokens_out,
+            "llm.token_count.prompt_details.cache_read": payload.get("cache_read_tokens"),
+            "llm.token_count.prompt_details.cache_write": payload.get("cache_write_tokens"),
+        }
+        if isinstance(tokens_in, int) and isinstance(tokens_out, int):
+            usage["llm.token_count.total"] = tokens_in + tokens_out
+    else:
+        for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+            usage[f"cursor.usage.{key}"] = payload.get(key)
+    return compact(usage)
+
+
+def _tool_call_ids(payload: Dict[str, Any]) -> "tuple[str, Optional[str]]":
+    """(call id, provider call id) from a possibly newline-joined ``tool_use_id``."""
+    raw = first(payload, "tool_use_id")
+    if raw is None:
+        return "", None
+    parts = [part.strip() for part in str(raw).splitlines() if part.strip()]
+    if not parts:
+        return "", None
+    return parts[0], (parts[1] if len(parts) > 1 else None)
+
+
 def _digest(*parts: Any) -> str:
     raw = "\x1f".join("" if p is None else str(p) for p in parts)
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
@@ -88,8 +148,7 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
     if not session:
         return []  # R-01: never invent a session id
     sid = str(session)
-    gen = first(payload, "generation_id")
-    turn = str(gen) if gen is not None else None
+    turn = _generation(payload)
     model = _model(payload)
 
     if event == "sessionStart":
@@ -142,6 +201,7 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
                 "cursor.stop.status": status,
                 "cursor.loop_count": payload.get("loop_count"),
                 **_model_params(payload),
+                **_usage(payload, "turn"),
             }),
         )]
 
@@ -149,9 +209,10 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         tool_name = str(first(payload, "tool_name") or "tool")
         failed = event == "postToolUseFailure"
         failure_type = payload.get("failure_type") if failed else None
+        call_id, provider_call_id = _tool_call_ids(payload)
         return [SpanEvent(
             END, TOOL, sid,
-            key=str(first(payload, "tool_use_id") or ""),
+            key=call_id,
             turn_id=turn,
             name=tool_name,
             duration_ms=number(payload.get("duration")),
@@ -162,6 +223,7 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
             error_message=payload.get("error_message") if failed else None,
             attributes=compact({
                 "cursor.tool.name": tool_name,
+                "cursor.tool.provider_call_id": provider_call_id,
                 "cursor.tool.duration_ms": number(payload.get("duration")),
                 "cursor.tool.failure_type": failure_type,
                 "cursor.tool.is_interrupt": payload.get("is_interrupt") if failed else None,
@@ -194,8 +256,11 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         )]
 
     if event == "afterAgentThought":
+        text = payload.get("text")
         return [SpanEvent(
             INSTANT, LLM, sid, turn_id=turn, name="Agent thought", model=model,
+            key=_digest("thought", turn, payload.get("duration_ms"),
+                        hashlib.sha256(str(text).encode("utf-8", "replace")).hexdigest()),
             duration_ms=number(payload.get("duration_ms")),
             output=payload.get("text"),
             attributes=compact({"cursor.llm.part": "thought", **_model_params(payload)}),
@@ -205,7 +270,8 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         events = [SpanEvent(
             INSTANT, LLM, sid, turn_id=turn, name="Agent response", model=model,
             output=payload.get("text"),
-            attributes=compact({"cursor.llm.part": "response", **_model_params(payload)}),
+            attributes=compact({"cursor.llm.part": "response", **_model_params(payload),
+                                **_usage(payload, "llm")}),
         )]
         if turn is not None:
             events.append(SpanEvent(UPDATE, TURN, sid, key=turn, output=payload.get("text")))
