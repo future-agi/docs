@@ -976,6 +976,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:kiro-cli
               // coding-agents:kiro-ide
               // coding-agents:oh-my-pi
+              { title: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi' },
               // coding-agents:openclaw
               // coding-agents:opencode
               // coding-agents:pi
