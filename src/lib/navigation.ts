@@ -970,6 +970,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:gemini-cli
               // coding-agents:github-copilot
               // coding-agents:google-antigravity
+              { title: 'Google Antigravity', href: '/docs/integrations/coding-agents/google-antigravity' },
               // coding-agents:goose
               // coding-agents:grok-build
               // coding-agents:hermes-agent
