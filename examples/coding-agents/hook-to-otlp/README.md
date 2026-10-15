@@ -35,7 +35,7 @@ process so the host is not kept waiting.
 | `FI_OTLP_ENDPOINT` | none | Full traces URL; overrides `FI_BASE_URL`. |
 | `FI_HOOK_CAPTURE_CONTENT` | off | `1` exports prompts, tool input/output, model text, error text. |
 | `FI_HOOK_MAX_CONTENT_CHARS` | `4096` | Per-field cap when content is on. |
-| `FI_HOOK_TIMEOUT` | `3` | HTTP timeout in seconds. |
+| `FI_HOOK_TIMEOUT` | `10` | HTTP timeout in seconds (the send runs in a detached process, so the host never waits on it). |
 | `FI_HOOK_SYNC` | off | `1` sends inline instead of in a detached child (tests, debugging). |
 | `FI_HOOK_STATE_DIR` | `$TMPDIR/fi-hook-to-otlp-<uid>` | Per-session state files (0600, removed at session end, swept after 24 h). |
 | `FI_HOOK_LOG_FILE` | none | One line per hook: event, span count, HTTP status. No content, no keys. |
@@ -60,6 +60,9 @@ process so the host is not kept waiting.
   from the payload, else the hook time. A turn opens on the first event that names it.
 - A turn end closes still-open children of that turn (`coding_agent.incomplete=true`);
   a session end closes everything and deletes the state file.
+- One turn is open per session: a turn START closes any other open turn (and its
+  children) as incomplete. If that turn's END arrives later, the turn is re-sent complete
+  with its original start.
 - Every span carries `session.id`, `gen_ai.conversation.id`, `coding_agent.app`,
   `coding_agent.scope`, `coding_agent.hook.event`, and `coding_agent.turn.id` when known.
   Tool spans add `gen_ai.tool.name` and `gen_ai.tool.call.id`; session/turn/llm/subagent
@@ -87,7 +90,7 @@ def parse(event: str, payload: dict) -> list:           # required
     return []
 
 def respond(event: str, payload: dict) -> str:          # optional, default "{}"
-    return "{}"
+    return "{}"                                         # "" prints nothing (hosts that add stdout to the model context)
 
 def event_name(argv_event, payload):                    # optional
     return argv_event or payload.get("hook_event_name")
@@ -104,6 +107,10 @@ input=None, output=None, error_message=None)`:
   `UPDATE` merges into an open span (for example a response text into the turn).
 - `scope`: `SESSION`, `TURN`, `TOOL`, `SUBAGENT`, `LLM`, `EVENT`.
 - `key` pairs START/END of the same scope (tool call id, turn id). Empty for the session.
+  Apps without ids can leave it empty: a keyless TURN START opens `turn-1`, `turn-2`, ...
+  and a keyless TURN END/UPDATE applies to the open turn (ignored if none); a keyless
+  END of another scope pairs with the oldest open keyless START of the same scope and
+  `name` (FIFO), else it becomes a standalone span.
 - `turn_id` parents a tool/subagent/llm/event span; None means the open turn, else the session.
 - `status` is `OK`, `ERROR` or None. `status_message` is always exported, so keep it to
   metadata (`"timeout"`), never free text.
