@@ -6,6 +6,8 @@ fields named in the kiro-cli-chat 2.31.1 binary.
 from __future__ import annotations
 
 import json
+import pathlib
+import subprocess
 import tempfile
 import unittest
 
@@ -89,6 +91,17 @@ class KiroCliAdapterTest(unittest.TestCase):
         payload = dict(self.records[2]["payload"])
         del payload["session_id"]
         self.assertEqual(kiro_cli.parse("PreToolUse", payload), [])
+
+    def test_shipped_commands_fail_open_when_emitter_is_missing(self):
+        root = pathlib.Path(__file__).resolve().parents[2] / "kiro-cli"
+        for path in (root / "fi-hook-to-otlp.json", root / "fi-hook-to-otlp.user.json"):
+            doc = json.loads(path.read_text())
+            for hook in doc["hooks"]:
+                command = hook["action"]["command"]
+                result = subprocess.run(["sh", "-c", command], input="{}", text=True,
+                                        capture_output=True, cwd=tempfile.mkdtemp())
+                self.assertEqual(result.returncode, 0, (path, command, result.stderr))
+                self.assertEqual(result.stdout, "", (path, command, result.stdout))
 
     def test_stdout_adds_nothing_to_agent_context(self):
         for event in ("SessionStart", "UserPromptSubmit", "Stop"):
