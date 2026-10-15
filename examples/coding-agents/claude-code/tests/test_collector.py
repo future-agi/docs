@@ -7,8 +7,11 @@ OTEL_LOG_TOOL_CONTENT set to 1. Each test starts the real otelcol-contrib
 binary with collector.yaml, posts a fixture to it, and checks what it forwards
 to a loopback stand-in for Future AGI.
 
+A third fixture is a default-flags run that called a tool on a stub stdio MCP
+server named "zzsecretcorp" (tool "zz_internal_lookup").
+
 Run: OTELCOL_BIN=/path/to/otelcol-contrib python3 -m unittest discover -s tests
-Skipped when no otelcol-contrib binary is found.
+Skipped when no otelcol-contrib binary is found, unless REQUIRE_OTELCOL=1.
 """
 from __future__ import annotations
 
@@ -31,7 +34,10 @@ CONFIG = HERE.parent / "collector.yaml"
 FIXTURES = HERE / "fixtures"
 DEFAULT_FIXTURE = FIXTURES / "claude-code-2.1.300-default.json"
 CONTENT_FIXTURE = FIXTURES / "claude-code-2.1.300-content-optin.json"
+MCP_FIXTURE = FIXTURES / "claude-code-2.1.300-mcp.json"
 OTELCOL = os.environ.get("OTELCOL_BIN") or shutil.which("otelcol-contrib")
+if not OTELCOL and os.environ.get("REQUIRE_OTELCOL") == "1":
+    raise RuntimeError("REQUIRE_OTELCOL=1 but no otelcol-contrib binary (set OTELCOL_BIN)")
 
 
 def free_port() -> int:
@@ -80,13 +86,15 @@ class Sink:
 
 @unittest.skipUnless(OTELCOL, "otelcol-contrib not found (set OTELCOL_BIN)")
 class CollectorConfigTest(unittest.TestCase):
+    extra_env: dict = {}
+
     def setUp(self):
         self.sink = Sink()
         self.port = free_port()
         self.tmp = tempfile.TemporaryDirectory()
         env = dict(os.environ, FI_API_KEY="test-api-key", FI_SECRET_KEY="test-secret-key",
                    FI_PROJECT_NAME="claude-code-contract", FI_OTLP_ENDPOINT=self.sink.url,
-                   FI_COLLECTOR_LISTEN=f"127.0.0.1:{self.port}")
+                   FI_COLLECTOR_LISTEN=f"127.0.0.1:{self.port}", **self.extra_env)
         # JSON encoding lets this test decode what the collector forwards
         # without protobuf libraries; everything else is collector.yaml as shipped.
         self.log = open(Path(self.tmp.name) / "otelcol.log", "w")
@@ -154,6 +162,8 @@ class CollectorConfigTest(unittest.TestCase):
                              a["input_tokens"] + a["cache_read_tokens"] + a["cache_creation_tokens"])
             self.assertEqual(a["gen_ai.usage.output_tokens"], a["output_tokens"])
             self.assertEqual(a["gen_ai.usage.cache_read.input_tokens"], a["cache_read_tokens"])
+            self.assertEqual(a["gen_ai.usage.cache_read_tokens"], a["cache_read_tokens"])
+            self.assertEqual(a["gen_ai.usage.cache_write_tokens"], a["cache_creation_tokens"])
             self.assertEqual(a["gen_ai.request.model"], "claude-haiku-5-5")
         for res, _, a in spans:
             self.assertEqual(res["project_name"], "claude-code-contract")
@@ -196,12 +206,44 @@ class CollectorConfigTest(unittest.TestCase):
         spans = self.send(body)
         self.assertNotIn("dev@example.com", json.dumps([[r, a] for r, _, a in spans]))
 
+    def test_input_tokens_without_cache_counts(self):
+        body = json.loads(DEFAULT_FIXTURE.read_text())
+        for rs in body["resourceSpans"]:
+            for ss in rs["scopeSpans"]:
+                for s in ss["spans"]:
+                    s["attributes"] = [a for a in s["attributes"] if a["key"] != "cache_creation_tokens"]
+        for _, _, a in self.by_name(self.send(body), "claude_code.llm_request"):
+            self.assertEqual(a["gen_ai.usage.input_tokens"], a["input_tokens"])
+
+    def test_mcp_names_replaced_by_default(self):
+        spans = self.send(json.loads(MCP_FIXTURE.read_text()))
+        dump = json.dumps([[r, s] for r, s, _ in spans])
+        self.assertNotIn("zzsecretcorp", dump)
+        self.assertNotIn("zz_internal_lookup", dump)
+        names = {s["name"] for _, s, a in spans if a.get("fi.span.kind") == "TOOL"}
+        self.assertEqual(names, {"mcp_other", "Read"})
+        (mcp,) = [a for _, s, a in spans if s["name"] == "mcp_other"]
+        self.assertEqual(mcp["gen_ai.tool.name"], "mcp_other")
+        self.assertNotIn("anthropic.mcp.server.name", mcp)
+
     def test_project_name_from_claude_code_wins(self):
         body = json.loads(DEFAULT_FIXTURE.read_text())
         for rs in body["resourceSpans"]:
             rs["resource"]["attributes"].append({"key": "project_name", "value": {"stringValue": "per-dev"}})
         spans = self.send(body)
         self.assertEqual({r["project_name"] for r, _, _ in spans}, {"per-dev"})
+
+
+
+class KeepMcpNamesTest(CollectorConfigTest):
+    """FI_KEEP_MCP_NAMES=1 keeps Claude Code's MCP names."""
+    extra_env = {"FI_KEEP_MCP_NAMES": "1"}
+
+    def test_mcp_names_replaced_by_default(self):
+        spans = self.send(json.loads(MCP_FIXTURE.read_text()))
+        (mcp,) = [a for _, s, a in spans if s["name"] == "mcp__zzsecretcorp__zz_internal_lookup"]
+        self.assertEqual(mcp["gen_ai.tool.name"], "zz_internal_lookup")
+        self.assertEqual(mcp["anthropic.mcp.server.name"], "zzsecretcorp")
 
 
 if __name__ == "__main__":

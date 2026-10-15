@@ -5,8 +5,10 @@
 #   FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=claude-code-e2e ./run_e2e.sh
 #
 # Needs otelcol-contrib (OTELCOL_BIN or PATH), claude (CLAUDE_BIN or PATH) and
-# a working Claude Code login or ANTHROPIC_API_KEY. For a self-hosted Future
-# AGI set FI_OTLP_ENDPOINT (e.g. http://localhost:4318/v1/traces).
+# a working Claude Code login or ANTHROPIC_API_KEY; it makes one real (billed)
+# model request. For a self-hosted Future AGI set FI_OTLP_ENDPOINT (e.g.
+# http://localhost:4318/v1/traces) and FI_COLLECTOR_PORT=4319, so this
+# collector does not try to bind the port Future AGI's collector uses.
 # CONTENT=1 also sets the OTEL_LOG_* content flags (prompt, tool input/output).
 # The Claude Code variables are passed on the command line only; a
 # ~/.claude/settings.json "env" block with OTEL_* keys takes precedence over them.

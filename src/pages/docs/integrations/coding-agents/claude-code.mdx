@@ -28,7 +28,7 @@ This is not the same as:
 
 | | |
 | --- | --- |
-| Tested with | Claude Code 2.1.300 (macOS), OpenTelemetry Collector Contrib 0.162.0 |
+| Tested with | Claude Code 2.1.300 (macOS), OpenTelemetry Collector Contrib 0.162.0. Older contrib releases call the exporter `otlphttp` instead of `otlp_http`. |
 | Claude Code docs used | [Monitoring](https://code.claude.com/docs/en/monitoring-usage), read 2026-10-14 |
 | Requires | `otelcol-contrib` for the full mapping. Claude Code can also export [directly](#without-a-collector). |
 | Source | [examples/coding-agents/claude-code](https://github.com/future-agi/docs/tree/main/examples/coding-agents/claude-code) |
@@ -50,7 +50,7 @@ export FI_PROJECT_NAME=claude-code-sessions
 otelcol-contrib --config fi-docs/examples/coding-agents/claude-code/collector.yaml
 ```
 
-The collector listens on `127.0.0.1:4318` (OTLP/HTTP) and forwards traces to Future AGI. For a self-hosted Future AGI, also set `FI_OTLP_ENDPOINT` to your collector's traces URL, for example `http://localhost:4318/v1/traces`, and move the local listener with `FI_COLLECTOR_LISTEN=127.0.0.1:4319`.
+The collector listens on `127.0.0.1:4318` (OTLP/HTTP) and forwards traces to Future AGI. For a self-hosted Future AGI, whose own collector usually holds port 4318, set `FI_OTLP_ENDPOINT` to its traces URL (for example `http://localhost:4318/v1/traces`), move this collector with `FI_COLLECTOR_LISTEN=127.0.0.1:4319`, and use `http://127.0.0.1:4319` as `OTEL_EXPORTER_OTLP_ENDPOINT` in step 2.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -58,6 +58,7 @@ The collector listens on `127.0.0.1:4318` (OTLP/HTTP) and forwards traces to Fut
 | `FI_PROJECT_NAME` | `claude-code` | Project for these traces. A `project_name` set in Claude Code's `OTEL_RESOURCE_ATTRIBUTES` wins. |
 | `FI_OTLP_ENDPOINT` | `https://api.futureagi.com/tracer/v1/traces` | Where traces go. |
 | `FI_COLLECTOR_LISTEN` | `127.0.0.1:4318` | Where Claude Code sends its spans. |
+| `FI_KEEP_MCP_NAMES` | off | `1` keeps MCP server and tool names. See [Privacy](#privacy). |
 
 ## 2. Turn on Claude Code's trace export
 
@@ -116,11 +117,15 @@ FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=claude-code-e2e \
 | --- | --- | --- |
 | `claude_code.interaction` | Agent | `session.id`, prompt length, turn duration, interaction sequence number |
 | `claude_code.llm_request` | LLM | model, input and output tokens, cache read and cache write tokens, time to first token, stop reason, request id, attempts, `ERROR` status and error message when the request fails |
-| `claude_code.tool`, renamed to the tool (`Bash`, `Read`, `Edit`, `mcp__<server>__<tool>`) | Tool | `gen_ai.tool.name`, `tool_use_id`, duration, Bash command category (`bash_argv0`, `bash_command_class`). The original span name stays in `span.type` (`tool`). |
+| `claude_code.tool`, renamed to the tool (`Bash`, `Read`, `Edit`; MCP tools are `mcp_other`) | Tool | `gen_ai.tool.name`, `tool_use_id`, duration, Bash command category (`bash_argv0`, `bash_command_class`). The original span name stays in `span.type` (`tool`). |
 | `claude_code.tool.blocked_on_user` | Chain | permission decision (`accept`, `reject`) and its source (`config`, `user_temporary`, ...), wait time |
 | `claude_code.tool.execution` | Chain | success, error category (`Error:ENOENT`, `ShellError`), `ERROR` status on failure |
 
-The collector sets `gen_ai.usage.input_tokens` to Claude Code's `input_tokens` plus its cache read and cache write tokens, because Claude Code reports the cached part separately. The cached counts are also kept in `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_creation.input_tokens`. Cost is not sent by Claude Code on spans; Future AGI computes it from the model and tokens when the model is in its price list.
+The collector sets `gen_ai.usage.input_tokens` to Claude Code's `input_tokens` plus its cache read and cache write tokens, because Claude Code reports the cached part separately. The cached counts are also written to `gen_ai.usage.cache_read_tokens` and `gen_ai.usage.cache_write_tokens` (and the OpenTelemetry keys `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_creation.input_tokens`).
+
+<Warning>
+Claude Code sends no cost on its spans. The cost Future AGI shows is its own estimate from the model and tokens, and it prices cached tokens at the full input rate, while Anthropic bills cache reads at a fraction of it. For a typical Claude Code request, where most input is a cache read, the estimate is several times the real input cost. Use Claude Code's `claude_code.cost.usage` metric or the Claude Console for spend.
+</Warning>
 
 When the Agent tool starts a subagent, the subagent's model requests and tool calls appear under that tool's span.
 
@@ -131,18 +136,29 @@ When the Agent tool starts a subagent, the subagent's model requests and tool ca
 - **One trace per session.** Claude Code starts a new trace for every prompt. Use the **Sessions** tab, or filter on `session.id`, to see a whole session.
 - **Model output and system prompt.** Response text is a log event attribute, not a span attribute, outside of detailed beta tracing.
 - **Tab completions and IDE inline suggestions.** They are not part of the trace export.
+- **A fallback without traces.** Anthropic's traces are beta. If you turn them off, or a release removes them, nothing reaches Future AGI: Claude Code's stable signals are metrics and log events, and turning the log events into traces would need a bridge this page does not provide.
 
 ## Privacy
 
-By default Claude Code puts no prompt text, tool arguments, or tool output on its spans: the turn's `user_prompt` attribute is `<REDACTED>` and only lengths, names, ids, timings, and token counts are sent. The collector config also deletes `user.email`, which Claude Code adds when you are signed in with a Claude account.
+By default Claude Code puts no prompt text, tool arguments, or tool output on its spans: the turn's `user_prompt` attribute is `<REDACTED>` and only lengths, names, ids, timings, and token counts are sent.
 
-Content is opt-in on the Claude Code side. Each variable adds one kind of content, and the collector maps it to the span's input and output so it shows in the trace view:
+Two kinds of identifying data arrive with every content flag off, and the collector handles them as follows:
+
+| Data | Sent by Claude Code | Collector default |
+| --- | --- | --- |
+| MCP server and tool names (`tool_name` = `mcp__<server>__<tool>`, `gen_ai.tool.name`, `anthropic.mcp.server.name`) | always, for MCP tool calls | replaced with Claude Code's `tool_name_safe` (`mcp_other`, or the tool name for a few fixed shapes). `FI_KEEP_MCP_NAMES=1` keeps them. |
+| `user.email` | when signed in with a Claude account or through a gateway | deleted |
+| `user.groups` | gateway (OIDC) sign-in | deleted |
+| `organization.id`, `user.account_uuid`, `user.account_id` | when signed in with a Claude account | kept (account identifiers, no content) |
+| `user.id` | always: a random installation id, or the IdP subject on gateway sign-in, which can look like an email | kept |
+
+Content is opt-in on the Claude Code side. Each variable adds one kind of content:
 
 | Variable | What it adds | Where it shows in Future AGI |
 | --- | --- | --- |
 | `OTEL_LOG_USER_PROMPTS=1` | prompt text | input of `claude_code.interaction` |
-| `OTEL_LOG_TOOL_DETAILS=1` | Bash commands, file paths, MCP server and tool names, skill names | input of `claude_code.tool` |
-| `OTEL_LOG_TOOL_CONTENT=1` | file contents and command output (the `tool.output` span event, cut at 60 KB) | output of `claude_code.tool` |
+| `OTEL_LOG_TOOL_DETAILS=1` | Bash commands, file paths, skill names, subagent types | input of the tool span (the Bash command or the file path); other details stay as span attributes |
+| `OTEL_LOG_TOOL_CONTENT=1` | file contents and command output (the `tool.output` span event, cut at 60 KB) | output of the tool span |
 
 Do not set `OTEL_LOG_RAW_API_BODIES` for this setup. It sends full API request and response bodies as log events, which Future AGI does not ingest.
 
@@ -160,7 +176,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=your-futureagi-api-key,X-Secret-Key
 export OTEL_RESOURCE_ATTRIBUTES=project_name=claude-code-sessions
 ```
 
-The trace tree, model, `session.id`, and tool spans arrive the same way. Without the collector's mapping, every tool span is named `claude_code.tool`, the turn and model-request spans show type `unknown`, token counts stay in Claude Code's own attribute names and are not counted by Future AGI, and `user.email` is kept. Put the keys in your shell or user settings only: anyone who can read the settings file can read them.
+The trace tree, model, `session.id`, and tool spans arrive the same way. Without the collector's mapping, every tool span is named `claude_code.tool`, the turn and model-request spans show type `unknown`, token counts stay in Claude Code's own attribute names and are not counted by Future AGI, and `user.email` and MCP server and tool names are kept. Put the keys in your shell or user settings only: anyone who can read the settings file can read them.
 
 ## Troubleshooting
 
@@ -170,6 +186,8 @@ The trace tree, model, `session.id`, and tool spans arrive the same way. Without
 3. Variables in the `env` block of `~/.claude/settings.json` take precedence over the same variables in your shell. If you test with shell exports, remove the settings entries first.
 
 **The collector logs `responded with HTTP Status Code 400`.** The exporter is compressing its requests. Future AGI's OTLP endpoint reads uncompressed bodies; keep `compression: none` in `collector.yaml`.
+
+**The collector exits with `address already in use`.** Another process holds the listen port (4318, often a local Future AGI or another collector). Set `FI_COLLECTOR_LISTEN=127.0.0.1:4319` and point `OTEL_EXPORTER_OTLP_ENDPOINT` at the same port. The config turns off the collector's own metrics server (`telemetry.metrics.level: none`), so port 8888 is not used.
 
 **Spans arrive but the turn and model spans show type `unknown` and no tokens.** Claude Code is sending straight to Future AGI instead of through the collector. Check `OTEL_EXPORTER_OTLP_ENDPOINT`.
 

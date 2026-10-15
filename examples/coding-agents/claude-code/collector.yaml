@@ -3,7 +3,9 @@
 # Claude Code (CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1) sends its
 # claude_code.* spans here over OTLP/HTTP. This config tags each span with a
 # Future AGI span kind, copies the token counts onto the GenAI usage keys
-# Future AGI reads, drops user.email, and forwards traces only. Claude Code's
+# Future AGI reads, names tool spans after the tool, replaces user-chosen MCP
+# server and tool names, drops user.email and user.groups, and forwards
+# traces only. Claude Code's
 # metrics and log events are not ingested by Future AGI; leave
 # OTEL_METRICS_EXPORTER and OTEL_LOGS_EXPORTER unset.
 #
@@ -15,6 +17,7 @@
 #   FI_PROJECT_NAME            project for these traces (default claude-code)
 #   FI_OTLP_ENDPOINT           traces URL (default Future AGI cloud)
 #   FI_COLLECTOR_LISTEN        where Claude Code sends spans (default 127.0.0.1:4318)
+#   FI_KEEP_MCP_NAMES          1 = keep MCP server and tool names (default: replaced)
 
 receivers:
   otlp:
@@ -40,9 +43,14 @@ processors:
           # Token usage. Claude Code's input_tokens excludes prompt-cache reads
           # and writes; the GenAI convention counts them in the input total.
           - set(attributes["gen_ai.usage.input_tokens"], Int(attributes["input_tokens"]) + Int(attributes["cache_read_tokens"]) + Int(attributes["cache_creation_tokens"])) where name == "claude_code.llm_request" and attributes["input_tokens"] != nil and attributes["cache_read_tokens"] != nil and attributes["cache_creation_tokens"] != nil
+          # Claude Code sets each cache count only when it is defined.
+          - set(attributes["gen_ai.usage.input_tokens"], Int(attributes["input_tokens"])) where name == "claude_code.llm_request" and attributes["gen_ai.usage.input_tokens"] == nil and attributes["input_tokens"] != nil
           - set(attributes["gen_ai.usage.output_tokens"], Int(attributes["output_tokens"])) where name == "claude_code.llm_request" and attributes["output_tokens"] != nil
           - set(attributes["gen_ai.usage.cache_read.input_tokens"], Int(attributes["cache_read_tokens"])) where name == "claude_code.llm_request" and attributes["cache_read_tokens"] != nil
           - set(attributes["gen_ai.usage.cache_creation.input_tokens"], Int(attributes["cache_creation_tokens"])) where name == "claude_code.llm_request" and attributes["cache_creation_tokens"] != nil
+          # The cache keys Future AGI shows on the span.
+          - set(attributes["gen_ai.usage.cache_read_tokens"], Int(attributes["cache_read_tokens"])) where name == "claude_code.llm_request" and attributes["cache_read_tokens"] != nil
+          - set(attributes["gen_ai.usage.cache_write_tokens"], Int(attributes["cache_creation_tokens"])) where name == "claude_code.llm_request" and attributes["cache_creation_tokens"] != nil
 
           # Content, only when Claude Code was told to export it
           # (OTEL_LOG_USER_PROMPTS=1 / OTEL_LOG_TOOL_DETAILS=1). Otherwise
@@ -51,12 +59,24 @@ processors:
           - set(attributes["input.value"], attributes["full_command"]) where name == "claude_code.tool" and attributes["full_command"] != nil
           - set(attributes["input.value"], attributes["file_path"]) where name == "claude_code.tool" and attributes["input.value"] == nil and attributes["file_path"] != nil
 
-          # Signed-in users carry their email on every span.
+          # Signed-in users carry their email on every span; gateway (OIDC)
+          # sign-in adds group membership.
           - delete_key(attributes, "user.email")
+          - delete_key(attributes, "user.groups")
 
-          # Name tool spans after the tool (Bash, Read, mcp__server__tool).
-          # tool_name is exported with every content flag off. Keep this last:
-          # the statements above match on the original span name.
+          # MCP tools: Claude Code exports the user-chosen server and tool names
+          # (tool_name mcp__<server>__<tool>, gen_ai.tool.name,
+          # anthropic.mcp.server.name) with every content flag off. Replace
+          # them with tool_name_safe ("mcp_other", or the tool name for a few
+          # fixed shapes) unless FI_KEEP_MCP_NAMES=1. tool_name is overwritten
+          # last because the conditions read it.
+          - set(attributes["tool_name_safe"], "mcp_other") where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and attributes["tool_name_safe"] == nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name_safe"]) where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and "${env:FI_KEEP_MCP_NAMES:-0}" != "1"
+          - delete_key(attributes, "anthropic.mcp.server.name") where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and "${env:FI_KEEP_MCP_NAMES:-0}" != "1"
+          - set(attributes["tool_name"], attributes["tool_name_safe"]) where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and "${env:FI_KEEP_MCP_NAMES:-0}" != "1"
+
+          # Name tool spans after the tool (Bash, Read, mcp_other). Keep this
+          # last: the statements above match on the original span name.
           - set(name, attributes["tool_name"]) where name == "claude_code.tool" and attributes["tool_name"] != nil
 
       - context: spanevent
@@ -68,6 +88,7 @@ processors:
       - context: resource
         statements:
           - delete_key(attributes, "user.email")
+          - delete_key(attributes, "user.groups")
 
   resource/futureagi:
     attributes:
