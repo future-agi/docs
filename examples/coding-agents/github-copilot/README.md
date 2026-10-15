@@ -19,3 +19,5 @@ export FI_API_KEY=... FI_SECRET_KEY=...
 CAPTURE_CONTENT=1 ./run_e2e.sh     # opt in to prompt/tool content for one run
 python3 -m unittest test_check_spans
 ```
+
+`check_spans.py` accepts both the CLI file-exporter records and direct span objects written by the VS Code file exporter. It ignores standalone `custom_notification` records when checking the agent tree.

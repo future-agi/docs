@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
-"""Check a GitHub Copilot OTel span dump against the Future AGI recipe contract.
+"""Check Copilot CLI or VS Code OTel file-exporter JSON lines.
 
-Input is the JSON-lines file Copilot writes when COPILOT_OTEL_FILE_EXPORTER_PATH
-is set (one record per span or metric). This is a local pre-flight check only;
-the setup path is OTLP/HTTP straight to Future AGI.
-
-    python3 check_spans.py copilot-otel.jsonl [--content] [--marker TEXT]
-
-Checks:
-  * one trace per agent invocation, rooted at an `invoke_agent` span;
-  * every `chat` / `execute_tool` span is a child of that root (or of a subagent);
-  * every span carries `gen_ai.conversation.id`;
-  * `execute_tool` spans carry `gen_ai.tool.name`;
-  * with content capture off (default), no content attribute is present and the
-    optional --marker string does not appear anywhere in the dump;
-  * with --content, at least one content attribute is present.
+The CLI exporter writes records as ``{"type":"span", ...}``; the VS Code
+FileSpanExporter writes span objects directly. This local pre-flight check
+normalizes both shapes. The setup path remains OTLP/HTTP straight to Future AGI.
 """
 from __future__ import annotations
 
@@ -32,14 +21,42 @@ CONTENT_ATTRS = (
 )
 
 
+def _attrs(span: dict) -> dict:
+    attrs = span.get("attributes", {})
+    if isinstance(attrs, dict):
+        return attrs
+    if isinstance(attrs, list):
+        out = {}
+        for item in attrs:
+            if not isinstance(item, dict) or "key" not in item:
+                continue
+            value = item.get("value", {})
+            if isinstance(value, dict) and value:
+                out[item["key"]] = next(iter(value.values()))
+        return out
+    return {}
+
+
+def _parent(span: dict) -> str | None:
+    if span.get("parentSpanId"):
+        return span["parentSpanId"]
+    context = span.get("parentSpanContext")
+    return context.get("spanId") if isinstance(context, dict) else None
+
+
 def load_spans(path: str) -> list[dict]:
     spans = []
     with open(path, encoding="utf-8") as fh:
         for line in fh:
-            if line.strip():
-                record = json.loads(line)
-                if record.get("type") == "span":
-                    spans.append(record)
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            # CLI: type=span. VS Code: direct span object with spanId.
+            if record.get("type") == "span" or record.get("spanId"):
+                copy = dict(record)
+                copy["attributes"] = _attrs(record)
+                copy["parentSpanId"] = _parent(record)
+                spans.append(copy)
     return spans
 
 
@@ -47,25 +64,31 @@ def check(spans: list[dict], content: bool = False, marker: str | None = None, r
     errors: list[str] = []
     if not spans:
         return ["no spans in file"]
+    for span in spans:
+        span["attributes"] = _attrs(span)
     ids = {s["spanId"] for s in spans}
-    roots = [s for s in spans if not s.get("parentSpanId") or s["parentSpanId"] not in ids]
+    # Standalone non-agent roots such as custom_notification are valid vendor
+    # records but are outside this recipe's agent-tree contract.
+    relevant = [s for s in spans if s["attributes"].get("gen_ai.operation.name") in
+                {"invoke_agent", "chat", "execute_tool"}]
+    roots = [s for s in relevant if not s.get("parentSpanId") or s["parentSpanId"] not in ids]
     for root in roots:
         if root["attributes"].get("gen_ai.operation.name") != "invoke_agent":
             errors.append(f"root span {root['name']!r} is not invoke_agent")
-    traces = {s["traceId"] for s in spans}
+    traces = {s["traceId"] for s in relevant}
     if len(roots) != len(traces):
-        errors.append(f"{len(traces)} trace(s) but {len(roots)} root span(s)")
-    ops = {s["attributes"].get("gen_ai.operation.name") for s in spans}
+        errors.append(f"{len(traces)} agent trace(s) but {len(roots)} invoke_agent root(s)")
+    ops = {s["attributes"].get("gen_ai.operation.name") for s in relevant}
     for needed in ("invoke_agent", "chat", "execute_tool"):
         if needed not in ops:
             errors.append(f"no {needed} span")
-    for s in spans:
+    for s in relevant:
         attrs = s["attributes"]
         if not attrs.get("gen_ai.conversation.id"):
             errors.append(f"span {s['name']!r} has no gen_ai.conversation.id")
         if attrs.get("gen_ai.operation.name") == "execute_tool" and not attrs.get("gen_ai.tool.name"):
             errors.append(f"tool span {s['spanId']} has no gen_ai.tool.name")
-    present = sorted({k for s in spans for k in s["attributes"] if k in CONTENT_ATTRS})
+    present = sorted({k for s in relevant for k in s["attributes"] if k in CONTENT_ATTRS})
     if content and not present:
         errors.append("content capture requested but no content attribute was exported")
     if not content and present:

@@ -16,7 +16,10 @@ command -v copilot >/dev/null || { echo "copilot CLI not found on PATH" >&2; exi
 
 export OTEL_EXPORTER_OTLP_ENDPOINT="${FI_OTLP_BASE:-https://api.futureagi.com/tracer}"
 export OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=${FI_API_KEY},X-Secret-Key=${FI_SECRET_KEY}"
-export OTEL_RESOURCE_ATTRIBUTES="project_name=${FI_PROJECT_NAME:-my-copilot-sessions},project_type=observe"
+PROJECT_NAME="${FI_PROJECT_NAME:-my-copilot-sessions}"
+[[ "${CAPTURE_CONTENT:-0}" == "1" ]] && PROJECT_NAME="${PROJECT_NAME}-content"
+export OTEL_RESOURCE_ATTRIBUTES="project_name=${PROJECT_NAME},project_type=observe"
+unset COPILOT_OTEL_FILE_EXPORTER_PATH COPILOT_OTEL_EXPORTER_TYPE OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 if [[ "${CAPTURE_CONTENT:-0}" == "1" ]]; then
   export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
 else
@@ -34,5 +37,5 @@ cd "$workdir"
 copilot -p "$marker: list the files in this folder and read README.md, then reply with one short sentence." \
   --allow-all-tools --no-color
 echo
-echo "Open project '${FI_PROJECT_NAME:-my-copilot-sessions}' in Future AGI Observe. Expect one trace:"
+echo "Open project '${PROJECT_NAME}' in Future AGI Observe. The first run against a new project may be dropped while Copilot flushes; retry or create the project first. Expect one trace:"
 echo "invoke_agent -> chat + execute_tool spans, all sharing gen_ai.conversation.id."

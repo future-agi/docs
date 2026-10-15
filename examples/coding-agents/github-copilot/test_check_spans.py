@@ -52,6 +52,26 @@ class CopilotSpanContract(unittest.TestCase):
         del spans[0]["attributes"]["gen_ai.conversation.id"]
         self.assertTrue(any("conversation.id" in e for e in check_spans.check(spans, raw=self.raw)))
 
+    def test_vscode_direct_span_shape_and_nested_parent(self) -> None:
+        root = {"traceId": "t", "spanId": "r", "name": "invoke_agent",
+                "attributes": {"gen_ai.operation.name": "invoke_agent", "gen_ai.conversation.id": "c"}}
+        child = {"traceId": "t", "spanId": "c1", "parentSpanContext": {"spanId": "r"},
+                 "name": "chat", "attributes": {"gen_ai.operation.name": "chat", "gen_ai.conversation.id": "c"}}
+        tool = {"traceId": "t", "spanId": "c2", "parentSpanContext": {"spanId": "r"},
+                "name": "execute_tool read", "attributes": {"gen_ai.operation.name": "execute_tool", "gen_ai.conversation.id": "c", "gen_ai.tool.name": "read"}}
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as fh:
+            for record in (root, child, tool):
+                fh.write(json.dumps(record) + "\n")
+            fh.flush()
+            spans = check_spans.load_spans(fh.name)
+        self.assertEqual(check_spans.check(spans), [])
+
+    def test_standalone_custom_notification_is_ignored(self) -> None:
+        spans = copy.deepcopy(self.spans)
+        spans.append({"traceId": "other", "spanId": "n", "name": "custom_notification", "attributes": {}})
+        self.assertEqual(check_spans.check(spans, raw=self.raw), [])
+
 
 if __name__ == "__main__":
     unittest.main()

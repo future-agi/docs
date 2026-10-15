@@ -28,7 +28,7 @@ One Copilot agent turn becomes one trace. A Copilot CLI turn that lists a folder
 invoke_agent                       conversation id, total tokens, turn count
 ├── chat gpt-6-luna                model, input/output/cached tokens, finish reason
 ├── execute_tool glob              tool name, tool call id
-├── execute_tool bash              tool name, tool call id, exit code
+├── execute_tool bash bash         tool name, tool call id, exit code
 ├── chat gpt-6-luna
 ├── execute_tool view
 └── chat gpt-6-luna
@@ -39,7 +39,8 @@ invoke_agent                       conversation id, total tokens, turn count
 | `invoke_agent` | `gen_ai.conversation.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `github.copilot.turn_count`, `github.copilot.agent.type`, `error.type` on failure |
 | `chat <model>` | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.*` tokens (including cache read/write), `gen_ai.response.finish_reasons`, `gen_ai.response.time_to_first_chunk` |
 | `execute_tool <tool>` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `process.exit.code` for shell tools, `error.type` on failure |
-| `execute_hook` (VS Code) | hook type and decision, when you use Copilot hooks |
+| `execute_hook` (VS Code) | hook type and decision; `copilot_chat.hook_command` may include the full local command path |
+| Span status / hook errors | Raw failure text may be present even with content capture off: status messages, `exception` events, or CLI `github.copilot.hook.error_message` |
 
 When the agent starts a subagent, the subagent's `invoke_agent` span is nested under the `execute_tool` span that started it, so the whole tree stays in one trace.
 
@@ -55,7 +56,18 @@ When the agent starts a subagent, the subagent's `invoke_agent` span is nested u
 <Steps>
 <Step title="Set the exporter variables">
 
-Set these in the shell that runs `copilot` (or in your shell profile):
+Scope these variables to the Copilot process. Do not put the keys in a shell profile: Copilot's shell tool and other OTel-instrumented processes inherit them. A wrapper is safer:
+
+```bash
+copilot() {
+  OTEL_EXPORTER_OTLP_ENDPOINT="https://api.futureagi.com/tracer" \
+  OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=${FI_API_KEY},X-Secret-Key=${FI_SECRET_KEY}" \
+  OTEL_RESOURCE_ATTRIBUTES="project_name=my-copilot-sessions,project_type=observe" \
+  command copilot --secret-env-vars=FI_API_KEY,FI_SECRET_KEY,OTEL_EXPORTER_OTLP_HEADERS "$@"
+}
+```
+
+Set these variables only for the shell/process that runs `copilot`:
 
 ```bash
 export FI_API_KEY="YOUR_API_KEY"
@@ -75,6 +87,8 @@ Setting `OTEL_EXPORTER_OTLP_ENDPOINT` turns Copilot's exporter on. Copilot appen
 cd ~/code/my-project
 copilot -p "List the files in this folder and read README.md, then summarize it in one sentence." --allow-all-tools
 ```
+
+`-p` requires `--allow-all-tools`, which auto-approves every tool call. Prefer an interactive session for real projects, or replace it with narrowly scoped `--allow-tool` rules.
 
 Interactive sessions (`copilot` with no `-p`) export the same way. Each message you send becomes its own `invoke_agent` trace.
 
@@ -133,15 +147,18 @@ Organizations can push the same configuration to every developer through Copilot
 
 ## Privacy
 
-By default Copilot exports metadata only: model names, token counts, durations, tool names, and IDs. It does not export prompts, responses, system prompts, tool schemas, tool arguments, or tool results. We checked this on a real Copilot CLI 1.0.98 session: a unique marker string in the prompt and the contents of the file Copilot read were absent from every span stored in Future AGI.
+By default Copilot exports mostly metadata: model names, token counts, durations, tool names, and IDs. Prompt and tool message bodies are off by default. However, some vendor fields remain free text even when content capture is off, including hook command paths and raw failure text. We checked a real Copilot CLI 1.0.98 session: a unique marker string in the prompt and the contents of the file Copilot read were absent from every span stored in Future AGI.
 
 Other fields you should know about:
 
 | Field | When it is sent | Notes |
 | --- | --- | --- |
-| `enduser.pseudo.id` (CLI) | Always | Pseudonymous Copilot user ID, not an email or login |
-| `github.copilot.git.repository`, `.branch`, `.commit_sha` (VS Code) | When the workspace is a Git repository | Repository remote URL and current branch and commit |
-| `user.name`, `host.name` (VS Code) | Only with `github.copilot.chat.otel.captureIdentity` | Off by default |
+| `enduser.pseudo.id` (CLI) | When available | Pseudonymous Copilot user ID, not an email or login |
+| `github.copilot.git.repository`, `.branch`, `.commit_sha` (CLI and VS Code) | When the workspace is a Git repository | Repository remote URL, current branch and commit; VS Code can also emit `github.copilot.github.org` and legacy `copilot_chat.repo.*` aliases |
+| `github.copilot.context.skills`, `.custom_agent_names`, `.mcp_server_names` (CLI) | When the session uses them | Skill names, custom agent names and hashed MCP server names |
+| `user.name`, `process.user.name`, `host.name` (VS Code) | Only with `github.copilot.chat.otel.captureIdentity` | Off by default |
+| `copilot_chat.hook_command` (VS Code hooks) | When a hook runs | Full hook command line, which may contain a local path |
+| Status messages and `github.copilot.hook.error_message` | On failures | Raw failure text can contain paths or hook/tool output |
 
 To capture prompt and tool content, opt in explicitly and only in a trusted environment:
 
@@ -160,6 +177,7 @@ With content on, spans add `gen_ai.input.messages`, `gen_ai.output.messages`, `g
 - **Cost in currency.** `github.copilot.cost` is a billing multiplier and `github.copilot.nano_aiu` counts AI units. Neither is a dollar amount, and Future AGI does not convert them.
 - **Metrics and events.** Copilot also exports OTel metrics. The Future AGI collector accepts traces only, so metric exports are rejected with HTTP 404 (Copilot logs `HTTP export failed with status code: 404` at exit). Traces are not affected.
 - **Span type for `invoke_agent`.** Future AGI classifies `chat` spans as LLM and `execute_tool` spans as tools; the `invoke_agent` root shows type `unknown`.
+- **Standalone `custom_notification` traces.** Copilot CLI can export a one-span `custom_notification` trace for shell completion, idle, or permission notifications. Future AGI shows it as type unknown; it is safe to ignore or filter.
 - **The local file and SQLite exporters** (`COPILOT_OTEL_FILE_EXPORTER_PATH`, **Chat: Export Agent Traces DB**) are debugging aids, not the setup path.
 
 This page is about Copilot as an application. It is not a wrapper for GitHub Models or for model calls your own code makes; use a [traceAI integration](/docs/integrations/traceai) for those.
@@ -171,7 +189,7 @@ This page is about Copilot as an application. It is not a wrapper for GitHub Mod
 | No trace appears | Check that `OTEL_EXPORTER_OTLP_ENDPOINT` (CLI) or `otel.enabled` (VS Code) is set in the process that runs Copilot. VS Code only reads the variables at start: quit it fully and relaunch from the shell. |
 | Spans rejected with 401 or 403 | `OTEL_EXPORTER_OTLP_HEADERS` must be `X-Api-Key=...,X-Secret-Key=...` with no spaces or quotes inside the value. |
 | Spans rejected with a `project_name` error | Add `project_name=...` to `OTEL_RESOURCE_ATTRIBUTES`. |
-| 404 from the collector | The endpoint is a base URL. Use `https://api.futureagi.com/tracer`, not `.../tracer/v1/traces`. |
+| 404 from the collector | If no traces arrive and the 404 is for traces (not `meter shutdown`), the endpoint is a base URL. Use `https://api.futureagi.com/tracer`, not `.../tracer/v1/traces`. A meter-shutdown 404 is expected because Future AGI accepts traces only. |
 | Prompts are visible in spans | Content capture is on. Unset `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` or `COPILOT_OTEL_CAPTURE_CONTENT` and set `captureContent` to `false`. |
 
 To check your settings locally before sending anything, run one session with `COPILOT_OTEL_FILE_EXPORTER_PATH=/tmp/copilot-otel.jsonl` and check the file with `python3 check_spans.py /tmp/copilot-otel.jsonl` from the example folder. Unset the variable afterwards: while it is set, Copilot writes to the file instead of exporting.
