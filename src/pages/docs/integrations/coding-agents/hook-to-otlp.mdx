@@ -1,0 +1,128 @@
+---
+title: "Coding agent hooks to Future AGI (hook-to-OTLP)"
+description: "A small hook command that turns coding-agent hook events (Cursor, Claude Code, and others) into OpenTelemetry traces in Future AGI: one trace per session, content off by default."
+---
+
+## About
+
+Most coding agents (Cursor, Claude Code, Gemini CLI, Kiro, and others) can run a command at fixed points of the agent loop: when a session starts, before a prompt is sent, after a tool runs, when the agent stops. Each hook receives a JSON payload on stdin (some apps append it to the command as a heredoc, which the shell feeds to stdin).
+
+`hook-to-otlp` is one stdlib-only Python script that you register as that hook command. It maps the payloads to OpenTelemetry spans and sends them to Future AGI over OTLP/HTTP. Each app has a small adapter that knows its event names and fields. The app-specific pages (for example [Cursor](/docs/integrations/coding-agents/cursor)) show the exact hook configuration.
+
+This is application session tracing: it shows what the agent did (turns, tools, subagents, timing, errors). It is not model-call instrumentation. For your own code that calls an LLM SDK, use a [traceAI integration](/docs/integrations) instead.
+
+Source: [examples/coding-agents/hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp).
+
+## What you get in Future AGI
+
+One agent session (conversation) becomes one trace:
+
+```
+Cursor session            AGENT   whole conversation, re-sent as it grows
+└── Cursor turn           CHAIN   one user message → agent stop
+    ├── Shell             TOOL    duration, status, failure type
+    ├── Read              TOOL
+    ├── Subagent: explore AGENT
+    └── Agent response    LLM     model name
+```
+
+| Span | Parent | `fi.span.kind` | When it is sent |
+| --- | --- | --- | --- |
+| Session | none | `AGENT` | together with every child span, and at session end |
+| Turn | session | `CHAIN` | when the turn ends |
+| Tool | turn | `TOOL` | when the tool finishes or fails |
+| Subagent | turn | `AGENT` | when the subagent stops |
+| Model response / thought | turn | `LLM` | when the hook fires |
+| Other events (for example context compaction) | turn | `CHAIN` | when the hook fires |
+
+Every span has `session.id` and `gen_ai.conversation.id` set to the app's session id, so the Sessions view groups them. Tool spans have `gen_ai.tool.name` and `gen_ai.tool.call.id`. Session, turn, and model spans have `llm.model_name` when the app reports a model. Failed tools and turns are marked `ERROR`.
+
+How the emitter builds the tree:
+
+- The trace id is a hash of the app name and session id, so every hook of a session lands in the same trace without coordination.
+- Span ids are derived the same way from the session, the span type, and the app's id for it (turn id, tool call id). A repeated hook overwrites its span instead of duplicating it.
+- Apps that do not report turn or tool call ids still get a tree: each prompt hook opens the next turn, and each tool end is paired with the oldest unfinished start of the same tool.
+- A new turn closes a previous turn that never reported its end, marking it `coding_agent.incomplete=true` (corrected if the end arrives later).
+- Durations come from a matching start hook when the app has one, otherwise from the duration the app reports in the end hook. A small state file per session (in your temp directory, mode 0600) keeps start times between hook processes. With content capture on, it also holds the content of spans that have not ended yet (for example the open turn's prompt) and of turns closed as incomplete; a turn that ends normally leaves no content in it. It is deleted when the session ends, and files untouched for 24 hours are removed.
+- The session span is re-sent with the same id and start time whenever a child span is sent, so it always covers the whole conversation. A conversation that was opened and closed without any activity is not exported.
+
+## Privacy
+
+By default the emitter exports structure and metadata only: ids, names, model, durations, counts, statuses.
+
+| Data | Default | With `FI_HOOK_CAPTURE_CONTENT=1` |
+| --- | --- | --- |
+| Session, turn, tool call ids, tool names, model, durations, status | exported | exported |
+| Prompt text, tool arguments, tool output, model response and thinking text | **not exported** | exported as `input.value` / `output.value`, capped at 4096 characters per field, common key and token formats replaced with `[REDACTED]` |
+| Tool error text | **not exported** (status message is the failure type, for example `timeout`) | exported as `exception.message` and the status message, with the user name in home-directory paths replaced by `<user>` |
+| File and workspace paths as metadata (`cwd`, workspace roots, transcript paths) | **never exported** | **never exported** |
+| Paths inside prompts, tool input, and tool output (for example a Read tool's `file_path`) | **not exported** | exported as part of that content, with the user name in home-directory paths replaced by `<user>` (`/Users/<user>/project/README.md`) |
+| User email | **never exported** | **never exported** |
+
+The user name is the one directory after `/Users/`, `/home/`, or `C:\Users\` (and the name in `~name/`); the text after it, such as the rest of a shell command, is kept as it was. A name with spaces is replaced in full when it is this machine's own home directory. For another account's name with spaces (for example in a log copied from another machine), only the part before the first space is replaced.
+
+The emitter never reads files named in a payload (for example a transcript path) and never reads the app's local database or logs. It only sees the JSON the app passes to the hook.
+
+<Warning>
+Turn content on only for projects where prompts and source code may be stored in Future AGI. Redaction catches common key formats; it is not a data-loss-prevention control.
+</Warning>
+
+## Configuration
+
+Set these in the environment that starts the agent, or in `~/.config/fi-hook-to-otlp/env` as `KEY=VALUE` lines (useful for desktop apps that do not inherit your shell environment; `chmod 600` the file).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | none | Your Future AGI keys. Without them the hook does nothing. |
+| `FI_PROJECT_NAME` | the app name | Future AGI project for these traces. |
+| `FI_BASE_URL` | `https://api.futureagi.com` | Traces go to `$FI_BASE_URL/tracer/v1/traces`. |
+| `FI_OTLP_ENDPOINT` | none | Full traces URL, overrides `FI_BASE_URL` (self-hosted collectors). |
+| `FI_HOOK_CAPTURE_CONTENT` | off | `1` exports prompts, tool input/output, and model text. |
+| `FI_HOOK_MAX_CONTENT_CHARS` | `4096` | Per-field cap when content is on. |
+| `FI_HOOK_TIMEOUT` | `10` (`3` on Windows) | HTTP timeout in seconds. On macOS and Linux the send runs in the background, so this never delays the agent. |
+| `FI_HOOK_LOG_FILE` | none | Writes one line per hook (event, span count, HTTP status). No content, no keys. |
+| `FI_HOOK_DUMP_FILE` | none | Appends every OTLP body exactly as sent, to check what leaves the machine. |
+| `FI_HOOK_DISABLED` | off | `1` turns the hook into a no-op. |
+
+## Registering the hook
+
+Apps that export OpenTelemetry natively do not use this emitter and have no hook command; their pages set up the app's own telemetry export. Every app that is traced through hooks registers this same guarded command, so a missing emitter or a missing `python3` can never block the agent (many apps treat exit code 2 from a hook as "block this action"):
+
+```bash
+(python3 -B <path-to>/emit.py <app> <EventName> 2>/dev/null || true)
+```
+
+- `|| true` turns any failure (emitter file missing, `python3` missing, crash) into exit code 0 with empty output, which apps treat as "no decision".
+- The parentheses run the command in a subshell, so the payload reaches `python3` however the app passes it. Some apps pipe it to stdin; others append it to the command as a heredoc (Cursor's headless agent host runs `<command> <<'CURSOR_HOOK_EOF'`). Without the parentheses that heredoc would go to `true`, and the emitter would get no payload.
+- `2>/dev/null` keeps Python's own error text out of the app's logs. The emitter itself never writes to stderr.
+- `-B` stops Python from writing `__pycache__` into your project.
+- The event name is passed explicitly, so the emitter works even if the app leaves it out of the payload.
+
+This form needs a POSIX shell (`sh`, `bash`, `zsh`); fish, for example, reads the parentheses as command substitution. On macOS and Linux, Cursor runs each hook command with `$SHELL -c` (falling back to `/bin/sh`). The commands and installers on these pages are not tested on native Windows; there, use WSL or write the equivalent for the shell your app runs hooks with, and keep it exiting 0 with no output on failure.
+
+## Safety for the host app
+
+- The script exits 0 and prints the response the app expects (for most hooks `{}`), so it never blocks or changes the agent's behaviour. If its adapter cannot be loaded or it fails, it prints nothing. If Python cannot start the script at all (for example a half-deleted install), the guard in the hook command still turns that into exit code 0 with no output.
+- On macOS and Linux the HTTP request runs in a detached background process, so the agent does not wait for the network. On Windows there is no background send: the request runs inline with a 3-second timeout, and hooks of the same session are not locked against each other, so a start time can occasionally be lost. A down collector, a wrong key, or bad JSON is logged (if `FI_HOOK_LOG_FILE` is set) and otherwise ignored.
+- Register it only on hooks that observe. Do not use it as the deciding hook for permission prompts.
+- Requirements: Python 3.9 or newer on the `PATH` the app uses. No packages to install.
+
+## Supported apps
+
+| App | Page |
+| --- | --- |
+| Cursor (IDE agent) | [Cursor](/docs/integrations/coding-agents/cursor) |
+
+Adding an app is one adapter file: see [the adapter guide](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp#writing-an-adapter).
+
+## Troubleshooting
+
+**No traces arrive.** Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` and run one agent turn. No lines means the app did not run the hook (check the app's hook configuration and logs). `error=` lines mean the collector was unreachable; `http=401` or `http=403` means the keys are wrong.
+
+**Keys are set in my shell but nothing is sent.** Desktop apps started from the Dock or Start menu do not see shell variables. Put the variables in `~/.config/fi-hook-to-otlp/env`, or start the app from a terminal.
+
+**A span has `coding_agent.turn.inferred=true`.** The app did not report a turn id for that event, so the span was attached to the turn that was open at the time.
+
+**A tool span sits directly under the session.** The app reported no turn id for it and no turn was open at the time (for example, the app did not run its prompt hook). Such spans carry no turn marker; the session span is their parent.
+
+**I want to check exactly what is sent.** Set `FI_HOOK_DUMP_FILE=/tmp/fi-hook-dump.jsonl` and search it for a phrase from your prompt. With content capture off it must not appear.
