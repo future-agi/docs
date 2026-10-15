@@ -20,6 +20,7 @@ Python 3.9+.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import importlib
 import json
@@ -65,6 +66,7 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b((?:api[_-]?key|secret[_-]?key|access[_-]?token|password|passwd|token)\b[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+"),
 )
 MAX_ENDED_TURNS = 64
+MAX_ENDED_RECS = 8
 
 
 @dataclass
@@ -405,12 +407,42 @@ class SpanBuilder:
         ended = self.state["ended_turns"]
         ended.append(key)
         del ended[:-MAX_ENDED_TURNS]
+        recs = self.state.setdefault("ended_recs", {})
+        recs.pop(key, None)
+        recs[key] = dict(rec)
+        while len(recs) > MAX_ENDED_RECS:
+            recs.pop(next(iter(recs)))
         if self.state.get("current_turn") == key:
             self.state["current_turn"] = None
+
+    def _resolve_turn_key(self, ev: SpanEvent) -> Optional[str]:
+        """Key for a TURN event that has none (apps without turn ids).
+
+        START mints the next per-session key (turn-1, turn-2, ...); END and
+        UPDATE apply to the currently open turn, if any.
+        """
+        if ev.phase == START:
+            seq = int(self.state.get("turn_seq", 0)) + 1
+            self.state["turn_seq"] = seq
+            return f"turn-{seq}"
+        return self.state.get("current_turn")
+
+    def _oldest_open(self, scope: str, name: Optional[str]) -> Optional[str]:
+        """Key of the oldest open keyless START of ``scope`` with this name (FIFO pairing)."""
+        candidates = [rec for rec in self.state["open"].values()
+                      if rec["scope"] == scope and rec.get("synthetic_key") and rec.get("name") == name]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda rec: rec["start_ns"])["key"]
 
     # -- main entry
 
     def apply(self, ev: SpanEvent, event: str) -> None:
+        if ev.scope == TURN and not ev.key:
+            resolved = self._resolve_turn_key(ev)
+            if not resolved:
+                return
+            ev = dataclasses.replace(ev, key=resolved)
         start_ns = self._start_of(ev)
         session = self._ensure_session(start_ns)
         if ev.model:
@@ -430,6 +462,8 @@ class SpanBuilder:
 
         key = ev.key
         synthetic = False
+        if not key and ev.phase == END:
+            key = self._oldest_open(ev.scope, ev.name) or ""
         if not key:
             key, synthetic = secrets.token_hex(8), True
         slot = f"{ev.scope}:{key}"
@@ -468,6 +502,13 @@ class SpanBuilder:
             return
         slot = f"{TURN}:{key}"
         if ev.phase == START:
+            # One turn at a time per session: a new turn closes any other open
+            # turn as incomplete (apps that sometimes skip their turn-end hook).
+            for other_slot, other in list(self.state["open"].items()):
+                if other["scope"] == TURN and other["key"] != key:
+                    del self.state["open"][other_slot]
+                    other["incomplete"] = True
+                    self._end_turn(other["key"], other, event)
             if key in self.state["ended_turns"]:
                 self.state["ended_turns"].remove(key)
             rec = self._ensure_turn(key, start_ns)
@@ -481,7 +522,15 @@ class SpanBuilder:
         else:
             rec = self.state["open"].pop(slot, None)
             if rec is None:
-                rec = {"scope": TURN, "key": key, "start_ns": start_ns, "attrs": {}, "parent": self.root}
+                late = self.state.get("ended_recs", {}).pop(key, None)
+                if late is not None:
+                    # The turn was closed as incomplete; re-send it complete with its original start.
+                    rec = late
+                    rec.pop("incomplete", None)
+                    if key in self.state["ended_turns"]:
+                        self.state["ended_turns"].remove(key)
+                else:
+                    rec = {"scope": TURN, "key": key, "start_ns": start_ns, "attrs": {}, "parent": self.root}
             self._merge(rec, ev)
             self._end_turn(key, rec, event)
 
@@ -544,9 +593,12 @@ def respond(adapter: Any, event: str, payload: Dict[str, Any]) -> str:
     if fn is None:
         return "{}"
     try:
-        return fn(event, payload) or "{}"
+        out = fn(event, payload)
     except Exception:
         return "{}"
+    # None means "use the default"; "" means "print nothing" (hosts that add
+    # hook stdout to the model context).
+    return "{}" if out is None else str(out)
 
 
 def build_spans(adapter: Any, cfg: Config, event: str, payload: Dict[str, Any],
