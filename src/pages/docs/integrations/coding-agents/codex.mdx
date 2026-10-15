@@ -1,0 +1,157 @@
+---
+title: "Codex session tracing with Future AGI"
+description: "Trace OpenAI Codex CLI sessions in Future AGI from Codex's own OpenTelemetry log events: one trace per prompt with model requests, tool calls, tokens, and approvals, grouped by conversation. Prompt and tool content stay off by default."
+---
+
+## About
+
+Codex has an `[otel]` section in its config that exports OpenTelemetry log events for each run: the prompt, every model request and its token counts, every tool approval and tool result. Future AGI stores traces, not logs, so a small bridge (`bridge.py`, Python standard library only) receives those events on your machine and turns each Codex prompt into one trace:
+
+```
+Codex turn                     one prompt (agent span), session.id = Codex conversation id
+├── Codex model request        model, input / output / cached / reasoning tokens, HTTP status
+├── exec                       tool call: name, call id, duration, approval decision
+│   └── exec_command           a tool call made from inside another one
+└── Codex model request
+```
+
+All prompts of one Codex conversation share `session.id`, so a resumed conversation shows up under **Sessions** as one session with one trace per prompt.
+
+This is not the same as:
+
+- **The Codex SDK** (`@openai/codex-sdk`), which drives Codex from your own TypeScript code. It has its own traceAI instrumentor.
+- **OpenAI API tracing.** The OpenAI instrumentors trace calls your application makes to the OpenAI API, not a Codex session.
+
+| | |
+| --- | --- |
+| Tested with | Codex CLI 0.162.1 (`codex exec`, macOS), model `gpt-5.6-terra` through a Responses-compatible provider |
+| Codex docs used | [Configuration reference](https://developers.openai.com/codex/config-reference) and [Advanced configuration: observability](https://developers.openai.com/codex/config-advanced), read 2026-10-14 |
+| Requires | Python 3.9+ on the machine that runs Codex. No packages. |
+| Source | [examples/coding-agents/codex](https://github.com/future-agi/docs/tree/main/examples/coding-agents/codex) |
+
+<Note>
+Codex 0.162.1 can also export traces (`otel.trace_exporter`). Those are Codex's internal function spans: one prompt in our test produced 28 traces and about 1,300 spans (file reads, plugin loading, stream handling), with the tool call in a separate trace from the turn and no session id. Their names are not documented. This page uses the documented log events instead and leaves `trace_exporter` off.
+</Note>
+
+## 1. Run the bridge
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+
+export FI_API_KEY=your-futureagi-api-key
+export FI_SECRET_KEY=your-futureagi-secret-key
+export FI_PROJECT_NAME=codex-sessions
+python3 fi-docs/examples/coding-agents/codex/bridge.py
+```
+
+The bridge listens on `127.0.0.1:4319` and prints one line per trace it sends. Keep it running while you use Codex.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | none | Sent to Future AGI as `X-Api-Key` and `X-Secret-Key`. Required. |
+| `FI_PROJECT_NAME` | `codex` | Project for these traces. |
+| `FI_BASE_URL` | `https://api.futureagi.com` | Traces go to `$FI_BASE_URL/tracer/v1/traces`. |
+| `FI_OTLP_ENDPOINT` | none | Full traces URL, overrides `FI_BASE_URL` (self-hosted Future AGI). |
+| `FI_BRIDGE_LISTEN` | `127.0.0.1:4319` | Where Codex sends its log events. |
+| `FI_BRIDGE_IDLE_SECONDS` | `10` | A turn is sent this long after its last event. Events that arrive later, such as the result of a long tool call, are added to the same trace. |
+| `FI_BRIDGE_CAPTURE_CONTENT` | off | `1` keeps prompt text, tool arguments, and tool output. See [Privacy](#privacy). |
+| `FI_BRIDGE_MAX_CONTENT_CHARS` | `4096` | Per-field cap when content is on. |
+
+## 2. Point Codex at the bridge
+
+Add an `[otel]` section to your user config, `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`):
+
+```toml
+[otel]
+log_user_prompt = false   # Codex's default; prompts are sent as [REDACTED]
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4319/v1/logs", protocol = "json" } }
+trace_exporter = "none"
+```
+
+| Key | Why |
+| --- | --- |
+| `exporter` | Codex's log exporter. Off (`none`) by default. The bridge accepts OTLP/HTTP with `protocol = "json"`. |
+| `log_user_prompt` | Codex replaces the prompt with `[REDACTED]` unless this is `true`. |
+| `trace_exporter` | Keeps Codex's internal spans from going anywhere. |
+
+The section must be in the user config. Codex ignores `otel` in a project's `.codex/config.toml`, so a repository cannot turn the export on. The Codex CLI and the IDE extension read the same user config.
+
+To try it without editing the file, pass the same settings to one run:
+
+```bash
+codex exec \
+  -c 'otel.exporter={otlp-http={endpoint="http://127.0.0.1:4319/v1/logs",protocol="json"}}' \
+  -c 'otel.trace_exporter="none"' \
+  "List the files in this folder and read README.md"
+```
+
+## 3. Run a session
+
+Run Codex in a project and send a prompt that uses a tool, for example *"List the files in this folder and read README.md"*. Codex sends its events in batches and when it exits, and the bridge sends the turn about 10 seconds after the last event. The bridge prints:
+
+```
+[fi-codex-bridge] turn trace_id=2bece989c2f947ac0bc49eab2e8c42a8 session.id=01a13da7-7e23-7570-9898-1f212eaaf447 spans=4 http=200
+```
+
+Open **Observe** in Future AGI and select the project (`codex-sessions` above). Each prompt is a trace named **Codex turn**. `codex exec resume <session id> "..."` adds the next prompt to the same session.
+
+`run_e2e.sh` in the examples folder runs the whole path once: it starts the bridge, runs one `codex exec` prompt with the settings passed through `-c`, and prints the trace id:
+
+```bash
+FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=codex-e2e fi-docs/examples/coding-agents/codex/run_e2e.sh
+```
+
+## What is captured
+
+| Codex event | Future AGI span | Fields |
+| --- | --- | --- |
+| `codex.conversation_starts` | (attributes of every turn) | model provider name, approval policy, sandbox policy |
+| `codex.user_prompt` | **Codex turn** (agent) | `session.id` = `conversation.id`, model, prompt length, originator (for example `codex_exec`) |
+| `codex.turn_ttft` | **Codex turn** | time to first token (`codex.turn.ttft_ms`) |
+| `codex.api_request` | **Codex model request** (LLM) | model, HTTP status, attempt, endpoint, duration; `ERROR` with the provider's message on a failed request |
+| `codex.sse_event` `response.completed` | **Codex model request** | input, output, cached, and reasoning tokens, time to first token |
+| `codex.tool_decision` | tool span | approval decision (for example `approved`) and its source (for example `Config`) |
+| `codex.tool_result` | tool span named after the tool (`exec`, `exec_command`, MCP tools) | `gen_ai.tool.name`, call id, namespace, MCP server, duration, success; `ERROR` when Codex reports `success=false` |
+
+The turn span also carries the sum of its requests' tokens (`codex.turn.input_tokens`, `codex.turn.output_tokens`; kept off the usage keys so the trace total is not counted twice) and the number of tool calls. A tool call that runs inside another (Codex's `exec` tool running `exec_command`) is nested under it.
+
+Codex's WebSocket transport logs `codex.websocket_request` and `codex.websocket_event` instead of `codex.api_request` and `codex.sse_event`. The bridge reads them the same way, but this was not tested: the provider used for testing serves HTTP only.
+
+## What is not available
+
+- **Model input and output text.** Codex's events carry token counts, not the messages.
+- **Cost.** Codex's events have no cost. Future AGI computes it from the model and tokens when the model is in its price list.
+- **Runs that end in an error.** In testing, a `codex exec` run that failed (unknown model) exited without sending its batched events, so nothing reached the bridge.
+- **Codex's internal spans.** Startup phases, plugin loading, and file reads are not traced; see the note above about `trace_exporter`.
+- **Codex Cloud tasks.** They run on OpenAI's servers and do not read your local `[otel]` config.
+- **The interactive TUI and IDE extension were not run for this page.** OpenAI documents that they read the same `[otel]` section; the events above were recorded from `codex exec`.
+
+## Privacy
+
+By default no prompt text, tool arguments, or tool output reach Future AGI:
+
+- Codex sends the prompt as `[REDACTED]` while `log_user_prompt = false`.
+- Codex does put tool arguments (shell commands, file paths) and tool output (file contents, command output) on its `codex.tool_result` events by default. The bridge drops them unless `FI_BRIDGE_CAPTURE_CONTENT=1`.
+- The bridge forwards an allow-list of fields only. Host name, terminal type, and Codex's `auth.*` fields are not sent.
+
+To include content, turn it on in both places: `log_user_prompt = true` in Codex for the prompt, and `FI_BRIDGE_CAPTURE_CONTENT=1` for the bridge. The prompt becomes the turn's input, and each tool's arguments and output become the tool span's input and output, each capped at `FI_BRIDGE_MAX_CONTENT_CHARS`.
+
+The bridge listens on `127.0.0.1` only. If you bind it to another address, anyone who can reach it can send spans to your project.
+
+## Troubleshooting
+
+**The bridge prints nothing.**
+1. A typo in `config.toml` makes Codex print a config error at start. To rule out the file, run `codex exec` once with the `-c` flags from step 2.
+2. The `[otel]` section must be in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`), not in the project's `.codex/config.toml`.
+3. Wait for Codex to exit or for its next batch. A run that ends in an error may send nothing.
+
+**Codex's export gets HTTP 415.** Codex is sending protobuf. Set `protocol = "json"` in the exporter, or install `opentelemetry-proto` in the bridge's Python so it can read protobuf.
+
+**The bridge logs `export failed: HTTP 401` or `403`.** Wrong Future AGI keys.
+
+**A turn shows up in parts.** The bridge sends a turn after `FI_BRIDGE_IDLE_SECONDS` of quiet and sends the turn span again, with the same id, when more events arrive. Future AGI keeps the latest version. Raise the value if you prefer one send per turn.
+
+## Next Steps
+
+- [Hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp): the shared emitter the hook-based coding agent integrations use.
+- [Sessions](/docs/observe/features/session): how Future AGI groups traces by `session.id`.
