@@ -82,17 +82,19 @@ class DevinPageTest(unittest.TestCase):
         self.assertIn("recordContent: false", privacy)
         self.assertIn("by default", privacy)
 
-    def test_devin_desktop_reference_is_linked_or_not_claimed(self):
-        desktop_page = PAGES / (DESKTOP_HREF.lstrip("/") + ".mdx")
-        if desktop_page.exists():
-            # Once the Desktop page is in the tree, refer to it by link, never as plain bold text.
-            self.assertIn(f"]({DESKTOP_HREF})", self.text)
-        else:
-            # No page to point at: do not claim Future AGI supports Cascade, and do not link a missing page.
-            self.assertNotIn(DESKTOP_HREF, self.text)
-            self.assertNotIn("Future AGI supports", self.text)
-            self.assertIn("recipe for Devin Desktop is in progress", self.text)
+    def test_devin_desktop_reference_is_true_with_or_without_desktop_page(self):
+        # The Devin Desktop page (docs#921) may land before or after this one, so the
+        # Desktop mentions must read true in both trees: no "not published yet" claim
+        # that goes stale when it lands, and no link to a page that is not there yet.
+        for stale in ("not published", "in progress", "until it is published"):
+            self.assertNotIn(stale, self.text, stale)
+        self.assertNotIn("Future AGI supports", self.text)
         self.assertNotIn("see **Devin Desktop**", self.text)
+        desktop_page = PAGES / (DESKTOP_HREF.lstrip("/") + ".mdx")
+        if not desktop_page.exists():
+            self.assertNotIn(DESKTOP_HREF, self.text)
+        # Either the neutral pointer or, once both pages are in the tree, a link to the Desktop page.
+        self.assertTrue(f"]({DESKTOP_HREF})" in self.text or "not described on this page" in self.text)
 
     def test_no_cascade_or_local_hook_configuration(self):
         for needle in ("hooks.json", "pre_user_prompt", "post_cascade_response", "trajectory_id", "emit.py"):
