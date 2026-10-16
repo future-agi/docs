@@ -1,0 +1,239 @@
+---
+title: "OpenAI Go tracing with Future AGI"
+description: "Trace the official OpenAI Go SDK (openai-go v3) with the traceAI Go middleware: one LLM span per chat completion, streaming and tool calls included, exported to Future AGI over OTLP/HTTP."
+---
+
+## About
+
+`traceaiopenai` (module `github.com/future-agi/traceAI/go/openai`) traces Go services that call OpenAI with the official SDK, [`github.com/openai/openai-go/v3`](https://github.com/openai/openai-go). It is an `option.Middleware`: you add one option when you build the client, and every Chat Completions call, streaming or not, becomes one LLM span. The SDK keeps its own HTTP client and transport policy.
+
+A run of the example on this page is one trace:
+
+```
+weather-agent              your agent span (AGENT)
+├── chat gpt-4.1-mini      the middleware: the model asks for get_weather (LLM)
+├── execute_tool get_weather   your tool span (TOOL)
+└── chat gpt-4.1-mini      the middleware: the final answer, streamed (LLM)
+```
+
+This is not the same as:
+
+- **[OpenAI (Python and JS/TS)](/docs/integrations/traceai/openai)** (`traceAI-openai`, `@traceai/openai`) and **[OpenAI Java](/docs/integrations/traceai/java/openai)**. Those packages are unchanged. The Go module writes the same attribute names as the Python package, so the spans look the same in Future AGI.
+- **Arize's `openinference-instrumentation-openai-go`**. That module targets `github.com/openai/openai-go` v1 (a different import path from v3) and writes OpenInference attribute names. It is not this integration and you do not need it.
+
+| | |
+| --- | --- |
+| Tested with | openai-go **v3.78.0** (latest on 2026-10-16) and v3.71.1; Go 1.27.2 and 1.26.9; OpenTelemetry Go v1.47.0 |
+| Supported | openai-go v3.71.1 or later (the module's minimum), Go 1.26 or later |
+| Tested surface | Chat Completions: `client.Chat.Completions.New` and `NewStreaming`, tool calls, HTTP errors, cancellation |
+| Source | [traceAI `go/openai`](https://github.com/future-agi/traceAI/tree/main/go/openai) |
+
+<Note>
+The end-to-end test sent real model calls through an OpenAI-compatible endpoint (set with `OPENAI_BASE_URL`), not directly to `api.openai.com`. The span format for `api.openai.com` responses is covered by unit tests that replay OpenAI's documented JSON and streaming shapes.
+</Note>
+
+## 1. Install
+
+```bash
+go get github.com/future-agi/traceAI/go/openai@latest github.com/openai/openai-go/v3@latest
+go get go.opentelemetry.io/otel/sdk go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+```
+
+<Note>
+The module ships with [traceAI PR #260](https://github.com/future-agi/traceAI/pull/260). Until that is merged, fetch the PR commit straight from GitHub:
+
+```bash
+GOPRIVATE=github.com/future-agi/traceAI go get github.com/future-agi/traceAI/go/openai@7e3a28b8f184
+```
+</Note>
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-service"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+`FI_BASE_URL` is optional (default `https://api.futureagi.com`; set it to your own collector when you self-host). The OpenAI SDK reads `OPENAI_API_KEY` and `OPENAI_BASE_URL` itself.
+
+## 3. Create the tracer provider
+
+The module does not build an exporter. Use the stock OpenTelemetry OTLP/HTTP exporter with the three things Future AGI needs: both auth headers, the `project_name` resource attribute, and an uncompressed body (the collector rejects gzip).
+
+```go
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	traceaiopenai "github.com/future-agi/traceAI/go/openai"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+)
+```
+
+```go
+func newTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
+	apiKey, secretKey := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY")
+	project := os.Getenv("FI_PROJECT_NAME")
+	if apiKey == "" || secretKey == "" || project == "" {
+		return nil, errors.New("set FI_API_KEY, FI_SECRET_KEY and FI_PROJECT_NAME")
+	}
+	base := strings.TrimRight(envOr("FI_BASE_URL", "https://api.futureagi.com"), "/")
+
+	exp, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			"X-Api-Key":    apiKey,
+			"X-Secret-Key": secretKey,
+		}),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+	)
+	if err != nil {
+		return nil, err
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(
+		attribute.String("project_name", project),
+		attribute.String("project_type", "observe"),
+		attribute.String("service.name", project),
+	))
+	if err != nil {
+		return nil, err
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+		sdktrace.WithBatcher(exp),
+	), nil
+}
+
+func shutdown(tp *sdktrace.TracerProvider) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := tp.Shutdown(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "trace export:", err)
+	}
+}
+```
+
+`resource.Default()` adds only the SDK name and version and `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` if you set them. No host, process or OS detector is added, so no host name, user name or local path is exported.
+
+## 4. Add the middleware and flush on exit
+
+```go
+	tp, err := newTracerProvider(ctx)
+	if err != nil {
+		return err
+	}
+	defer shutdown(tp) // flush before exit
+
+	// OPENAI_API_KEY and OPENAI_BASE_URL are read by the SDK as usual.
+	client := openai.NewClient(
+		option.WithMiddleware(traceaiopenai.Middleware(traceaiopenai.WithTracerProvider(tp))),
+	)
+```
+
+Call the SDK as usual. `defer shutdown(tp)` matters: the batch exporter sends spans in the background, and spans still queued when the process exits are lost. Without `WithTracerProvider` the middleware uses the OpenTelemetry global provider (`otel.SetTracerProvider`).
+
+For a stream, ask for the usage chunk if you want token counts on the span:
+
+```go
+	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
+	s := client.Chat.Completions.NewStreaming(ctx, params)
+	defer s.Close()
+```
+
+The span ends when the stream reaches `[DONE]`, fails, is cancelled, or is closed.
+
+## 5. Sessions and your own spans
+
+Put a session id on the context; every chat span started from it carries `session.id`, and Future AGI groups those traces into one session. `ContextWithUserID` does the same for `user.id` (use an opaque id, not an email address).
+
+```go
+	sessionCtx := traceaiopenai.ContextWithSessionID(ctx, *session)
+	ctx, agent := tracer.Start(sessionCtx, "weather-agent", trace.WithAttributes(
+		attribute.String(traceaiopenai.GenAISpanKind, traceaiopenai.SpanKindAgent),
+		attribute.String(traceaiopenai.GenAIOperationName, "invoke_agent"),
+		attribute.String("gen_ai.agent.name", "weather-agent"),
+	), trace.WithAttributes(traceaiopenai.ContextAttributes(sessionCtx)...))
+```
+
+The middleware spans the model calls. Your agent loop and your tool code are yours to span, as above; `ContextAttributes` copies the session and user ids onto them, and `TraceConfig.SetAttributes` applies the same privacy switches to the values you add:
+
+```go
+	tc.SetAttributes(span,
+		attribute.String(traceaiopenai.InputValue, args),
+		attribute.String(traceaiopenai.InputMimeType, traceaiopenai.MimeTypeJSON))
+```
+
+## 6. Run the example
+
+The complete program (agent span, a `get_weather` tool call, a streamed answer, a failing call) is [`examples/traceai/openai-go/main.go`](https://github.com/future-agi/docs/tree/main/examples/traceai/openai-go) in this docs repo and `go/openai/example` in traceAI.
+
+```bash
+go run . -stream -fail
+```
+
+It prints the trace id. Open **Observe → your project → Tracing**: the LLM spans show the model, provider `openai`, prompt and completion tokens, and the conversation (system, user, tool and assistant turns); the failing call shows status ERROR with `HTTP 400 model_not_found`.
+
+## What is captured
+
+| Attribute | When |
+| --- | --- |
+| `gen_ai.span.kind` = `LLM`, `gen_ai.operation.name` = `chat`, `gen_ai.provider.name` | always (`azure` for Azure OpenAI hosts, otherwise `openai`) |
+| `gen_ai.request.model`, `gen_ai.request.temperature`, `top_p`, `max_tokens`, `seed`, `frequency_penalty`, `presence_penalty`, `stop_sequences` | when set on the request |
+| `gen_ai.request.parameters` | allow-listed request options as JSON |
+| `gen_ai.response.id`, `gen_ai.response.model`, `gen_ai.response.finish_reasons` | when the response has them |
+| `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens`, `cache_read_tokens`, `output_tokens.reasoning` | only when the API returns usage; never written as 0 |
+| `gen_ai.input.messages.*`, `gen_ai.output.messages.*` (roles, text, image URLs, tool calls with id, name, arguments), `gen_ai.tool.definitions.*`, `input.value`, `output.value` | content; on by default |
+| `session.id`, `user.id` | when set on the context |
+| `http.response.status_code`, `http.request.resend_count`, `error.type`, `error.message` | on errors and retries |
+
+Never captured, in any mode: request headers (the OpenAI key, `Authorization`, the Future AGI keys), transport error text (it carries URLs and host names; only a class such as `transport`, `canceled` or `timeout` is recorded), audio bytes, and the free-form request fields `user`, `metadata`, `safety_identifier` and `prompt_cache_key`.
+
+## Privacy
+
+Content is captured by default, as in every traceAI instrumentor. The traceAI switches, with the same names and defaults as the Python package, turn it off. Set them in the environment before the client is built, or pass `traceaiopenai.WithTraceConfig(traceaiopenai.TraceConfig{...})`.
+
+| Variable | Effect |
+| --- | --- |
+| `FI_HIDE_INPUTS=true` | `input.value` becomes `__REDACTED__`; input messages, system instructions, tool-call arguments and the API error message are dropped |
+| `FI_HIDE_OUTPUTS=true` | `output.value` becomes `__REDACTED__`; output messages, tool-call results and the API error message are dropped |
+| `FI_HIDE_INPUT_MESSAGES=true` / `FI_HIDE_OUTPUT_MESSAGES=true` | drop only `gen_ai.input.messages.*` / `gen_ai.output.messages.*` |
+| `FI_HIDE_INPUT_TEXT=true` / `FI_HIDE_OUTPUT_TEXT=true` | redact message text, keep roles and tool calls |
+| `FI_HIDE_INPUT_IMAGES=true` | drop image parts |
+| `FI_HIDE_LLM_INVOCATION_PARAMETERS=true` | drop `gen_ai.request.parameters` |
+| `FI_BASE64_IMAGE_MAX_LENGTH` | redact `data:` images longer than this (default 32000) |
+
+A value counts only when it is `true` (any case). With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` the model, token counts, tool names, session id and error status are still exported; prompts, answers, tool arguments and results are not. In our test a unique marker placed in the prompt, the tool arguments and the tool result was absent from every stored column of the project with both switches on, and present in the input and output with the defaults.
+
+## Errors, cancellation and retries
+
+- An HTTP 4xx or 5xx response, or an `error` event inside a stream, ends the span with status ERROR, `http.response.status_code` and `error.type`. The API's error message is added unless inputs or outputs are hidden. The SDK still returns its error to you unchanged.
+- A context cancelled or timed out before the response completes ends the span with ERROR and `error.type` `canceled` or `timeout`. A stream you close early yourself ends without an error.
+- openai-go runs middleware once per HTTP attempt, so a retried call is one span per attempt; retries carry `http.request.resend_count`. Start a span around the call, as the example's agent span does, so the attempts share one trace, or use `option.WithMaxRetries(0)`.
+- One SDK call is one span. Calling again after an error is a new attempt and a new span.
+
+## Not supported
+
+- The Responses API, Embeddings, Images, Audio, Realtime and the Assistants API pass through without a span. Only Chat Completions are traced.
+- `github.com/openai/openai-go` v1 (the old import path).
+- Cost is not computed in Go; Future AGI prices the model from the token counts.
+
+## Troubleshooting
+
+- **No traces.** Check that the process calls `shutdown(tp)` (or `tp.Shutdown`) before it exits, and that `FI_API_KEY`, `FI_SECRET_KEY` and `FI_PROJECT_NAME` are set. The exporter URL must be the full traces URL, `{FI_BASE_URL}/tracer/v1/traces`.
+- **Export errors about the body.** Keep `otlptracehttp.WithCompression(otlptracehttp.NoCompression)`; the collector rejects gzip.
+- **Spans in the wrong project or none at all.** `project_name` must be a resource attribute on the tracer provider, not a span attribute.
+- **No token counts on a streamed span.** Set `StreamOptions.IncludeUsage`; without it the API sends no usage chunk.
+- **Every retry is a separate trace.** Start a parent span around the call (step 5).
+- **No span at all for a call.** Only Chat Completions are traced; check that the middleware is on the client (or on that request with `option.WithMiddleware`).
