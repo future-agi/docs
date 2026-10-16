@@ -1,0 +1,197 @@
+---
+title: "ElevenLabs Agents conversation tracing with Future AGI"
+description: "Forward ElevenLabs Agents post-call OpenTelemetry traces to Future AGI with traceAI-elevenlabs-agents: one trace and one Voice-tab call per conversation, with turns, tool calls, LLM model and tokens. Transcript content stays off by default."
+---
+
+## About
+
+[ElevenLabs Agents](https://elevenlabs.io/agents) runs your voice agent on ElevenLabs, so there is no process of yours to instrument. When a call ends and ElevenLabs finishes analysis, it can POST the whole conversation to a webhook as an OpenTelemetry trace (OTLP JSON). The `traceAI-elevenlabs-agents` forwarder is that webhook. It runs in your environment, checks the `ElevenLabs-Signature` header, maps the trace onto Future AGI's attribute names, and exports it to Future AGI with your own keys:
+
+```
+elevenlabs.conversation               CONVERSATION: Voice-tab call, session.id = conversation id, duration, turns
+├── elevenlabs.recv.agent_response    CHAIN: greeting (or LLM, when ElevenLabs names the model)
+├── elevenlabs.recv.user_transcript   CHAIN: user turn
+├── elevenlabs.recv.agent_response    LLM: model and token counts from ElevenLabs
+│   └── elevenlabs.tool.{name}        TOOL
+└── elevenlabs.<anything else>        passed through unchanged
+```
+
+Each conversation shows up once in Observe, in **Tracing** and in the project's **Voice** call list. Future AGI never sees your ElevenLabs signing secret or API key.
+
+<Warning>
+**Alpha, verified against a stand-in.** The forwarder was tested end to end against a Future AGI collector with ElevenLabs **stood in** by a local sender that builds deliveries from the documented payload shape and signs them exactly as documented. It has not yet received a delivery from a live ElevenLabs workspace. Field names ElevenLabs does not document (tool arguments, LLM usage, turn index) follow what the [Langfuse ElevenLabs cookbook](https://langfuse.com/integrations/no-code/elevenlabs) reads from real exports.
+</Warning>
+
+This is not the same as:
+
+- **LiveKit** and **Pipecat** ([LiveKit](/docs/integrations/traceai/livekit), [Pipecat](/docs/integrations/traceai/pipecat)). Those instrument a voice agent you run yourself, while it runs. This page is for agents ElevenLabs runs, and data arrives after the call.
+- **Voice observability through an agent definition** ([Voice observability](/docs/observe/features/voice)). That path has Future AGI pull call logs with a provider API key stored in Future AGI. This forwarder pushes from your environment and keeps every ElevenLabs credential with you. Use one path per agent, or the same call appears twice.
+- **ElevenLabs text-to-speech calls** made from your own code. Those are plain API calls, not Agents conversations.
+
+| | |
+| --- | --- |
+| Tested with | `traceAI-elevenlabs-agents` 0.1.0: end-to-end run on Python 3.12 against a Future AGI collector, unit tests on Python 3.10, 3.12 and 3.13. Signature check cross-checked against the `elevenlabs` Python SDK `construct_event` 2.73.0 (latest on 2026-10-15) and 2.70.0 |
+| ElevenLabs surface | Post-call webhook type `post_call_transcription_otel` and `GET /v1/convai/conversations/{id}?format=opentelemetry`, as documented on [OpenTelemetry traces](https://elevenlabs.io/docs/eleven-agents/customization/opentelemetry-traces) (read 2026-10-15) |
+| Live ElevenLabs delivery | Not yet tested (stand-in only, see the warning above) |
+| Requires | Python 3.10 to 3.13. Standard library only: no ElevenLabs SDK, no OpenTelemetry SDK |
+| Source | [python/frameworks/elevenlabs-agents](https://github.com/future-agi/traceAI/tree/dev/python/frameworks/elevenlabs-agents) in traceAI |
+
+<Note>
+ElevenLabs renamed the GET parameter once (`format=otlp_traces` in the 25 May 2026 changelog, `format=opentelemetry` on the current page). The forwarder uses the current spelling only. If backfill starts returning conversations without `otlp_traces`, check that page again.
+</Note>
+
+## 1. Install
+
+```bash
+pip install traceAI-elevenlabs-agents
+```
+
+<Note>
+The package ships with the traceAI pull request for TH-8231 and is not on PyPI yet. Until it is released, install it from source:
+
+```bash
+pip install "git+https://github.com/future-agi/traceAI.git@feat/th-8231-elevenlabs-agents#subdirectory=python/frameworks/elevenlabs-agents"
+```
+</Note>
+
+## 2. Set environment variables
+
+```bash
+export ELEVENLABS_WEBHOOK_SECRET="the-webhook-signing-secret"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="elevenlabs-calls"
+```
+
+`ELEVENLABS_WEBHOOK_SECRET` is the secret ElevenLabs shows once when you create the workspace webhook in step 4. Start the forwarder after you have it.
+
+`FI_PROJECT_NAME` is the Observe project every conversation goes to. Future AGI creates it on the first export if it does not exist. The project is process configuration: nothing in a delivery can send data to a different project. Run one forwarder per ElevenLabs workspace and project.
+
+For a self-hosted Future AGI, also set `FI_BASE_URL`. Traces go to `$FI_BASE_URL/tracer/v1/traces` as uncompressed OTLP/HTTP JSON.
+
+## 3. Run the forwarder
+
+```bash
+traceai-elevenlabs-agents --host 0.0.0.0 --port 8787
+```
+
+It listens on `/elevenlabs/webhook` (change it with `--path`) and answers `GET /healthz`. ElevenLabs delivers to an HTTPS URL, so put it behind your ingress or a reverse proxy that terminates TLS, for example `https://hooks.example.com/elevenlabs/webhook`. On SIGTERM it stops accepting new deliveries and lets in-flight ones finish.
+
+The forwarder keeps a small SQLite file with one row per conversation it forwarded (`~/.traceai-elevenlabs-agents/forwarded.sqlite3`, or `FI_ELEVENLABS_STATE_PATH`). Keep it on a persistent volume; see [Duplicates](#duplicates).
+
+## 4. Point ElevenLabs at it
+
+1. In the ElevenAgents dashboard, create a workspace webhook with your HTTPS URL and HMAC authentication. Copy the signing secret into `ELEVENLABS_WEBHOOK_SECRET`.
+2. Open [Agents settings](https://elevenlabs.io/app/agents/settings), assign the webhook as the post-call webhook, enable the **Transcript** event and turn on **OpenTelemetry transcript payloads**.
+3. Turn on **Enable retries** for the webhook, so ElevenLabs retries when the forwarder answers 5xx.
+
+To set it per agent instead, ElevenLabs documents `platform_settings.workspace_overrides.webhooks` with `"events": ["transcript"]` and `"transcript_format": "opentelemetry"`.
+
+## 5. Place a call and check Observe
+
+After the call ends and ElevenLabs finishes analysis, open the project in Observe. The conversation is one trace in **Tracing** (root span `elevenlabs.conversation`) and one call in the **Voice** list, with its duration and turn count. The forwarder logs one line per delivery:
+
+```
+INFO traceai_elevenlabs_agents forwarded: conversation_id=conv_... source=post_call_webhook spans=8
+```
+
+## Backfill one conversation
+
+```bash
+export ELEVENLABS_API_KEY="key-with-CONVAI_READ"
+traceai-elevenlabs-agents backfill --conversation-id conv_9001k1zph3fkeh5s8xg9z90swaqa
+```
+
+This calls `GET /v1/convai/conversations/{id}?format=opentelemetry` once and forwards the result through the same mapping. It is a one-shot pull, not a poll loop. Set `FI_ELEVENLABS_API_BASE_URL` if your workspace uses a different ElevenLabs API host. A conversation the webhook already forwarded prints `"status": "duplicate"` and is not exported again.
+
+## Duplicates
+
+ElevenLabs keeps the trace id stable for a conversation but creates new span ids every time it exports it (the [Langfuse cookbook](https://langfuse.com/integrations/no-code/elevenlabs) documents this from real exports). Forwarding the same conversation twice would put a second copy of every turn and tool span into the same trace. So the forwarder records each conversation id it forwarded and answers a webhook retry or a backfill of the same conversation with `200 duplicate` without exporting.
+
+`backfill --force` exports anyway. Use it only for a conversation whose first export never reached Future AGI.
+
+## What is captured
+
+The forwarder keeps the trace id, span ids, parent span ids, span names, timestamps and status codes exactly as ElevenLabs sent them, and adds:
+
+| Span | Attributes added |
+| --- | --- |
+| `elevenlabs.conversation` (root) | `fi.span.kind=CONVERSATION` (what lists the call in the Voice tab), `gen_ai.system=elevenlabs`, `session.id` = conversation id, `call.duration` (root span length in seconds, else a numeric `time_in_call_secs` on the root), `call.total_turns` (number of user and agent turn spans), `elevenlabs.agent_id`, `elevenlabs.source`, `elevenlabs.cost_fiat` |
+| `elevenlabs.recv.agent_response` with `elevenlabs.producing_llm` | `fi.span.kind=LLM`, `gen_ai.request.model`, `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` from `elevenlabs.llm_usage.<model>.input` and `.output_total` |
+| Other agent turns, user turns | `fi.span.kind=CHAIN` |
+| `elevenlabs.tool.{name}` | `fi.span.kind=TOOL`, `tool.name` |
+| Every span | `session.id`, so the conversation also groups as one session |
+
+Fields ElevenLabs did not send are left out, never filled with 0 or an empty string. Span names the forwarder does not know (for example a future `elevenlabs.event.*`) pass through without a kind. A root status ERROR, which ElevenLabs sets when the call did not end with a normal client disconnect, stays ERROR, and so does a failing tool span.
+
+`elevenlabs.cost_fiat` is ElevenLabs' total cost for the call, including speech-to-text and text-to-speech. It is kept as an attribute and is not added to the LLM cost column.
+
+### Not captured
+
+- **Talk ratio and per-turn audio durations.** The OpenTelemetry payload has no per-side audio durations, so `call.talk_ratio` is not written and the Voice detail's duration, latency and talk-percentage tiles stay empty. The call's duration and turn count are shown.
+- **Recordings.** The OpenTelemetry webhook carries no audio, and signed media URLs inside span attributes expire after about 15 minutes, so the forwarder drops them. The `post_call_audio` webhook is not handled.
+- **The monitoring WebSocket** (`.../monitor?events_format=opentelemetry`). It needs an Enterprise workspace and sends many partial batches during the call; not supported.
+- **RAG chunk text.** The trace records the retrieval query, embedding model and latency, not the retrieved chunks.
+- **A live view.** Conversations appear after ElevenLabs finishes analysis.
+- **The Voice call status.** The Voice list shows every forwarded call as `completed`; an abnormal disconnect is visible as ERROR on the trace.
+- **Span event attributes.** With content capture on they are forwarded, but Future AGI currently stores only each event's name and time.
+
+## Privacy
+
+Content capture is **off** by default. With it off, only identifiers, timings, counts, status codes, model names and token numbers are exported: no transcript text, no tool arguments or results, no reasoning, no RAG queries, no analysis results or dynamic variables, no user id, no status messages, no span event attributes, and none of the payload's other resource attributes. The call is still listed in the Voice tab, with its duration and turn count but without a transcript.
+
+To export the conversation content, opt in:
+
+```bash
+export FI_ELEVENLABS_CAPTURE_CONTENT=true
+```
+
+With it on, the forwarder also writes the transcript (`conversation.transcript` and `fi.conversation.transcript`, plus `conversation.transcript.{i}.message.role` and `.content`), so the Voice detail shows it and voice evals can read it. Turns and tools get `input.value` and `output.value` (an LLM turn's input is the user turn before it), and every other attribute ElevenLabs sent is kept, except signed media URLs. `user.id` is written only when ElevenLabs supplied one (the GET response's `user_id`); it is never invented or hashed.
+
+There is no other redaction. If some inputs must never leave ElevenLabs, configure that on the ElevenLabs agent.
+
+The ElevenLabs signing secret, the `ElevenLabs-Signature` header, the ElevenLabs API key and the Future AGI keys are never written to a span, a response body or a log line. A delivery with a bad signature is rejected before its body is read. Log lines carry the conversation id and the outcome only.
+
+## Responses
+
+ElevenLabs treats 2xx as success, retries 5xx, 429 and 408 up to five times when retries are on, never retries other 4xx, and can disable a webhook that keeps failing. The forwarder answers:
+
+| Delivery | Response | Exported |
+| --- | --- | --- |
+| Signature missing, malformed, wrong, or older than 30 minutes | 401 | nothing |
+| `post_call_transcription`, `post_call_audio`, `call_initiation_failure` | 200 `ignored` | nothing |
+| No `resourceSpans`, no conversation id, malformed span ids | 400 with a code | nothing |
+| Conversation already forwarded | 200 `duplicate` | nothing |
+| Same conversation being forwarded by another worker right now | 503 | nothing |
+| Future AGI unreachable, or it refused the batch | 502 | nothing |
+| Accepted by Future AGI | 200 `forwarded` | one trace |
+
+The forwarder answers 2xx only after Future AGI accepted the batch, so a retry after any failure is safe.
+
+## Troubleshooting
+
+| What you see | What to check |
+| --- | --- |
+| Every delivery gets 401 | `ELEVENLABS_WEBHOOK_SECRET` is not the secret of this webhook, a proxy rewrites the body (the signature covers the raw bytes), or the forwarder's clock is off by more than `FI_ELEVENLABS_SIGNATURE_TOLERANCE_SECS` (default 1800). The log line says `signature_mismatch` or `timestamp_outside_tolerance` |
+| 200 `ignored` and no trace | The webhook sends JSON transcripts. Turn on **OpenTelemetry transcript payloads** for the post-call webhook |
+| 502 in the log (`export failed`) | Future AGI is unreachable or refused the keys. Check `FI_BASE_URL`, `FI_API_KEY`, `FI_SECRET_KEY`. ElevenLabs retries if **Enable retries** is on |
+| The call is in Tracing but not in the Voice list | The root span must be the parentless `elevenlabs.conversation`. Check that the payload has it |
+| No transcript in the Voice detail | Content capture is off. Set `FI_ELEVENLABS_CAPTURE_CONTENT=true` |
+| A conversation appears twice | Two forwarders with separate state files received it, or `backfill --force` was used, or an agent-definition connection also pulls the same agent. Share one state file per workspace |
+| Backfill prints `missing_otlp_traces` | The GET response had no `otlp_traces`. Check the `format=opentelemetry` spelling on the ElevenLabs page |
+| You need to stop forwarding for a while | Set `FI_ELEVENLABS_PAUSED=true` and restart: every delivery gets 503 and ElevenLabs retries later. To stop for good, remove the post-call webhook in ElevenLabs |
+
+## Configuration reference
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ELEVENLABS_WEBHOOK_SECRET` | required to serve | Signing secret of the workspace webhook |
+| `FI_API_KEY`, `FI_SECRET_KEY` | required | Future AGI keys |
+| `FI_PROJECT_NAME` | required | Observe project for every conversation |
+| `FI_BASE_URL` | `https://api.futureagi.com` | Future AGI base URL |
+| `FI_ELEVENLABS_CAPTURE_CONTENT` | off | `true` exports conversation content (see [Privacy](#privacy)) |
+| `FI_ELEVENLABS_STATE_PATH` | `~/.traceai-elevenlabs-agents/forwarded.sqlite3` | Duplicate-protection record |
+| `FI_ELEVENLABS_SIGNATURE_TOLERANCE_SECS` | `1800` | Accepted signature age, the 30 minutes the ElevenLabs SDK uses |
+| `FI_ELEVENLABS_PAUSED` | off | `true` answers 503 to every delivery |
+| `ELEVENLABS_API_KEY` | backfill only | ElevenLabs API key with `CONVAI_READ` |
+| `FI_ELEVENLABS_API_BASE_URL` | `https://api.elevenlabs.io` | ElevenLabs API host for backfill |
