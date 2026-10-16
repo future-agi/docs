@@ -120,7 +120,7 @@ class MockHelicone:
                             {
                                 "id": "call_mock_1",
                                 "type": "function",
-                                "function": {"name": "get_weather", "arguments": json.dumps({"city": f"Paris {marker}".strip()})},
+                                "function": {"name": "get_weather", "arguments": json.dumps({"city": "Paris", **({"case_ref": marker} if marker else {})})},
                             }
                         ],
                     }

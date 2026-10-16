@@ -32,7 +32,7 @@ What the tests assert, with the acceptance criterion from the PRD each one cover
 
 - **AC-01** Two surfaces, two auths: the gateway client sends the Helicone key as `Authorization` and no `Helicone-Auth`; the proxy client sends the provider key plus `Helicone-Auth`; each surface's client fails with 401 on the other's URL.
 - **AC-02** Model, usage, `project_name` and `project_type` on the exported span; agent, tool and LLM spans nest correctly; the OTLP request has the Future AGI key headers and is not compressed.
-- **AC-03** `FI_HIDE_INPUTS` / `FI_HIDE_OUTPUTS` keep a unique marker and an email out of every field of every exported span; without them they are exported. The tool-definition and error-text gaps are pinned in their own tests.
+- **AC-03** `FI_HIDE_INPUTS` / `FI_HIDE_OUTPUTS` keep a unique marker and an email out of every field of every exported span (prompts, answers, tool arguments and tool results); without them they are exported. The tool-definition and error-text gaps are pinned in their own tests.
 - **AC-05** `Helicone-Session-Id`, `Helicone-User-Id`, `Helicone-Property-*` reach Helicone and are not on any span; `using_session` / `using_user` are how a Future AGI session and user are set.
 - **AC-06** No Helicone or provider key reaches the collector; no real key is in this directory.
 - The base URLs the page publishes, built by the OpenAI SDK on an in-process transport (`STANDIN`), give the paths and headers the page describes.

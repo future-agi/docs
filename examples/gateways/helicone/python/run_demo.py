@@ -53,8 +53,11 @@ def build_tools(tool_marker: str):
                 "description": f"Get the current weather for a city. Internal ref {tool_marker}.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"city": {"type": "string"}},
-                    "required": ["city"],
+                    "properties": {
+                        "city": {"type": "string"},
+                        "case_ref": {"type": "string", "description": "Copy the 'Case ref' value from the system message."},
+                    },
+                    "required": ["city", "case_ref"],
                 },
             },
         }
@@ -66,8 +69,8 @@ def run_agent(provider, client, model, marker, fi_session_id, fi_user_id, helico
     tracer = FITracer(provider.get_tracer("helicone-demo"))
 
     @tracer.tool(name="get_weather", description="Look up the weather for a city")
-    def get_weather(city: str) -> str:
-        return f"21C and sunny in {city}"
+    def get_weather(city: str, case_ref: str = "") -> str:
+        return f"21C and sunny in {city} (case {case_ref})" if case_ref else f"21C and sunny in {city}"
 
     @tracer.agent(name="weather-agent")
     def agent(question: str) -> str:

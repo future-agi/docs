@@ -163,6 +163,9 @@ def test_default_exports_prompts_and_responses(run_python, surface):
     assert "jane.doe@example.com" in blob  # the email in the prompt is content, exported by default
     llm = run.by_kind("LLM")
     assert any(MARKER in s.attributes.get("output.value", "") for s in llm)
+    # the tool span carries the tool arguments and the tool result (the marker is passed as case_ref)
+    [tool] = run.by_kind("TOOL")
+    assert MARKER in tool.attributes["input.value"] and MARKER in tool.attributes["output.value"]
 
 
 @pytest.mark.parametrize("surface", SURFACES)
@@ -180,6 +183,10 @@ def test_hide_settings_remove_prompt_response_and_tool_io(run_python, surface):
     assert MARKER not in blob, "prompt / response / tool args / tool result leaked through the hide settings"
     assert "jane.doe@example.com" not in blob
     assert "__REDACTED__" in blob
+    # tool arguments and tool result are content too
+    tools = run.by_kind("TOOL")
+    assert tools and all(MARKER not in json.dumps(t.to_dict()) for t in tools)
+    assert tools[0].attributes["input.value"] == "__REDACTED__" and tools[0].attributes["output.value"] == "__REDACTED__"
     # usage and model are not content: they are still there
     llm = [s for s in run.by_kind("LLM") if s.status_code == 1]
     assert llm and all("gen_ai.usage.total_tokens" in s.attributes or "gen_ai.request.model" not in s.attributes for s in llm)
