@@ -1,0 +1,308 @@
+---
+title: "TrueFoundry AI Gateway tracing with Future AGI"
+description: "Trace calls to TrueFoundry AI Gateway in Observe with the OpenAI instrumentor, or send the gateway's own OpenTelemetry export to Future AGI. Prompt and response capture is switchable on both paths."
+---
+
+## About
+
+[TrueFoundry AI Gateway](https://www.truefoundry.com/docs/ai-gateway/quick-start) is an OpenAI-compatible gateway that TrueFoundry hosts or you self-host. There are two ways to see its calls in Observe:
+
+| | Client tracing | Gateway export |
+| --- | --- | --- |
+| Where it runs | Your application, with `traceai-openai` | The gateway, in TrueFoundry's OTEL Config |
+| Who can set it up | Anyone with a TrueFoundry token | A gateway admin |
+| What you see | One LLM span per call as your code made it, under your own agent and tool spans | The spans the gateway builds: a `ChatCompletion` span with a `Model` span under it |
+| Status on this page | Run end to end with a stand-in gateway | Run with synthetic batches only |
+
+<Warning>
+Alpha. No TrueFoundry code ran for this page. The client path was run against a stand-in that serves the gateway surface TrueFoundry documents, and the gateway export was tested with synthetic OTLP batches built from TrueFoundry's attribute docs. Both are flagged where they matter. Nobody has run a real gateway against Future AGI yet.
+</Warning>
+
+This page does not cover TrueFoundry's own trace storage, which keeps working and is not read by Future AGI, or its OTEL metrics exporter, which is a separate switch and has no Future AGI receiver. For the OpenAI instrumentor itself, see [OpenAI](/docs/integrations/traceai/openai).
+
+| | |
+| --- | --- |
+| Tested with | `traceai-openai` 0.1.10, `openai` 3.31.0, `fi-instrumentation-otel` 1.1.0, Python 3.12, a self-hosted Future AGI on a laptop. OpenTelemetry Collector contrib 0.162.0 for the collector recipe. |
+| TrueFoundry docs used | [Quick start](https://www.truefoundry.com/docs/ai-gateway/quick-start), [Making your first request](https://www.truefoundry.com/docs/ai-gateway/making-llm-requests-via-gateway), [Export OpenTelemetry data](https://www.truefoundry.com/docs/ai-gateway/export-opentelemetry-data), [Span attributes](https://www.truefoundry.com/docs/ai-gateway/fetch-request-logs-span-attributes), [GenAI span attributes](https://www.truefoundry.com/docs/ai-gateway/fetch-request-logs-span-attributes-genai), and the [Arize](https://www.truefoundry.com/docs/ai-gateway/arize) guide for the Additional Resource Attributes field, all read 2026-10-15. The docs changelog's latest release then was 0.176.17 (2026-10-05). |
+| TrueFoundry gateway | Not run. No gateway version is tested. |
+| Source | [examples/gateways/truefoundry](https://github.com/future-agi/docs/tree/main/examples/gateways/truefoundry) |
+
+## 1. Client tracing
+
+Your code calls the gateway with the OpenAI client. `traceai-openai` wraps that client, so the call is traced in your process. TrueFoundry never sees your Future AGI keys, and Future AGI never sees your TrueFoundry token.
+
+<Steps>
+
+<Step title="Install">
+
+```bash
+pip install traceai-openai openai
+```
+
+`traceai-openai` supports Python 3.10 to 3.13.
+</Step>
+
+<Step title="Get the gateway values">
+
+Open the TrueFoundry Playground, pick a model, and click **Code** to see all three.
+
+| Value | TrueFoundry SaaS | Self-hosted |
+| --- | --- | --- |
+| Base URL | `https://gateway.truefoundry.ai` | Shown in the Playground Code Snippets |
+| API key | A Personal Access Token (development) or a Virtual Account Token (applications) | Same |
+| Model id | `provider_account/model_name`, for example `openai-main/gpt-4o-mini` | Same |
+
+The base URL has no `/v1` suffix: the OpenAI client appends `/chat/completions`.
+</Step>
+
+<Step title="Trace the client">
+
+```python
+import os
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from openai import OpenAI
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-chatbot",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = OpenAI(
+    base_url="https://gateway.truefoundry.ai",
+    api_key=os.environ["TFY_API_KEY"],
+)
+
+response = client.chat.completions.create(
+    model="openai-main/gpt-4o-mini",
+    messages=[{"role": "user", "content": "What is the capital of France?"}],
+)
+print(response.choices[0].message.content)
+```
+
+Set `FI_API_KEY` and `FI_SECRET_KEY` in the environment. For a self-hosted Future AGI also set `FI_BASE_URL`: the SDK sends traces to `$FI_BASE_URL/tracer/v1/traces`.
+</Step>
+
+</Steps>
+
+Open **Observe**, select `my-chatbot`, and open the trace. A complete example with an agent and a tool call is in [client_example.py](https://github.com/future-agi/docs/blob/main/examples/gateways/truefoundry/client_example.py).
+
+### What the span shows
+
+| Field | Value |
+| --- | --- |
+| Type and name | `llm`, `ChatCompletion` |
+| Model | The model the response reports, when the response has one. The id you sent, `provider_account/model_name`, is kept in the request parameters. A failed call has no model field. |
+| Tokens | Input, output and total, from the response `usage`. |
+| Provider | `openai`. `traceai-openai` 0.1.10 recognises `api.openai.com`, `openai.azure.com` and `googleapis.com` by host and labels every other host `openai`, so this is not a TrueFoundry label. |
+| Prompt, response, tool calls | Captured by default. See [Privacy](#privacy). |
+| Error | A call the gateway rejects ends the span with status `ERROR` and the client's error text. In the stand-in test a 403 for a model the caller may not use showed as `PermissionDeniedError`. |
+| Hierarchy | If you wrap the call in your own agent and tool spans, the LLM spans sit under them: agent, LLM, tool, LLM in the test run. |
+
+TrueFoundry's `tfy.*` fields (cost, routing, caller identity, guardrails) are gateway-side and are not on client spans. Use the gateway export below if you need them.
+
+## 2. Gateway export
+
+TrueFoundry can send the traces the gateway builds to any OTLP endpoint. This path needs a gateway admin, and the gateway must be able to reach the endpoint: a TrueFoundry-hosted gateway cannot reach a collector on your laptop.
+
+<Note>
+Everything in this section comes from TrueFoundry's docs and from synthetic batches shaped like them. The gateway's real export was not captured. Check one real trace in Observe before relying on it, and compare it with the tables below.
+</Note>
+
+### Configure the exporter
+
+In TrueFoundry, go to **AI Gateway**, **Controls**, **Settings**, **OTEL Config**, click edit, and enable **OTEL Traces Exporter Configuration**.
+
+| Field | Value |
+| --- | --- |
+| Protocol | HTTP Configuration |
+| Endpoint | The full URL, path included: TrueFoundry does not append `/v1/traces`. Hosted Future AGI: `https://api.futureagi.com/tracer/v1/traces`, the URL the SDK uses (not tried with a TrueFoundry batch). Self-hosted: `http://<your collector>:<HTTP port>/v1/traces` (`/tracer/v1/traces` also works). |
+| Encoding | `proto`. `json` also worked in the test. |
+| Headers | Two header pairs, added with **+ Add Headers**: `X-Api-Key` with your key, `X-Secret-Key` with your secret. |
+| Additional Resource Attributes | `project_name` with your Observe project name, `project_type` with `observe`. |
+| Exclude Request Data | Tick it. See [Privacy](#privacy). |
+| Metrics exporter | Leave it off. Do not enter the traces URL there. |
+
+Future AGI rejects a batch whose resource has no `project_name`, with HTTP 400. TrueFoundry sets `service.name` to `tfy-llm-gateway` by itself, which does not select a project. On the self-hosted stack used for testing, a batch with a new project name created the project; create the project in Observe first rather than relying on that.
+
+If the header slots only take one entry, send one `Authorization` header instead: `Basic ` followed by the base64 of `api_key:secret_key`. That works over HTTP only. Over gRPC the collector reads `x-api-key` and `x-secret-key` metadata and rejects Basic. Over HTTP, `Authorization: Bearer` is rejected with 401.
+
+For model, provider and token counts, set `ENABLE_GEN_AI_OTEL_ATTRIBUTES=true` on the `tfy-llm-gateway` deployment and restart it. TrueFoundry documents the flag as off by default and as an environment variable of that deployment, so whether you can set it on a hosted gateway is not something we could check.
+
+### What shows up in Observe
+
+From synthetic batches. A real gateway may differ.
+
+| Signal | Flag on | Flag off |
+| --- | --- | --- |
+| Hierarchy | `ChatCompletion` span, `Model: <model>` span under it | Same |
+| Span type | `llm` | `unknown` |
+| Model | On the `Model` span: the id the client asked for (`openai-main/gpt-4o-mini`), with the provider's model name stored separately | None |
+| Tokens | Input, output and total on the `Model` span | None. The counts exist only as raw `tfy.model.metric.*` attributes. |
+| Provider | From `gen_ai.provider.name`, for example `openai` | None |
+| Cost | Not read from `tfy.model.metric.cost_in_usd`. Observe showed 0. | Same |
+| Prompt and response | Stored as raw attributes when present. Not shown in the Input and Output panes. | Same |
+| Caller | `tfy.request.created_by_subject` is stored as an attribute and is not mapped to a user | Same |
+| Errors | `ERROR` only if the gateway sets the OTLP span status. `tfy.error_type` and `error.type` are not read. | Same |
+
+TrueFoundry's current docs name `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` and `gen_ai.provider.name`. A TrueFoundry blog post from 2026-09-10 lists `gen_ai.usage.prompt_tokens` and `gen_ai.system` instead. This page and its tests follow the docs.
+
+TrueFoundry's docs say it does not yet write agent (`gen_ai.agent.*`), tool (`gen_ai.tool.*`) or MCP (`mcp.*`) attributes, so guardrail, MCP and agent-response spans carry only `tfy.*` fields. Those spans were not part of the synthetic batches.
+
+### Optional: your own OpenTelemetry Collector
+
+Put a collector between the gateway and Future AGI when you need any of these:
+
+- The gateway cannot set the headers or resource attributes above.
+- You want prompts, responses, caller identity and error text removed in one place you control, however the gateway's checkbox behaves.
+- The gateway exporter compresses its requests. The Future AGI HTTP receiver rejects gzip bodies (HTTP 400 in the test), while the collector accepts gzip and forwards plain OTLP.
+
+Point the gateway's OTEL Config at the collector (HTTP, `proto`, `http://<collector>:4318/v1/traces`, no Future AGI headers needed, Exclude Request Data ticked). The collector adds the project and the keys:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # `insert` keeps a project_name the gateway already set and fills it in when it sent none.
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: insert
+      - key: project_type
+        value: observe
+        action: insert
+
+  # Content, identity and error text. Delete the two created_by_subject lines to keep the caller.
+  transform/privacy:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "tfy.input")
+          - delete_key(attributes, "tfy.output")
+          - delete_key(attributes, "tfy.input_short_hand")
+          - delete_key(attributes, "gen_ai.input.messages")
+          - delete_key(attributes, "gen_ai.output.messages")
+          - delete_key(attributes, "tfy.request.metadata")
+          - delete_key(attributes, "tfy.prompt_variables")
+          - delete_key(attributes, "tfy.error_message")
+          - delete_key(attributes, "tfy.request.created_by_subject")
+          - delete_key(attributes, "tfy.request.created_by_subject_teams")
+          - set(status.message, "error") where status.message != ""
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/privacy, batch]
+      exporters: [otlp_http/future_agi]
+```
+
+Run it with the three values it reads. `FI_TRACES_URL` is the full URL from the table above.
+
+```bash
+docker run -d --name tfy-otelcol --memory 512m \
+  -p 4318:4318 -p 4317:4317 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol/config.yaml:ro" \
+  -e FI_API_KEY -e FI_SECRET_KEY \
+  -e FI_PROJECT_NAME=my-gateway \
+  -e FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol/config.yaml
+```
+
+Tested with contrib 0.162.0, where the exporter is named `otlp_http`. Collectors older than that call it `otlphttp`. `service.telemetry.metrics.level: none` turns off the collector's own metrics endpoint and `compression: none` keeps the export plain, which the Future AGI receiver needs. Each request the Future AGI HTTP receiver reads is capped at 16 MiB in the version tested (a 15 MiB attribute was accepted, a 17 MiB one got HTTP 413), so the `batch` processor keeps requests small.
+
+## Privacy
+
+### Client path
+
+`traceai-openai` captures prompts, responses and tool arguments and results by default. Turn capture off with the [TraceConfig](/docs/sdk/tracing/trace-config) switches, in code or in the environment:
+
+```bash
+export FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true
+export FI_HIDE_INPUT_MESSAGES=true FI_HIDE_OUTPUT_MESSAGES=true
+export FI_HIDE_LLM_INVOCATION_PARAMETERS=true
+```
+
+With these set, a run with unique markers in the prompt, the customer note, the tool arguments and the tool result left no marker in what the exporter sent, nor in any column of the project's span and trace rows (attributes, resource attributes, events, status message, input, output, metadata, tags). Those rows live in ClickHouse on the stack tested; the Postgres trace tables were empty. It also left no user name, host name, home directory or working directory. Model, token counts and tool names are still sent. With the switches off, the same marker is stored.
+
+<Warning>
+The switches do not cover failed calls. When the gateway rejects a request, `traceai-openai` 0.1.10 puts the client's error text in the span status and records an exception event. On the wire that event carries the stack trace, with local file paths and your user name. Future AGI stores the event's name and the status message but not the event's attributes, so the stored row held the error text and no stack trace. If error text can contain something sensitive in your setup, treat failed-call spans as carrying it.
+</Warning>
+
+### Gateway export
+
+TrueFoundry's Exclude Request Data checkbox drops `tfy.input`, `tfy.output` and `tfy.input_short_hand` before export, according to TrueFoundry's docs. That is TrueFoundry's control, not a Future AGI mask, and it was not run here. TrueFoundry's pages do not say the box is ticked by default, so tick it yourself.
+
+The docs do not say the box covers these, and they can carry content or identity:
+
+| Attribute | What it can hold |
+| --- | --- |
+| `gen_ai.input.messages`, `gen_ai.output.messages` | The messages. TrueFoundry derives them from `tfy.input` and `tfy.output` after redaction and omits them when prompt logging is disabled. Whether the checkbox removes them is not stated. |
+| `tfy.request.metadata`, `tfy.prompt_variables` | Whatever the caller attached |
+| `tfy.request.created_by_subject`, `tfy.request.created_by_subject_teams` | The caller, possibly an e-mail address |
+| `tfy.error_message` | Raw error text |
+
+The collector recipe above deletes all of them. In the test, three synthetic batches went through it: a success with content, metadata, variable, caller and team attributes, the same success with only the three documented keys already removed, and a failed request with an error message and an exception event. None left a marker, e-mail address, user name, host name or path in what the collector forwarded or in any stored column, and the status message was replaced by `error`. A batch with the content attributes, sent straight to Future AGI without the collector, stored the marker in the span attributes.
+
+## Limitations
+
+- No real TrueFoundry gateway was run. The stand-in forwards `POST /chat/completions` to another OpenAI-compatible endpoint and answers a model the caller may not use with 403. Its error body is a guess. Streaming was not run: the stand-in buffers the response.
+- What the gateway's response reports as `model` is not documented, so the model on a client span may be the provider's name or the id you sent.
+- Gateway export attribute placement is assumed: which `gen_ai.*` attributes sit on the `ChatCompletion` span and which on the `Model` span, the message JSON shape, and whether a failed request sets the OTLP status.
+- Whether the gateway's exporter compresses, and what it does when the endpoint is unreachable, were not tested. TrueFoundry's blog says export is asynchronous and drops spans when the endpoint is down, without failing the request.
+- If you turn on both client tracing and gateway export, each request appears twice, once from each path. There is no merge.
+- `traceai-openai` 0.1.10 labels the provider `openai` for this host and sets no model on a failed call.
+- Only Python was run. The TypeScript instrumentor was not.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| Gateway export never shows up | TrueFoundry's blog says a failed export is dropped and logged on the gateway, without failing the request. Check the gateway's logs, and post a test batch with `native/post_batch.py` from the examples to separate a Future AGI problem from a gateway one. |
+| HTTP 400, `no project_name` | The resource has no `project_name`. Add it under Additional Resource Attributes, or use the collector recipe. |
+| HTTP 401 | The keys did not arrive, or no account has them. `Authorization: Bearer` never works. Send `X-Api-Key` and `X-Secret-Key`, or one Basic header over HTTP. |
+| HTTP 400, `decode protobuf` | The body is compressed or not OTLP. Route through the collector recipe. |
+| HTTP 413 | A request over 16 MiB. Batch smaller, or use the collector recipe. |
+| Spans arrive with type `unknown`, no model, no tokens | `ENABLE_GEN_AI_OTEL_ATTRIBUTES` is off on the gateway. |
+| Nothing from your app appears | Check `register()` ran before the first client call and that `FI_API_KEY`, `FI_SECRET_KEY` and, for self-hosted, `FI_BASE_URL` are set. |
+| The model on the span is not the id you sent | The span shows the response's model. Find your id under the span's request parameters. |
+
+## Next Steps
+
+- [OpenAI instrumentor](/docs/integrations/traceai/openai)
+- [TraceConfig](/docs/sdk/tracing/trace-config)
+- [Observe](/docs/observe)
