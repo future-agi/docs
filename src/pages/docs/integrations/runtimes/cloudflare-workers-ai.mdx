@@ -1,0 +1,329 @@
+---
+title: "Trace Cloudflare Workers AI with Future AGI"
+description: "Send OpenTelemetry traces from a Cloudflare Worker that calls env.AI.run, and finish the export before the request ends. An in-isolate TypeScript recipe, no package."
+---
+
+## About
+
+[Workers AI](https://developers.cloudflare.com/workers-ai/) is a binding. Your Worker calls `env.AI.run(model, input)`; there is no OpenAI-compatible base URL that you host, so a provider-endpoint recipe does not apply. A Worker also lives inside an isolate that the runtime can end when the request ends. A tracer that exports on a timer loses the spans of the last request. This page is a recipe for that: one request is one trace (`worker.fetch` with a `workers_ai.run` child), and the export is awaited in `finally`, before the `Response` is returned.
+
+```text
+Worker request
+└─ worker.fetch     (chain)   method and path only, never the query string
+   └─ workers_ai.run  (llm)   the env.AI.run call: model id, token usage when the binding returns it
+await flush()  ->  Future AGI   before the Response is returned, on success and on error
+```
+
+There is no Future AGI package for Cloudflare Workers. You copy two small TypeScript files (`tracing.ts` and a handler) and wrap your own `env.AI.run` calls. The one dependency set is the OpenTelemetry JS SDK.
+
+<Warning>
+Alpha. Everything on this page was run end to end against a self-hosted Future AGI, with the real OpenTelemetry JS SDK inside the real Cloudflare Workers runtime (`workerd`, started by `wrangler dev --local`). **`env.AI` was a stand-in.** The stand-in `run()` called a local OpenAI-compatible endpoint and returned a `{ response, usage }` object. The real Workers AI binding was not called, no Cloudflare account or login was used, nothing was deployed, and no Cloudflare API was called. Real model responses (including stream results and models that return no `usage`) were not exercised. `scheduled`, `queue` and Durable Object handlers are not covered.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `wrangler` **4.151.1** and `workerd` **1.20261012.1** (latest on npm, 2026-10-16), `@opentelemetry/sdk-trace-base` and `@opentelemetry/resources` **2.12.0**, `@opentelemetry/otlp-transformer` **0.223.0**, `@opentelemetry/api` 1.9.1, Node 26.8.1 for the tooling, `compatibility_date` 2026-10-01. Against a self-hosted Future AGI. |
+| Not used | `@microlabs/otel-cf-workers` (a community wrapper, currently a release candidate at the time of writing), and Cloudflare's own tracer (see the next section). |
+| Cloudflare docs used | [Bindings](https://developers.cloudflare.com/workers-ai/configuration/bindings/) (`env.AI.run(model, input)`), [Traces](https://developers.cloudflare.com/workers/observability/traces/), [Exporting OpenTelemetry data](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/), all read 2026-10-16 |
+| Source | [examples/runtimes/cloudflare-workers-ai](https://github.com/future-agi/docs/tree/main/examples/runtimes/cloudflare-workers-ai): the two files, 14 unit tests, the local `workerd` end-to-end script |
+
+### How this differs from other pages
+
+- **[OpenAI](/docs/integrations/traceai/openai) and other provider pages.** Those instrument a client library that you call over HTTP. `env.AI.run` is a Cloudflare binding, so this page wraps the binding call itself. Do not point an OpenAI client at a Cloudflare URL and call that a Workers AI integration.
+- **Cloudflare's built-in tracing and its OpenTelemetry destinations.** Not supported for Future AGI, see below.
+
+## Cloudflare's native OpenTelemetry export is not supported
+
+Cloudflare can export Worker traces to an OTLP destination you create in its dashboard. That is not a Future AGI setup path today, so there are no steps for it here. Future AGI needs `project_name` as a **resource attribute**. The destination form documents an OTLP endpoint and optional custom headers (so both Future AGI keys can be sent), and it does not document a way to set resource attributes ([source](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/), read 2026-10-16). Traces without `project_name` are rejected. This was read from Cloudflare's documentation only: no destination was created and nothing was tested against it. Re-check the page before relying on this.
+
+Plan and pricing, as the same page and the [Traces page](https://developers.cloudflare.com/workers/observability/traces/) said on 2026-10-16: Workers Free, traces "Not available"; Workers Paid, 10 million events per month included and $0.05 per million after; "starting on October 1, 2026, tracing will be billed"; stored traces count toward Observability pricing from December 1, 2026. This is Cloudflare's pricing, it changes, and it does not apply to the in-isolate recipe below, which only makes an outbound `fetch` to Future AGI.
+
+## Set up
+
+<Steps>
+
+<Step title="Install">
+
+```bash
+npm i @opentelemetry/api@1.9.1 @opentelemetry/sdk-trace-base@2.12.0 @opentelemetry/resources@2.12.0 @opentelemetry/otlp-transformer@0.223.0
+npm i -D wrangler@4.151.1
+```
+
+</Step>
+
+<Step title="Set the keys and the project">
+
+Both keys are required. Keep them as Worker secrets, not in `wrangler.jsonc` and not in the source.
+
+```bash
+npx wrangler secret put FI_API_KEY
+npx wrangler secret put FI_SECRET_KEY
+```
+
+```jsonc
+// wrangler.jsonc
+{
+  "name": "my-workers-ai-app",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "ai": { "binding": "AI" },
+  "vars": { "FI_BASE_URL": "https://api.futureagi.com", "FI_PROJECT_NAME": "my-workers-ai-app" }
+}
+```
+
+Self-hosted Future AGI: set `FI_BASE_URL` to your own URL. One Worker, one key pair, one project. Do not choose the project from a request header, because a request header is controlled by the caller. If either key is missing, tracing is off: nothing is exported, nothing throws, and the Worker answers as usual.
+
+</Step>
+
+<Step title="Add the tracer and wrap the binding call">
+
+```typescript
+// file: src/tracing.ts
+// In-isolate tracing for a Cloudflare Worker. Copy this file next to your handler.
+//
+//   one provider per request  ->  spans ended in the handler  ->  await flush() in `finally`
+//
+// Why per request: the keys are bindings on `env`, which only exists inside a handler, and an isolate
+// can be torn down at any time, so nothing here relies on a timer or on state surviving the request.
+//
+// Configuration (Worker vars and secrets, never in the source):
+//   FI_API_KEY, FI_SECRET_KEY   both required; if either is missing tracing is off and nothing is exported
+//   FI_BASE_URL                 default https://api.futureagi.com  (self-hosted: your own URL)
+//   FI_PROJECT_NAME             the Observe project (default "cloudflare-workers-ai")
+//   FI_CAPTURE_CONTENT=true     opt in to prompt, response and error text on spans (off by default)
+import { trace, context, SpanStatusCode, type Span } from "@opentelemetry/api";
+import { JsonTraceSerializer } from "@opentelemetry/otlp-transformer";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import {
+  BasicTracerProvider,
+  BatchSpanProcessor,
+  type ReadableSpan,
+  type SpanExporter,
+} from "@opentelemetry/sdk-trace-base";
+
+export const FLUSH_BUDGET_MS = 2000; // proposed bound for one flush: a proposal, not a measurement
+
+export interface TracingEnv {
+  FI_API_KEY?: string;
+  FI_SECRET_KEY?: string;
+  FI_BASE_URL?: string;
+  FI_PROJECT_NAME?: string;
+  FI_CAPTURE_CONTENT?: string;
+}
+
+/** OTLP/HTTP (JSON) exporter built on fetch: workerd has no XMLHttpRequest and no node:http by default. */
+export function fiExporter(env: TracingEnv, fetchImpl: typeof fetch = fetch): SpanExporter | undefined {
+  if (!env.FI_API_KEY || !env.FI_SECRET_KEY) return undefined; // missing keys: do not export, do not throw
+  const base = (env.FI_BASE_URL || "https://api.futureagi.com").replace(/\/+$/, "");
+  return {
+    export(spans: ReadableSpan[], done) {
+      const body = JsonTraceSerializer.serializeRequest(spans);
+      fetchImpl(`${base}/tracer/v1/traces`, {
+        method: "POST",
+        // Both keys are required. Do not set Content-Encoding: Future AGI rejects gzip bodies.
+        headers: {
+          "content-type": "application/json",
+          "X-Api-Key": env.FI_API_KEY!,
+          "X-Secret-Key": env.FI_SECRET_KEY!,
+        },
+        body: body as BodyInit,
+        signal: AbortSignal.timeout(FLUSH_BUDGET_MS),
+      })
+        .then((r) => done({ code: r.ok ? 0 : 1 }))
+        .catch(() => done({ code: 1 })); // never log the body or the keys
+    },
+    shutdown: async () => {},
+  };
+}
+
+export interface Tracing {
+  readonly enabled: boolean;
+  readonly captureContent: boolean;
+  startSpan(name: string, attributes: Record<string, string | number | boolean>, parent?: Span): Span;
+  /** Await this in `finally`, after the root span has ended. Never throws, never outlives FLUSH_BUDGET_MS. */
+  flush(): Promise<boolean>;
+}
+
+export function createTracing(env: TracingEnv, exporter: SpanExporter | undefined = fiExporter(env)): Tracing {
+  const projectName = env.FI_PROJECT_NAME || "cloudflare-workers-ai";
+  const provider = new BasicTracerProvider({
+    resource: resourceFromAttributes({
+      project_name: projectName, // a RESOURCE attribute: a span attribute with this key is not a substitute
+      project_type: "observe",
+      "service.name": projectName,
+    }),
+    // A batch processor whose timer never matters: flush() below is the only trigger.
+    spanProcessors: exporter ? [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 60_000 })] : [],
+  });
+  const tracer = provider.getTracer("fi-cloudflare-workers-ai");
+  return {
+    enabled: !!exporter,
+    captureContent: (env.FI_CAPTURE_CONTENT || "").toLowerCase() === "true",
+    startSpan(name, attributes, parent) {
+      const ctx = parent ? trace.setSpan(context.active(), parent) : context.active();
+      return tracer.startSpan(name, { attributes }, ctx);
+    },
+    async flush() {
+      if (!exporter) return true;
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), FLUSH_BUDGET_MS);
+        });
+        const ok = await Promise.race([provider.forceFlush().then(() => true), timeout]);
+        clearTimeout(timer);
+        return ok;
+      } catch {
+        return false; // a failed export never changes the user's response
+      }
+    },
+  };
+}
+
+export function errorStatus(span: Span, err: unknown, captureContent: boolean) {
+  const type = err instanceof Error ? err.name : "Error";
+  span.setAttribute("error.type", type);
+  // Raw error text can carry prompts, paths or hostnames: only the class name unless you opt in.
+  span.setStatus({ code: SpanStatusCode.ERROR, message: captureContent && err instanceof Error ? err.message : type });
+}
+```
+
+```typescript
+// file: src/index.ts
+// Worker: one request = one trace.  worker.fetch (root)  ->  workers_ai.run (child, the env.AI.run call)
+import { createTracing, errorStatus, type Tracing, type TracingEnv } from "./tracing";
+
+export interface AiBinding {
+  run(model: string, input: Record<string, unknown>): Promise<any>;
+}
+export interface Env extends TracingEnv {
+  AI: AiBinding;
+}
+interface Ctx {
+  waitUntil(p: Promise<unknown>): void;
+}
+
+export const MODEL = "@cf/meta/llama-3.1-8b-instruct";
+
+/** Wrap one env.AI.run call in a child span. Same signature as the binding. */
+export async function tracedRun(tracing: Tracing, root: import("@opentelemetry/api").Span, ai: AiBinding, model: string, input: Record<string, unknown>) {
+  const span = tracing.startSpan(
+    "workers_ai.run",
+    {
+      "fi.span.kind": "LLM",
+      "gen_ai.provider.name": "cloudflare", // one provider key, not two
+      "gen_ai.request.model": model, // the model id argument, as passed
+      "llm.model_name": model,
+    },
+    root,
+  );
+  if (tracing.captureContent) span.setAttribute("input.value", JSON.stringify(input).slice(0, 4000));
+  try {
+    const result = await ai.run(model, input);
+    const usage = result && typeof result === "object" ? result.usage : undefined;
+    // Usage only when the binding returned it. Never write zeros.
+    if (usage && Number.isFinite(usage.prompt_tokens)) {
+      span.setAttribute("gen_ai.usage.input_tokens", usage.prompt_tokens);
+      span.setAttribute("llm.token_count.prompt", usage.prompt_tokens);
+    }
+    if (usage && Number.isFinite(usage.completion_tokens)) {
+      span.setAttribute("gen_ai.usage.output_tokens", usage.completion_tokens);
+      span.setAttribute("llm.token_count.completion", usage.completion_tokens);
+    }
+    if (tracing.captureContent) span.setAttribute("output.value", JSON.stringify(result).slice(0, 4000));
+    return result;
+  } catch (err) {
+    errorStatus(span, err, tracing.captureContent);
+    throw err;
+  } finally {
+    span.end();
+  }
+}
+
+export async function handle(request: Request, env: Env, _ctx: Ctx): Promise<Response> {
+  const tracing = createTracing(env);
+  const url = new URL(request.url);
+  const root = tracing.startSpan("worker.fetch", {
+    "fi.span.kind": "CHAIN",
+    "http.request.method": request.method,
+    "url.path": url.pathname, // path only: the query string can carry tokens
+  });
+  try {
+    const body = (await request.json().catch(() => ({}))) as { prompt?: string };
+    const result = await tracedRun(tracing, root, env.AI, MODEL, { prompt: body.prompt ?? "Say hello." });
+    root.setAttribute("http.response.status_code", 200);
+    return Response.json({ response: result?.response ?? null });
+  } catch (err) {
+    // This handler returns 502 when the AI call fails, so the request span is ERROR as well.
+    // If you catch the error and return a fallback with 200, leave the root span OK.
+    root.setAttribute("http.response.status_code", 502);
+    errorStatus(root, err, tracing.captureContent);
+    return Response.json({ error: "ai_failed" }, { status: 502 });
+  } finally {
+    root.end();
+    // Await the export before the Response is returned, on success and on error.
+    // ctx.waitUntil is deliberately NOT used as the flush: it is untested here (see the page).
+    await tracing.flush();
+  }
+}
+
+export default {
+  fetch: (request: Request, env: Env, ctx: Ctx) => handle(request, env, ctx),
+};
+```
+
+Your Worker keeps calling `env.AI.run` as before. `tracedRun` has the same arguments plus the tracing handle and the root span.
+
+</Step>
+
+<Step title="Check it">
+
+Send a request to your deployed Worker, then open the project in Future AGI (Observe). You should see one trace per request: `worker.fetch` with a `workers_ai.run` child that carries the model id and token usage. This page never deployed a Worker, so that last check is yours to run.
+
+</Step>
+
+</Steps>
+
+| Piece | Value |
+| --- | --- |
+| Endpoint | `{FI_BASE_URL}/tracer/v1/traces`, OTLP over HTTP, JSON body, no compression |
+| Headers | `X-Api-Key` and `X-Secret-Key`. Both. One header is a failed setup |
+| Resource | `project_name` and `project_type=observe`, on the resource. A span attribute with that key does not replace it |
+| Flush | `await tracing.flush()` in `finally`, after the root span ended, with a 2 second bound |
+| Exporter | A small `fetch` exporter. The Node OTLP exporters need `XMLHttpRequest` or `node:http`, which a Worker does not give you by default |
+
+## What is captured
+
+| Span | Attributes |
+| --- | --- |
+| `worker.fetch` (chain) | `http.request.method`, `url.path`, `http.response.status_code`. Status ERROR when the handler returns 502 |
+| `workers_ai.run` (llm) | `gen_ai.request.model` (and `llm.model_name`) set to the model id you passed, `gen_ai.provider.name=cloudflare`, token counts when the result has `usage.prompt_tokens` / `usage.completion_tokens`. Status ERROR with `error.type` when `run` throws |
+
+Not captured: streaming token timing (a streamed result is a stream, and this recipe does not wrap it, so the span would end when `run` returns), cost, other bindings (KV, R2, Durable Objects), `scheduled`, `queue` and Durable Object handlers, `CF-Connecting-IP` (an IP address is not a user id), `session.id` and `user.id` (add them yourself only if your Worker already has them). If a result carries no usage, no token attributes are written, not zeros.
+
+## Privacy
+
+Default: no prompt, no response, no query string, no raw error text, no stack trace. Only the span names, the model id, method, path, status, token counts, and the error class name are exported.
+
+Opt in with the Worker variable `FI_CAPTURE_CONTENT=true`. That adds `input.value` (the binding input) and `output.value` (the result), each cut at 4,000 characters, and the error message as the span status message. It still never records a stack trace, a hostname, a username or a local path. This switch belongs to this recipe, not to the traceAI `FI_HIDE_*` settings.
+
+## Lifecycle: flush, `waitUntil`, failures
+
+- The export is awaited before the `Response` is returned, on success and on error (`try`/`finally`). The processor is a batch processor with a 60 second timer that never matters: `flush()` is the trigger.
+- A failed or slow export never changes the HTTP status. Export is bounded at 2 seconds (a proposal, not a measurement of any production setup). With an unreachable collector the request still returned 200 and took about 2 seconds longer than the model call.
+- **`ctx.waitUntil` is not used as the flush and is unverified.** It extends work after the response. This recipe does not claim it completes the export, because it was not tested on Cloudflare's platform. Await the export.
+- If the AI call throws and your handler returns a fallback with status 200, leave the root span OK. The sample handler returns 502, so both spans are ERROR.
+
+## How it was tested
+
+`examples/runtimes/cloudflare-workers-ai/run_e2e.sh` starts `workerd` through `wrangler dev --local` with `src/e2e-entry.ts`, which swaps `env.AI` for the stand-in, and checks the stored spans in a self-hosted Future AGI: two happy requests (hierarchy chain to llm, model, tokens), a failing AI call (ERROR spans, 502, next request fine), the privacy scan (a unique marker in the prompt, the response and the error text, scanned across every stored column of the project, and the same run with `FI_CAPTURE_CONTENT=true`), missing keys (nothing exported, no project created), and an unreachable collector. `npm test` runs 14 unit tests with a fake `env.AI` and a fake `fetch`, no network. Neither runs `wrangler deploy`.
+
+## Troubleshooting
+
+- **No traces in the project.** Both `FI_API_KEY` and `FI_SECRET_KEY` must be set, as secrets of this Worker. The collector needs `project_name` on the resource, which `createTracing` sets from `FI_PROJECT_NAME`.
+- **Spans of the last request are missing.** Something exits before `await tracing.flush()`. Keep it in `finally`, after `root.end()`.
+- **`XMLHttpRequest` or `node:http` errors.** You used a Node OTLP exporter. Use the `fetch` exporter from `tracing.ts`.
+- **The export is rejected.** Do not send a gzip body. The recipe sets no `Content-Encoding`.
+- **Trying it locally without a Cloudflare account.** The real `ai` binding talks to your Cloudflare account (not tested here). For a local trial, swap `env.AI` for a stub the way `src/e2e-entry.ts` does.
+- **Usage is missing on the span.** The model's result had no `usage` field. That is expected, and the recipe writes no zeros.
+- **The query string is on a span.** Record `url.pathname` only.
