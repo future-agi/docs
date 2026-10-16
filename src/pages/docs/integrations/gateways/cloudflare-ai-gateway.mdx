@@ -1,0 +1,284 @@
+---
+title: "Cloudflare AI Gateway tracing with Future AGI"
+description: "Send Cloudflare AI Gateway traces to Observe through an OpenTelemetry Collector you run. Prompts stay off by default. Alpha: Cloudflare itself was not run."
+---
+
+## About
+
+[Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/) sits between your application and the model provider. Its [OpenTelemetry export](https://developers.cloudflare.com/ai-gateway/observability/otel-integration/) sends one span per request it handles to any OTLP endpoint, so you see those calls in Observe without adding code to your app. This page sends those spans to Observe through an OpenTelemetry Collector that you run.
+
+The export is not client tracing. The [OpenAI instrumentor](/docs/integrations/traceai/openai) with the gateway's `/compat` or `/openai` URL as the base URL traces calls your own code makes. The export traces what the gateway received, from any client, including tools you cannot instrument. It is also not Cloudflare Agents or Workers AI, which have their own export surfaces.
+
+| | Client tracing | Gateway export |
+| --- | --- | --- |
+| Where it runs | Your application, with `traceai-openai` | Cloudflare, switched on in the gateway settings |
+| What you see | The call as your code made it, under your own agent and tool spans | One span per gateway request |
+| Prompts and responses | Captured by default, switched off with the `FI_HIDE_*` variables | Off by default on this page, switched on with `FI_CAPTURE_CONTENT` |
+| What you run | Nothing beyond your app | A collector that Cloudflare can reach |
+
+<Warning>
+Alpha. Nobody ran Cloudflare AI Gateway for this page. A stand-in sender posted what Cloudflare's documentation says the exporter posts, built from the attribute names Cloudflare publishes, to a real OpenTelemetry Collector and a self-hosted Future AGI. The model call behind each test span was real; the Cloudflare span around it was not. Check one real trace in Observe before you rely on this, and compare it with the tables below.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | OpenTelemetry Collector contrib 0.162.0 (Docker), the latest release on 2026-10-16. A self-hosted Future AGI on a laptop. |
+| Cloudflare docs used | [OpenTelemetry](https://developers.cloudflare.com/ai-gateway/observability/otel-integration/), "Last updated Sep 24, 2026", read 2026-10-16. The gateway is a hosted service with no version number to pin. |
+| Cloudflare | Not run. No account, gateway, key or tunnel was used. |
+| Source | [examples/gateways/cloudflare-ai-gateway](https://github.com/future-agi/docs/tree/main/examples/gateways/cloudflare-ai-gateway) |
+
+## Why a collector sits in the middle
+
+Cloudflare's exporter has four fields: URL, Headers, Authorization (a Secrets Store reference) and Content type. Pointing it straight at Future AGI runs into three things, each seen in the test:
+
+1. Future AGI needs a `project_name` on every batch and the exporter cannot set one. It has no field for resource attributes. A batch without it is rejected with HTTP 400 `no project_name`.
+2. Cloudflare's page tells you to put `Authorization: Bearer <token>` in Headers. Future AGI answers 401 to a Bearer header and wants `X-Api-Key` and `X-Secret-Key`. Putting your Future AGI keys in Cloudflare's settings also hands them to a third party.
+3. The endpoint must be reachable from Cloudflare's network, so it needs a secret of its own.
+
+The collector below fixes all three. It accepts the Bearer token Cloudflare sends, sets the Observe project, and adds the Future AGI keys on your side. It also maps Cloudflare's names to the ones Observe reads and keeps prompts and error text out unless you opt in.
+
+## Set up
+
+<Steps>
+
+<Step title="Write the collector config">
+
+Save this as `otelcol.yaml`. Everything it reads from the environment is listed in the next step.
+
+```yaml
+extensions:
+  # The endpoint has to be reachable from Cloudflare's network, so it must not be open: anyone who finds it
+  # could write into your project.
+  bearertokenauth/gateway:
+    scheme: Bearer
+    token: ${env:GATEWAY_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/gateway
+        # Put TLS in front of this (a load balancer or reverse proxy), or set `tls:` here with
+        # cert_file and key_file.
+
+processors:
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: insert
+
+  transform/cloudflare:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span type in Observe: a span with a model is an LLM span, anything else a chain.
+          - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.request.model"] != nil
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["gen_ai.request.model"] == nil
+          # Cloudflare names the provider gen_ai.model.provider; Observe reads gen_ai.provider.name.
+          - set(attributes["gen_ai.provider.name"], attributes["gen_ai.model.provider"]) where attributes["gen_ai.model.provider"] != nil
+          # Cloudflare's own cost estimate (gen_ai.usage.cost). Observe reads gen_ai.cost.total.
+          - set(attributes["gen_ai.cost.total"], attributes["gen_ai.usage.cost"]) where attributes["gen_ai.usage.cost"] != nil
+          # Content ON: fill the Input and Output panes from Cloudflare's JSON strings.
+          - set(attributes["input.value"], attributes["gen_ai.prompt_json"]) where attributes["gen_ai.prompt_json"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.completion_json"]) where attributes["gen_ai.completion_json"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): the prompt and completion in the spelling Cloudflare uses and in the
+          # OpenTelemetry GenAI spellings, indexed keys included. Content ON keeps nothing twice.
+          - delete_key(attributes, "gen_ai.prompt_json")
+          - delete_key(attributes, "gen_ai.completion_json")
+          - delete_matching_keys(attributes, "^gen_ai\\.(prompt|completion|input\\.messages|output\\.messages)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Error text can echo the request. Keep the fact of the error, not the words.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Future AGI reads at most 16 MiB per request, so batching keeps requests small.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/gateway]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; the gateway sends traces only
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/cloudflare, batch]
+      exporters: [otlp_http/future_agi]
+```
+
+`FI_CAPTURE_CONTENT` is read as the exact string `true`. Any other value, or none, keeps content out.
+</Step>
+
+<Step title="Run the collector">
+
+```bash
+export GATEWAY_TOKEN=$(openssl rand -hex 24)   # the secret Cloudflare will send
+export FI_API_KEY=YOUR_API_KEY FI_SECRET_KEY=YOUR_SECRET_KEY
+
+docker run -d --name cloudflare-gateway-otelcol --memory 512m \
+  -p 4318:4318 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol/config.yaml:ro" \
+  -e GATEWAY_TOKEN -e FI_API_KEY -e FI_SECRET_KEY \
+  -e FI_PROJECT_NAME=my-cloudflare-gateway \
+  -e FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol/config.yaml
+```
+
+| Variable | Value |
+| --- | --- |
+| `GATEWAY_TOKEN` | A secret you invent. It protects the collector, not Future AGI. |
+| `FI_API_KEY`, `FI_SECRET_KEY` | Your Future AGI keys. They stay on this machine. |
+| `FI_PROJECT_NAME` | The Observe project every gateway trace goes to. On the self-hosted stack tested, a new name created the project. Create it first if you want to set it up yourself. |
+| `FI_TRACES_URL` | The full traces URL. Hosted Future AGI: `https://api.futureagi.com/tracer/v1/traces`, the URL the SDK uses, not tried with this collector. Self-hosted: `http://<your Future AGI host>:4318/v1/traces`. |
+| `FI_CAPTURE_CONTENT` | Leave unset. See [Privacy](#privacy). |
+</Step>
+
+<Step title="Make it reachable over HTTPS">
+
+Cloudflare's exporter runs in Cloudflare's network, so the collector needs a public HTTPS URL. The collector listens on plain HTTP on port 4318. Put TLS in front of it with a load balancer or a reverse proxy, or add `tls:` with `cert_file` and `key_file` under the receiver's `http:` block. TLS was not part of the test, and nothing here was exposed publicly. Every request must carry the bearer token; without it the collector answers 401.
+</Step>
+
+<Step title="Add the exporter in Cloudflare">
+
+In the Cloudflare dashboard open your AI Gateway, go to **Settings** and add an OTEL exporter.
+
+| Field | Value |
+| --- | --- |
+| URL | `https://gateway-otel.example.com/v1/traces`, your collector's public URL with the `/v1/traces` path |
+| Headers | `Authorization: Bearer YOUR_GATEWAY_TOKEN`, with the value of `GATEWAY_TOKEN`. This is the shape Cloudflare's own page shows. Do not put your Future AGI keys here. |
+| Authorization | Leave empty. Cloudflare says passing the token in Headers is simpler. |
+| Content type | `json` (the default) or `protobuf`. The collector accepted both. |
+
+The dashboard was not opened for this page. The field names above are the ones on Cloudflare's page.
+</Step>
+
+<Step title="Send a request through the gateway">
+
+Any client works. `cf-aig-metadata` is optional and carries values you choose. `cf-aig-otel-trace-id` and `cf-aig-otel-parent-span-id` are optional and link the gateway span to a trace your application already started:
+
+```bash
+curl https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai/chat/completions \
+  --header 'Authorization: Bearer {api_token}' \
+  --header 'Content-Type: application/json' \
+  --header 'cf-aig-metadata: {"team": "engineering", "feature": "support-bot"}' \
+  --header 'cf-aig-otel-trace-id: 0123456789abcdef0123456789abcdef' \
+  --header 'cf-aig-otel-parent-span-id: 0123456789abcdef' \
+  --data '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+The trace and span ids must be lowercase hex, 32 and 16 characters. The example values on Cloudflare's page contain letters outside `0-9a-f`, so they are not valid ids.
+
+Open **Observe**, select your project, and open the trace.
+</Step>
+
+</Steps>
+
+## What shows up in Observe
+
+From the stand-in test. A real Cloudflare payload may differ.
+
+| Signal | What Observe shows |
+| --- | --- |
+| Hierarchy | One span per gateway request. With `cf-aig-otel-trace-id` and `cf-aig-otel-parent-span-id` set, the span is stored under that trace id and sits under your span, if your app sent that span to the same project. Without the headers Cloudflare makes a new trace id. |
+| Span type | `llm`. The collector sets it from the presence of `gen_ai.request.model`. Without that step Observe showed `unknown`. |
+| Model | `gen_ai.request.model`, stored as the model. |
+| Provider | Cloudflare's `gen_ai.model.provider`. Observe does not read that name, so the collector copies it to `gen_ai.provider.name`. Both are kept. Without the copy the provider was empty. |
+| Tokens | `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`, with the total derived. A request with no usage shows no tokens, not zero. |
+| Cost | `gen_ai.usage.cost`, which Cloudflare calls an estimate. Observe does not read that name, so the collector copies it to `gen_ai.cost.total` and Observe stores it as the cost. Both attributes stay on the span. Without the copy Observe showed 0. The test value was synthetic, so how Cloudflare computes it is not checked. A request with no cost attribute was not tried. |
+| Custom metadata | Each `cf-aig-metadata` key is a span attribute of its own, for example `team`. It is not mapped to user, session or project. Cloudflare drops keys that start with `gen_ai.`. |
+| Prompt and response | Absent by default. With the opt-in they fill the Input and Output panes of the span, as the JSON strings Cloudflare sends in `gen_ai.prompt_json` and `gen_ai.completion_json`. The shape of those strings is assumed. |
+| Tool calls | Not in Cloudflare's attribute list, so there are no tool spans. A tool call inside the completion is visible only with the opt-in. |
+| Errors | A span with OTLP status `ERROR` shows as `ERROR`. The message is replaced by `error` unless you opt in. How Cloudflare marks a failed request in OTLP is not documented. |
+
+## Privacy
+
+Cloudflare's page documents no switch to leave prompts and completions out of the export. They travel in `gen_ai.prompt_json` and `gen_ai.completion_json` whenever the exporter is on, so the only place to keep them out of Observe is the collector.
+
+| Switch | Where | Default |
+| --- | --- | --- |
+| `FI_CAPTURE_CONTENT` | The collector's environment | `false` |
+
+With the collector default, these never leave your network, whatever Cloudflare sends:
+
+| Removed | Why |
+| --- | --- |
+| `gen_ai.prompt_json`, `gen_ai.completion_json` | Prompts and responses |
+| `gen_ai.prompt`, `gen_ai.completion`, `gen_ai.input.messages`, `gen_ai.output.messages`, with indexed spellings | The other names the OpenTelemetry GenAI conventions use for the same thing. Cloudflare does not document them. |
+| The span status message, replaced by `error` | Error text can echo the request |
+| `exception.message` and `exception.stacktrace` on span events | Stack traces carry paths and text |
+
+Kept: model, provider, token counts, cost, timing, status, and every `cf-aig-metadata` key. Metadata is a value you choose and Cloudflare exports it, so do not put a secret, an e-mail address or free text in that header.
+
+To send content on purpose, set `FI_CAPTURE_CONTENT=true` and restart the collector. The collector then copies `gen_ai.prompt_json` and `gen_ai.completion_json` into the Input and Output panes, removes the originals so nothing is stored twice, and leaves error text and exception details alone.
+
+In the test with content off, real model calls (JSON and protobuf), a failed request with an e-mail address in its text and a synthetic exception event with a stack trace each carried a unique marker. None of the markers, the e-mail address, the user name, the host name, the home or working directory, `Traceback` or the stack trace path appeared in what the collector exported or in any stored row of the project (every table with a project column, 8 in ClickHouse and 34 in Postgres, of which the non-empty ones were scanned, plus the collector's own export capture, including resource attributes and span events). The custom metadata marker did appear, as described above. With content on, the same markers were stored and the Input and Output panes filled.
+
+## Pointing the exporter straight at Future AGI
+
+Not recommended, and it cannot work for a real trace today. What the stand-in sender saw from a self-hosted Future AGI:
+
+| Request | Result |
+| --- | --- |
+| `X-Api-Key` and `X-Secret-Key`, no `project_name` | HTTP 400, `no project_name`, nothing stored |
+| The same body with `project_name` set by the sender | HTTP 200, stored. Cloudflare cannot do this. |
+| The same, protobuf | HTTP 200 |
+| Wrong keys | HTTP 401 |
+| `Authorization: Bearer <api key>`, the shape on Cloudflare's page, or no headers | HTTP 401 |
+| The same body gzipped | HTTP 400 |
+| The `/tracer/v1/traces` path instead of `/v1/traces` | HTTP 200 |
+| A span with no `gen_ai.prompt_json` | HTTP 200, stored with an empty Input pane, not an empty prompt |
+
+Even when a span lands, without the collector it showed type `unknown`, no provider and cost 0, as described above.
+
+Future AGI could stamp the project on its own collector for exporters like this one. That is a platform decision that has not been made. Until then this page needs the collector.
+
+## Limitations
+
+- Cloudflare was not run. The real payload, the span name and tree, the resource attributes, the way a failed request is marked, the cost value, whether the dashboard Headers field accepts the Bearer header as written, whether Cloudflare compresses its bodies, and how it retries a failed export are unverified. The collector accepts gzip and plain bodies, JSON and protobuf.
+- Cloudflare spans carry no tool, retrieval, user or session fields in the published list. A user or session id needs `cf-aig-metadata`, and this page does not map any key to them.
+- The span's own timing is Cloudflare's. A request that Cloudflare serves from its cache, a streamed response and a request with a custom provider were not tested.
+- One collector sends to one project. Run one collector per project, each with its own endpoint and token.
+- TLS in front of the collector, a public endpoint and the hosted Future AGI URL were not tried.
+- Exporter errors are Cloudflare's: a failed export does not fail your request, and you will not see it in Observe.
+- The collector keeps prompts out of Observe. It cannot stop Cloudflare from sending them to your collector.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| Nothing appears in Observe | Check the collector log for `Exporting failed. Dropping data`. A 401 there means the Future AGI keys or `FI_TRACES_URL` are wrong. Cloudflare never sees that error. |
+| The collector answers 401 | The token in the exporter's Headers does not match `GATEWAY_TOKEN`, or you used the Authorization secret with a different value. |
+| HTTP 400 `no project_name` | You pointed the exporter straight at Future AGI. Use the collector. |
+| Type `unknown`, no provider, cost 0 | The span did not go through the collector config on this page. |
+| Tokens are 0 | The request had no usage, or Cloudflare used attribute names this page does not know. Compare one trace's attributes with the tables above. |
+| No prompts or responses | That is the default. See [Privacy](#privacy). |
+| The gateway span is not under my span | The trace id or parent span id was not valid lowercase hex, or your app never sent the parent span to the same project. Observe lists a trace by its root, so a trace whose root points at a missing parent is not listed; open it by trace id. |
+| A metadata key is missing | Keys that start with `gen_ai.` are dropped by Cloudflare. |
+
+## Next Steps
+
+- [OpenAI instrumentor](/docs/integrations/traceai/openai), for tracing calls your code makes through the gateway
+- [Observe](/docs/observe)
