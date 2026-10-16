@@ -1025,7 +1025,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Go',
             items: [
               { title: 'OpenAI', href: '/docs/integrations/traceai/go/openai' },
-              { title: 'Anthropic', href: '/docs/integrations/traceai/anthropic-go' },
+              { title: 'Anthropic', href: '/docs/integrations/traceai/go/anthropic' },
               { title: 'Gemini', href: '/docs/integrations/traceai/go/gemini' },
               { title: 'A2A', href: '/docs/integrations/traceai/go/a2a' },
               { title: 'CloudWeGo Eino', href: '/docs/integrations/traceai/go/eino' },
