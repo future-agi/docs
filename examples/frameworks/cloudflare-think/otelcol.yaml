@@ -1,0 +1,119 @@
+# OpenTelemetry Collector (contrib) between Cloudflare Workers Observability and Future AGI, for Think agents.
+#
+# A Workers OTLP destination has a name, an endpoint and custom headers. It has no field for resource
+# attributes, and Future AGI rejects any batch whose resource has no `project_name`. This collector:
+#   1. accepts OTLP/HTTP (Cloudflare sends JSON, not binary protobuf) only with your bearer token,
+#   2. drops the Durable Object storage spans Workers records around every turn (optional, see below),
+#   3. sets the Observe project (`project_name`), which the destination cannot,
+#   4. marks Think's spans as agent / LLM / tool, links each conversation as a session, and turns
+#      Think's `error.type` into an error status,
+#   5. keeps prompts, outputs, tool arguments and results, and error text OUT unless you opt in,
+#   6. forwards uncompressed OTLP to Future AGI with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+#
+# Environment:
+#   COLLECTOR_TOKEN             a secret you invent; the Workers destination sends `Authorization: Bearer <it>`
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they stay here; they never go to Cloudflare)
+#   FI_PROJECT_NAME             the Observe project every Think trace goes to
+#   FI_TRACES_URL               https://api.futureagi.com/tracer/v1/traces, or your self-hosted collector URL
+#   FI_CAPTURE_CONTENT          optional, default false. `true` forwards the payloads Think recorded
+#                               (only present if the agent sets storeMessages / storeTools) and error text.
+
+extensions:
+  # Cloudflare's network has to reach this endpoint, so it must not be open: anyone who finds it could
+  # write into your project. Put TLS in front of it (a load balancer or reverse proxy), or set `tls:` below.
+  bearertokenauth/cloudflare:
+    scheme: Bearer
+    token: ${env:COLLECTOR_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/cloudflare
+
+processors:
+  # Workers traces every Durable Object storage call: about 250 leaf spans per Think turn, with no
+  # GenAI content. Remove this processor (and its name in the pipeline) to keep them.
+  filter/storage_spans:
+    error_mode: ignore
+    traces:
+      span:
+        - IsMatch(name, "^durable_object_storage_")
+
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: upsert
+
+  transform/think:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span types in Observe. Future AGI already reads `chat` and `execute_tool`; it does not read
+          # `invoke_agent` yet, so all three are set here.
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "chat"
+          - set(attributes["fi.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "execute_tool"
+          # One Think conversation (one Durable Object) is one Observe session.
+          - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
+          # Think records a failed model call or tool as `error.type` without a span status.
+          - set(status.code, STATUS_CODE_ERROR) where attributes["error.type"] != nil
+          # Query strings can carry user input or API keys (some providers take `?key=`). Always cut them.
+          - replace_pattern(attributes["url.full"], "[?#].*$", "") where attributes["url.full"] != nil
+          # Content ON: fill the Input and Output panes from Think's payload attributes.
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.value"], attributes["gen_ai.tool.call.arguments"]) where attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.tool.call.result"]) where attributes["gen_ai.tool.call.result"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): even if the agent sets storeMessages / storeTools (for example to
+          # use Cloudflare's own session replay), the payloads stop here.
+          - delete_matching_keys(attributes, "^gen_ai\\.(input\\.messages|output\\.messages|system_instructions|tool\\.call\\.arguments|tool\\.call\\.result|tool\\.definitions)$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Error text can echo the request. Keep the fact of the error, not the words.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Content OFF: drop every other span event (console output attributed to a span, for example).
+  filter/span_events:
+    error_mode: ignore
+    traces:
+      spanevent:
+        - name != "exception" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # Future AGI rejects gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/cloudflare]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/storage_spans, resource/future_agi, transform/think, filter/span_events, batch]
+      exporters: [otlp_http/future_agi]
