@@ -1,0 +1,118 @@
+---
+title: "Claude Managed Agents Tracing Is Not Supported Yet"
+description: "Anthropic now exports OpenTelemetry traces for Claude Managed Agents, but Future AGI cannot accept them as Anthropic sends them yet. What works, what is missing, and what we tested."
+---
+
+## About
+
+Claude Managed Agents is Anthropic's hosted agent service. Anthropic runs the agent loop and a sandbox for each session; your code creates agents, environments and sessions and exchanges events with them through the `client.beta.agents`, `environments`, `sessions` and `sessions.events` methods of Anthropic's SDKs (Python, TypeScript, Java, Go, C#, Ruby and PHP), under the beta header `managed-agents-2026-04-01`. The service is under Anthropic's commercial terms, not an open source license.
+
+**Future AGI does not support tracing Claude Managed Agents yet.** There are no setup steps on this page on purpose.
+
+Status: not supported, checked on 2026-10-16 with the `anthropic` Python SDK 1.15.0. Anthropic's OpenTelemetry export is itself in beta, and Anthropic says span names and attributes can change during the beta.
+
+This page is not about these related products, which run the agent loop in your own process:
+
+| You use | Where to look |
+| --- | --- |
+| The Claude Messages API in your own code | [Anthropic](/docs/integrations/traceai/anthropic). `traceAI-anthropic` wraps `messages.create`. It does not wrap the Sessions API, and a managed session's model calls happen on Anthropic's servers, so it records nothing of a session. |
+| The Claude Agent SDK | `traceai-claude-agent-sdk` in the [instrumentor list](/docs/sdk/tracing/instrumentors). |
+| Claude Code | The Claude Code coding-agent page. |
+
+## What changed
+
+An earlier review of this integration (2026-10-03) found no OpenTelemetry export for Managed Agents. That is no longer true. Anthropic now documents two ways to get OpenTelemetry spans for a session:
+
+| Source | Who sends the spans | What a session produces |
+| --- | --- | --- |
+| API tracing ("telemetry destinations") | Anthropic's servers push OTLP/HTTP to an endpoint that an organization admin adds in the Claude Console or with the Admin API. | A span per Sessions API request, one `anthropic.session.turn` span per agent turn (including turns on other threads), `anthropic.model_request` spans with the model and token counts, and an `anthropic.tool_use <tool>` span for each tool that Anthropic runs. |
+| SDK tracing | The Claude SDK in your process. Your own OpenTelemetry exporter sends the spans. | A span per Sessions API request your code makes (`anthropic.sessions.create`, `anthropic.sessions.events.send`, ...) and an `anthropic.custom_tool_use <tool>` span for each tool the SDK's session tool runner runs. No turn spans, no model request spans and no token counts: those exist only in API tracing. |
+
+Sources, read 2026-10-16: [API tracing](https://platform.claude.com/docs/en/manage-claude/opentelemetry/api), [SDK tracing](https://platform.claude.com/docs/en/manage-claude/opentelemetry/sdk), [span reference](https://platform.claude.com/docs/en/api/opentelemetry/spans), [content modes](https://platform.claude.com/docs/en/manage-claude/opentelemetry).
+
+## Why it is not supported yet
+
+We compared Anthropic's delivery rules with what a Future AGI collector accepts, and replayed the documented span shape into a local Future AGI.
+
+| Topic | Anthropic | Future AGI today | Result |
+| --- | --- | --- | --- |
+| Project | API spans carry the resource attribute `service.name` = `claude-platform` and nothing else. A destination can set request headers, not resource attributes. | Every span batch must carry a `project_name` resource attribute. There is no header alternative. | **Blocks.** Each delivery is rejected with HTTP 400 `ResourceSpan(s) have no project_name`. A collector in front of Future AGI would have to add the attribute. |
+| Endpoint | The destination must be an HTTPS URL on port 443 with a public hostname. A hostname that resolves to a non-public address disables the destination. | Depends on the deployment. Our local stack serves plain HTTP on a private port. | Not tested. We did not expose a collector publicly and did not test a Future AGI Cloud endpoint. |
+| Compression | The first request of each delivery is gzip-compressed. On a 400 or 415 answer, Anthropic resends the same spans uncompressed right away. | Rejects gzip bodies with HTTP 400. | Works. The uncompressed resend is accepted. |
+| Authentication | Up to 20 custom request headers per destination. | `X-Api-Key` and `X-Secret-Key` headers. | Works. |
+| Span types | Turns have `gen_ai.operation.name` = `invoke_agent`, model requests `chat`, tools `execute_tool`. | Maps `chat` to LLM and `execute_tool` to tool. `invoke_agent` is not mapped. | Model requests show as LLM spans with model and tokens, tools as tool spans. Turns show as `unknown`. |
+| Sessions | A session's spans carry `anthropic.session.id` and the thread ID in `gen_ai.conversation.id`, and can be spread over several traces. | Builds sessions from the `session.id` attribute. | No Sessions view. A multi-thread session would appear as separate, unconnected traces. Not tested with real threads. |
+| Content | With content on, prompts and replies are in `gen_ai.system_instructions`, `gen_ai.input.messages` and `gen_ai.output.messages`, and tool payloads in `gen_ai.tool.call.arguments` and `anthropic.tool_result.content`. | Fills a span's Input and Output from `input.value` and `output.value`. | Content is stored only as raw span attributes. The Input and Output columns stay empty. |
+| Cost | Token counts on `anthropic.model_request`. | Prices spans by model. | Cost showed $0.00 for `claude-opus-5-5` in our local run. |
+| A real session | Needs an Anthropic API key with billing, runs only Claude models, and is not eligible for zero data retention. | | Not run. No spend was approved, so no real session was traced. |
+
+## What we tested
+
+All runs used a local Future AGI on 2026-10-16. **Everything below is a stand-in.** No Anthropic account, API key or model call was used, so nothing here proves what Anthropic's real payload looks like.
+
+**API spans.** We built a payload from Anthropic's span reference (span names, kinds, resource, instrumentation scope and attribute keys, with made-up values) and sent it the way Anthropic's delivery rules describe: gzip first, then uncompressed after the 400. Sent as is, it was rejected for the missing `project_name`. With `project_name` added, as a collector in front of Future AGI would do, it was stored with this tree:
+
+```text
+anthropic.sessions.events.send     unknown
+  anthropic.session.turn           unknown   model claude-opus-5-5
+    anthropic.model_request        llm       1,834 input / 41 output tokens
+    anthropic.tool_use bash        tool
+    anthropic.model_request        llm       1,907 input / 18 output tokens
+```
+
+A turn whose model request failed with `rate_limit_error` showed the turn and the model request as `ERROR`.
+
+**SDK spans.** We ran the `anthropic` Python SDK 1.15.0 with its built-in tracing, with the Sessions API replaced by a local stub. The application's own OTLP exporter sent the spans straight to Future AGI with the two key headers and a `project_name` resource attribute, uncompressed. The session's spans nest under the application's own span:
+
+```text
+managed-agent-run                          your span
+  anthropic.sessions.create               model claude-opus-5-5
+  anthropic.sessions.events.stream
+  anthropic.sessions.events.list
+  anthropic.sessions.events.send          the user message
+  anthropic.custom_tool_use count_files   tool
+  anthropic.sessions.events.send          the tool result
+```
+
+A request for an unknown session showed `anthropic.sessions.retrieve` as `ERROR` with `error.type` = `not_found_error` and no error text. This half works with Future AGI today, but it shows only what your process did. Without API tracing there are no turns, model requests or token counts.
+
+## Privacy
+
+| | Default | Opt-in |
+| --- | --- | --- |
+| API tracing destination | **Metadata only**: identifiers, timing, status, token counts, and agent and tool names | **Full content** (`traces.content_mode` = `content`): adds prompts, replies, tool arguments and tool results |
+| SDK tracing | Metadata only | `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE=content`, or the client's `open_telemetry` option |
+
+What we saw in our runs:
+
+- **SDK spans, default.** We put a unique marker in the user message, so it also reached the tool input and the tool result. It was absent from every stored column of every table that holds the project's rows, including resource attributes.
+- **SDK spans, content on.** The marker appeared only in the raw attributes of the `anthropic.custom_tool_use` span. The Sessions request spans carried no message text in either mode.
+- **API spans.** Our metadata-only payload has no content by construction, as Anthropic describes that mode. In the content payload, the marker was stored only in the raw attributes of the turn and tool spans.
+- No API key, user name, host name or home directory path was stored in any run.
+
+Identifiers are exported in both modes: organization, workspace, session, agent and request IDs. If your organization has a HIPAA, FERPA or K-12 data-handling restriction with Anthropic, destinations export metadata only whatever their content mode; SDK spans are not affected by that restriction.
+
+## What would change this
+
+- **Project.** Future AGI accepts the project another way than a resource attribute, or Future AGI documents and supports a collector in front of it that adds `project_name`. Neither exists today.
+- **Mapping.** Turns map to agent spans, `anthropic.session.id` maps to a Future AGI session, and `gen_ai.input.messages` and `gen_ai.output.messages` fill Input and Output.
+- **A real run.** One real Managed Agents session delivered to a public HTTPS endpoint confirms the payload matches the shape above. This needs an approved spend cap.
+
+## What this page does not include
+
+- No setup steps, collector configuration, relay, package or peer dependency.
+- No claim that Future AGI received spans from Anthropic's servers.
+- Not tested: multi-agent threads, outcomes, compaction, MCP tools, and self-hosted sandboxes (where the SDK's environment worker emits the tool spans in your process).
+
+## Troubleshooting
+
+If you already added a Future AGI endpoint as an Anthropic telemetry destination:
+
+- **Delivery shows Failing with HTTP 400**: the spans have no `project_name` resource attribute. Future AGI cannot accept them directly yet.
+- **Delivery shows Failing with HTTP 401**: the `X-Api-Key` or `X-Secret-Key` header value is wrong.
+- **Destination is Disabled**: the hostname resolves to a non-public address, the endpoint answered with a redirect, or every delivery failed for 24 hours.
+
+If you send SDK spans from your own application to Future AGI:
+
+- Set the `project_name` resource attribute and the `X-Api-Key` and `X-Secret-Key` headers, and send uncompressed.
+- If another library also traces the Anthropic SDK, Anthropic's docs say to turn one of the two off. For the SDK's own spans, set `ANTHROPIC_OPEN_TELEMETRY=false`.
