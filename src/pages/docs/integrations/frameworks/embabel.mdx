@@ -1,0 +1,393 @@
+---
+title: "Embabel tracing with Future AGI"
+description: "Send the OpenTelemetry traces of an Embabel agent app to Future AGI with Embabel's observability starter and Spring Boot's OTLP exporter. Covers the Spring Boot 4 property names, the resource bean that carries project_name, what is captured, the content-off default and the opt-in."
+---
+
+## About
+
+This page is for Embabel, the JVM agent framework on Spring Boot in the `embabel/embabel-agent` repository (Maven group `com.embabel.agent`, Apache-2.0).
+
+Embabel's observability starter, `embabel-agent-starter-observability`, already emits OpenTelemetry spans for each agent run, action, LLM call, tool loop and tool call, with no changes to your agent code. You send them to Future AGI with Spring Boot's own OTLP exporter, a few lines of `application.yml` and one small configuration class. There is no traceAI package for Embabel and you do not need one.
+
+<Warning>
+Alpha. This page was tested end to end against a self-hosted Future AGI stack with a real model behind an OpenAI-compatible endpoint. It was not tested against the hosted `api.futureagi.com` endpoint, and the only model starter run end to end was `embabel-agent-starter-openai-custom`.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | Embabel 1.5.3 (latest, released 2026-10-05): tests and end to end. Embabel 1.5.2: end to end, and the tests pass except the two tool-error checks (see [Errors](#errors)). Both import Spring Boot 4.1.1, OpenTelemetry Java 1.62.0, Micrometer Tracing 1.7.1 and Spring AI 2.0.1. JDK 21.0.12, Maven 3.10.0. |
+| Java | 21 or later. Embabel 1.5.3 is compiled for Java 21 (class file version 65), so a JDK 17 cannot load it. |
+| Model | A real model behind an OpenAI-compatible endpoint, through `embabel-agent-starter-openai-custom`. Embabel's agent, action and tool spans come from the agent platform, not the model starter, but other starters were not run. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-16. |
+| Not tested | The hosted `api.futureagi.com` collector. Other model starters (OpenAI, Anthropic, Gemini and the rest). gRPC transport. Sub-agents, RAG and embedding spans, `@Tracked` methods, the Embabel shell, web (Spring MVC) apps, streaming. |
+| Embabel docs used | The [observability module README at v1.5.3](https://github.com/embabel/embabel-agent/blob/v1.5.3/embabel-agent-observability/README.md) and the installing guide in the same tag. Read 2026-10-16. |
+| Source | [examples/frameworks/embabel](https://github.com/future-agi/docs/tree/main/examples/frameworks/embabel): the app, the configuration class, tests, a recorded trace, and an end-to-end script. |
+
+## 1. Add the dependencies
+
+Embabel 1.5.3 is built on Spring Boot 4.1.1, so use that parent. Add the observability starter and the OTLP exporter next to your Embabel and model starters:
+
+```xml title="pom.xml"
+<parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.1</version>
+    <relativePath/>
+</parent>
+
+<properties>
+    <java.version>21</java.version>
+    <embabel-agent.version>1.5.3</embabel-agent.version>
+</properties>
+
+<dependencies>
+    <dependency>
+        <groupId>com.embabel.agent</groupId>
+        <artifactId>embabel-agent-starter</artifactId>
+        <version>${embabel-agent.version}</version>
+    </dependency>
+    <!-- your model starter, for example any OpenAI-compatible endpoint: -->
+    <dependency>
+        <groupId>com.embabel.agent</groupId>
+        <artifactId>embabel-agent-starter-openai-custom</artifactId>
+        <version>${embabel-agent.version}</version>
+    </dependency>
+
+    <!-- tracing -->
+    <dependency>
+        <groupId>com.embabel.agent</groupId>
+        <artifactId>embabel-agent-starter-observability</artifactId>
+        <version>${embabel-agent.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+</dependencies>
+```
+
+All of these resolve from Maven Central. No snapshot repository is needed, and the Langfuse exporter (`opentelemetry-exporter-embabel`) is not used.
+
+## 2. Configure the exporter
+
+Add this to `application.yml`:
+
+```yaml title="application.yml"
+spring:
+  application:
+    name: my-agent-app            # becomes service.name
+
+embabel:
+  agent:
+    platform:
+      observability:
+        enabled: true
+        # Content off by default. Set EMBABEL_CAPTURE_CONTENT=true to opt in.
+        capture-message-content: ${EMBABEL_CAPTURE_CONTENT:false}
+        trace-http-details: false
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  opentelemetry:
+    resource-attributes:
+      project_name: ${FI_PROJECT_NAME}
+      project_type: observe
+    tracing:
+      export:
+        otlp:
+          endpoint: ${FI_BASE_URL:https://api.futureagi.com}/tracer/v1/traces
+          transport: http
+          compression: none
+          headers:
+            X-Api-Key: ${FI_API_KEY}
+            X-Secret-Key: ${FI_SECRET_KEY}
+```
+
+| Piece | Value |
+| --- | --- |
+| Endpoint | `https://api.futureagi.com/tracer/v1/traces`. Spring Boot uses the URL as written, so include the path. HTTP, not gRPC. Traces only: the collector has no logs or metrics route, and this setup sends only traces. |
+| Headers | Both `X-Api-Key` and `X-Secret-Key`. A Bearer token does not authenticate. |
+| Resource | `project_name` and `project_type=observe`. Future AGI files spans by the resource attribute `project_name`, and a batch without it is dropped. A span attribute with that key does not count, and `service.name` is not read as a project name. On Embabel this property needs the bean in [step 3](#3-add-the-configuration-class). |
+| Compression | `none`, which is also Spring Boot's default. The collector rejects gzip bodies. |
+| Sampling | `1.0`. Embabel already defaults to `1.0`, overriding Spring Boot's `0.1`. Below `1.0`, whole runs are dropped at random. |
+| Content | Off. See [Privacy](#privacy). Embabel's own default is on. |
+
+<Warning>
+Do not use the `management.otlp.tracing.endpoint` snippet from Embabel's README. That is the Spring Boot 3 property name. Spring Boot 4.0 removed it (its configuration metadata marks it as an error-level deprecation, replaced by `management.opentelemetry.tracing.export.otlp.endpoint`), and Embabel 1.5.3 runs on Spring Boot 4.1.1. With the old name, nothing is exported and Embabel logs `No SpanExporter beans found. OpenTelemetry tracing will be disabled.` The old `embabel.observability.*` prefix is also ignored: it is now `embabel.agent.platform.observability.*`.
+</Warning>
+
+## 3. Add the configuration class
+
+Two beans are needed on top of `application.yml`:
+
+- **The resource.** Embabel's observability starter registers its own OpenTelemetry `Resource` bean, which carries only `service.name`. It replaces Spring Boot's resource, so `management.opentelemetry.resource-attributes` and `OTEL_RESOURCE_ATTRIBUTES` are ignored and `project_name` never reaches Future AGI. Declaring a `Resource` bean yourself restores Spring Boot's behaviour: both Embabel's and Spring Boot's beans step aside when one exists.
+- **The exporter wrapper.** `capture-message-content: false` removes prompts, answers and tool payloads, but Embabel still exports error text: in the span status, in the `exception` event (message and stack trace), and in `embabel.llm.error.message` and `embabel.tool.error.message`. Error text often repeats the input that caused it. The wrapper drops it when content capture is off, and drops stack traces always. `SpanExporters` is the Spring Boot 4 bean that the batch span processor exports to, so declaring it wraps the OTLP exporter without exporting anything twice.
+
+```java title="FutureAgiTracingConfiguration.java"
+import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.resources.ResourceBuilder;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.SpanExporters;
+import org.springframework.boot.opentelemetry.autoconfigure.OpenTelemetryProperties;
+import org.springframework.boot.opentelemetry.autoconfigure.OpenTelemetryResourceAttributes;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+
+@Configuration(proxyBeanMethods = false)
+public class FutureAgiTracingConfiguration {
+
+    /** Builds the resource the way Spring Boot does, so project_name is sent. */
+    @Bean
+    Resource futureAgiResource(Environment environment, OpenTelemetryProperties properties) {
+        ResourceBuilder builder = Resource.builder();
+        new OpenTelemetryResourceAttributes(environment, properties.getResourceAttributes()).applyTo(builder::put);
+        return Resource.getDefault().merge(builder.build());
+    }
+
+    /** Error text follows the content switch; stack traces are never exported. */
+    @Bean
+    SpanExporters spanExporters(
+            ObjectProvider<SpanExporter> exporters,
+            @Value("${embabel.agent.platform.observability.capture-message-content:true}") boolean captureContent) {
+        return SpanExporters.of(exporters.orderedStream()
+                .map(exporter -> new ErrorTextRedactingSpanExporter(exporter, captureContent))
+                .toList());
+    }
+}
+```
+
+```java title="ErrorTextRedactingSpanExporter.java"
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.common.AttributesBuilder;
+import io.opentelemetry.sdk.common.CompletableResultCode;
+import io.opentelemetry.sdk.trace.data.DelegatingSpanData;
+import io.opentelemetry.sdk.trace.data.EventData;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.data.StatusData;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+
+/** Drops error text (unless keepErrorText) and stack traces; keeps the ERROR status and the error type. */
+public final class ErrorTextRedactingSpanExporter implements SpanExporter {
+
+    static final Set<String> ERROR_TEXT_KEYS = Set.of(
+            "exception.message", "error.message", "embabel.llm.error.message", "embabel.tool.error.message");
+    static final String STACKTRACE_KEY = "exception.stacktrace";
+
+    private final SpanExporter delegate;
+    private final boolean keepErrorText;
+
+    public ErrorTextRedactingSpanExporter(SpanExporter delegate, boolean keepErrorText) {
+        this.delegate = delegate;
+        this.keepErrorText = keepErrorText;
+    }
+
+    @Override
+    public CompletableResultCode export(Collection<SpanData> spans) {
+        return delegate.export(spans.stream().map(this::redact).toList());
+    }
+
+    @Override
+    public CompletableResultCode flush() {
+        return delegate.flush();
+    }
+
+    @Override
+    public CompletableResultCode shutdown() {
+        return delegate.shutdown();
+    }
+
+    SpanData redact(SpanData span) {
+        StatusData status = span.getStatus();
+        boolean statusHasText = !keepErrorText && !status.getDescription().isEmpty();
+        boolean attributesHaveText = hasDroppedKey(span.getAttributes());
+        boolean eventsHaveText = span.getEvents().stream().anyMatch(e -> hasDroppedKey(e.getAttributes()));
+        if (!statusHasText && !attributesHaveText && !eventsHaveText) {
+            return span;
+        }
+        StatusData cleanStatus = statusHasText ? StatusData.create(status.getStatusCode(), "") : status;
+        Attributes cleanAttributes = withoutDroppedKeys(span.getAttributes());
+        List<EventData> cleanEvents = span.getEvents().stream()
+                .map(e -> hasDroppedKey(e.getAttributes())
+                        ? EventData.create(e.getEpochNanos(), e.getName(), withoutDroppedKeys(e.getAttributes()))
+                        : e)
+                .toList();
+        return new DelegatingSpanData(span) {
+            @Override
+            public StatusData getStatus() {
+                return cleanStatus;
+            }
+
+            @Override
+            public Attributes getAttributes() {
+                return cleanAttributes;
+            }
+
+            @Override
+            public int getTotalAttributeCount() {
+                return cleanAttributes.size();
+            }
+
+            @Override
+            public List<EventData> getEvents() {
+                return cleanEvents;
+            }
+        };
+    }
+
+    private boolean dropped(String key) {
+        return STACKTRACE_KEY.equals(key) || (!keepErrorText && ERROR_TEXT_KEYS.contains(key));
+    }
+
+    private boolean hasDroppedKey(Attributes attributes) {
+        return attributes.asMap().keySet().stream().anyMatch(k -> dropped(k.getKey()));
+    }
+
+    private Attributes withoutDroppedKeys(Attributes attributes) {
+        AttributesBuilder builder = Attributes.builder();
+        attributes.forEach((key, value) -> {
+            if (!dropped(key.getKey())) {
+                @SuppressWarnings("unchecked")
+                AttributeKey<Object> k = (AttributeKey<Object>) key;
+                builder.put(k, value);
+            }
+        });
+        return builder.build();
+    }
+}
+```
+
+Put both classes in a package your `@SpringBootApplication` scans. Your agents, actions and tools need no changes.
+
+## 4. Set environment variables and run
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-agent-app"            # the Observe project the traces land in
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"     # default: https://api.futureagi.com
+# export EMBABEL_CAPTURE_CONTENT=true            # opt in to prompts, answers, tool payloads and error text
+
+# the model, here through embabel-agent-starter-openai-custom
+export OPENAI_CUSTOM_BASE_URL="https://api.openai.com/v1"
+export OPENAI_CUSTOM_API_KEY="your-model-key"
+export OPENAI_CUSTOM_MODELS="gpt-4.1-mini"
+export EMBABEL_MODELS_DEFAULT_LLM="gpt-4.1-mini"
+```
+
+Set `FI_BASE_URL` to the origin only. `application.yml` adds `/tracer/v1/traces`.
+
+Spans are exported in batches every few seconds. When the Spring context closes (a normal shutdown, or `SpringApplication.exit` in a command-line app), the remaining spans are flushed. A process that is killed loses the spans of its last few seconds.
+
+## 5. Look at the trace
+
+Open **Observe → Tracing** in your project. One agent run is one trace:
+
+```text
+agent WeatherAgent                        agent
+├── planning ready
+├── planning report
+├── action report
+│   ├── llm <model>
+│   │   └── tool-loop
+│   │       ├── chat <model>                  llm   (model, input and output tokens)
+│   │       ├── llm.invocation <model>              (the same token counts again)
+│   │       ├── execute_tool currentWeather   tool
+│   │       ├── chat <model>                  llm
+│   │       └── llm.invocation <model>
+│   └── tool-loop-completed
+├── planning ready
+├── goal report
+└── COMPLETED
+```
+
+These are the span names Embabel 1.5.3 sent for an agent with one action and one tool, and the right-hand column is the span type Future AGI showed. `chat` spans come from Spring AI's model call, the others from Embabel. Spans without a type in the column are shown as plain spans in the trace tree.
+
+## What is captured
+
+With content off (the default on this page):
+
+| Span | What it carries |
+| --- | --- |
+| `agent <name>` | Agent name, planner type, status, goal, run id (`embabel.run.id`, also sent as `gen_ai.conversation.id`), `gen_ai.operation.name=agent`. Status ERROR when the run fails. |
+| `action <name>` | Action name, agent name, run id. |
+| `llm <model>`, `tool-loop` | Model, action, tool names, iteration limits and counts. |
+| `chat <model>` | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, finish reasons, response id, `gen_ai.usage.input_tokens` and `output_tokens`. Future AGI shows the model and token counts on this span. |
+| `llm.invocation <model>` | Model and token usage again. |
+| `execute_tool <tool>` | Tool name, tool status, duration, correlation id. Status ERROR when the tool throws. |
+| `planning`, `goal`, `COMPLETED` / lifecycle | Plan goal and action count, goal name, final state. |
+
+With content on, the agent, action and tool-loop spans also carry `input.value` and `output.value` (shown as input and output in Future AGI), `chat` spans carry the prompt and answer messages, tool spans carry the arguments and result as attributes, and error spans carry the error text.
+
+### Errors
+
+- **Tool throws.** The `execute_tool` span is ERROR with the error type (`ToolReturnedError`). Embabel hands the error to the model, which usually answers anyway, so the run can still end `COMPLETED`. On Embabel 1.5.2 the same tool failure was recorded with status OK; 1.5.3 marks it ERROR.
+- **Model call fails.** Every span on the failing path is ERROR, plus `llm.retry` and `llm.error` spans. Embabel retries the call (10 attempts by default) and then the action (up to 5 attempts), so one failing run produced 204 spans in our test.
+- With content off, ERROR spans have no status message and no error text. With content on, the status message is the error message. Stack traces are never sent.
+- If Future AGI cannot be reached, the agent run is not affected. In our test against an unreachable endpoint the app logged nothing about the failed export and exited normally, so check the project rather than the logs.
+
+## Privacy
+
+Content capture is **off** on this page: `capture-message-content: false`, plus the exporter wrapper for error text. Embabel's own default is on, so set it explicitly as shown.
+
+Off means none of these leave the process: prompts and answers, the agent's and actions' inputs and outputs, tool arguments and results, planning world state, error messages and stack traces. What is sent is metadata: span names, agent, action, goal and tool names, model names, token counts, durations, statuses, error types, and generated ids (run id, tool correlation id, the model's response id). Class and method names of your agent appear in goal names, for example `com.example.WeatherAgent.report`.
+
+To opt in, set `EMBABEL_CAPTURE_CONTENT=true` (or `capture-message-content: true`). Prompts, answers, inputs and outputs, tool payloads and error text are then sent, truncated to `max-attribute-length` (4000 characters by default). Stack traces stay off.
+
+In both modes, API keys, hostnames, usernames and local paths were not exported in our test. Keep `trace-http-details` off: it records HTTP bodies and headers.
+
+How this was checked: a unique marker was put in the question and the tool argument, then every stored column for the project (span attributes, resource attributes, span events, status message, input, output and the trace tables) was searched. With content off the marker, the tool's error text, the API keys, the home directory, the username and the hostname were not found. With content on the marker and the error text were found, and the keys, home directory and hostname were not.
+
+## How this differs from related pages
+
+- [Spring Boot and Spring AI](/docs/integrations/traceai/spring-boot) uses the traceAI starter and wraps a Spring AI `ChatModel` you choose, so it traces model calls only. This page uses Embabel's own instrumentation and traces the whole agent run: planning, actions, tool loops, tools and model calls. Use one or the other: with both on the same model, each call would be recorded twice. That combination was not run.
+- Embabel's README also describes a Langfuse and LangSmith exporter (`opentelemetry-exporter-embabel`). It is not used here: Future AGI takes the standard OTLP exporter.
+- There is no traceAI Java package for Embabel. The starter already emits the spans; this page only routes them.
+
+## Known gaps
+
+These were seen against Future AGI on 2026-10-16 with Embabel 1.5.3:
+
+- Only `chat` (llm), `execute_tool` (tool) and `agent` spans get a span type. Action, LLM wrapper, tool-loop, planning, goal and lifecycle spans show as plain spans.
+- Token counts appear twice per model call, on `chat` and on `llm.invocation`. A sum over every span in a trace counts them twice; count `llm` spans only.
+- Token counts are sent as strings (Micrometer tags are strings). Future AGI still reads them.
+- Embabel sends a session id as `gen_ai.conversation.id` (the run id when there is no conversation), but Future AGI does not read it as the session, so runs are not grouped into sessions.
+- With content on, tool arguments and results are span attributes, not the tool span's input and output.
+- On a failed run, the agent span's `embabel.agent.status` attribute can still read `RUNNING` while its span status is ERROR.
+
+## Troubleshooting
+
+- **Nothing arrives, and the log says `No SpanExporter beans found. OpenTelemetry tracing will be disabled.`** The endpoint is set with the Spring Boot 3 name `management.otlp.tracing.endpoint`, or `opentelemetry-exporter-otlp` is missing. Use `management.opentelemetry.tracing.export.otlp.endpoint`.
+- **The project never appears.** The batch had no `project_name` resource attribute. Check that `FutureAgiTracingConfiguration` is scanned: without its `Resource` bean, Embabel's resource is used and `management.opentelemetry.resource-attributes` is ignored.
+- **Only one key header.** Both `X-Api-Key` and `X-Secret-Key` are required.
+- **gzip.** Keep `compression: none`. The collector rejects gzip bodies.
+- **The last spans of a short-lived app are missing.** Close the Spring context before the JVM exits (`SpringApplication.exit`); a killed process does not flush.
+- **Every model call fails with 404 on `embabel-agent-starter-openai-custom`.** In our runs the base URL needed the `/v1` suffix (`https://host/v1`).
+- **`Failed to introspect meta-annotation @AutoConfiguration on class ...ChatClientAutoConfiguration` at startup.** Seen in every run, including working ones. It does not affect tracing.
+
+## Run the example
+
+The [example](https://github.com/future-agi/docs/tree/main/examples/frameworks/embabel) has the app, the configuration class, the tests and an end-to-end script:
+
+```bash
+cd examples/frameworks/embabel
+mvn -B package                 # unit and contract tests, no keys needed
+./run_e2e.sh                   # real model and real Future AGI; content off, then on, plus a tool failure
+```
+
+`tools/replay_fixture.py` sends a recorded Embabel 1.5.3 trace (content off) to a collector without running the JVM or a model.
+
+## Next Steps
+
+- [Spring Boot and Spring AI](/docs/integrations/traceai/spring-boot) to trace Spring AI model calls with the traceAI starter.
+- [Java integrations](/docs/integrations/traceai/java) for other Java frameworks and providers.
