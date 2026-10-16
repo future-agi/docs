@@ -1,0 +1,235 @@
+---
+title: "Vercel AI Gateway tracing with Future AGI"
+description: "Trace OpenAI-client calls to the Vercel AI Gateway with traceAI-openai. Covers what is captured, the privacy settings, and why the gateway's own Trace Drain cannot reach an Observe project today."
+---
+
+## About
+
+Three things share the name "Vercel". Keep them apart:
+
+1. **Client tracing of the AI Gateway** (`https://ai-gateway.vercel.sh/v1`). Your app calls the gateway with the OpenAI SDK and Future AGI traces those calls from your process. This is the supported path and the subject of this page.
+2. **AI Gateway Trace Drains.** Vercel can forward its own OpenTelemetry trace of each request to an OTLP/HTTP endpoint. A drain carries no prompts, bills at Vercel, and cannot set the `project_name` that Future AGI requires, so it **cannot target an Observe project today**. See [Trace Drains](#trace-drains-limitation-not-a-supported-path).
+3. **The Vercel AI SDK.** Its JavaScript integration (`@traceai/vercel`) has its own page: [Vercel AI SDK](/docs/integrations/traceai/vercel). This page does not replace it.
+
+There is no new package here. The client path is the existing [OpenAI integration](/docs/integrations/traceai/openai) with the gateway as the base URL.
+
+<Warning>
+Alpha. The gateway hop was **not** run against a live Vercel AI Gateway: a real call needs a Vercel account and a gateway key, and Vercel asks for a payment method on the team even to use its free credits. Everything below that depends on what the gateway returns was checked against a local stand-in with the real `openai` SDK and the real instrumentor. Those points are marked **stand-in only**. No Trace Drain was enabled, and no Vercel fee was incurred.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `traceAI-openai` 0.1.10, `fi-instrumentation-otel` 1.1.0, `openai` 3.31.0 (end to end), `openai` 1.109.1 (tests only), Python 3.13. `traceAI-openai` 0.1.10 requires Python below 3.14. |
+| Gateway | Not tested live. Local stand-in shaped like the documented Chat Completions API, and a local OpenAI-compatible proxy running a real model. Both stand-ins, neither is Vercel. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-15. The hosted `api.futureagi.com` URL was not exercised. |
+| Vercel docs used | [OpenAI Chat Completions API](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions), [Trace Drains](https://vercel.com/docs/ai-gateway/observability-and-spend/trace-drains) (last updated 2026-09-08), [Using Drains](https://vercel.com/docs/drains/using-drains) (2026-09-17), [Trace Drains reference](https://vercel.com/docs/drains/reference/traces) (2026-08-21), [AI Gateway pricing](https://vercel.com/docs/ai-gateway/pricing) (2026-09-08). All read 2026-10-15. |
+| Source | [examples/gateways/vercel-ai-gateway](https://github.com/future-agi/docs/tree/main/examples/gateways/vercel-ai-gateway) |
+
+## 1. Install
+
+```bash
+pip install traceAI-openai fi-instrumentation-otel openai
+```
+
+## 2. Set environment variables
+
+```bash
+export AI_GATEWAY_API_KEY="your-vercel-ai-gateway-key"   # goes to Vercel only
+export FI_API_KEY="your-futureagi-api-key"                # goes to Future AGI only
+export FI_SECRET_KEY="your-futureagi-secret-key"
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"   # your collector's OTLP/HTTP address
+```
+
+The two key sets are not interchangeable. The gateway key is sent as `Authorization: Bearer` to Vercel by the OpenAI client. The Future AGI key pair is sent as `X-Api-Key` and `X-Secret-Key` to the collector by the tracer. The example's tests assert that neither key appears in the other's traffic.
+
+Vercel documents that an AI Gateway API key takes precedence over an OIDC token, even an invalid key. This page uses an API key.
+
+## 3. Trace the gateway client
+
+```python
+import os
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+from openai import OpenAI
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-chatbot",          # the Observe project the spans land in
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = OpenAI(
+    base_url="https://ai-gateway.vercel.sh/v1",
+    api_key=os.environ["AI_GATEWAY_API_KEY"],
+)
+
+response = client.chat.completions.create(
+    model="<provider>/<model>",          # copy a current id from Vercel's model list
+    messages=[{"role": "user", "content": "Say hello in five words."}],
+)
+print(response.choices[0].message.content)
+
+trace_provider.force_flush()             # short scripts: send spans before the process exits
+```
+
+`register()` sets `project_name` and `project_type` on the resource, which is what Future AGI needs to route the spans. The model id is a placeholder on purpose: Vercel's examples use ids such as `anthropic/claude-opus-5` and `openai/gpt-6-astra`, and those change. Do not copy an id from this page.
+
+Streaming (`stream=True`), tool calls (`tools=`), and the failure case work through the same client. The Vercel Chat Completions pages document all three. This page ran each of them with the sync client. `AsyncOpenAI` is patched by the same instrumentor and was not run for this page. The gateway's Responses and Anthropic-format endpoints were not run either.
+
+### Optional: group calls under one session and one parent span
+
+```python
+from fi_instrumentation import using_session
+
+with using_session("support-chat-42"):
+    ...  # your OpenAI calls; every span in the block carries session.id
+```
+
+Use `using_session` and `using_user` for session and user. Vercel's own headers for tags or user ids are a gateway feature and were not verified as a source of session or user on the client path.
+
+## 4. Look at the trace
+
+Open **Observe**, select the project (`my-chatbot` above), and open a trace. A run that wraps four scenarios (chat, streaming, a tool round trip, a failing call) in one parent span looks like this (the shape comes from the runnable example, with a local OpenAI-compatible proxy standing in for the gateway):
+
+```
+vercel-ai-gateway-demo          agent   your own parent span
+├── ChatCompletion              llm     non-streaming call
+├── ChatCompletion              llm     streaming call
+├── ChatCompletion              llm     tool call requested by the model
+├── tool lookup_record          tool    your own span around the local tool
+├── ChatCompletion              llm     final answer after the tool result
+└── ChatCompletion              llm     failure case (ERROR)
+```
+
+The parent, the session, and the tool span are your code. The `ChatCompletion` spans are the integration.
+
+## What is captured on the client path
+
+| Signal | What you get |
+| --- | --- |
+| Model | For non-streaming calls, the `model` field **of the response body**. With the stand-in, a response that names a different model than the request showed the response's model on the span. A live gateway may return a resolved model id (Vercel's drain documents `gen_ai.response.model` as the resolved canonical model), so the span can show an id other than the one you sent. **Stand-in only; not checked against a live gateway.** |
+| Model on streamed and failed calls | `traceAI-openai` 0.1.10 records no model on a streamed call or a failed call. A pending traceAI change (future-agi/traceAI pull request 249, open at the time of writing) records the requested model on both. |
+| Provider | `openai` on every span, including calls to the gateway. The span does not say "Vercel", and the provider-by-host table in that pending change does not list `ai-gateway.vercel.sh` either. |
+| Tokens | Input, output, and total tokens when the response body (or the last streamed chunk) reports `usage`. If a streamed call reports no usage, the span has no token attributes. That is unknown, not zero. Vercel's streaming page does not document `stream_options`, so the example does not send it. |
+| Cost | Not on the client path. Vercel reports cost in its dashboard and, on a drain, as `vercel.ai_gateway.cost.total`. |
+| Prompts, answers, tool arguments, tool results | Captured by default. See [Privacy](#privacy). |
+| Errors | The span has status `ERROR`. Its status message is the exception class and the gateway's error body. The span also carries an `exception` event. |
+| Streaming | A `First Token Stream Event` on the span. |
+| Fallbacks, retries, routing, provider attempts | **Not captured.** The span shows the one call your client made. Vercel's attempt spans exist only in the drain trace. |
+| Vercel request id, generation id, API key id, deployment | **Not captured** on the client path. |
+
+## Privacy
+
+**Default.** `traceAI-openai` captures what the model sees and says. System and user prompts, model answers, tool-call arguments, and tool results are on the span as input and output. Vercel also sees every prompt, because the gateway is on the request path. Hiding content in Future AGI does not hide it from Vercel.
+
+**Switch capture off.** Set these before the process starts, or pass a `TraceConfig` to `instrument(config=...)`:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+export FI_HIDE_LLM_INVOCATION_PARAMETERS=true   # also drops request parameters such as stream and tool_choice
+```
+
+With those set, `input.value` and `output.value` are `__REDACTED__`, and the message and tool-call content is not exported.
+
+**Proof.** A unique marker was placed in the system prompt, the user prompt, and (by the model) the answer, the tool-call arguments, and the tool result. The run called the stand-in proxy, with a real model, through the unchanged recipe.
+
+| Run | Result |
+| --- | --- |
+| `FI_HIDE_*` on | 0 occurrences of the marker in all 47 ClickHouse tables (every column, including `resource_attrs`, `span_events`, `attrs_string`, `input`, `output`, `metadata`, `status_message`) and in a full data dump of the Postgres database. The application still received the full answer. |
+| Default | 46 occurrences, all in the `spans` table: `attrs_string`, `input`, `output`, `attributes_extra`. |
+
+The same marker test runs without any Future AGI stack in the example's test suite, against the bytes the collector receives (every span attribute, event, and resource attribute).
+
+**What the hide flags do not remove.** With content hidden, a span still carries:
+
+- the model id, token counts, and timings;
+- `session.id` when you use `using_session`;
+- tool definitions: tool names, descriptions, and JSON schemas you pass in `tools=`;
+- **error text.** A failed call's status message is the exception class plus the gateway's error body. On the wire the `exception` event also carries `exception.message` and `exception.stacktrace`, and the stack trace contains local file paths. Future AGI stored only the event name and time in `span_events`, and no local path, user name, or host name was found in any stored row of the hidden-content run. The stored status message still holds the gateway's error text. A gateway error body is not your prompt, but treat it as text you did not write.
+
+Spans you create yourself carry only what you put on them. The example's parent and tool spans record no arguments.
+
+## Trace Drains (limitation, not a supported path)
+
+AI Gateway can forward an OpenTelemetry trace of every request through a [Vercel Drain](https://vercel.com/docs/ai-gateway/observability-and-spend/trace-drains). Facts, from Vercel's pages read on 2026-10-15:
+
+- **Plan.** Trace Drains need a Pro or Enterprise team.
+- **Price.** Vercel charges $0.05 per 1,000 traces delivered to each drain, plus $0.50 per GB of trace egress. Pro has no allowance for either meter. Failed deliveries do not incur a trace-event charge. These are Vercel's prices on that date. They are not Future AGI prices, and they can change. Re-read [Vercel's pricing](https://vercel.com/docs/ai-gateway/pricing) before you rely on them.
+- **Protocol.** OTLP/HTTP only, over HTTPS, as JSON or Protobuf. OTLP/gRPC is not supported. Your endpoint must answer 200.
+- **No prompts or completions.** Vercel: "AI Gateway traces contain request metadata, but they don't include prompt or completion content." This is how the drain works, not something Future AGI strips. There is no switch that adds them. Use the client path for prompts.
+- **Resource attributes are fixed.** `service.name: ai-gateway` and `service.namespace: vercel`. The drain form has an endpoint URL, a format, custom headers (one `Header-Name: Header-Value` per line), and a signature secret. It has no resource-attribute field.
+- **`vercel.project.id` is a Vercel project id.** It is not a Future AGI project name. Do not map one to the other.
+
+### Why it cannot reach an Observe project
+
+Future AGI's collector routes spans by the resource attribute `project_name`. A drain cannot set it, and custom headers do not substitute. The collector rejects such a batch. Reproduced against the local collector with a drain-shaped fixture (not a real drain):
+
+| Request | Result |
+| --- | --- |
+| Drain shape (no `project_name`), `X-Api-Key` and `X-Secret-Key` headers, JSON | `400 auth stamp: stamp: 1 ResourceSpan(s) have no project_name (indices: [0])` |
+| Same, Protobuf | the same 400 |
+| Same fixture with `project_name` added to the resource, JSON or Protobuf | `200`, trace appears in the project |
+| `Authorization: Bearer ...` instead of the key headers | `401 missing credentials: provide X-Api-Key/X-Secret-Key or Authorization: Basic` |
+
+So a drain pointed at a Future AGI collector today sends nothing that lands. A collector-side rule that stamps a project for such exporters has been proposed and is not shipped. Do not follow a drain recipe that says "paste the keys as headers and it works".
+
+Other points that were not verified against a real drain:
+
+- **JSON dialect.** Vercel's [reference page](https://vercel.com/docs/drains/reference/traces) shows a JSON span with `"kind": "server"`. The local collector rejected that string (`unknown string value`) and accepted integer kinds and `SPAN_KIND_SERVER`-style names. Whether Vercel's real JSON uses the lower-case form is unknown. Choose **Protobuf** in the drain form.
+- **Compression.** Vercel's pages do not say whether a drain compresses its request body. The local collector refuses gzip bodies.
+- **Reachability.** Vercel posts from its cloud over HTTPS. A collector on a private address is not reachable. This page does not recommend exposing one.
+- **Cancelled requests.** What the drain emits for a request the client cancels is unverified.
+
+### What an accepted drain-shaped trace looks like
+
+If the batch carries `project_name` (the fixture does, a drain does not), the local stack showed: one root span typed `llm` with the requested model, the provider from `gen_ai.provider.name`, input and output tokens from `gen_ai.usage.*`, and the resolved model kept as an attribute; the routing, model-attempt and provider-attempt spans nested under it, typed `unknown`; and all `vercel.ai_gateway.*` attributes kept as span attributes. `vercel.ai_gateway.cost.total` stayed an attribute and **did not fill the Cost field** (it showed $0.00). The fixture's values are placeholders, not a capture, so treat this as the mapping of the published attribute names, not a record of a real drain.
+
+### Client path and drain side by side
+
+| Signal | Client path (this page) | Trace Drain |
+| --- | --- | --- |
+| Lands in an Observe project | Yes, named in `register()` | No. Rejected until a project can be named |
+| Prompts and answers | Captured by default, can be turned off | Never included |
+| Model | Response-body model (non-streaming) | Root span `gen_ai.request.model` and `gen_ai.response.model` |
+| Tokens | When the response reports `usage` | Input, output, reasoning, cache read and cache write tokens |
+| Cost | No | `vercel.ai_gateway.cost.total` as a string attribute |
+| Fallbacks, retries, provider attempts | No | Yes, as separate spans |
+| Cost to you at Vercel | None for tracing | $0.05 per 1,000 traces plus $0.50 per GB, Pro or Enterprise |
+| Missing is | Unknown, not zero | Unknown, not zero |
+
+Turning on both gives you two traces for one request, not a merged view. If both ever reach the same project, expect duplicates. Vercel's [sampling rules](https://vercel.com/docs/drains/reference/traces#sampling-rate) apply to the drain, so a missing drain trace can be sampling.
+
+## How this differs from the other Vercel and OpenAI pages
+
+- **[Vercel AI SDK](/docs/integrations/traceai/vercel).** For apps built on the AI SDK (`ai`, `@ai-sdk/*`) in JavaScript. If your app reaches the gateway through the AI SDK, keep that page's instrumentor. Do not add the OpenAI instrumentor to the same calls.
+- **[OpenAI](/docs/integrations/traceai/openai).** The same instrumentor. This page only adds the gateway base URL, the two key sets, and the limits above.
+- **Vercel's AI SDK for Python.** Vercel's current Python quick start uses a package named `ai`, not the OpenAI SDK. It is a different client, and this page did not test it.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| The call worked but no trace appears | Exporter errors never fail your request. A short script may exit before the batch is sent: call `trace_provider.force_flush()`. Check `FI_BASE_URL` and the key pair. With a collector that was unreachable, the example still returned the model's answer and exited 0. |
+| `401` from the gateway | The gateway key is wrong or missing. Vercel documents that a key you set takes precedence over an OIDC token, even an invalid key. |
+| `401` from the collector | The Future AGI key pair is wrong, or the gateway key was sent there. Header names are `X-Api-Key` and `X-Secret-Key`. A Bearer token always gets `401`. |
+| Provider shows `openai` | Expected. See the capture table. |
+| The span's model is not the id you sent | The span shows the response body's model on non-streaming calls. Vercel can resolve the id you sent to a canonical one. |
+| A streamed call has no model or no tokens | `traceAI-openai` 0.1.10 leaves the model off streamed spans, and tokens appear only if the stream reports usage. |
+| Error spans show gateway error text | Expected. See [what the hide flags do not remove](#privacy). |
+| A drain shows nothing in Observe | The batch has no `project_name`. See [Why it cannot reach an Observe project](#why-it-cannot-reach-an-observe-project). |
+| A drain test costs money | It does. Vercel bills delivered traces and egress to the team. Nothing on this page enables or tests a drain. |
+
+## Run the example
+
+The example runs the recipe against a local stand-in, then replays a drain-shaped fixture. It never calls Vercel.
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+cd fi-docs/examples/gateways/vercel-ai-gateway
+FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:4318 ./run_e2e.sh
+```
+
+To run the same script against a real gateway, set `GATEWAY_BASE_URL=https://ai-gateway.vercel.sh/v1`, `GATEWAY_API_KEY`, and `GATEWAY_MODEL`. That needs a Vercel account and a gateway key, which this page did not create. The [README](https://github.com/future-agi/docs/tree/main/examples/gateways/vercel-ai-gateway) lists what a live run would still have to confirm.
