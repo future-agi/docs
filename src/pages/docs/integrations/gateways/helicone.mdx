@@ -1,0 +1,282 @@
+---
+title: "Trace Helicone gateway calls in Observe"
+description: "Trace OpenAI client calls through Helicone's AI Gateway or classic proxy in Future AGI with traceAI-openai. Two base URLs, two auths. Alpha."
+---
+
+## About
+
+Helicone is an LLM gateway and observability product. You point the OpenAI SDK at a Helicone base URL and Helicone forwards the request to the model provider. This page traces those calls in Future AGI **from your own code**: the OpenAI client is instrumented with [traceAI-openai](/docs/integrations/traceai/openai) and exports spans to Future AGI, whatever base URL the client uses. There is no Helicone package and nothing to install on the Helicone side.
+
+This is not:
+
+- **A Helicone export.** None of the Helicone docs read for this page describes a way to send Helicone's request logs to an OTLP trace endpoint. Helicone's webhooks and GraphQL data export are JSON features, not OTLP (read 2026-10-03), and its `/v1/trace/log` endpoint receives OpenTelemetry spans into Helicone, the opposite direction ([Helicone Traces docs](https://helicone-helicone-7.mintlify.app/observability/traces), read 2026-10-15). Future AGI does not import Helicone's history; Helicone's dashboard stays a separate store. The one OpenTelemetry export that does exist, in the self-hosted gateway, is covered in [Self-hosted gateway telemetry](#self-hosted-gateway-telemetry).
+- **A new traceAI package.** The existing instrumentor handles the call. [What is not captured](#what-is-not-captured) lists the gaps found.
+
+<Note>
+Helicone was acquired by Mintlify on 2026-03-03. Both companies say Helicone's services stay live "in maintenance mode": security updates, bug and performance fixes, and new models keep shipping ([Helicone](https://www.helicone.ai/blog/joining-mintlify), [Mintlify](https://www.mintlify.com/blog/mintlify-acquires-helicone)). Helicone's own docs call the classic proxy integrations "maintained but no longer actively developed" ([Legacy Integrations](https://docs.helicone.ai/integrations/overview)). This page makes no claim beyond that.
+</Note>
+
+| | |
+| --- | --- |
+| Tested with (Python) | traceAI-openai 0.1.10 (latest release on PyPI), fi-instrumentation-otel 1.1.0, openai 3.31.0 (latest) and 1.69.0 (the oldest the instrumentor accepts), Python 3.13. The package metadata allows Python 3.10 to 3.13. |
+| Tested with (TypeScript) | @traceai/openai 0.1.13, @traceai/fi-core 1.0.0, openai 5.23.2 (the newest release the instrumentor's peer range accepts, `^4 \|\| ^5`), Node 26.8.1 |
+| Helicone side | Helicone AI Gateway 0.2.0-beta.30, self-hosted (`@helicone/ai-gateway`), in front of an OpenAI-compatible upstream. The classic-proxy shape was run against a local stand-in. |
+| Helicone docs read | [AI Gateway overview](https://docs.helicone.ai/gateway/overview), [Legacy Integrations](https://docs.helicone.ai/integrations/overview), [Sessions](https://docs.helicone.ai/features/sessions), [Custom Properties](https://docs.helicone.ai/features/advanced-usage/custom-properties), [User Metrics](https://docs.helicone.ai/features/advanced-usage/user-metrics), [gateway README](https://github.com/Helicone/ai-gateway), all read 2026-10-15 |
+| Source | [examples/gateways/helicone](https://github.com/future-agi/docs/tree/main/examples/gateways/helicone) |
+
+<Warning>
+Alpha. No Helicone account was used and the hosted endpoints `ai-gateway.helicone.ai` and `oai.helicone.ai` were **not called**. What ran: the real self-hosted Helicone AI Gateway; the classic proxy's auth shape against a local stand-in (`STANDIN`); and the hosted base URLs through the OpenAI SDK on an in-process transport, which shows the request the client builds and not what Helicone does with it. Treat anything that depends on the hosted service as unverified until you run it with your own Helicone key.
+</Warning>
+
+## 1. Pick the Helicone surface
+
+Helicone has two ways in. They use different auth, and mixing them fails: the AI Gateway wants the Helicone key as the client's API key, the classic proxy wants your provider key as the API key plus a `Helicone-Auth` header.
+
+<div style={{ overflowX: 'auto' }}>
+
+| Surface | Base URL | `api_key` on the OpenAI client | Extra header | Where it is documented |
+| --- | --- | --- | --- | --- |
+| AI Gateway | `https://ai-gateway.helicone.ai` | Your Helicone key | none | [Gateway overview](https://docs.helicone.ai/gateway/overview), quick example |
+| Classic proxy | `https://oai.helicone.ai/v1` | Your OpenAI key | `Helicone-Auth: Bearer <Helicone key>` | [Legacy Integrations](https://docs.helicone.ai/integrations/overview) |
+| Self-hosted AI Gateway | `http://localhost:8080/ai` (default port) | any value, unless you enabled gateway auth | none | [gateway README](https://github.com/Helicone/ai-gateway) |
+
+</div>
+
+Helicone's own pages spell the hosted gateway URL three ways: `https://ai-gateway.helicone.ai` (overview, sessions), `https://ai-gateway.helicone.ai/ai` (README, user metrics) and `https://ai-gateway.helicone.ai/v1` ([Responses API guide](https://docs.helicone.ai/gateway/concepts/responses-api)). This page uses the overview's. The others were not tried against the hosted service. No EU gateway host was verified, so none is given here.
+
+Model names also vary across Helicone's pages (`gpt-4o-mini`, `openai/gpt-4o-mini`, `gpt-4o/openai`). Take the id from [helicone.ai/models](https://www.helicone.ai/models). The self-hosted gateway on `/ai` rejects a name without a provider prefix (`openai/gpt-4o-mini` works; `gpt-4o-mini` returns `Model string must be in format '{provider}/{model_name}'`).
+
+## 2. Install
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```bash Python
+pip install traceAI-openai openai
+```
+
+```bash TypeScript
+npm install @traceai/openai @traceai/fi-core "openai@^5" "@opentelemetry/instrumentation@^0.202.0"
+```
+
+</CodeGroup>
+
+Set the Future AGI keys where `register()` reads them. For a self-hosted Future AGI, also set `FI_BASE_URL`; spans go to `$FI_BASE_URL/tracer/v1/traces`.
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+# self-hosted Future AGI only:
+# export FI_BASE_URL="http://localhost:8080"
+```
+
+Future AGI keys go to Future AGI only. Helicone keys go to Helicone only. Do not put a Helicone key in a collector header, and do not send a Bearer token to the collector.
+
+## 3. Trace the client
+
+Call `register()` and instrument **before** you create the client.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```python Python
+import os
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from openai import OpenAI
+from traceai_openai import OpenAIInstrumentor
+
+provider = register(project_type=ProjectType.OBSERVE, project_name="my-chatbot")
+OpenAIInstrumentor().instrument(tracer_provider=provider)
+
+# AI Gateway: the Helicone key is the api_key.
+client = OpenAI(
+    base_url="https://ai-gateway.helicone.ai",
+    api_key=os.environ["HELICONE_API_KEY"],
+)
+
+# Classic proxy: your OpenAI key is the api_key, Helicone-Auth carries the Helicone key.
+# client = OpenAI(
+#     base_url="https://oai.helicone.ai/v1",
+#     api_key=os.environ["OPENAI_API_KEY"],
+#     default_headers={"Helicone-Auth": f"Bearer {os.environ['HELICONE_API_KEY']}"},
+# )
+
+response = client.chat.completions.create(
+    model="gpt-4o-mini",  # use an id from helicone.ai/models
+    messages=[{"role": "user", "content": "Say hello in one sentence."}],
+)
+print(response.choices[0].message.content)
+
+provider.force_flush()  # short scripts: send the spans before the process exits
+```
+
+```typescript TypeScript
+import { register, ProjectType } from "@traceai/fi-core";
+import { OpenAIInstrumentation } from "@traceai/openai";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import * as openaiModule from "openai";
+import OpenAI from "openai";
+
+const tracerProvider = register({ projectType: ProjectType.OBSERVE, projectName: "my-chatbot" });
+const instrumentation = new OpenAIInstrumentation({});
+registerInstrumentations({ instrumentations: [instrumentation], tracerProvider });
+// ES modules are not loaded through require(), so hand the module to the instrumentation.
+// With CommonJS, registerInstrumentations alone is enough.
+instrumentation.manuallyInstrument(openaiModule as any);
+
+// AI Gateway: the Helicone key is the apiKey.
+const client = new OpenAI({
+  baseURL: "https://ai-gateway.helicone.ai",
+  apiKey: process.env.HELICONE_API_KEY,
+});
+
+// Classic proxy: your OpenAI key is the apiKey, Helicone-Auth carries the Helicone key.
+// const client = new OpenAI({
+//   baseURL: "https://oai.helicone.ai/v1",
+//   apiKey: process.env.OPENAI_API_KEY,
+//   defaultHeaders: { "Helicone-Auth": `Bearer ${process.env.HELICONE_API_KEY}` },
+// });
+
+const response = await client.chat.completions.create({
+  model: "gpt-4o-mini", // use an id from helicone.ai/models
+  messages: [{ role: "user", content: "Say hello in one sentence." }],
+});
+console.log(response.choices[0].message.content);
+
+await tracerProvider.forceFlush();
+```
+
+</CodeGroup>
+
+Open **Observe** in Future AGI and select the project (`my-chatbot`). Each chat call is one span.
+
+The examples directory has runnable versions of both ([`python/`](https://github.com/future-agi/docs/tree/main/examples/gateways/helicone/python), [`typescript/`](https://github.com/future-agi/docs/tree/main/examples/gateways/helicone/typescript)): an agent that makes a tool call, a streamed call and a failing call, a local stand-in for Helicone, and `run_e2e.sh`.
+
+## 4. Sessions and users
+
+Helicone's session and user headers are Helicone's. They are sent to Helicone and **are not copied onto spans** (tested on both surfaces in Python and TypeScript): sending `Helicone-Session-Id` without a Future AGI session produces spans with no `session.id`, and no span attribute is named after a `Helicone-*` header. Response headers such as Helicone's request id are not recorded either.
+
+To get sessions and users in Future AGI, set them with the traceAI API, and send Helicone's headers separately if you also want them in Helicone's dashboard:
+
+```python
+from fi_instrumentation import using_session, using_user
+
+with using_session("chat-42"), using_user("user-123"):
+    client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "Hi"}],
+        extra_headers={                      # Helicone reads these; Future AGI does not
+            "Helicone-Session-Id": "chat-42",
+            "Helicone-Session-Path": "/chat",
+            "Helicone-Session-Name": "support",
+            "Helicone-User-Id": "user-123",
+            "Helicone-Property-Environment": "production",
+        },
+    )
+```
+
+See [Set session and user ID](/docs/sdk/tracing/set-session-user-id). In TypeScript, per-call headers go in the second argument (`{ headers: { ... } }`). A Future AGI session helper for TypeScript was not tested.
+
+## What is captured
+
+Measured on the real self-hosted gateway and on the stand-in, traceAI-openai 0.1.10 (Python) and @traceai/openai 0.1.13 (TypeScript).
+
+<div style={{ overflowX: 'auto' }}>
+
+| Signal | Python | TypeScript |
+| --- | --- | --- |
+| Span | One LLM span per chat call, in the `register()` project (`project_name` is a resource attribute), nested under any span you have open | Same, named `OpenAI Chat Completions` |
+| Provider label | `openai` on every span, whatever the base URL | `openai` on every span |
+| Model | `gen_ai.request.model` is the model the gateway **returns** (`gpt-6-luna` for a request of `openai/gpt-6-luna`). The name you sent stays in `gen_ai.request.parameters`. | `llm.model_name` is the returned model on a finished call |
+| Tokens | Input, output and total, when the response has usage | Same for non-streamed calls |
+| Messages and tool calls | Input and output messages, tool definitions, `tool_calls` | Same |
+| Streaming | The streamed text. Tokens only when you send `stream_options={"include_usage": True}`; without it no token attributes are set, not zeros. | The streamed text. No token counts, even with `include_usage`. Status stays unset. `llm.model_name` is the requested name, prefix included. |
+| Failed call | An `ERROR` span: status message and an `exception` event | **No span** (see below) |
+
+</div>
+
+## What is not captured
+
+- **The provider.** Every span says `openai`. The instrumentor labels a span from the client's base URL host and neither Helicone host is in its table. An unreleased change (future-agi/traceAI#249) records the requested model on streamed and failed calls and maps known hosts to a provider, and it still says `openai` for both Helicone hosts. The tests here pass on 0.1.10 and on that change.
+- **Model on streamed and failed calls (Python 0.1.10).** The model attribute comes from the response, so those spans have none. The requested name is in `gen_ai.request.parameters` unless you hide parameters.
+- **Failed calls in TypeScript.** `@traceai/openai` 0.1.13 handles a synchronous throw only. The OpenAI SDK rejects asynchronously, so the span of a failed request (401, 429, a gateway error) is never ended and never exported. The call still fails for your app as usual; only the trace is missing.
+- **Helicone data.** Helicone's request id, cache hits, routing choice, cost and latency breakdown are not on the span. Future AGI does not read Helicone's cost; it prices a span from the model and tokens when it knows the model.
+- **Embeddings, the Responses API and batch calls through Helicone** were not tested for this page.
+- **Retries inside the SDK.** The demo sets `max_retries=0` so one failure is one span; with the default, each attempt is a separate call.
+
+## Privacy
+
+Helicone sees every prompt and response, because it is on the request path. Hiding content in Future AGI does not change what Helicone stores.
+
+Default: the instrumentor exports prompts, responses, tool-call arguments and tool results, like any OpenAI call it traces. That is the same on every base URL.
+
+**Python: turn content off.** Set these before the process starts (or use `TraceConfig`, see [Mask span attributes](/docs/sdk/tracing/mask-span-attributes)):
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+export FI_HIDE_LLM_INVOCATION_PARAMETERS=true   # the request parameters, including the model name you sent
+```
+
+Measured with a unique marker in the system prompt, the user prompt, the tool arguments, the tool result and the answer, run through the real self-hosted gateway. With these three settings and the scrubbing exporter below, the marker was absent from every ClickHouse table of the Future AGI deployment (44 tables scanned) and from a full Postgres dump. In every ClickHouse table that is keyed by project (16 tables), the content-off project held no copy of the marker, of the email address in the prompt, of the gateway's error text, of a stack trace, of a local path, or of the user name and host name of the machine. The same run without the settings showed the marker, and the email address, in the stored prompts and answers.
+
+What the hide settings **do not** remove:
+
+- **Tool definitions.** `gen_ai.tool.definitions` (tool names, descriptions, parameter schemas) is exported with `FI_HIDE_INPUTS=true`. Do not put secrets in tool descriptions.
+- **Error text and stack traces.** A failed call exports the SDK's error text, which includes the body Helicone or the provider returned, as the span's status message and as an `exception` event with a stack trace (file paths from your machine, including your user name). The hide settings do not touch either. The Future AGI deployment tested kept the status message and stored only the name and time of the exception event, but the data does leave your process. To keep it from leaving, wrap the exporter:
+
+```python
+from fi_instrumentation import HTTPSpanExporter, register
+from fi_instrumentation.fi_types import ProjectType
+from redact_errors import RedactErrorDetailsExporter   # examples/gateways/helicone/python/redact_errors.py
+
+provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-chatbot",
+    span_exporter=RedactErrorDetailsExporter(HTTPSpanExporter()),
+)
+```
+
+  It keeps the `ERROR` status and the exception class and drops the message and the stack trace. It is about 30 lines and is tested in the examples directory.
+- **Values you set yourself:** session and user ids, tags, metadata, and the model name.
+
+**TypeScript: content cannot be turned off.** In `@traceai/openai` 0.1.13 the hide settings (`FI_HIDE_*` and `traceConfig`) have no effect: prompts and responses are exported either way, including a raw copy in `raw.input` and `raw.output`. This was measured with every `hide*` option set. If a workload must not export content, use the Python recipe, or remove the content at a collector before it leaves your network. The examples directory pins this behaviour in a test so it fails when it is fixed.
+
+## Self-hosted gateway telemetry
+
+The open-source AI Gateway can export its own OpenTelemetry data (`telemetry.exporter: otlp` in its config). This recipe does not use it. We tried it against Future AGI so you do not have to:
+
+- It speaks OTLP over **gRPC**. Pointed at a Future AGI OTLP/gRPC endpoint with `OTEL_EXPORTER_OTLP_HEADERS` (`x-api-key`, `x-secret-key`) and `OTEL_RESOURCE_ATTRIBUTES` (`project_name`, `project_type`), the spans arrive and are stored. Both are standard OpenTelemetry environment variables, which this gateway build honoured.
+- They are the gateway's **internal pipeline spans** (`request`, `authorize`, `opt_rate_limit`, `opt_cache`, `mapper`, `dispatcher` and similar), typed `unknown`, with source file names and thread names. They carry no model, no tokens, no provider and no prompt or response, so they are not LLM traces and do not replace the client spans above.
+- The gateway's README says the export covers logs, metrics and traces; the Future AGI collector takes traces only.
+
+Use it only if you want to see where time goes inside a self-hosted gateway. `run_e2e.sh` step 7 reproduces it.
+
+## Troubleshooting
+
+<div style={{ overflowX: 'auto' }}>
+
+| What you see | What it means |
+| --- | --- |
+| 401 and the response names Helicone | The Helicone key, or the `Helicone-Auth` header, is wrong or missing for that surface. Check the table in step 1. This is Helicone's 401, not the collector's. |
+| 401 from the collector, or no spans in the project | Check `FI_API_KEY` and `FI_SECRET_KEY` (Bearer tokens never work on the collector), and `FI_BASE_URL` for a self-hosted Future AGI. A batch without a `project_name` is dropped, so call `register()` with a project name. |
+| The call worked and no trace appears | Spans are sent in batches. Call `provider.force_flush()` (Python) or `tracerProvider.forceFlush()` (TypeScript) before a short script exits. Export errors never fail your request. |
+| `Model string must be in format '{provider}/{model_name}'` | You are on the self-hosted gateway's `/ai` route with a bare model name. Use `openai/<model>`. |
+| Every span says `openai`, including Anthropic or Gemini models | Expected, see [What is not captured](#what-is-not-captured). The `model` shows what ran. |
+| A streamed span has no model or no tokens | Python 0.1.10 omits the model on streams. Ask the stream for usage with `stream_options={"include_usage": True}`. TypeScript records no stream tokens. |
+| TypeScript: a failed request leaves no trace | Known gap in `@traceai/openai` 0.1.13, see above. |
+| You pointed a Helicone webhook at the collector | Unsupported. Webhooks are JSON payloads, not OTLP. |
+| Prompts appear although `FI_HIDE_INPUTS=true` | TypeScript ignores the setting. In Python, check the variable is set in the process that runs the client and spelled exactly, and that you did not create the instrumentor with a `TraceConfig` that overrides it. |
+
+</div>
+
+## How this differs from other pages
+
+- [OpenAI](/docs/integrations/traceai/openai): the same instrumentor. This page adds the two Helicone base URLs, their auth, what happens to Helicone's headers, and the limits above.
+- [Portkey](/docs/integrations/traceai/portkey) and [LiteLLM](/docs/integrations/traceai/litellm): those have their own traceAI packages that wrap the Portkey and LiteLLM clients. There is no `traceAI-helicone`, because the OpenAI client is the thing being traced.
+- **Helicone's dashboard** keeps its own copy of your requests. The two stores are independent.
+
+## Next steps
+
+- [Mask span attributes](/docs/sdk/tracing/mask-span-attributes): the `FI_HIDE_*` settings and `TraceConfig`.
+- [Set session and user ID](/docs/sdk/tracing/set-session-user-id): sessions and users in Future AGI.
+- [OpenAI integration](/docs/integrations/traceai/openai): chat, tool calls, audio and images with the same instrumentor.
