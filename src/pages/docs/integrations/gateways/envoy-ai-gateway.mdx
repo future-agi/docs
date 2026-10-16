@@ -1,0 +1,135 @@
+---
+title: "Send Envoy AI Gateway traces to Observe"
+description: "Export the spans Envoy AI Gateway already creates for chat, completion and embedding requests to Future AGI with the gateway's standard OpenTelemetry environment variables. Prompts stay out unless you opt in. Alpha."
+---
+
+## About
+
+Envoy AI Gateway sits in front of your model providers. For every OpenAI-style Chat Completions, legacy Completions and Embeddings request it records a span with OpenInference attributes (model, token counts, latency, status). Point its OpenTelemetry exporter at Future AGI and each gateway request shows up in an Observe project, even when the calling app has no Future AGI code in it.
+
+You configure the gateway only. There is no Future AGI package, no custom ext-proc and no Envoy-specific receiver.
+
+This is not client tracing. If you installed `traceAI-openai` in an app that calls the gateway, that traces the app's call to the gateway. This page traces the gateway itself, including callers you do not control. Running both gives two traces for one call.
+
+| | |
+| --- | --- |
+| Tested with | `aigw` v1.2.0 (`v1.2.0-0-gdaa9f89`, standalone CLI, darwin-arm64, Envoy fetched by the CLI). v1.2.0 was the latest release on 2026-10-16. The project is now branded "Agent Router"; the code and env names are the same. |
+| Future AGI side | A self-hosted Future AGI stack built from `dev` (collector on `/v1/traces`). The hosted URL `https://api.futureagi.com/tracer` was **not** called. |
+| Upstream used | A real GPT model through a local OpenAI-compatible endpoint (chat and completions) and Gemini's OpenAI-compatible embeddings endpoint. No billed provider account was used. |
+| Envoy AI Gateway docs used | [Tracing](https://aigateway.envoyproxy.io/docs/capabilities/observability/tracing), read 2026-10-16, plus the v1.2.0 source for env names |
+| Source | [examples/gateways/envoy-ai-gateway](https://github.com/future-agi/docs/tree/main/examples/gateways/envoy-ai-gateway) |
+
+<Warning>
+Alpha. What ran: the real `aigw` v1.2.0 binary exporting to a self-hosted Future AGI for chat, legacy completions, embeddings, an unknown-model failure, a wrong collector key and a missing project name, with content off and on. What did not run: a Kubernetes cluster, the Helm chart, a `GatewayConfig`, the hosted Future AGI endpoint, streaming, and providers other than OpenAI-compatible ones. The Kubernetes files in the example directory are unverified translations of the same environment variables.
+</Warning>
+
+## Before you start
+
+- A Future AGI API key and secret key, and the Observe project name you want the traces in.
+- Envoy AI Gateway 1.x (tested on 1.2.0).
+- The Future AGI collector takes **traces only, over HTTP, uncompressed**. The gateway's own example uses a gRPC collector on `:4317`; do not copy that.
+
+## Setup
+
+Set these environment variables on the gateway process (standalone `aigw`), or on the ext-proc container for Kubernetes (see [Kubernetes](#kubernetes-not-run)):
+
+```bash
+# Future AGI export, traces only
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://api.futureagi.com/tracer"   # self-hosted: http://<collector>:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=YOUR_FI_API_KEY,X-Secret-Key=YOUR_FI_SECRET_KEY"
+export OTEL_RESOURCE_ATTRIBUTES="project_name=my-envoy-gateway,project_type=observe"
+export OTEL_METRICS_EXPORTER="none"
+export OTEL_LOGS_EXPORTER="none"
+
+# Keep prompts and responses out of the spans (the gateway captures them by default)
+export OPENINFERENCE_HIDE_INPUTS=true
+export OPENINFERENCE_HIDE_OUTPUTS=true
+export OPENINFERENCE_HIDE_EMBEDDINGS_TEXT=true
+export OPENINFERENCE_HIDE_EMBEDDINGS_VECTORS=true
+
+OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=YOUR_PROVIDER_KEY aigw run
+```
+
+| Variable | Why |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | The OpenTelemetry SDK appends `/v1/traces`. Tested: an endpoint of `http://127.0.0.1:4318` posted to `/v1/traces`; with a `/tracer` path prefix the post went to `/tracer/v1/traces` (checked against a capture stub, not against the hosted service). |
+| `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` | The collector does not take gRPC from this recipe. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `X-Api-Key` and `X-Secret-Key`. A Bearer token does not work (the collector answers 401). |
+| `OTEL_RESOURCE_ATTRIBUTES` | `project_name` is required. Without it the collector rejects the whole batch with HTTP 400. `project_type=observe` makes an Observe project. |
+| `OTEL_METRICS_EXPORTER=none` | The collector has no metrics route. |
+| `OTEL_LOGS_EXPORTER=none` | When an OTLP endpoint is set, `aigw` otherwise wires OTLP access logs too. The collector has no logs route. |
+| `OPENINFERENCE_HIDE_*` | See [Privacy](#privacy). |
+
+Run it end to end with the tested script: [run_aigw.sh](https://github.com/future-agi/docs/blob/main/examples/gateways/envoy-ai-gateway/run_aigw.sh). Then send a request and wait about ten seconds (spans are batched; `aigw` flushes on shutdown):
+
+```bash
+curl -s localhost:1975/v1/chat/completions -H 'content-type: application/json' \
+  -H 'agent-session-id: my-session-1' \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}],"max_tokens":50}'
+```
+
+### Group requests into sessions
+
+By default the gateway copies the request header `agent-session-id` to the span attribute `session.id`, which Observe uses as the session. To map more headers, set `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES` (standalone) or the controller flag `spanRequestHeaderAttributes` (Kubernetes), for example `agent-session-id:session.id,x-tenant-id:tenant.id`. Headers that are not mapped are not exported (tested: an unmapped `x-tenant-id` did not appear). `OTEL_AIGW_REQUEST_HEADER_ATTRIBUTES` sets all three signals at once; this page only uses the span variant.
+
+### Kubernetes (not run)
+
+The same variables go on the ext-proc container. [`k8s/gatewayconfig.yaml`](https://github.com/future-agi/docs/blob/main/examples/gateways/envoy-ai-gateway/k8s/gatewayconfig.yaml) (a per-gateway `GatewayConfig`, `apiVersion: aigateway.envoyproxy.io/v1beta1`, keys from a Secret) and [`k8s/helm-values.yaml`](https://github.com/future-agi/docs/blob/main/examples/gateways/envoy-ai-gateway/k8s/helm-values.yaml) (`extProc.extraEnvVars`) show how. **Neither was applied to a cluster.** The gateway's own tracing page only shows the endpoint and metrics variables in this position, so passing the header and resource-attribute variables this way is unverified. If your chart cannot pass `X-Api-Key` and `X-Secret-Key`, there is no supported route; do not fork ext-proc.
+
+## What you see in Observe
+
+Each request is one trace with one span, named for the endpoint:
+
+| Request | Span | Observe type | What it carries |
+| --- | --- | --- | --- |
+| `/v1/chat/completions` | `ChatCompletion` | LLM | model, provider (`llm.system`), prompt / completion / total tokens, reasoning-token details, invocation parameters, `session.id`, latency |
+| `/v1/completions` | `Completion` | LLM | same |
+| `/v1/embeddings` | `CreateEmbeddings` | Embedding | model, latency |
+
+Real example from the run: `ChatCompletion`, model `gpt-6-luna`, 318 prompt and 33 completion tokens, 2.5 s, session `sess-th8300-a`. The span is a root span: the gateway does not create a parent, and there are no separate spans for the provider hop or for tool calls inside the conversation. If the caller sends a W3C `traceparent`, the gateway's tracer is the standard OpenTelemetry SDK; joining a caller's trace was not tested.
+
+## Privacy
+
+Envoy AI Gateway puts the full request and response on the span by default. This recipe turns that off. With the four `OPENINFERENCE_HIDE_*` variables set to `true`:
+
+- `input.value` and `output.value` are stored as `__REDACTED__`; no `llm.input_messages`, `llm.output_messages`, prompts or choices are exported.
+- Model, token counts, invocation parameters, latency and status are still exported.
+- Proof: a unique marker in the prompt was absent from every stored column (ClickHouse `spans`, `traces`, `trace_sessions` and the Postgres tracer tables, including resource attributes and events) after the run. The same marker sent with content on was found.
+
+**Opt in** by setting the four variables to `false` (the example script does this with `FI_CAPTURE_CONTENT=1`). Prompts and completions then appear on the span.
+
+One thing is not hidden: when the upstream call fails, the span status message carries the gateway's error text. For an unknown model this includes the model name from your request (`unknown provider for model <name>`). Provider error text can contain more. Treat error messages as non-sensitive only if your providers' errors are.
+
+## Errors
+
+- An upstream or routing failure is a span with status `ERROR`, for example `Error code: 400 ... model_not_found` for an unknown model.
+- A wrong collector secret does not fail the user's request: the call returns 200 and the gateway logs `traces export: failed to send ...: 401 Unauthorized`.
+- A missing `project_name` also does not fail the request; the gateway logs `400 Bad Request ... have no project_name` and the batch is dropped.
+
+## Limits and what was not tested
+
+- Kubernetes, Helm and `GatewayConfig`: not run.
+- Hosted `api.futureagi.com`: not called.
+- Streaming responses, MCP, Anthropic-style and other non-OpenAI endpoints: not tested. The gateway's tracing covers the three OpenAI endpoints above.
+- No per-tool or per-agent hierarchy: one flat span per gateway request.
+- The standalone `aigw` logs a warning about a default MCP session encryption seed. That is unrelated to tracing; set your own seed if you use MCP.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| Nothing appears | Spans are batched; wait ten seconds or stop `aigw` (it flushes). Then check the gateway log for `traces export`. |
+| `401 Unauthorized` in the gateway log | Wrong or missing `X-Api-Key` / `X-Secret-Key`, or a Bearer header. |
+| `400 ... have no project_name` | `OTEL_RESOURCE_ATTRIBUTES` is missing or empty. |
+| Export goes to port 4317 or fails on gRPC | You copied the gateway's gRPC example. Use `http/protobuf` and the HTTP endpoint. |
+| Errors about `/v1/logs` or `/v1/metrics` | Set `OTEL_LOGS_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`. |
+| Prompts are visible | The `OPENINFERENCE_HIDE_*` variables are not set on the same process that serves traffic. |
+| No session | The request has no `agent-session-id` header, or you overrode the header map without it. |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Observe overview" href="/docs/observe" />
+  <Card title="Set up tracing with traceAI" href="/docs/integrations" />
+</CardGroup>
