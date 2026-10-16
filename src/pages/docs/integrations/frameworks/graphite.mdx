@@ -1,0 +1,366 @@
+---
+title: "Graphite (grafi) tracing with Future AGI"
+description: "Send the OpenTelemetry traces of a Graphite (PyPI grafi) agent to Future AGI by injecting your own tracer provider through ExecutionServices. Do not use Graphite's setup_tracing(). Covers the attribute mapping, the metadata-only default and the opt-in for content."
+---
+
+## About
+
+This page is for Graphite, the open-source Python agent framework from Binome: repository [`binome-dev/graphite`](https://github.com/binome-dev/graphite), PyPI package `grafi`, MPL-2.0. It is not Graphite.dev, the code-review product.
+
+Graphite already emits OpenTelemetry spans for every assistant, workflow, node and tool call. It takes the tracer from `ExecutionServices`, so your application owns the tracer provider and you point its exporter at Future AGI. There is no traceAI package for Graphite. You add one small module (below) and pass its tracer in.
+
+<Warning>
+Do not call Graphite's `setup_tracing()` for Future AGI. It builds a plaintext gRPC exporter with no headers and sets `service.name` instead of `project_name`. Against Future AGI it sends nothing usable (the collector answers `UNAUTHENTICATED`), and against any other endpoint it sends spans in the clear.
+</Warning>
+
+<Warning>
+Alpha. Tested end to end against a self-hosted Future AGI stack on localhost, with a real model behind an OpenAI-compatible endpoint. Not tested against the hosted `api.futureagi.com` collector.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `grafi` 0.0.36 (latest, published 2026-06-23) on Python 3.13.15 (end to end and tests) and on Python 3.11 (tests). `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1, `openai` 3.31.0. |
+| Model | A real model behind an OpenAI-compatible endpoint, through Graphite's `OpenAITool`. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-16. |
+| Not tested | The hosted collector. Other LLM tools of Graphite (Anthropic, Gemini, Ollama and so on). Human-in-the-loop, RAG and MCP nodes. Multi-assistant setups. |
+| Source | [examples/frameworks/graphite](https://github.com/future-agi/docs/tree/main/examples/frameworks/graphite): the module, a runnable assistant, tests and an end-to-end script. |
+
+## 1. Install
+
+```bash
+pip install grafi==0.0.36 "opentelemetry-exporter-otlp-proto-http>=1.42.1"
+```
+
+Graphite needs Python 3.11 or later. It installs `opentelemetry-sdk` and the gRPC exporter itself. Future AGI takes traces over OTLP/HTTP, so you add the HTTP exporter.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-chatbot"             # the Observe project the traces land in
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"    # default: https://api.futureagi.com
+# export FI_CAPTURE_CONTENT=1                   # opt in to prompts, answers and tool payloads
+```
+
+Set `FI_BASE_URL` to the origin only. The code adds `/tracer/v1/traces`.
+
+## 3. Add the tracing module
+
+Save this next to your agent code as `futureagi_grafi.py`.
+
+| Piece | Value |
+| --- | --- |
+| Endpoint | `https://api.futureagi.com/tracer/v1/traces`. HTTP, not gRPC. Traces only: the collector has no logs or metrics route. |
+| Headers | Both `X-Api-Key` and `X-Secret-Key`. One header is a failed setup. |
+| Resource | `project_name` and `project_type=observe`. A span attribute with that key does not count, and a batch without it is rejected. `service.name` is not read as a project name. |
+| Compression | Off. The collector rejects gzip bodies with a `400`. |
+| Attribute names | Graphite writes its own names. The exporter wrapper renames them to the ones Future AGI reads. See [What is captured](#what-is-captured). |
+| Content | Off by default. See [Privacy](#privacy). |
+
+```python title="futureagi_grafi.py"
+"""Send Graphite (PyPI ``grafi``) traces to Future AGI.
+
+Graphite emits OpenTelemetry spans through the tracer you put in ``ExecutionServices``.
+Its own ``setup_tracing()`` helper cannot be used for Future AGI (plaintext gRPC, no
+headers, ``service.name`` instead of ``project_name``), so the application builds the
+tracer provider itself. ``create_tracer_provider`` does that:
+
+* the resource carries ``project_name`` (Future AGI files spans by it) and ``project_type``;
+* the OTLP/HTTP exporter carries ``X-Api-Key`` and ``X-Secret-Key``, sends no gzip, and
+  posts to ``<FI_BASE_URL>/tracer/v1/traces`` (traces only, no logs or metrics route);
+* ``GrafiExporter`` maps Graphite's own attribute names to the ones Future AGI reads
+  (``oi_span_type`` -> ``fi.span.kind``, ``input`` -> ``input.value``, ``output`` ->
+  ``output.value``, ``conversation_id`` -> ``session.id``, ``user_id`` -> ``user.id``),
+  leaves out empty ids and dict-valued attributes, and never exports a stack trace;
+* by default only metadata leaves the process (see ``METADATA_ATTRIBUTES``). Set
+  ``FI_CAPTURE_CONTENT=1`` (or ``capture_content=True``) to also export prompts, answers,
+  tool arguments and results, and the text of an error.
+
+It does not touch the global tracer provider, and it never calls Graphite's
+``setup_tracing``.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping, Sequence
+
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+    Compression,
+    OTLPSpanExporter,
+)
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import Event, ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
+from opentelemetry.trace import Status, StatusCode
+
+# Graphite attribute -> the attribute Future AGI reads.
+RENAMES = {
+    "oi_span_type": "fi.span.kind",
+    "input": "input.value",
+    "output": "output.value",
+    "conversation_id": "session.id",
+    "user_id": "user.id",
+}
+
+# Graphite sets these to "" when the application gave no id. An empty id is not exported.
+ID_ATTRIBUTES = frozenset({"session.id", "user.id"})
+
+# Graphite writes the exception text, the traceback (local file paths) and a JSON copy of
+# both onto the span. None of them is exported, in either mode. The text of the error is
+# exported with content on, as ``error.message``.
+NEVER_EXPORTED = frozenset({"error", "error.stack", "error.details"})
+
+# Attributes that describe a call without containing what was said or done. Anything not
+# listed here is dropped unless content capture is on, so an attribute added by a later
+# Graphite release stays private until it is reviewed (tests/test_privacy.py checks this).
+METADATA_ATTRIBUTES = frozenset(
+    {
+        # Graphite's own spans (after the renames above)
+        "fi.span.kind",
+        "session.id",
+        "user.id",
+        "id",
+        "name",
+        "type",
+        "model",
+        "invoke_id",
+        "assistant_request_id",
+        "subscribed_topics",
+        "publish_to_topics",
+        "error.type",
+        # spans of an optional provider instrumentor (OpenInference OpenAI)
+        "openinference.span.kind",
+        "llm.model_name",
+        "llm.provider",
+        "llm.system",
+    }
+)
+METADATA_PREFIXES = ("llm.token_count.",)
+
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def map_attributes(attributes: Mapping[str, object] | None, capture_content: bool) -> dict[str, object]:
+    """Rename Graphite's keys, drop what must not leave, and (without content) keep metadata only."""
+    mapped: dict[str, object] = {}
+    for key, value in (attributes or {}).items():
+        if isinstance(value, Mapping):  # InvokeContext.kwargs: free-form application data
+            continue
+        if key in NEVER_EXPORTED:
+            continue
+        key = RENAMES.get(key, key)
+        if key in ID_ATTRIBUTES and value in ("", None):
+            continue
+        if capture_content or key in METADATA_ATTRIBUTES or key.startswith(METADATA_PREFIXES):
+            mapped[key] = value
+    return mapped
+
+
+def _map_event(event: Event, capture_content: bool) -> Event:
+    """Keep an event's name and time. The stack trace of an exception event is always
+    dropped (it holds local file paths); its message, which can hold user text, is kept
+    only with content on."""
+    attributes = dict(event.attributes or {})
+    if event.name == "exception":
+        keep = {"exception.type", "exception.message"} if capture_content else {"exception.type"}
+        attributes = {key: value for key, value in attributes.items() if key in keep}
+    elif not capture_content:
+        attributes = {}
+    return Event(name=event.name, attributes=attributes, timestamp=event.timestamp)
+
+
+class _MappedSpan:
+    """A read-only view of a finished span with Graphite's attributes mapped.
+
+    Everything the OTLP encoder reads is delegated to the real span, except the
+    attributes, the events and the status.
+    """
+
+    def __init__(self, span: ReadableSpan, capture_content: bool) -> None:
+        self._span = span
+        self._attributes = map_attributes(span.attributes, capture_content)
+        self._events = tuple(_map_event(event, capture_content) for event in span.events)
+        status = span.status
+        description = status.description
+        if status.status_code == StatusCode.ERROR and not capture_content:
+            # The status message is the text of the exception. Keep the class name instead.
+            description = next(
+                (
+                    event.attributes["exception.type"]
+                    for event in self._events
+                    if "exception.type" in event.attributes
+                ),
+                None,
+            )
+        self._status = Status(status.status_code, description)
+
+    def __getattr__(self, name: str):
+        return getattr(self._span, name)
+
+    @property
+    def attributes(self) -> Mapping[str, object]:
+        return self._attributes
+
+    @property
+    def events(self) -> Sequence[Event]:
+        return self._events
+
+    @property
+    def status(self) -> Status:
+        return self._status
+
+
+class GrafiExporter(SpanExporter):
+    """Wrap an exporter so Graphite's spans arrive in the shape Future AGI reads."""
+
+    def __init__(self, inner: SpanExporter, capture_content: bool = False) -> None:
+        self._inner = inner
+        self._capture_content = capture_content
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        return self._inner.export([_MappedSpan(span, self._capture_content) for span in spans])
+
+    def shutdown(self) -> None:
+        self._inner.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._inner.force_flush(timeout_millis)
+
+
+def create_tracer_provider(
+    project_name: str | None = None,
+    *,
+    capture_content: bool | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    secret_key: str | None = None,
+) -> TracerProvider:
+    """Build the tracer provider that exports Graphite's spans to Future AGI.
+
+    Use ``provider.get_tracer("grafi")`` as ``ExecutionServices(tracer=...)`` and call
+    ``provider.shutdown()`` before the process exits so the last batch is flushed.
+    """
+    project_name = project_name or os.environ.get("FI_PROJECT_NAME") or "graphite-app"
+    if capture_content is None:
+        capture_content = os.environ.get("FI_CAPTURE_CONTENT", "").lower() in _TRUE
+    base_url = (base_url or os.environ.get("FI_BASE_URL") or "https://api.futureagi.com").rstrip("/")
+    api_key = api_key or os.environ.get("FI_API_KEY")
+    secret_key = secret_key or os.environ.get("FI_SECRET_KEY")
+    if not api_key or not secret_key:
+        raise RuntimeError("Set FI_API_KEY and FI_SECRET_KEY: Future AGI needs both keys.")
+
+    exporter = OTLPSpanExporter(
+        endpoint=f"{base_url}/tracer/v1/traces",
+        headers={"X-Api-Key": api_key, "X-Secret-Key": secret_key},
+        compression=Compression.NoCompression,  # the Future AGI collector refuses gzip
+    )
+    provider = TracerProvider(
+        resource=Resource.create({"project_name": project_name, "project_type": "observe"})
+    )
+    provider.add_span_processor(BatchSpanProcessor(GrafiExporter(exporter, capture_content)))
+    return provider
+```
+
+## 4. Inject the tracer and run through the runtime
+
+Create the provider once, hand its tracer to `ExecutionServices`, and run the assistant through `GrafiRuntime.invoke`. Calling `assistant.invoke(...)` directly does not use the injected tracer.
+
+```python
+from grafi.common.models.invoke_context import InvokeContext
+from grafi.runtime import ExecutionServices, GrafiRuntime
+
+from futureagi_grafi import create_tracer_provider
+
+provider = create_tracer_provider()  # reads FI_API_KEY, FI_SECRET_KEY, FI_PROJECT_NAME, FI_BASE_URL
+runtime = GrafiRuntime(ExecutionServices(tracer=provider.get_tracer("grafi")))
+
+context = InvokeContext(
+    conversation_id="support-chat-42",  # becomes the Future AGI session
+    invoke_id=uuid.uuid4().hex,
+    assistant_request_id=uuid.uuid4().hex,
+    user_id="user-1234",                # optional; use an opaque id, not an email
+)
+try:
+    events = [event async for event in runtime.invoke(my_assistant, request)]
+finally:
+    provider.shutdown()  # flush the last batch before the process exits
+```
+
+`quickstart.py` in the [example folder](https://github.com/future-agi/docs/tree/main/examples/frameworks/graphite) is a complete assistant (one LLM node, one function tool) with exactly this wiring. The module does not touch the global tracer provider.
+
+## What is captured
+
+One trace per `runtime.invoke`:
+
+```text
+[agent] WeatherAssistant.run
+  [agent] tool_workflow.invoke
+    [chain] LLMNode.invoke
+      [llm] ChatLLM.invoke
+    [chain] ToolNode.invoke
+      [tool] WeatherTool.invoke
+    [chain] LLMNode.invoke
+      [llm] ChatLLM.invoke
+```
+
+| Graphite attribute | Future AGI attribute | Note |
+| --- | --- | --- |
+| `oi_span_type` (`AGENT`, `CHAIN`, `LLM`, `TOOL`) | `fi.span.kind` | Assistant and workflow spans are agents, nodes are chains. |
+| `conversation_id` | `session.id` | The Future AGI session. |
+| `user_id` | `user.id` | Only when you set it. Graphite writes an empty string when you do not, and the module leaves it out. |
+| `input`, `output` | `input.value`, `output.value` | Only with content on. |
+| `InvokeContext.kwargs` (a dict) | not exported | Free-form application data. |
+
+Errors are recorded as span status `ERROR` on the failing tool, the node, the workflow and the assistant, and a failing model call marks the LLM span, its node, the workflow and the assistant. The status message is the exception class name by default.
+
+**Model name and token counts are not in Graphite's own spans.** `ChatLLM.invoke` spans carry no model and no usage. If you want them, enable the OpenInference OpenAI instrumentor on the same provider:
+
+```python
+from openinference.instrumentation.openai import OpenAIInstrumentor
+
+OpenAIInstrumentor().instrument(tracer_provider=provider)  # installed with grafi
+```
+
+This adds one child LLM span (`ChatCompletion`) under each `ChatLLM.invoke` with `llm.model_name` and token counts. The trade-off is two LLM spans per model call. It is off by default in the module for that reason. With the default metadata-only mode, the child span carries the model and token counts but not the messages.
+
+## Privacy
+
+Graphite always writes the full serialized input and output of every component onto its spans, and the text and traceback of an error. `GrafiExporter` removes them before export unless you opt in.
+
+| | Default | `FI_CAPTURE_CONTENT=1` |
+| --- | --- | --- |
+| Prompts, answers, tool arguments and results | Not exported | Exported (`input.value`, `output.value`) |
+| Error text | Class name only | Message exported |
+| Stack trace, `error.stack`, `error.details` | Never exported | Never exported |
+| Span names, kinds, ids, timings, status | Exported | Exported |
+| `session.id`, `user.id` | Exported | Exported |
+
+Metadata is an allow-list (`METADATA_ATTRIBUTES`). An attribute added by a later Graphite release stays private until you add it. `session.id` and `user.id` are identifiers you choose: use opaque ids, not email addresses.
+
+Graphite's own `GRAFI_SPAN_DISABLE_PAYLOADS` and `GRAFI_SPAN_MAX_PAYLOAD_CHARS` apply before the module sees the span and can be used in addition.
+
+## Limitations
+
+- Alpha, tested on `grafi` 0.0.36 only. Graphite is a 0.0.x library and its span attributes may change; `tests/test_privacy.py::test_every_attribute_graphite_sets_is_classified` in the example folder fails when a release adds an attribute you have not classified.
+- No model name or token counts without the OpenInference OpenAI instrumentor (see above).
+- Graphite's Redis and Kafka event stores, and its other span producers, were not exercised.
+
+## Troubleshooting
+
+- **No traces for the project, and `UNAUTHENTICATED ... missing X-Api-Key or X-Secret-Key` in the log.** `setup_tracing()` ran. Remove it and use `create_tracer_provider()` as above.
+- **Spans leave the process in the clear.** The `insecure=True` gRPC exporter of `setup_tracing()` is still in the path.
+- **Nothing is exported although the assistant runs.** The assistant was called directly with `assistant.invoke(...)`. Run it through `runtime.invoke(...)` with the runtime built from your `ExecutionServices`.
+- **The last trace is missing.** Call `provider.shutdown()` before the process exits. An `atexit` hook flushes as a fallback.
+- **`400` from the collector.** Compression is on. The module sets it off; check `OTEL_EXPORTER_OTLP_COMPRESSION` is not overriding a custom exporter.
+- **One header is a failed setup.** The exporter needs both `X-Api-Key` and `X-Secret-Key`.
+
+## How this differs from the OpenInference-based pages
+
+Graphite does not use a traceAI instrumentor for its own spans: it creates them itself, with its own attribute names. The module maps those names, which a traceAI instrumentor would otherwise do. If you want model and token detail, the OpenInference OpenAI instrumentor is the same one the [OpenAI integration](/docs/integrations/traceai/openai) uses.
