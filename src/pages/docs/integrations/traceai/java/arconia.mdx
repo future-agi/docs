@@ -1,0 +1,177 @@
+---
+title: "Arconia tracing with Future AGI"
+description: "Point Arconia's OpenTelemetry starter for Spring Boot at Future AGI with two headers and a project_name resource attribute. Covers the settings that silently break export, privacy defaults, and how this differs from the Spring AI integration."
+---
+
+<TLDR>
+- Arconia already exports OpenTelemetry traces. You configure it, there is no `traceai-arconia` package.
+- Set the traces endpoint, **`compression: none`**, both `X-Api-Key` / `X-Secret-Key` headers and a `project_name` resource attribute. Leave `protocol` unset.
+- Arconia alone creates HTTP server spans, not LLM spans. They show in Future AGI with type `unknown` and no input or output.
+- Raw exception messages and stack traces are not exported unless you opt in.
+</TLDR>
+
+## About
+
+[Arconia](https://docs.arconia.io) (`io.arconia`, Apache-2.0) is an OpenTelemetry starter for Spring Boot. Add `arconia-opentelemetry-spring-boot-starter` and your application exports traces, logs and metrics over OTLP. Future AGI ingests traces only, so this recipe configures the trace exporter and turns the other two signals off.
+
+This is not the [Spring Boot and Spring AI integration](/docs/integrations/traceai/spring-boot). That one wraps Spring AI models and produces LLM spans. Arconia is the export layer for whatever your Spring Boot application already traces (HTTP server spans, and anything instrumented through Micrometer). It creates no `llm.*` or `gen_ai.*` attributes.
+
+<Warning>
+This page is alpha. It was tested against a self-hosted Future AGI collector on localhost (2026-10-16), not against the hosted `api.futureagi.com`. Arconia is pre-1.0 and releases roughly monthly, so re-check the property names when you upgrade.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `io.arconia:arconia-bom` **0.31.0** (latest on Maven Central, published 2026-10-14) and **0.30.0**. Spring Boot 4.1.1, Java 21 (OpenJDK 21.0.12), OpenTelemetry SDK 1.66.0. Arconia requires Spring Boot 4 and Java 21 or newer. |
+| Future AGI | Self-hosted stack on localhost. |
+| Not tested | The hosted endpoint, gRPC export, Spring Boot 3, native images, Arconia metrics and logs export, the Arconia AI semantic-convention modules, and Spring AI (see [Spring AI](#spring-ai)). |
+| Arconia docs used | [OpenTelemetry Traces](https://docs.arconia.io/arconia/latest/opentelemetry/traces/) and [OpenTelemetry Resource](https://docs.arconia.io/arconia/latest/opentelemetry/resource/), read 2026-10-16, plus the 0.31.0 and 0.30.0 jars. |
+| Source | [`java/examples/arconia-example`](https://github.com/future-agi/traceAI/tree/dev/java/examples/arconia-example) in `future-agi/traceAI`: the yaml below, a demo app, 11 tests against a stand-in collector, and an end-to-end script. |
+
+## 1. Add the dependencies
+
+```xml
+<parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.1</version>
+</parent>
+
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.arconia</groupId>
+            <artifactId>arconia-bom</artifactId>
+            <version>0.31.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-webmvc</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.arconia</groupId>
+        <artifactId>arconia-opentelemetry-spring-boot-starter</artifactId>
+    </dependency>
+</dependencies>
+```
+
+Do not set a version on the starter, it comes from the BOM.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_PROJECT_NAME="my-service"
+# Self-hosted Future AGI only, no trailing slash. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:14338"
+```
+
+Keep the keys in the environment or a secret store, not in `application.yaml`.
+
+## 3. Configure Arconia
+
+```yaml
+arconia:
+  otel:
+    traces:
+      exporter:
+        otlp:
+          endpoint: ${FI_BASE_URL:https://api.futureagi.com}/tracer/v1/traces
+          compression: none
+          headers:
+            X-Api-Key: ${FI_API_KEY}
+            X-Secret-Key: ${FI_SECRET_KEY}
+    metrics:
+      exporter:
+        type: none
+    logs:
+      exporter:
+        type: none
+    resource:
+      attributes:
+        project_name: ${FI_PROJECT_NAME}
+        project_type: observe
+```
+
+| Setting | Why |
+| --- | --- |
+| `endpoint` | Arconia's HTTP default is `http://localhost:4318/v1/traces`. Future AGI's route is `/tracer/v1/traces`. |
+| `compression: none` | **Required.** Arconia's default is `gzip` (confirmed on 0.31.0: the request carries `Content-Encoding: gzip`). the Future AGI collector does not accept gzip bodies. |
+| `protocol` | **Leave it unset.** HTTP/protobuf is the default. See the warning below. |
+| `headers` | Both keys are needed. One header is a failed setup. |
+| `resource.attributes.project_name` | A resource attribute, not a span attribute. Arconia adds any key under `arconia.otel.resource.attributes` to the resource. Without it the batch is dropped. |
+| `metrics` and `logs` exporter `none` | Arconia exports both over OTLP by default. Future AGI has no logs or metrics route, and log bodies can contain prompts. Never point them at `/tracer/v1/traces`. |
+
+<Warning>
+Do not write `protocol: http-protobuf`. The Arconia docs list it as a valid value, but on 0.30.0 and 0.31.0 the span exporter bean is only registered for `http_protobuf`. With `http-protobuf` Spring's condition report says `otlpHttpSpanExporter ... found different value in property 'protocol'`, no exporter exists, nothing is sent, and no error is logged. The app looks healthy and Future AGI shows no project. Leaving `protocol` unset (or `http_protobuf`) works. The example's tests assert both behaviours, so a test failure after an upgrade means upstream changed it.
+</Warning>
+
+## 4. Run it
+
+```bash
+mvn spring-boot:run
+curl localhost:8080/hello
+```
+
+Stop the process with `SIGTERM` or Ctrl-C so Spring closes the context. Closing the context flushes Arconia's batch span processor, which otherwise waits up to 5 seconds. A process killed with `kill -9`, or a short command-line app that calls `System.exit` before the context closes, loses the last batch.
+
+Sampling: Arconia's default strategy is `parent-based-always-on`, so every request is traced and `management.tracing.sampling.probability` is ignored. It only applies if you choose `trace-id-ratio` or `parent-based-trace-id-ratio`; a lower value then drops traces on purpose.
+
+## What is captured
+
+One HTTP request is one trace with one `SERVER` span named like `http get /hello`. In the Observe list it appears with type `unknown`, no input, no output and no tokens, because it carries no `fi.span.kind` or LLM attributes.
+
+| Attribute | Value |
+| --- | --- |
+| Span | `http get /hello`, kind `SERVER`, status `UNSET`, or `ERROR` for a 5xx / unhandled exception |
+| Span attributes | `method`, `uri` (the route template, for example `/users/{id}`), `status`, `outcome`, `exception`, `http.url` (the path only, no query string) |
+| Event on failure | `exception` with `exception.type` only (see Privacy) |
+| Resource | `project_name`, `project_type`, `service.name`, `service.instance.id`, `telemetry.sdk.*`, `webengine.name`, `webengine.version` |
+
+Anything else your application instruments through Micrometer (`@Observed`, `RestClient`, JDBC with the right starters) is exported the same way. This page tested only the server span.
+
+## Privacy
+
+Query strings, request and response bodies, and header values are not on any span. Resource attributes carry no host name, user name, process command line or local path (tests scan the wire bytes for the OS user name, home directory and working directory).
+
+One thing is exported by default by Arconia: when a request fails, Micrometer records the exception on the server span with `exception.message`, the whole `exception.stacktrace`, and copies the message into the span status description. Messages often contain user input or identifiers.
+
+The example therefore ships `ErrorDetailRedaction`, a small Spring configuration class that wraps the span exporter and strips those three fields before they leave the JVM. It keeps the span, its `ERROR` status and `exception.type`. Copy `ErrorDetailRedaction.java` into your application to get the same behaviour. It is application code, Arconia has no switch for this.
+
+| Mode | How | What Future AGI stores |
+| --- | --- | --- |
+| Default | `ErrorDetailRedaction` present, nothing else set | `ERROR` status, empty status message, `exception` event name and time, exception class in `attrs_string.exception` |
+| Opt in to raw error text | `FI_EXPORT_ERROR_DETAILS=true` | The status message contains the exception message (`failed: <your text>`) |
+
+Verified with a unique marker in the query string and in the exception message: with defaults the marker is in zero rows and zero columns of the spans and traces tables (ClickHouse) and of the observation span, trace, project version, end user and session tables (Postgres), and no stack frames are stored. With the opt-in the marker is in the failed span's status message. Future AGI's span store keeps only the name and time of span events, so the stack trace is not stored even with the opt-in.
+
+## Spring AI
+
+Arconia does not create LLM spans. For LLM spans in a Spring AI application, the Future AGI module is `traceai-spring-ai` (see [Spring Boot](/docs/integrations/traceai/spring-boot)).
+
+The combined setup, Arconia for export plus `traceai-spring-ai` for LLM spans, was **not run and is not supported by this page**. `traceai-spring-ai` today is built against Spring AI 1.0.0-M4 and Spring Boot 3.2.1, and Arconia 0.31.0 requires Spring Boot 4.1. Spring AI 2.0.1 no longer publishes `spring-ai-core` (the artifact `traceai-spring-ai` compiles against), so the module does not build against it as is. Whether the two would double-count one LLM call is untested. Use Arconia for the application's own spans and the existing Spring Boot guide, on a Boot 3 application, for LLM spans.
+
+## Limitations
+
+- Spans created by Arconia alone have type `unknown` in Observe, with no input, output, model or tokens.
+- Arconia states Spring Boot 4 and Java 21 as its minimum. Boot 3 was not tried.
+- Traces only. No metrics or logs in Future AGI.
+- gRPC export is untested. This recipe uses HTTP only.
+- `OTEL_EXPORTER_OTLP_*` environment variables beat `arconia.otel.*` properties (documented by Arconia, verified here).
+
+## Troubleshooting
+
+- **No project appears and nothing is logged.** Check `protocol`. Remove `http-protobuf`. Run with `--debug` and look for `otlpHttpSpanExporter` under "Did not match".
+- **Export fails or is rejected.** `compression: none` is missing, so the request body is gzip (`Content-Encoding: gzip`), which the Future AGI collector does not accept.
+- **Traces go to localhost or another backend.** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) is set in the environment and wins over the yaml. Unset it or set it to the same URL. The example's `run_e2e.sh` demonstrates the override.
+- **Spans are in the wrong project, or dropped.** `project_name` must be under `arconia.otel.resource.attributes`, not a span attribute.
+- **No spans for HTTP requests.** Check the exporter first (the `protocol` warning above). The example runs with only `spring-boot-starter-webmvc` and the Arconia starter, no Actuator dependency.
+- **Last requests missing from a short run.** The process exited before the context closed. Let Spring shut down.
+- **Logs or metrics errors.** Set `arconia.otel.logs.exporter.type` and `arconia.otel.metrics.exporter.type` to `none`.
