@@ -1,0 +1,223 @@
+---
+title: "TypeSafe (Jev) decision tracing with Future AGI"
+description: "Trace TypeSafe System One decision calls (Jev) made with the typesafe-sdk Python client: one evaluator span per call with every noul, choice, score and box answer, using traceAI-typesafe. Alpha."
+---
+
+## About
+
+[TypeSafe](https://typesafe.ai) serves Jev through the System One decision API: you send some content (`state`) and named questions, and get back a typed answer per question. It is not a chat API and returns no text. `traceAI-typesafe` instruments the official Python client, [`typesafe-sdk`](https://pypi.org/project/typesafe-sdk/): every `TypeSafeClient.system_one(...)` and `AsyncTypeSafeClient.system_one(...)` call becomes one `EVALUATOR` span in Future AGI, however many questions it asks.
+
+A run of the example on this page is one trace:
+
+```
+triage_ticket              your own span (CHAIN)
+├── typesafe.system_one    billing (noul), tone (choice), urgency (score)  (EVALUATOR)
+└── typesafe.system_one    escalate (noul), from the async client           (EVALUATOR)
+```
+
+This is not the same as:
+
+- **Jev as an evaluator model in Future AGI.** Running Future AGI evals with Jev as the judge is a separate feature (tracked as TH-8183). This package adds no evaluator model, does not call Future AGI's gateway, and does not turn answers into Pass/Fail. It only traces calls your own code makes to TypeSafe.
+- **[OpenAI](/docs/integrations/traceai/openai) (`traceAI-openai`).** System One is not OpenAI-compatible. Pointing `openai.OpenAI` at TypeSafe does not work, and `traceAI-openai` would not see the answers.
+
+<div style={{ overflowX: 'auto' }}>
+
+| | |
+| --- | --- |
+| Tested with | typesafe-sdk **0.7.5** (latest on PyPI, released 2026-10-14) end to end on Python 3.12; unit tests also on typesafe-sdk 0.7.4 (Python 3.13) and 0.7.0 (Python 3.10); fi-instrumentation-otel 1.1.0; traceAI-typesafe 0.1.0 |
+| Supported | typesafe-sdk 0.7.0 or later, below 1.0; Python 3.10 to 3.13 (fi-instrumentation-otel does not support 3.14 yet) |
+| TypeSafe docs read | [Python SDK](https://docs.typesafe.ai/sdk/python), [System One](https://docs.typesafe.ai/concepts/system-one), [noul](https://docs.typesafe.ai/primitives/noul), [choice](https://docs.typesafe.ai/primitives/choice), [score](https://docs.typesafe.ai/primitives/score), [changelog](https://docs.typesafe.ai/sdk/python/changelog) and the [OpenAPI document](https://api.typesafe.ai/openapi.json) (version 0.2.0), all read 2026-10-16 |
+| Source | [traceAI `python/frameworks/typesafe`](https://github.com/future-agi/traceAI/tree/main/python/frameworks/typesafe) and [examples/traceai/typesafe](https://github.com/future-agi/docs/tree/main/examples/traceai/typesafe) |
+
+</div>
+
+<Warning>
+Alpha. No TypeSafe account or API key was used. What ran end to end: the real `typesafe-sdk` 0.7.5 client with this package, configured as on this page and exporting to a Future AGI collector, against a local stand-in server shaped like TypeSafe's published OpenAPI document (`STANDIN`, numbers from a hash, not Jev), plus one request to the real `api.typesafe.ai` with a deliberately invalid key to check the authentication-error span. The span for a real Jev answer is built from the same SDK response object, but has not been seen with a live key. [Run it yourself](#run-it-yourself) shows how to check it with yours.
+</Warning>
+
+## 1. Install
+
+```bash
+pip install traceAI-typesafe typesafe-sdk
+```
+
+<Note>
+`traceAI-typesafe` ships with [traceAI PR #264](https://github.com/future-agi/traceAI/pull/264). Until it is released to PyPI, install it from the PR commit:
+
+```bash
+pip install "traceAI-typesafe @ git+https://github.com/future-agi/traceAI@e6dd3c0e16e7bd034739fd2537f13a8ec2018b6e#subdirectory=python/frameworks/typesafe" typesafe-sdk
+```
+</Note>
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export TYPESAFE_API_KEY="your-typesafe-api-key"
+```
+
+The TypeSafe key goes to the SDK only and never onto a span. `FI_BASE_URL` is optional (set it to your own collector when you self-host). The SDK also reads `TYPESAFE_BASE_URL` and `TYPESAFE_DEFAULT_MODEL` itself; this package reads neither and never sets a host or a model.
+
+## 3. Register the tracer and instrument the client
+
+```python
+import os
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_typesafe import TypeSafeInstrumentor
+from typesafe_sdk import AsyncTypeSafeClient, Choice, Noul, Score, TypeSafeClient
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name=os.environ.get("FI_PROJECT_NAME", "support-triage"),
+)
+TypeSafeInstrumentor().instrument(tracer_provider=trace_provider)
+```
+
+Call `instrument()` once, before you make decisions. Clients created before or after are both traced.
+
+## 4. Make decisions
+
+Nothing changes in how you call TypeSafe. Ask your questions (`TICKET` is the text you want decided):
+
+```python
+QUESTIONS = {
+    "billing": Noul(instructions="Is this message about billing? {0}".format(MARKER).strip()),
+    "tone": Choice(
+        instructions="What is the tone of this message?",
+        criteria={"calm": None, "angry": "Upset or hostile {0}".format(MARKER).strip(), "excited": None},
+    ),
+    "urgency": Score(
+        instructions="How urgent is this message?",
+        criteria=["Can wait", "Needs attention this week", "Needs attention today"],
+    ),
+}
+```
+
+(`MARKER` is empty unless you set `RUN_MARKER`; the example uses it for the privacy check below.)
+
+```python
+with TypeSafeClient() as client:
+    result = client.system_one(state=TICKET, questions=QUESTIONS)
+print("billing", result.nouls["billing"].noul)
+print("tone", result.choices["tone"].choice, result.choices["tone"].confidence)
+print("urgency", result.scores["urgency"].score, result.scores["urgency"].confidence)
+```
+
+The async client is traced the same way (inside an `async` function):
+
+```python
+async with AsyncTypeSafeClient() as client:
+    result = await client.system_one(
+        state={"ticket": TICKET, "customer_tier": "gold"},
+        questions={"escalate": Noul(instructions="Should a human agent take this ticket now?")},
+    )
+print("escalate", result.nouls["escalate"].noul)
+```
+
+In a short-lived script, call `trace_provider.force_flush()` before the process exits so the last spans are sent.
+
+## What a span contains
+
+One span per `system_one` call, named `typesafe.system_one`, kind `EVALUATOR`. Questions are attributes, not child spans: TypeSafe answers them all in one response.
+
+<div style={{ overflowX: 'auto' }}>
+
+| Answer type | Attributes, under `typesafe.question.<your question name>.` |
+| --- | --- |
+| `noul` | `type`, `noul`: the probability of yes, from 0 to 1. A number, never a boolean, never Pass/Fail. No `confidence`: the API sends none, so the span has none |
+| `choice` | `type`, `choice`: the chosen label, `confidence` |
+| `score` | `type`, `score`: the expected score (may fall between levels), `confidence` |
+| `box` | `type`, `box.top`, `box.bottom`, `box.left`, `box.right`, and `confidence` only when the API sent a number (it may send `null`) |
+
+</div>
+
+<div style={{ overflowX: 'auto' }}>
+
+| Attribute | Value |
+| --- | --- |
+| `gen_ai.provider.name` | `typesafe` |
+| `gen_ai.request.model` | The model the request asked for, for example `jev-latest`. This is what the **Model** column shows |
+| `gen_ai.response.model` | The model that answered. When it differs (an alias resolved to a version such as `jev-1.13.0`), `typesafe.response.model` is set too |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` | As the API reported them. No cost is computed |
+| `typesafe.question_count` | Number of questions in the request |
+| `typesafe.request_id` | The `x-typesafe-request-id` response header, for TypeSafe support |
+| `server.address` | The host the client called |
+| `input.value` | JSON with the `state` and the questions (instructions and criteria). Images appear as their `<image:...>` reference, never as bytes or a file path |
+| `output.value` | JSON with every decision (the same values as the attributes above) |
+| `typesafe.idempotency_key` | Only if you passed an `Idempotency-Key` header in `extra_headers` |
+| `session.id`, `user.id`, metadata, tags | From `using_session(...)` and the other Future AGI context helpers, as on every traceAI span |
+
+</div>
+
+Never on the span: the probability maps (`probabilities`), score legends, image bytes, the API key, and any explanation (the API returns none, so none is invented).
+
+## Privacy
+
+`traceAI-typesafe` follows the same `TraceConfig` rules as every traceAI instrumentor: content is captured by default, and the standard flags turn it off.
+
+<div style={{ overflowX: 'auto' }}>
+
+| Setting | What is dropped |
+| --- | --- |
+| `FI_HIDE_INPUTS=true` or `TraceConfig(hide_inputs=True)` (also `FI_HIDE_INPUT_TEXT`) | `input.value` (the `state` and the questions) and `typesafe.idempotency_key` |
+| `FI_HIDE_OUTPUTS=true` or `TraceConfig(hide_outputs=True)` (also `FI_HIDE_OUTPUT_TEXT`) | `output.value` and the chosen `choice` labels. Numeric answers stay |
+| `FI_PII_REDACTION=true` | Masks emails, phone numbers and similar patterns in every string attribute and in the error message |
+
+</div>
+
+Set the flags in the environment before the process starts, or pass a `TraceConfig`:
+
+```python
+from fi_instrumentation import TraceConfig
+
+TypeSafeInstrumentor().instrument(
+    tracer_provider=trace_provider,
+    config=TraceConfig(hide_inputs=True, hide_outputs=True),
+)
+```
+
+Recorded in every mode: question names and answer types, numeric answers (`noul`, `score`, `confidence`, box edges), model, token counts, request id and host. **Question names are attribute keys, so do not put personal data or secrets in them.** Never recorded in any mode: the API key, stack traces, and the text of errors raised inside the SDK before a request is sent (they can name a local file).
+
+## Errors and retries
+
+A failed call ends its span with status `ERROR` and these attributes: `error.type` (the SDK exception class, for example `TypeSafeAuthenticationError`), `http.response.status_code`, `typesafe.error_type` (TypeSafe's own code, for example `authentication_error`), `typesafe.request_id`, and `typesafe.retry_after_ms` on a 429. The status message is the class and the HTTP status. While content is captured, TypeSafe's error message is added to it (an API can echo request values, so it is left out when inputs or outputs are hidden).
+
+The instrumentor adds no retries. The SDK's own `RetryPolicy` (by default up to two retries on 408, 429 and 5xx responses) runs inside the one span, so a 429 followed by a success is a single `OK` span. If you call `system_one` again yourself, that is a second span.
+
+Errors raised by the SDK before a request is sent (no question, an image file it cannot read) also end the span as `ERROR`, with only the exception class.
+
+## Not supported
+
+- **`client.models.list()`** (`GET /v1/models`) is not a decision and creates no span.
+- **The TypeSafe JavaScript SDK.** Python only.
+- **Probability maps and legends.** Only the chosen value and its confidence are recorded.
+- **A custom `response_model`.** The span reads the `answers` field; a model that drops it still gets a span with model and usage, but no per-question attributes.
+- **`system-one.dev`.** A separate platform with its own keys and credits; this page does not cover it. If you point the client there, you still get a span, but its credit headers are not read.
+- **Idempotency replay.** An `Idempotency-Key` you send is recorded; nothing is cached or replayed.
+
+## Troubleshooting
+
+- **No spans.** Call `TypeSafeInstrumentor().instrument(...)` before the first decision, and `trace_provider.force_flush()` before a short script exits. Check that `FI_API_KEY` and `FI_SECRET_KEY` are set in the same process.
+- **`TypeSafeError: No API key was provided`.** The SDK needs `TYPESAFE_API_KEY` (or `api_key=`). This is raised when the client is created, before any span.
+- **An `ERROR` span with `TypeSafeAuthenticationError (HTTP 401)`.** The key is wrong or revoked.
+- **`TypeSafeUnprocessableEntityError (HTTP 422)`.** TypeSafe rejected the request body; with content captured, the message names the field (for example `questions.tone.choice.criteria`). A `choice` question needs a mapping of criteria, not a list.
+- **The Model column shows `jev-latest`, not a version.** That is the model you asked for. The resolved version is in `gen_ai.response.model` and `typesafe.response.model`.
+- **A `noul` shows no confidence.** Expected: the API returns none for `noul`.
+- **The `choice` label is missing.** `FI_HIDE_OUTPUTS` or `FI_HIDE_OUTPUT_TEXT` is on.
+
+## Run it yourself
+
+[examples/traceai/typesafe](https://github.com/future-agi/docs/tree/main/examples/traceai/typesafe) has the program above (`app.py`), a local System One stand-in, tests, and `run_e2e.sh`:
+
+```bash
+cd examples/traceai/typesafe
+export FI_API_KEY=... FI_SECRET_KEY=...
+./run_e2e.sh                       # tests, then app.py against the local stand-in (not TypeSafe)
+PRIVACY=1 ./run_e2e.sh             # also: a unique marker with the hide flags on, and with the default
+TYPESAFE_API_KEY=... ./run_e2e.sh  # against the real api.typesafe.ai with your own key
+```
+
+With your own key, the run makes two System One decisions (a few hundred input tokens), one request the API rejects with 422, one request with a deliberately invalid key, and one `GET /v1/models`.
