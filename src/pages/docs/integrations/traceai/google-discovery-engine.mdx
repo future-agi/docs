@@ -1,0 +1,143 @@
+---
+title: "Google Discovery Engine (Vertex AI Search) Integration with Future AGI Tracing"
+description: "Trace Google Discovery Engine (Vertex AI Search) search, search_lite and answer_query calls in Future AGI with the traceAI-discoveryengine instrumentor."
+---
+
+## About
+
+`traceAI-discoveryengine` wraps the official [`google-cloud-discoveryengine`](https://pypi.org/project/google-cloud-discoveryengine/) Python client (Google Discovery Engine, sold as Vertex AI Search) so every `search`, `search_lite` and `answer_query` call becomes a `RETRIEVER` span in Future AGI.
+
+The client does not trace itself. At `google-cloud-discoveryengine` 0.20.5 an uninstrumented call emits no span, even with `GOOGLE_SDK_EXPERIMENTAL_PYTHON_TRACING_ENABLED=true`, and a gRPC instrumentation you add yourself only creates transport spans without the query, result count or retriever kind. The package fills that gap with one span per call.
+
+The package is Alpha. It is released from [future-agi/traceAI](https://github.com/future-agi/traceAI) (`python/frameworks/discoveryengine`). Until a release is on PyPI, install it from that directory of the repository.
+
+## 1. Installation
+
+```bash
+pip install traceAI-discoveryengine
+```
+
+Until the first release reaches PyPI, install from a checkout of the repository:
+
+```bash
+pip install "fi-instrumentation-otel>=1.1.0" "google-cloud-discoveryengine>=0.20.5,<1" \
+  ./python/frameworks/discoveryengine
+```
+
+Tested with `google-cloud-discoveryengine` 0.20.5 (the latest release when this page was written, 2026-10-16) on Python 3.10, 3.11, 3.12 and 3.13. The package accepts `google-cloud-discoveryengine>=0.20.5,<1`; outside that range `instrument()` logs an error and wraps nothing.
+
+## 2. Set environment variables
+
+```python
+import os
+
+os.environ["FI_API_KEY"] = "your-futureagi-api-key"
+os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+```
+
+Google credentials stay where the Google client already reads them: Application Default Credentials (`gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`), credentials you pass to the client, or `client_options={"api_key": ...}` for `search_lite`. The package never reads ADC and never records a credential.
+
+The Future AGI project (`project_name` below) is not your GCP project. The GCP project only appears inside resource names such as the serving config.
+
+## 3. Register and instrument
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from google.cloud import discoveryengine_v1 as discoveryengine
+from traceai_discoveryengine import DiscoveryEngineInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="support-search",
+)
+DiscoveryEngineInstrumentor().instrument(tracer_provider=trace_provider)
+
+serving_config = (
+    "projects/my-gcp-project/locations/global/collections/default_collection/"
+    "engines/my-engine/servingConfigs/default_search"
+)
+search = discoveryengine.SearchServiceClient()  # Application Default Credentials
+pager = search.search(request={"serving_config": serving_config, "query": "rotate an API key"})
+
+answers = discoveryengine.ConversationalSearchServiceClient()
+answers.answer_query(
+    request={"serving_config": serving_config, "query": {"text": "How do I rotate an API key?"}}
+)
+```
+
+Import the clients from `google.cloud.discoveryengine_v1`. **`from google.cloud import discoveryengine` produces no spans**: at 0.20.5 that unversioned module re-exports the v1beta clients, which are not traced.
+
+An engine in a multi-region location needs its regional endpoint, for example `client_options={"api_endpoint": "eu-discoveryengine.googleapis.com"}`. The gRPC (default), gRPC asyncio and REST (`transport="rest"`) transports are traced the same way.
+
+Call `register()` first so the instrumentor has a tracer provider. Under an active span (an agent or a RAG pipeline step) the Discovery Engine span is its child, so a retrieval followed by an LLM call shows as one trace.
+
+## What is captured
+
+| Call | Span name | Span kind |
+|---|---|---|
+| `SearchServiceClient.search`, `SearchServiceAsyncClient.search` | `discoveryengine.search` | `RETRIEVER` |
+| `SearchServiceClient.search_lite`, `SearchServiceAsyncClient.search_lite` | `discoveryengine.search_lite` | `RETRIEVER` |
+| `ConversationalSearchServiceClient.answer_query`, `ConversationalSearchServiceAsyncClient.answer_query` | `discoveryengine.answer_query` | `RETRIEVER` |
+
+| Attribute | Value |
+|---|---|
+| `gen_ai.retrieval.query`, `input.value` | The query (`SearchRequest.query` or `AnswerQueryRequest.query.text`), credentials removed, cut to 1 KB. Shown as **Query** in the span view. |
+| `discoveryengine.serving_config` | The serving config resource name from the request. |
+| `discoveryengine.result_count` | Results on the returned (first) page for search; number of `references` for answers. |
+| `discoveryengine.answer.length`, `discoveryengine.answer.state` | Length of the answer text in characters, and the answer state (`SUCCEEDED`, `FAILED` ...). |
+| `discoveryengine.session` | The Discovery Engine session resource name, from the request and then the response. |
+| `discoveryengine.error.status`, `discoveryengine.error.code` | On failure: the status name (`PERMISSION_DENIED`) and code (`403`). |
+
+Iterating a search pager past the first page adds no span: later pages are fetched by the pager, and `result_count` counts the first page only.
+
+An error raised by the client (`PermissionDenied`, `InvalidArgument`, `ServiceUnavailable`, `Forbidden` on REST, or `RetryError`) ends the span with status `ERROR` and a message such as `PermissionDenied: 403 ...`; your code still receives the exception unchanged. An answer returned with state `FAILED` is marked `ERROR` (`answer state FAILED`) without an exception.
+
+Not captured: search results (titles, snippets, documents, summaries), answer text, citations and reference content, request metadata, model name, token counts and cost. The answer response carries no model field, and Discovery Engine is billed in GCP rather than per token. Google credentials, stack traces and local file paths are never exported.
+
+Not traced: conversation and session CRUD (`create_conversation`, `converse_conversation` ...), `stream_answer_query`, document ingestion and data store or engine administration, and the v1beta and v1alpha clients.
+
+## Privacy
+
+traceAI instrumentors follow the standard `TraceConfig`: the query is recorded by default. To turn it off, set `FI_HIDE_INPUTS=true` or pass a config:
+
+```python
+from fi_instrumentation import TraceConfig
+
+DiscoveryEngineInstrumentor().instrument(
+    tracer_provider=trace_provider, config=TraceConfig(hide_inputs=True)
+)
+```
+
+With hidden inputs, `input.value` is `__REDACTED__`, `gen_ai.retrieval.query` is dropped, and the query is removed from server error text too (verbatim and in the escaped copies the Google client libraries write). Counts, the state and resource names stay. `FI_PII_REDACTION=true` replaces emails, phone numbers and similar patterns in every recorded text; it also matches the last ten digits of a numeric GCP project number in a resource name. `using_session`, `using_user`, `using_metadata` and `using_tags` apply.
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| `google-cloud-discoveryengine` | 0.20.5 |
+| `traceAI-discoveryengine` | 0.1.0 |
+| `fi-instrumentation-otel` | 1.1.0 |
+| Python | 3.10, 3.11, 3.12, 3.13 |
+
+Verified on 2026-10-16 against a local Future AGI deployment: the real `google-cloud-discoveryengine` clients (REST, gRPC and async gRPC transports) called local stand-ins of the documented v1 API, inside an agent span next to an LLM call. The hierarchy, span kinds, an `ERROR` span with `PERMISSION_DENIED`, and the `FI_HIDE_INPUTS` switch were checked in the stored spans. `discoveryengine.googleapis.com` itself was not called (no GCP project was available for the check).
+
+## Troubleshooting
+
+- **No spans appear.** Import the clients from `google.cloud.discoveryengine_v1` (not `google.cloud.discoveryengine`), call `instrument()` before the first call, and check `FI_API_KEY` and `FI_SECRET_KEY`.
+- **`instrument()` logs a version error.** The installed `google-cloud-discoveryengine` is outside `>=0.20.5,<1`; upgrade it.
+- **Only gRPC transport spans, no query.** Those come from a gRPC instrumentation, not from this package. Install and instrument `traceAI-discoveryengine`; the gRPC spans then nest under its spans.
+- **`PermissionDenied` or `Forbidden` on every call.** That is the GCP side: check the credentials, the serving config name and the regional endpoint. The span records the status and code, not the credential.
+- **Duplicate spans.** Do not combine this package with another instrumentor that wraps the same client methods.
+
+## Limitations
+
+- Python only; the Java and Node clients are not traced.
+- Only v1 clients. `stream_answer_query` and `converse_conversation` are not traced.
+- Query removal from error text matches the verbatim query and the escaped copies the client libraries write; a reworded or truncated server copy is not matched, and other request fields a server error may quote (a `filter`, `user_pseudo_id`) are not removed.
+- The async REST transport is not exercised by the tests.
+
+## Difference from related integrations
+
+- [Google GenAI](/docs/integrations/traceai/google_genai) and [Vertex AI](/docs/integrations/traceai/vertexai) trace Gemini model calls (`LLM` spans with model and tokens). `traceAI-discoveryengine` traces the search and grounded-answer calls of Vertex AI Search (`RETRIEVER` spans); it does not instrument `google.genai`, and the two can be used together in one RAG trace.
+- A gRPC OpenTelemetry instrumentation records the transport call only. This package adds the retrieval span with the query, serving config, result count and error status.
