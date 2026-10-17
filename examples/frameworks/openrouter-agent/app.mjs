@@ -4,7 +4,7 @@
 //   node app.mjs model-error  the model request is rejected; callModel throws
 //
 // OPENROUTER_API_KEY / OPENROUTER_BASE_URL / MODEL point it at OpenRouter (the defaults) or at any
-// server that speaks the OpenRouter Responses API. MARKER is put in the prompt and in the tool
+// server that speaks the OpenRouter Responses API. MAX_OUTPUT_TOKENS (optional) caps each model request. MARKER is put in the prompt and in the tool
 // result, so a privacy check can look for it.
 import { OpenRouterCore } from '@openrouter/sdk/core.js';
 import { callModel, tool } from '@openrouter/agent';
@@ -37,6 +37,7 @@ try {
     model,
     input: `What is the weather in Lisbon? Use the get_weather tool, then repeat the condition word for word. ${marker}`,
     tools: [getWeather],
+    ...(process.env.MAX_OUTPUT_TOKENS ? { maxOutputTokens: Number(process.env.MAX_OUTPUT_TOKENS) } : {}), // optional cap, keeps a test run cheap
     hooks: createTraceHooks(provider), // one hooks object per callModel()
   });
   const text = await run.getText();

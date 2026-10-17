@@ -17,7 +17,9 @@ them to Future AGI. There is no traceAI package for it and nothing wraps `callMo
 export FI_API_KEY=... FI_SECRET_KEY=...            # Future AGI
 export FI_BASE_URL=http://localhost:4318           # self-hosted only; default https://api.futureagi.com
 export OPENROUTER_API_KEY=sk-or-...
-MODEL=openai/gpt-4o-mini ./run_e2e.sh
+MODEL=openai/gpt-4o-mini MAX_OUTPUT_TOKENS=100 ./run_e2e.sh
 ```
 
 Unit tests only: `npm ci && npm test` (Node 22 and 26 tested).
+
+Verified live against openrouter.ai on 2026-10-17 (`openai/gpt-4o-mini`, `MAX_OUTPUT_TOKENS=100`, under $0.001): tree, tokens, cost, ERROR cases and the metadata-only default all passed. `MAX_OUTPUT_TOKENS` is optional; without it OpenRouter reserves credit for the model's maximum output and answers HTTP 402 when your balance is low. Details are in the docs page.
