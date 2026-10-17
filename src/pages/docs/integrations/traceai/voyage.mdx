@@ -1,0 +1,112 @@
+---
+title: "Voyage AI Integration with Future AGI for Embedding and Rerank Tracing"
+description: "Trace the Voyage AI Python client (embed and rerank) in Future AGI with traceAI-voyage: install, configure, what is captured, privacy settings and limits."
+---
+
+`traceAI-voyage` traces the official Voyage AI Python client, `voyageai.Client` and `voyageai.AsyncClient`. `traceAI-openai` does **not** trace Voyage: it wraps the OpenAI client only and never sees `voyageai.Client`. Use this package for Voyage embeddings and reranking.
+
+<Note>
+Package status: pull request [future-agi/traceAI#220](https://github.com/future-agi/traceAI/pull/220) (draft, base `dev`). Until it is merged and released, `pip install traceAI-voyage` is not available from PyPI; install from that branch.
+
+Verified live against `api.voyageai.com` on 2026-10-17 (see [Live vendor verification](#live-vendor-verification-2026-10-17)). Not yet run live: the MongoDB Atlas host (`ai.mongodb.com`), regional hosts and local in-process models.
+</Note>
+
+## 1. Installation
+
+```bash
+pip install traceAI-voyage
+```
+
+It accepts `voyageai>=0.3.7,<1` and `fi-instrumentation-otel>=1.1.0`.
+
+## 2. Set environment variables
+
+```python
+import os
+
+os.environ["FI_API_KEY"] = "your-futureagi-api-key"
+os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+os.environ["VOYAGE_API_KEY"] = "your-voyage-api-key"
+```
+
+## 3. Register and instrument
+
+```python
+import voyageai
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_voyage import VoyageInstrumentor
+
+trace_provider = register(project_type=ProjectType.OBSERVE, project_name="my-rag-app")
+VoyageInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = voyageai.Client()  # reads VOYAGE_API_KEY
+client.embed(["What is the capital of France?"], model="voyage-3.5", input_type="query")
+client.rerank("capital of France", ["Paris is...", "Berlin is..."], model="rerank-2.5", top_k=1)
+```
+
+The methods are patched on the client classes, so a client created before `instrument()` is traced too. `uninstrument()` restores the originals.
+
+## What is captured
+
+| Call | Span name | Span kind |
+|---|---|---|
+| `Client.embed`, `AsyncClient.embed` | `voyage.embed` | `EMBEDDING` |
+| `Client.rerank`, `AsyncClient.rerank` | `voyage.rerank` | `RERANKER` |
+
+One span per call (a list of texts is one span). Spans nest under the active span, so an agent or chain span becomes their parent. Recorded: provider `voyage`, model, `server.address` (host only), text/document/result counts, `input_type`, output dimension, `top_k`, and the token total reported by the client (shown as input tokens; never estimated, no cost set). A failed call is an `ERROR` span with the error type and message (API key removed). No stack trace is exported.
+
+Not traced (no span, not an error): `multimodal_embed`, `contextualized_embed`, the deprecated module functions `voyageai.get_embedding(s)`, and the TypeScript client. Embedding vectors are never recorded.
+
+## Privacy
+
+This package follows the standard traceAI `TraceConfig`.
+
+| Setting | Recorded |
+|---|---|
+| Default | Rerank query and relevance scores. Embed texts and rerank documents are **not** recorded. |
+| `VoyageInstrumentor().instrument(..., capture_content=True)` | Also embed texts and rerank documents (first 64 items, each cut to 2 KB). |
+| `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` | No content at all (query, texts, documents and scores are dropped); counts, model and tokens stay. |
+| `FI_PII_REDACTION=true` | Masks emails, SSNs, card numbers, keys, IPv4 addresses and phone numbers in recorded strings. |
+
+Local file paths, user names and stack traces are never exported.
+
+## Hosts and `base_url`
+
+The instrumentor never sets `base_url`. The Voyage client chooses the host from the key (keys created in MongoDB Atlas go to `ai.mongodb.com`, Voyage platform keys to `api.voyageai.com`); a `base_url` you pass to the client wins. A key sent to the wrong host fails in the client, the span records that error, and nothing retries elsewhere.
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| voyageai (latest stable, 2026-10-16) | 0.5.0 |
+| voyageai (floor) | 0.3.7 (unit suite) |
+| Live endpoint | `api.voyageai.com`, 2026-10-17 |
+| Python | 3.12 end to end; unit suite on 3.10 to 3.13 |
+
+## Live vendor verification (2026-10-17)
+
+Run exactly as in the usage example, with a real Voyage key and no `base_url` override (default host `api.voyageai.com`), exporting to a local Future AGI project. Versions: voyageai 0.5.0, traceAI-voyage 0.1.0, fi-instrumentation-otel 1.1.0, Python 3.12. Calls: `embed` (2 texts, `voyage-3.5-lite`, 1024 dimensions), `rerank` (`rerank-2.5-lite`, 2 documents), and one `embed` with an invalid key.
+
+```text
+trace ff4a65db-4717-474e-a209-4f600c1f4e5c (4 spans)
+- [agent] rag-agent
+  - [embedding] voyage.embed model=voyage-3.5-lite tok=26
+  - [reranker] voyage.rerank model=rerank-2.5-lite tok=52
+  - [embedding] voyage.embed status=ERROR:AuthenticationError: Provided API key is invalid.
+```
+
+The real response shapes matched the documented ones; no code change was needed. Privacy, with a unique marker scanned across every stored column: default mode records the marker only in the rerank query; `capture_content=True` also records embed texts and rerank documents (trace 9966a0d3-b87d-4e47-8af2-3f9b099e4109); `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` leaves no marker anywhere (trace 3f694a2e-7972-4c26-aedc-e35c8546725c). No API key, traceback, local path or user name appears in any mode.
+
+## Troubleshooting
+
+- **No Voyage spans after installing `traceAI-openai`.** That package cannot see `voyageai.Client`. Install `traceAI-voyage`.
+- **Token counts look doubled.** Another instrumentation that wraps the same embedding call also records usage; disable one.
+- **Texts missing on embed spans.** They are off by default; pass `capture_content=True`.
+- **Atlas key fails on `api.voyageai.com`.** Pass the host you need as `base_url` when building the client.
+
+## Limitations
+
+- Sync and async `embed` and `rerank` only.
+- Not run against a real service: Atlas keys on `ai.mongodb.com`, geography hosts, and local in-process models such as `voyage-4-nano` (these are covered by unit tests only).
+- With `pii_redaction` on, a relevance score with 10 or more fractional digits can be masked as a phone number.
