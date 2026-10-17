@@ -5,8 +5,9 @@ Runnable companion to the docs page `src/pages/docs/integrations/providers/comet
 `openai` Python client and the existing `traceAI-openai` instrumentor. There is no CometAPI package and
 no `traceai-cometapi`.
 
-Status: alpha. **No CometAPI account was used and no request was ever sent to `api.cometapi.com`.** See
-"What is real and what is a stand-in" below.
+Status: chat completions verified live against `https://api.cometapi.com/v1` on 2026-10-17 (chat, streaming with
+usage, a tool call, a wrong-key 401). The local stand-in in `standin/` is still a stand-in and is not CometAPI.
+See "Live vendor verification" and "What is real and what is a stand-in" below.
 
 Scope: `POST /v1/chat/completions` only. Models that CometAPI says need the Responses API, and image,
 video and audio routes, are not covered and not tested.
@@ -71,16 +72,17 @@ same job in-process.
 | --- | --- | --- |
 | `openai` SDK, `traceAI-openai`, `fi-instrumentation-otel`, OTLP export | yes | |
 | Future AGI collector | yours | the tests use a recording collector |
-| The CometAPI API | only if you set `COMETAPI_KEY` without `COMETAPI_BASE_URL` | `standin/cometapi_stub.py`, shaped from CometAPI's chat page and error-handling page. Nothing in it was captured from a real CometAPI response |
+| The CometAPI API | yes on the 2026-10-17 live run, and whenever you set `COMETAPI_KEY` without `COMETAPI_BASE_URL` | `standin/cometapi_stub.py`, shaped from CometAPI's chat page and error-handling page. Nothing in it was captured from a real CometAPI response |
 | The `api.cometapi.com` host | the client dials it in `tests/test_base_url.py` | a refusing proxy answers 403; no tunnel opens |
 
-What a live run is still needed for: the exact `model` value CometAPI returns for a request, the real error
-body for a wrong key and for a base URL without `/v1` (CometAPI's own pages disagree about whether that is a
-404, a 301 or HTML), whether usage includes reasoning tokens for reasoning models, and whether the real SSE
-stream matches the stand-in's.
+## Live vendor verification (2026-10-17)
 
-## Versions
+`COMETAPI_KEY=... COMETAPI_MODEL=gpt-4o-mini PRIVACY=1 ./run_e2e.sh` against the real API, traces to a local
+Future AGI (project `th8103-rest-cometapi-live`). traceAI-openai 0.1.10, openai 3.31.0, Python 3.13.15.
+Trace `def9127f-8cff-4921-bd36-06da0b491dfb`: AGENT with 4 LLM spans, 1 TOOL span, `fi_verify` PASS. Non-streaming
+spans carry `gpt-4o-mini-2024-07-18` (the response's `model`) and tokens; the streaming span carries tokens but no
+model on 0.1.10; the wrong-key call is an ERROR span (401, `cometapi_error`, `invalid token`). With `FI_HIDE_*`
+a unique marker is in no stored row of the project; with defaults it is in 5.
 
-Tested 2026-10-15 on Python 3.13: traceAI-openai 0.1.10, fi-instrumentation-otel 1.1.0, openai 3.31.0 (latest),
-1.109.1 and 1.69.0, opentelemetry-sdk 1.45.1. The suite also passes with traceAI PR 249 (open) overlaid; the
-assertions that differ between the two are written to accept both.
+Still not proven live: trailing-slash URL, Responses/image/video/audio routes, reasoning-token usage, cost.
+A base URL without `/v1` returned `404` JSON (`Invalid URL (POST /chat/completions)`), not a redirect or HTML.

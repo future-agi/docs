@@ -73,7 +73,7 @@ def test_the_page_follows_the_docs_style_and_carries_no_secret():
     assert 'COMETAPI_KEY="YOUR_COMETAPI_KEY"' in text  # placeholders only, no key in the page
     for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
         assert name in text
-    assert "Alpha" in text and "STANDIN" in text and "traceAI-openai 0.1.10" in text
+    assert "Live vendor verification (2026-10-17)" in text and "stand-in" in text and "traceAI-openai 0.1.10" in text
 
 
 def test_no_key_in_the_diff_and_no_other_cometapi_endpoint_client():
