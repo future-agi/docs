@@ -1,0 +1,132 @@
+---
+title: "Replicate Integration with Future AGI for Prediction Tracing"
+description: "Trace the official Replicate Python client in Future AGI with traceAI-replicate: run, stream, create, wait and cancel as one span per call, with model, status, tokens and errors."
+---
+
+`traceAI-replicate` traces the official [Replicate Python client](https://github.com/replicate/replicate-python) (`replicate`). Replicate's API is predictions, not OpenAI chat completions, so `traceAI-openai` does **not** trace it: pointing `openai.OpenAI` at `api.replicate.com` traces nothing. Use this package for `replicate.run`, `replicate.stream` and the prediction lifecycle.
+
+<Note>
+Package status: pull request [future-agi/traceAI#219](https://github.com/future-agi/traceAI/pull/219) (base `dev`). Until it is merged and released, `pip install traceAI-replicate` is not available from PyPI; install from that branch.
+
+Tested against a local stand-in for the Replicate HTTP API, not the vendor endpoint (no Replicate account was used). The real `replicate` client ran unchanged with only `REPLICATE_BASE_URL` pointed at the stand-in.
+</Note>
+
+## 1. Installation
+
+```bash
+pip install traceAI-replicate
+```
+
+It accepts `replicate>=1.0.0,<2` and `fi-instrumentation-otel>=1.1.0`, on Python 3.10 to 3.13.
+
+## 2. Set environment variables
+
+```python
+import os
+
+os.environ["FI_API_KEY"] = "your-futureagi-api-key"
+os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+os.environ["REPLICATE_API_TOKEN"] = "your-replicate-api-token"
+```
+
+The Replicate client reads `REPLICATE_API_TOKEN` itself. The instrumentor never reads it.
+
+## 3. Register and instrument
+
+Call `register()` **before** `instrument()`, and instrument before you use the client.
+
+```python
+import replicate
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_replicate import ReplicateInstrumentor
+
+trace_provider = register(project_type=ProjectType.OBSERVE, project_name="my-replicate-app")
+ReplicateInstrumentor().instrument(tracer_provider=trace_provider)
+
+output = replicate.run(
+    "meta/meta-llama-3-8b-instruct",
+    input={"prompt": "Write a one-line caption about a quiet field."},
+)
+print("".join(output))
+```
+
+`replicate.run`, `replicate.async_run`, `replicate.stream` and `replicate.async_stream` looked up after `instrument()`, and every `replicate.Client` method, are traced. A function imported earlier with `from replicate import run` keeps the untraced original.
+
+`instrument()` also accepts `config` (a `fi_instrumentation.TraceConfig`) and `max_pending_seconds` (default `600`, see [create, wait and cancel](#create-wait-and-cancel)).
+
+## What is captured
+
+| Call | Span |
+|---|---|
+| `Client.run`, `async_run` (and `replicate.run`) | One `replicate.run` span. The create request and the client's own polling add no span. |
+| `Client.stream`, `async_stream` (and `replicate.stream`) | One `replicate.stream` span for the whole stream, not one per event. |
+| `predictions.create`, `models.predictions.create`, `deployments.predictions.create` (sync and async) | One `replicate.predictions.create` span. |
+| `Prediction.wait`, `cancel`, `predictions.cancel(id)` (sync and async) | Ends the open create span of that prediction, or opens one `replicate.prediction.wait` / `replicate.predictions.cancel` span. |
+| `trainings.*`, `predictions.get` / `list`, file uploads | Not traced. |
+
+Spans nest under the active span, so an agent or chain span becomes their parent. Each span records:
+
+- provider `replicate` (`gen_ai.provider.name`) and model `owner/name` (`gen_ai.request.model`);
+- span kind `LLM` when the output is text, otherwise `CHAIN` (image or file URLs, errors);
+- prediction id, status (as the client returns it: `starting`, `processing`, `succeeded`, `failed`, `canceled`), version, deployment, `predict_time`;
+- input and output (text, or file URLs as strings; files are never downloaded);
+- token counts when the prediction reports them (`metrics.input_token_count` / `output_token_count`, which Replicate's language models return). No cost is recorded. Streams carry no token counts.
+
+### create, wait and cancel
+
+`predictions.create` usually returns a prediction that is still `starting`. The span stays open on it: a later `wait()` or `cancel()` ends that same span with the final status, output and duration, so create followed by wait is **one** span. If nothing continues it, the span ends with its create-time status when the provider is flushed or shut down (including the SIGTERM/SIGINT handler `register()` installs), after `max_pending_seconds`, at `uninstrument()` or at exit. The package never polls a prediction you did not wait for.
+
+### Errors
+
+- A failed prediction (`ModelError` from `run`, or status `failed` after `wait()`) is an `ERROR` span with the prediction's error string.
+- An HTTP error (`ReplicateError`, for example a wrong token, HTTP 401) is an `ERROR` span with the error type and message.
+- `canceled` is a terminal state, not a failure: the span status is OK with status `canceled`.
+- Closing or dropping a stream before its end is an `ERROR` span with description `cancelled` and `replicate.cancelled=true`.
+
+## Privacy
+
+This package follows the standard traceAI `TraceConfig`: content is recorded by default, like every traceAI LLM integration.
+
+| Setting | Recorded |
+|---|---|
+| Default | Prediction input and output, and a failed prediction's error string. |
+| `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` (or `TraceConfig(hide_inputs=True, hide_outputs=True)`) | Input and output become `__REDACTED__`; with outputs hidden a failed prediction's error string is `__REDACTED__` too. Model, status, ids, timing and tokens stay. |
+| `FI_PII_REDACTION=true` | Masks emails, card numbers, keys and similar values in recorded strings, the error status and the exception message. |
+
+Always, in every mode:
+
+- The Replicate API token is replaced by `[redacted]` wherever the client stored it.
+- No stack trace, local file path, user name or host name is exported. An exception event carries the type and the message only.
+- File outputs are recorded as URL strings and never fetched; a `data:` URI keeps only its media type.
+- A webhook URL is recorded only as present. This package hosts no webhook receiver.
+
+Replicate still receives your input either way.
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| replicate (latest stable, 2026-10-16) | 1.0.7 |
+| replicate (floor) | 1.0.0 |
+| fi-instrumentation-otel | 1.1.0 |
+| Python | 3.12 end to end; unit suite on 3.10, 3.12 and 3.13 |
+
+`replicate` 2.x is still a pre-release (2.0.0b4) and is not supported yet.
+
+## Troubleshooting
+
+- **No Replicate spans after installing `traceAI-openai`.** That package cannot see the Replicate client. Install `traceAI-replicate`.
+- **`replicate.run` is not traced.** You imported it with `from replicate import run` before `instrument()`. Call `replicate.run` after instrumenting, or instrument first.
+- **A create span ends with status `starting`.** Nothing called `wait()` or `cancel()` on that prediction before the flush; the span is not a completion.
+- **A `replicate.run` span shows `processing` with output.** With `Prefer: wait`, the client returns once the status is no longer `starting`; the server can answer `processing` for a finished prediction.
+- **Held create spans are missing after Ctrl-C.** You called `instrument()` before `register()`; register first so the flush and shutdown hooks land on the real provider.
+- **HTTP 401 or 402 on every call.** The token is wrong or the Replicate account has no credit; the span records the error, the instrumentor does not retry.
+
+## Limitations
+
+- Python client only; the JavaScript client is not traced.
+- Trainings are not traced.
+- `Prediction.stream()` and `Prediction.output_iterator()` on a prediction you created yourself are not wrapped; use `replicate.stream` or `replicate.run`.
+- The `Cancel-After` deadline is not recorded.
+- Tested through a stand-in, not the live Replicate service.
