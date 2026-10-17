@@ -5,8 +5,9 @@ Runnable companion to the docs page `src/pages/docs/integrations/providers/z-ai.
 stock `openai` Python client and the existing `traceAI-openai` instrumentor. There is no Z.ai
 package, no `traceai-zai` and no `zai-sdk` dependency.
 
-Status: alpha. **No Z.ai account was used and no request was ever sent to `api.z.ai`.** See
-"What is real and what is a stand-in" below.
+Status: alpha. Verified against the real `api.z.ai` general platform on 2026-10-17 with the free
+`glm-4.7-flash` model (see "Live vendor verification" on the docs page). The local stand-in is still
+used by the tests and by the default `./run_e2e.sh`, and is not Z.ai.
 
 ## Contents
 
@@ -68,12 +69,12 @@ Run a single scenario with `APP_ARGS="--scenario stream"`. `python app.py --help
 | --- | --- | --- |
 | `openai` SDK, `traceAI-openai`, `fi-instrumentation-otel`, OTLP export | yes | |
 | Future AGI collector | yours | the tests use a recording collector |
-| The Z.ai API | only if you set `ZAI_API_KEY` without `ZAI_BASE_URL` | `standin/zai_stub.py`, shaped from Z.ai's chat completion reference, streaming guide and error table (read 2026-10-15). Nothing in it was captured from a real Z.ai response. Error messages come from the documented table; the body returned for each case on the live API was not checked |
+| The Z.ai API | `ZAI_API_KEY` without `ZAI_BASE_URL`; run live 2026-10-17 (chat, stream, tools, thinking, 401, 429) | `standin/zai_stub.py`, shaped from Z.ai's chat completion reference, streaming guide and error table (read 2026-10-15). Nothing in it was captured from a real Z.ai response. Error messages come from the documented table; the body returned for each case on the live API was not checked |
 | `api.z.ai` hostname | the client dials it in `tests/test_hosts_dialed.py` | a refusing proxy answers 403; no tunnel opens |
 
-What a live run is still needed for: the exact `model` value Z.ai returns, the real streamed chunks
-(for example whether they carry the `object` field), whether reasoning tokens are inside
-`usage.completion_tokens`, and the real error body for a wrong key.
+Proven live 2026-10-17: the `model` value returned, usage on the last stream chunk, reasoning tokens inside
+`usage.completion_tokens`, the 401 and 429 error bodies. Still not proven live: `finish_reason: network_error`
+streams, cost for GLM ids, paid models, other Z.ai APIs.
 
 ## Versions
 

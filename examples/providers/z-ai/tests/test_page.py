@@ -57,8 +57,9 @@ def test_the_page_names_the_three_coding_plan_urls_and_zai_sdk(page):
 
 def test_the_page_flags_the_stand_in_and_the_unverified_parts(page):
     assert "`STANDIN`" in page
-    assert "No Z.ai account or key was used and no request was sent to `api.z.ai`" in page
-    assert "unverified" in page
+    assert "Verified against the real Z.ai general platform" in page
+    assert "Still not proven live" in page
+    assert "Live vendor verification (2026-10-17)" in page
 
 
 def test_the_page_names_every_hide_setting_the_example_uses(page):
