@@ -1,0 +1,181 @@
+---
+title: "Trace VoltAgent with Future AGI"
+description: "Add FIVoltAgentSpanProcessor from @traceai/voltagent to VoltAgent's observability config to send agent, LLM, tool, memory and sub-agent spans with model, tokens and sessions to Future AGI."
+---
+
+## About
+
+[VoltAgent](https://github.com/VoltAgent/voltagent) (`@voltagent/core`) is a TypeScript agent framework that already emits OpenTelemetry spans, but with its own attribute names (`entity.type`, `span.type`, `llm.model`, `llm.usage.prompt_tokens`, `conversation.id`, bare `input` / `output`). `@traceai/voltagent` adds `FIVoltAgentSpanProcessor`, which you put in VoltAgent's own `spanProcessors` list. For every span VoltAgent ends, it exports a copy with the keys Future AGI reads (`fi.span.kind`, `gen_ai.*`, `session.id`, `input.value` / `output.value`). It does not patch `Agent`, and the span VoltAgent hands to its other processors (VoltOps, local storage, websocket) is not changed.
+
+It is not the same as:
+
+| You want to trace | Use |
+|---|---|
+| VoltAgent agents, tools, memory and sub-agents | This page |
+| Vercel AI SDK calls you make yourself with `experimental_telemetry` | [Vercel AI SDK](/docs/integrations/traceai/vercel) (`@traceai/vercel`). VoltAgent does not turn on AI SDK telemetry, so you do not need it for VoltAgent's model calls |
+| Mastra agents | [Mastra](/docs/integrations/traceai/mastra) (`@traceai/mastra`) |
+| The VoltOps console | VoltAgent's own VoltOps export, which keeps working next to this processor. This package does not replace it |
+
+Tested with `@voltagent/core` 2.11.0 (the latest release on npm on 2026-10-16), `ai` 6.0.309 with `@ai-sdk/openai` 3.0.130, `@traceai/fi-core` 1.0.0, and Node 20, 22 and 26. Models used in the end-to-end runs: `gpt-4.1-nano` on the OpenAI API and an OpenAI-compatible endpoint. Alpha.
+
+## 1. Install
+
+```bash
+npm install @traceai/voltagent @traceai/fi-core @voltagent/core
+# the model provider and schema library the example below uses (AI SDK 6 providers are 3.x)
+npm install ai@6 @ai-sdk/openai@3 zod
+```
+
+`@voltagent/core` (MIT) is a peer dependency, `^2.11.0`. `@traceai/voltagent` never bundles it.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_FUTURE_AGI_API_KEY"
+export FI_SECRET_KEY="YOUR_FUTURE_AGI_SECRET_KEY"
+export FI_PROJECT_NAME="my-voltagent-app"
+export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"   # for the example model
+```
+
+`FI_API_KEY` and `FI_SECRET_KEY` are sent as the `X-Api-Key` / `X-Secret-Key` headers. They are never copied onto spans.
+
+## 3. Add the processor to VoltAgent's observability
+
+```typescript
+import { ProjectType, register } from "@traceai/fi-core";
+import { FIVoltAgentSpanProcessor } from "@traceai/voltagent";
+import { Agent, VoltAgent, VoltAgentObservability, createTool } from "@voltagent/core";
+import { openai } from "@ai-sdk/openai";
+import { z } from "zod";
+
+const tracerProvider = register({
+  projectName: process.env.FI_PROJECT_NAME,
+  projectType: ProjectType.OBSERVE,
+  // Required: VoltAgent registers its own tracer provider globally. If the Future AGI provider
+  // is global instead, VoltAgent's spans bypass every processor in spanProcessors.
+  setGlobalTracerProvider: false,
+});
+
+const observability = new VoltAgentObservability({
+  spanProcessors: [
+    // ...keep any processors you already have here...
+    new FIVoltAgentSpanProcessor({ tracerProvider }),
+  ],
+});
+
+const weather = createTool({
+  name: "get_weather",
+  description: "Get the current weather for a city",
+  parameters: z.object({ city: z.string() }),
+  execute: async ({ city }) => ({ city, tempC: 21, conditions: "sunny" }),
+});
+
+const agent = new Agent({
+  name: "weather-agent",
+  instructions: "Answer weather questions. Always call get_weather.",
+  model: openai.chat("gpt-4.1-nano"),
+  tools: [weather],
+});
+
+new VoltAgent({ agents: { weatherAgent: agent }, observability });
+
+const result = await agent.generateText("What is the weather in Lisbon?", {
+  userId: "user-123",
+  conversationId: "conversation-456",
+});
+
+console.log(result.text);
+
+// A one-off script: shutdown() flushes every processor and lets the process exit.
+// A server or serverless handler: await observability.forceFlush() before returning instead.
+await observability.shutdown();
+```
+
+The constructor warns (`console.warn`) when the provider you pass is the global one. Any AI SDK model works; with an OpenAI-compatible endpoint use `createOpenAI({ baseURL, apiKey }).chat("model-id")`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `tracerProvider` | | The provider from `register()`. Spans carry its resource (`project_name`, `project_type`) and go out through its exporter. |
+| `exporter`, `resource` | | Instead of `tracerProvider`: any OpenTelemetry `SpanExporter`, and the resource to export with. |
+| `traceConfig` | content captured | fi-core trace config (`hideInputs`, `hideOutputs`, ...). See [Privacy](#privacy). |
+| `batch` | `true` | Batch through a `BatchSpanProcessor` (queue 2048, batch 512, delay 5 s). `false` sends each span as it ends. |
+| `batchConfig` | SDK defaults | `BatchSpanProcessor` settings. |
+| `usageReconciliationTimeoutMs` | `30000` | How long an llm span waits for its agent span (see Tokens). |
+
+VoltAgent's VoltOps export, local storage and websocket processors keep running; you do not remove them. VoltAgent's sampling only wraps its VoltOps exporter, so a processor in `spanProcessors` receives every span. VoltAgent's span filter (instrumentation scope `@voltagent/core` by default) applies to every processor in the list, this one included.
+
+## What is captured
+
+One `generateText` / `streamText` call is one trace. A sub-agent runs inside its supervisor's trace, under the `delegate_task` tool span.
+
+| VoltAgent span | Future AGI kind | Example name |
+|---|---|---|
+| agent (root, or `span.type=agent`) and sub-agent | AGENT | `weather-agent`, `subagent:weather-agent` |
+| model call (`span.type=llm`) | LLM | `llm:generateText`, `llm:streamText` |
+| tool | TOOL | `tool.execution:get_weather` |
+| memory read; retriever, vector search | RETRIEVER | `memory.read` |
+| embedding | EMBEDDING | |
+| memory write, guardrail, middleware, summary, workflow and any other type | CHAIN | `memory.write`, `memory.steps.write` |
+
+| Field | Attributes |
+|---|---|
+| Model | `gen_ai.request.model`, `gen_ai.response.model` from `llm.model` (llm spans) or `ai.model.name` (agent span) |
+| Provider | `gen_ai.provider.name`: the text before `/` in a model string (`openai/gpt-4o-mini`), or, for an AI SDK model object, its provider id (`openai.chat` → `openai`, `anthropic.messages` → `anthropic`, `google.vertex.*` → `vertexai`, `amazon-bedrock` → `aws`, ...). Unknown ids stay unset |
+| Tokens | `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens` (plus cache-read and reasoning tokens when the model reports them) on llm spans only |
+| Cost | computed by Future AGI from the model and tokens. VoltAgent sets no cost except `usage.cost` from OpenRouter metadata, which is passed through |
+| Session and user | `session.id` and `gen_ai.conversation.id` from `conversationId`; `user.id` from `userId` |
+| Tools | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.description`; arguments and result as input and output |
+| Input and output | `input.value` / `output.value` from VoltAgent's `input` / `output`. On llm spans: the messages VoltAgent sent (`llm.messages`) as input, and the agent's answer as output when the operation has exactly one successful `generateText` / `streamText` llm span (VoltAgent records no answer text on llm spans) |
+| Errors | status `ERROR` with the error text, `error.type`, `error.message`, an `exception` event with `exception.type` and `exception.message`. A failing tool is an `ERROR` tool span; a failed model call makes the llm span and the agent span `ERROR` |
+
+Every original VoltAgent key also stays on the copy (except what the privacy rules below remove), so a VoltOps export and the Future AGI copy describe the same run.
+
+**Tokens are counted once.** VoltAgent records the operation's total usage on the agent span and the last model step's usage on the llm span. Future AGI adds token keys up over the whole trace, so the processor keeps token keys on llm spans only, moves the agent span's total to `voltagent.usage.*`, and, when an operation has exactly one successful `generateText` / `streamText` llm span, puts the operation total on that span (the last step's values stay under `voltagent.llm.last_step_usage.*`). Because the agent span carries no token keys, the trace list's Tokens column (which reads the root span) is empty for VoltAgent traces; open the trace to see each model call's tokens and cost.
+
+## Privacy
+
+Like every traceAI package, content is captured by default: the prompt, system instructions, message history, tool arguments and results, memory payloads, summaries, plans, the answer and error text. Hide it with the standard variables:
+
+```bash
+export FI_HIDE_INPUTS=true    # prompt, instructions, messages, tool arguments, queries, memory reads
+export FI_HIDE_OUTPUTS=true   # answer, tool results, summaries, plans, streamed guardrail chunks
+# finer: FI_HIDE_INPUT_MESSAGES / FI_HIDE_OUTPUT_MESSAGES (message lists only),
+#        FI_HIDE_INPUT_TEXT / FI_HIDE_OUTPUT_TEXT (keep message roles, text becomes __REDACTED__)
+```
+
+or in code: `new FIVoltAgentSpanProcessor({ tracerProvider, traceConfig: { hideInputs: true, hideOutputs: true } })`. The option wins over the variable; a variable hides only when its value is `true`. Keys that hold both sides (state snapshots, working memory, eval metadata) and error text are hidden when either flag is on. With both flags on, span structure, kinds, model, tokens, cost, session and status remain, and an `ERROR` status carries only the error type (for example `VoltAgentError` or `AI_APICallError`).
+
+In both modes:
+
+- Credentials are never exported: keys such as `api_key`, `secret`, `password`, `authorization`, `cookie` or `headers` are dropped from span and event attributes.
+- Stack traces are never exported: `error.stack` and `exception.stacktrace` are dropped, and stack frames are cut from every exported string, including a failed tool's error object inside the message history.
+- Local file paths are rewritten in every exported string: the working directory becomes `[cwd]`, the home directory `~`, and any other absolute local path `[path]`.
+- Error text (status message, `error.message`, `exception.message`) also has emails replaced with `<email>` and this machine's user and host names removed.
+
+Captured content is otherwise exported as the model saw it: an email in a prompt or a tool result stays unless you hide inputs and outputs. `FI_PII_REDACTION` is not applied by this processor.
+
+VoltAgent itself has no content switch, so a VoltOps export of the same run still contains everything.
+
+## Flushing and serverless
+
+- Spans are batched. Before a serverless handler returns, call `await observability.forceFlush()` (VoltAgent flushes every processor) or `await processor.forceFlush()`. VoltAgent ends some memory spans just after `generateText` resolves, so flush at the end of the handler.
+- A one-off script does not exit on its own after `forceFlush()`: `new VoltAgent()` keeps the process running (it installs signal handlers for a graceful shutdown). End the script with `await observability.shutdown()`, which flushes too.
+- On platforms with `waitUntil`, VoltAgent's serverless observability can flush in the background: `setWaitUntil(waitUntil)` from `@voltagent/core`.
+- A collector that is down or rejects a batch never fails the agent: export errors are logged through the OpenTelemetry diag logger, and `forceFlush()` / `shutdown()` never throw.
+
+## Limits
+
+- Workflows map to `CHAIN`; workflow step spans are exported but not asserted by the tests. Retriever, embedding and vector spans are mapped from VoltAgent's source and unit tests, not from a live run.
+- `generateObject` / `streamObject` open no llm span in VoltAgent 2.11.0; their usage is only `voltagent.usage.*` on the agent span, so they add no tokens to the trace.
+- With a provider tool routed through VoltAgent's tool routing, an operation has two successful llm spans; the processor then does not reconcile, and the trace total can be lower than what the model used. Tokens are never counted twice.
+- VoltAgent logs (`RemoteLogProcessor`) are not exported.
+- Node only; edge runtimes are not tested. VoltAgent 3.x (`3.0.0-next`) is not tested.
+
+## Troubleshooting
+
+- **No traces:** `register()` needs `projectName` or `FI_PROJECT_NAME`; the collector drops a batch without a project name.
+- **Spans arrive unmapped, with no `fi.span.kind`:** `register()` made the Future AGI provider global. Pass `setGlobalTracerProvider: false`.
+- **Last spans missing from a short script:** `await observability.forceFlush()` before the process exits.
+- **Duplicate spans:** the processor is in `spanProcessors` twice, or another exporter sends the same VoltAgent spans to Future AGI.
+- **Content missing:** a `FI_HIDE_*` variable or a `traceConfig` hide flag is set.
+- **Provider empty:** the model is an OpenAI-compatible provider with its own id, or a dynamic model; the model name and tokens are still recorded.
