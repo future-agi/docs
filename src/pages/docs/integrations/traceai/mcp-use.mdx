@@ -1,0 +1,159 @@
+---
+title: "Trace mcp-use agents with Future AGI"
+description: "Send mcp-use MCPAgent runs to Future AGI with traceAI-mcp-use: one agent span per run, with its model calls and MCP tool calls as children. A LangChain callback; nothing is patched."
+---
+
+## About
+
+[mcp-use](https://pypi.org/project/mcp-use/) builds LangChain agents (`mcp_use.MCPAgent`) on top of MCP servers. `traceAI-mcp-use` is a LangChain callback handler you pass to the agent. Each `run()`, `stream()` or `stream_events()` call becomes one trace: an agent span, one LLM span per model call and one tool span per MCP tool call. It patches nothing and only traces the agents you give it to.
+
+It is not the [MCP integration](/docs/integrations/traceai/mcp) (`traceAI-mcp`). That package works at the MCP transport (it carries trace context in MCP requests) and does not show the agent run, its model calls or its tool calls. You can install both; see [Related integrations](#related-integrations).
+
+Tested with `mcp-use` 1.7.1 (the latest release on PyPI on 2026-10-16), `langchain-core` 1.6.12, `langchain-openai` 1.7.2, `langgraph` 1.2.16 and `fi-instrumentation-otel` 1.1.0, on Python 3.12 and 3.13, with a real model and a real stdio MCP server. The package's test suite also passes on Python 3.11. Alpha.
+
+## 1. Install
+
+```bash
+pip install traceAI-mcp-use langchain-openai
+```
+
+Requires `mcp-use>=1.7.1,<2`, `langchain-core>=1.0.0,<2`, `fi-instrumentation-otel>=1.1.0` and Python 3.11 to 3.13 (mcp-use itself requires 3.11). `langchain-openai` is only needed for the OpenAI model in the example; any LangChain chat model works.
+
+<Note>
+Until `traceAI-mcp-use` is published on PyPI, install it from the traceAI repository:
+
+```bash
+pip install "git+https://github.com/future-agi/traceAI.git@dev#subdirectory=python/frameworks/mcp-use"
+```
+</Note>
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export OPENAI_API_KEY="YOUR_OPENAI_KEY"
+```
+
+## 3. Register and pass the callback
+
+```python
+import asyncio
+import sys
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from langchain_openai import ChatOpenAI
+from mcp_use import MCPAgent, MCPClient
+from traceai_mcp_use import FutureAGICallback
+
+trace_provider = register(project_type=ProjectType.OBSERVE, project_name="my-mcp-use-agent")
+
+client = MCPClient.from_dict(
+    {"mcpServers": {"calculator": {"command": sys.executable, "args": ["calculator_server.py"]}}}
+)
+agent = MCPAgent(
+    llm=ChatOpenAI(model="gpt-4o-mini"),
+    client=client,
+    callbacks=[FutureAGICallback(tracer_provider=trace_provider)],
+)
+
+async def main():
+    try:
+        print(await agent.run("What is 2 + 3? Use the add tool."))
+    finally:
+        await client.close_all_sessions()
+
+asyncio.run(main())
+```
+
+Pass the provider `register()` returns: without `tracer_provider` the callback uses the global provider, which `register()` does not set unless you ask it to. One callback can serve many agents and concurrent runs. The spans are exported when the process exits; in a long-running process call `trace_provider.force_flush()` when you need them now (the Python `MCPAgent` has no `flush()`).
+
+Sessions, users, metadata and tags come from the traceAI context helpers. The Python `MCPAgent` has no `set_metadata` or `set_tags` (the TypeScript agent does):
+
+```python
+from fi_instrumentation import using_metadata, using_session, using_tags, using_user
+
+with using_session("chat-123"), using_user("user-1"), using_metadata({"tenant": "t1"}), using_tags(["beta"]):
+    await agent.run("What is 2 + 3?")   # every span of the run gets these attributes
+```
+
+## What is captured
+
+| Span | Name | Future AGI kind | One per |
+|---|---|---|---|
+| Agent | `mcp_use.agent` | AGENT | `run()`, `stream()` or `stream_events()` call |
+| LLM | `chat <model>` | LLM | model call |
+| Tool | `execute_tool <tool>` | TOOL | MCP tool call |
+
+The LLM and tool spans are children of the agent span. LangGraph's graph nodes and middleware are not spans, so a tool span is a sibling of the model call that asked for it. The agent span is a child of the span that is current when the run starts, or a root span.
+
+- **Agent span:** the user's query (`input.value`), the final answer (`output.value`), and counts of model calls, tool calls and failed tool calls (`mcp_use.agent.llm_call_count`, `mcp_use.agent.tool_call_count`, `mcp_use.agent.tool_error_count`).
+- **LLM span:** request and response model, provider, temperature, max tokens, finish reasons, input, output, total and cache-read tokens (from LangChain's `usage_metadata`), the input messages (the 32 most recent) and the reply with its tool calls. A streamed completion is one LLM span; each streamed token is a `mcp_use.llm.chunk` event carrying only its index (first 128), and `mcp_use.llm.chunk_count` has the exact number.
+- **Tool span:** tool name, tool-call id, arguments (`gen_ai.tool.call.arguments`) and result (`gen_ai.tool.call.result`).
+
+Cost is not emitted. A value the callback is not given is left out, never written as 0. Text is capped (4 KB per content value, 1 KB per error message).
+
+## Errors
+
+- **A failed MCP tool call** is a tool span with status `ERROR`, an `exception` event and `mcp_use.tool.error_type`. mcp-use 1.7.1 does not raise for a failed MCP call: it returns a formatted error to the model, and the run usually goes on. The agent span then ends `OK` and counts the failure in `mcp_use.agent.tool_error_count`.
+- **A failed run** (for example the model call raises): the LLM span and the agent span end `ERROR`, and the exception reaches your code unchanged.
+- **Cancelled runs** (`asyncio.CancelledError`, or leaving `stream()` early) end their open spans `ERROR` with description `cancelled` and `mcp_use.cancelled=true`.
+
+By default the status description is `<type>: <message>`. With `FI_HIDE_INPUTS` or `FI_HIDE_OUTPUTS` it is the exception type only.
+
+## Privacy
+
+Like every traceAI package, content (prompts, messages, model output, tool arguments and results, error messages) is captured by default and hidden with the standard variables:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+# finer: FI_HIDE_INPUT_MESSAGES, FI_HIDE_OUTPUT_MESSAGES, FI_HIDE_INPUT_TEXT, FI_HIDE_OUTPUT_TEXT
+# PII: FI_PII_REDACTION=true
+```
+
+or `FutureAGICallback(tracer_provider=trace_provider, config=TraceConfig(hide_inputs=True, hide_outputs=True))` (`from fi_instrumentation import TraceConfig`). With both hide flags on, `input.value` and `output.value` are `__REDACTED__`, no message, argument, result or error text is stored, and the spans keep their names, kinds, model, tokens, counts and statuses. `MCPAgent` keeps memory by default and sends earlier turns back to the model; under `FI_HIDE_OUTPUTS` those replayed replies and tool results are treated as outputs too.
+
+In both modes these are never exported:
+
+- **Stack traces.** mcp-use sends a failed tool call back to the model with a full Python traceback (`format_error()`'s `stack`). In the next LLM span's input it is replaced by `[stack trace removed]`, and exception events have no `exception.stacktrace`.
+- **Local paths, user name and host name**, replaced by `[path]`, `[user]` and `[host]`.
+- **Secrets:** values of environment variables whose name contains `KEY`, `SECRET`, `TOKEN`, `PASSWORD` or `AUTH` (your LLM key, `FI_API_KEY`), bearer tokens, `sk-` style keys and strings you pass in `FutureAGICallback(redact=[...])`.
+
+<Note>
+mcp-use's own console logging is not part of the trace and these settings do not change it. At its default level it prints query previews and tool results, and a failed tool call's error with its stack trace. `from mcp_use import Logger; Logger.set_debug(0)` hides the INFO lines; `logging.getLogger("mcp_use").setLevel(logging.CRITICAL)` also hides the error line. mcp-use also sends anonymized usage telemetry (not spans); `MCP_USE_ANONYMIZED_TELEMETRY=false` turns it off.
+</Note>
+
+## Turning it off
+
+Leave the callback out, or pass `callbacks=[]`: mcp-use then adds no callback at all. With `callbacks=None` (the default), mcp-use attaches its own Langfuse handler when Langfuse is configured. There is no `observe=False` on the Python `MCPAgent`; that flag belongs to the TypeScript agent.
+
+## Related integrations
+
+| You use | Use |
+|---|---|
+| `mcp_use.MCPAgent` | This page (`traceAI-mcp-use`) |
+| MCP client or server code without mcp-use's agent | [MCP](/docs/integrations/traceai/mcp) (`traceAI-mcp`), transport-level context propagation |
+| LangChain or LangGraph without mcp-use | [LangChain](/docs/integrations/traceai/langchain) (`traceAI-langchain`) |
+
+- **With `traceAI-mcp` installed too** you get the same spans as with this package alone: one agent span and one tool span per tool call, none duplicated. To have `traceAI-mcp` wrap mcp-use's stdio client, call `MCPInstrumentor().instrument()` before importing `mcp_use`.
+- **Do not also run `traceAI-langchain`** for the same agent: it adds a second, full LangChain tree (graph, nodes, model and tool runs). Use one of the two.
+
+## Limits
+
+- Python only. The TypeScript `mcp-use` agent is not covered.
+- With `use_server_manager=True`, mcp-use restarts the graph run when the tool set changes, up to 3 times; each restart is a separate agent trace. Errors from the server manager's own tools (`connect_server`, `disconnect_server`, `list_servers`) are recorded as `OK` tool spans with the error as their result.
+- With `output_schema`, mcp-use's final formatting model call gets no callbacks, so it has no span.
+- Remote agents (`MCPAgent(agent_id=...)`) are not traced.
+- Spans are not made current while their run executes: an HTTP span started inside a tool is not a child of the tool span.
+- The agent span carries no token counts (Future AGI shows 0 on it); the LLM spans carry them.
+
+## Troubleshooting
+
+- **No traces:** pass `tracer_provider=trace_provider` (the one `register()` returned); check `FI_API_KEY`, `FI_SECRET_KEY` and the project name. In a short script, let the process exit normally or call `trace_provider.force_flush()`.
+- **Only some spans show up at first:** the last spans of a run (the final model call and the agent span) are exported when the run ends and can take a few seconds longer to appear.
+- **Langfuse traces but no Future AGI traces:** you left `callbacks` as `None`; pass `callbacks=[FutureAGICallback(...)]`.
+- **Duplicate trees:** `traceAI-langchain` is also instrumented in the process.
+- **Content missing:** a `FI_HIDE_*` variable or a `TraceConfig` hide flag is set.
+- **A tool failed but the agent span is `OK`:** expected; mcp-use hands MCP errors back to the model. Look at the tool span and `mcp_use.agent.tool_error_count`.
