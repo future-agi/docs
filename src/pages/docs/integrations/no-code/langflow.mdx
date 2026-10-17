@@ -1,0 +1,158 @@
+---
+title: "Send Langflow runs to Observe"
+description: "Turn on the Future AGI tracer in a self-hosted Langflow server built from the future-agi fork, and every flow run becomes a trace in Observe: a root span for the run, a span per component, and the LLM and tool calls inside each component with model, tokens, session and user. Fork only until it is accepted upstream."
+---
+
+## About
+
+Langflow is a visual builder for AI agents and workflows. It ships built-in tracers for several observability tools, each turned on with environment variables. The Future AGI tracer is one more of those: set three variables on the Langflow server, restart it, and every flow run (from the Playground, the `/run` API, or a served flow) lands in an Observe project as one trace.
+
+You configure the Langflow server only. Flows do not change, and there is no Future AGI package to add to a flow.
+
+| | |
+| --- | --- |
+| Tested with | Langflow `1.12.6` (latest stable release, 2026-10-13) and `1.12.4` (the version the integration was designed against), each with the tracer files from the fork branch; and the fork branch itself, [`future-agi/langflow` `feat/th-8224-futureagi-tracer`](https://github.com/future-agi/langflow/pull/1), which is Langflow's `release-1.13.0` candidate plus the tracer. Python 3.12. |
+| Not supported | Stock Langflow from PyPI or Docker Hub, Langflow Desktop and Langflow Cloud. None of them contain the Future AGI tracer yet. |
+| Future AGI side | A self-hosted Future AGI stack built from `dev` (collector on `/tracer/v1/traces`), and one run against the hosted service at the default endpoint `https://api.futureagi.com`. |
+| Models used | A real GPT model through a local OpenAI-compatible endpoint (Langflow's **OpenAI Compatible** model provider). |
+| Libraries inside Langflow | `openinference-instrumentation-langchain` 0.1.79, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1. All are already Langflow dependencies; nothing extra is installed. |
+
+<Warning>
+Alpha, fork only. What ran: Langflow's own **Simple Agent** starter flow (Agent with the Calculator and Current Date tools) from the Playground and the `/run` API, the **Basic Prompting** starter (streamed and not streamed), a failed model call, hidden content, wrong keys, a stopped collector, a missing variable and a graceful shutdown, on Langflow 1.12.6, 1.12.4 and the 1.13.0 candidate; one agent run and one failed run against the hosted endpoint. What did not run: Langflow Desktop and Cloud, Docker images of the fork, multi-worker deployments, PostgreSQL-backed Langflow, and model providers other than OpenAI-compatible chat models.
+</Warning>
+
+## Where the tracer comes from
+
+The tracer is a new file in Langflow's tracing service (`services/tracing/futureagi.py`) plus three lines that register it next to the existing tracers. It is in the [future-agi/langflow](https://github.com/future-agi/langflow) fork, on a branch based on Langflow's active release candidate (`release-1.13.0`), which is where Langflow's contributing guide asks for pull requests. It has not been submitted to `langflow-ai/langflow` yet.
+
+The two Langflow files the tracer plugs into (`services/tracing/base.py` and `service.py`) are identical in Langflow 1.12.4, 1.12.6 and the `release-1.13.0` candidate (checked 2026-10-16), so the same tracer works on all three.
+
+## Before you start
+
+- A Future AGI API key and secret key, and the name of the Observe project you want the traces in. The self-hosted stack we tested created the project on the first trace. If you are not sure your workspace does the same, create the project first.
+- A self-hosted Langflow server you can set environment variables on and restart.
+
+## Install Langflow from the fork
+
+```bash
+git clone --branch feat/th-8224-futureagi-tracer https://github.com/future-agi/langflow.git
+cd langflow
+make init          # Langflow's own setup: backend and frontend dependencies
+make run_cli       # builds the frontend and starts Langflow on http://localhost:7860
+```
+
+`make init` and `make run_cli` are Langflow's documented way to build the full app with its UI. For our branch test we installed only the backend (`uv pip install -e src/lfx -e src/backend/base`) and ran `langflow run --backend-only`, driving the flows through the API.
+
+If you already run Langflow `1.12.x` from PyPI and want to try the tracer before it is released, copy `src/backend/base/langflow/services/tracing/futureagi.py` and `service.py` from the fork branch into the installed `langflow/services/tracing/` package and restart. That is how the 1.12.6 and 1.12.4 runs above were done. Upgrading Langflow overwrites the files.
+
+## Configure
+
+Set these on the Langflow server, then restart it. The tracer reads them when a run starts; a running server does not pick up changes until restart.
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `FI_API_KEY` | Yes | Future AGI API key. Sent as the `X-Api-Key` header. |
+| `FI_SECRET_KEY` | Yes | Future AGI secret key. Sent as the `X-Secret-Key` header. |
+| `FI_PROJECT_NAME` | Yes | The Observe project for every run on this server. The flow name is not used as the project. |
+| `FI_BASE_URL` | No | Default `https://api.futureagi.com`. For a self-hosted collector, for example `http://localhost:4318`. Langflow appends `/tracer/v1/traces`. |
+| `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` | No | Default off. See [Privacy](#privacy). |
+| `FI_REDACT` | No | Default off. `true` hides inputs and outputs, like setting both hide variables. |
+
+```bash
+export FI_API_KEY=your-api-key
+export FI_SECRET_KEY=your-secret-key
+export FI_PROJECT_NAME=my-langflow-app
+# export FI_BASE_URL=http://localhost:4318   # self-hosted Future AGI only
+langflow run
+```
+
+The tracer sends OTLP/HTTP protobuf, uncompressed (the Future AGI collector does not accept gzip), with the resource attributes `project_name` and `project_type=observe`. You do not set headers yourself.
+
+Then run any flow. The trace appears in the Observe project a few seconds after the run ends (spans are exported in batches, about every five seconds).
+
+### Pass a session and a caller id
+
+- **Session.** The `session_id` of a run becomes `session.id`, and Observe groups the runs of one session together. In the Playground it is the Playground chat session (the flow id for the **Default Session**); for the API, send `session_id`:
+
+```bash
+curl -X POST "http://localhost:7860/api/v1/run/<flow-id>" \
+  -H "x-api-key: <langflow-api-key>" -H "Content-Type: application/json" \
+  -d '{"input_value": "What is 17 * 23?", "session_id": "support-chat-1042", "user_id": "customer-42"}'
+```
+
+- **User.** `user.id` is the Langflow user that ran the flow (the account behind the API key, or the signed-in user in the Playground). It is a Langflow user UUID.
+- **Caller id.** A `user_id` sent in the `/run` request body is Langflow's tracing label for your own end user. It is recorded as `langflow.tracing_user_id` on the run span and does not replace `user.id`.
+
+## What you see in Observe
+
+One trace per flow run:
+
+| Span | What it is |
+| --- | --- |
+| Run (root, `chain`) | Named after the flow. Input is the Chat Input message and output the Chat Output message, when the flow has them. Status is ERROR if any component failed. |
+| One span per component | Named `<Component> (<component id>)`, for example `Agent (Agent-EXpSZ)`. Agent components are `agent` spans, tool components `tool`, retrievers `retriever`; the rest are `chain`. Input and output are the component's inputs and outputs as JSON. Langflow masks fields named like `api_key`, `password` or `server_url` before any tracer sees them. |
+| LLM and tool calls | The LangChain runs inside a component, nested under that component's span: `ChatOpenAI` (LLM, with `llm.model_name` and prompt/completion tokens when the provider returns them), tool calls such as `evaluate_expression`, and for the Agent the LangGraph steps (`model`, `tools`, middleware). A streamed answer is one LLM span with the final output. |
+
+Run span attributes: `langflow.flow_name`, `langflow.flow_id`, `langflow.run_id`, `langflow.project_name` (Langflow's own tracing project setting, not the Observe project), `langflow.version`, `session.id`, `user.id`, and `langflow.tracing_user_id` when sent. Component spans also carry `session.id`, `langflow.component_type` and `langflow.vertex_id`.
+
+Real example from the tested Simple Agent flow on Langflow 1.12.6: 17 spans. The run span (`TH8103 Simple Agent`), `Chat Input`, `Agent` with a `LangGraph` child holding two `ChatOpenAI` LLM spans (`gpt-6-luna`, 1,064/79 and 1,193/32 prompt/completion tokens) and the `evaluate_expression` and `get_current_date` tool spans, then `Chat Output`. The Basic Prompting flow is 6 spans: run, `Chat Input`, `Prompt Template`, `Language Model` with its `Language Model` LLM span (337/38 tokens), and `Chat Output`.
+
+Not captured: Langflow's own component logs, embedding calls (LangChain embeddings emit no callbacks), cost when the model or tokens are missing, a second Observe project for the same server, and runs of servers where the variables are not set.
+
+## Privacy
+
+Like Langflow's other tracers, the Future AGI tracer exports content by default: chat messages, component inputs and outputs, prompts, model responses, and tool arguments and results. That follows the traceAI convention: content is on unless you hide it.
+
+To hide content for the whole server, set `FI_HIDE_INPUTS=true` and/or `FI_HIDE_OUTPUTS=true` (the same names the traceAI packages use), or `FI_REDACT=true` for both, and restart. Hiding inputs removes `input.*`, `llm.input_messages.*` and prompts from every span; hiding outputs removes `output.*` and `llm.output_messages.*`, including tool-call arguments the model generated. The trace shape, span names, model, token counts, timings, status, session and user ids stay.
+
+This was checked, not assumed. A unique marker and an email address were put into the questions of the Simple Agent, Basic Prompting and failing flows on a server with `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`. Every stored column for that project (ClickHouse `spans` including resource attributes, span events and the extra-attributes column, plus the Postgres tracer tables) was searched: neither was found in any of the 26 spans. The exported OTLP requests themselves were also captured on the way to the collector and decoded: no marker, no email. With the defaults, the same kind of marker was found in the input and output columns.
+
+In both modes:
+
+- Error messages are exported **without stack traces**. LangChain appends the full Python traceback (with absolute file paths, which include the OS user name) to every failed run, and the OpenInference callback copies it into the span status and an `exception.stacktrace` event attribute. The tracer keeps only the message, drops `exception.stacktrace`, and masks the home directory, the OS user name, the host name and email addresses in error text.
+- The server's home directory is replaced with `~` in every exported attribute value, for example in a file path a component received as input.
+- The resource carries only `project_name`, `project_type`, `service.name`, `service.instance.id` (a random id per process) and the OpenTelemetry SDK name and version. No host name, user name or process path. A search of every stored column for the OS user name, host name, home directory, `/Users/`, traceback headers, `File "` frame lines and `site-packages/` found none of them, on all three Langflow versions.
+- `session.id` and `langflow.tracing_user_id` are exported as you send them, and the hide variables do not hide them. Use opaque ids, not email addresses.
+
+## Errors
+
+A failed run is marked ERROR. With a model name the provider does not know, the tested Basic Prompting flow gave three ERROR spans: the `Language Model` LLM span (`OpenAIInvalidRequestError("Error code: 400 - ... unknown provider for model ...")`), the `Language Model` component span (`ValueError: Error code: 400 - ...`) and the run span (`ComponentBuildError: Error building Component Language Model: ...`), each with an `exception` event (type and message only).
+
+Tracing never changes the run:
+
+- **Missing variable.** If only some of `FI_API_KEY`, `FI_SECRET_KEY` and `FI_PROJECT_NAME` are set, the tracer stays off and Langflow logs one warning per process that names the missing ones: `[Future AGI] tracing is off: FI_PROJECT_NAME not set. Flows run without it.` If none are set, it stays off silently.
+- **Wrong keys or a stopped collector.** Flows answered normally and in their usual time, the spans were dropped, and Langflow logged at most one line a minute: `[Future AGI] dropped 8 span(s): export to the collector failed. Flow runs are not affected. Check FI_API_KEY, FI_SECRET_KEY, FI_BASE_URL and FI_PROJECT_NAME.` The OpenTelemetry exporter also logs its own line per failed batch (`Failed to export spans batch code: 401`, or `Transient error` while it retries a refused connection).
+- **Shutdown.** Spans are exported about every five seconds, and the tracer's OpenTelemetry provider flushes on a normal exit. In our test all 6 spans of a run answered just before `SIGTERM` were stored. A hard kill can lose the last few seconds of spans.
+
+## How this differs from related integrations
+
+- **Langflow's Arize Phoenix, Arize or Traceloop tracers.** Do not point them at Future AGI. Phoenix and Arize send `api_key` and `Authorization: Bearer` headers, which the Future AGI collector rejects, and none of them set `project_name`. The Future AGI tracer sends the headers and resource attributes the collector expects and labels spans as Langflow components.
+- **traceAI LangChain packages ([LangChain](/docs/integrations/traceai/langchain)).** Those instrument LangChain code you write and run yourself. Langflow runs LangChain inside its own server and adds component spans you cannot get from a LangChain callback alone, so use this tracer for Langflow instead of adding a traceAI package to the server.
+- **Flowise and other no-code builders.** Each has its own integration; this page covers Langflow only.
+
+## Limits and what was not tested
+
+- Fork only. Stock Langflow, Langflow Desktop and Langflow Cloud do not have this tracer. It is not in an upstream release.
+- One Observe project per Langflow server. Every flow and every user on the server shares `FI_PROJECT_NAME`. Run a second Langflow process with its own environment for a second project.
+- Langflow Desktop, Langflow Cloud, Docker images of the fork, several workers (`LANGFLOW_WORKERS` above 1), PostgreSQL-backed Langflow, Langflow versions before 1.12.4, and model providers other than OpenAI-compatible chat models were not run.
+- Component and run spans are created by the tracer; LLM and tool spans come from the OpenInference LangChain callback that Langflow already ships. Components that do not run LangChain (custom Python components, HTTP request components) show as component spans only.
+- Running the Future AGI tracer and the Phoenix or Traceloop tracer on the same server was not tested.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| `[Future AGI] tracing is off: ... not set` in the Langflow log | One of `FI_API_KEY`, `FI_SECRET_KEY` or `FI_PROJECT_NAME` is missing in the server's environment. Set it and restart. |
+| `[Future AGI] dropped N span(s)` with `Failed to export spans batch code: 401` | Wrong API key or secret key. Runs are unaffected. |
+| `[Future AGI] dropped N span(s)` with `Transient error` lines | The collector is unreachable. Check `FI_BASE_URL`; Langflow adds `/tracer/v1/traces` itself. |
+| No traces and no log line | None of the variables reach the server process, the server was not restarted, or this Langflow build does not have the tracer (stock Langflow). |
+| Inputs and outputs are empty | `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` or `FI_REDACT` is set on the server. |
+| All runs land in one project | That is the design: one project per server. |
+| Model or tokens missing | The model provider did not return them. Missing is unknown, not zero. |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Observe overview" href="/docs/observe" />
+  <Card title="Set up tracing with traceAI" href="/docs/integrations" />
+</CardGroup>
