@@ -1,0 +1,95 @@
+---
+title: "Open WebUI tracing with Future AGI"
+description: "Install the Future AGI filter function in Open WebUI so each completed chat turn becomes a trace in an Observe project. Covers what is captured, the metadata-only default, the opt-in for content, and the limits of the Open WebUI filter hooks."
+---
+
+## About
+
+This page is for **Open WebUI**, the self-hosted chat front end (`open-webui` on PyPI, repository `open-webui/open-webui`). It is not about any other product.
+
+Open WebUI can export its own OpenTelemetry spans, but those are infrastructure spans only: HTTP, database and Redis. They carry no model, prompt or token data. The Future AGI integration is a **filter Function** that you paste into Open WebUI. For each completed chat turn it exports one trace of two spans, `openwebui.chat` (chain) with an `openwebui.llm` (llm) child, with the model, token usage, the chat id as the session and the Open WebUI user id.
+
+This is not a traceAI instrumentor and it does not import traceAI. Open WebUI calls the filter's `inlet`, `stream` and `outlet` hooks; the filter only observes them and never changes the chat. The filter file is [`integrations/openwebui/futureagi_filter.py`](https://github.com/future-agi/traceAI/tree/dev/integrations/openwebui) in the traceAI repository, with its own README and tests. For background on how Future AGI ingests OpenTelemetry see [What is OpenTelemetry?](/docs/tracing/concepts/otel), and for keys and projects see [Setup Observability](/docs/quickstart/setup-observability).
+
+<Warning>
+Alpha. The filter source is in traceAI pull request 207 and may not be merged to `dev` yet. Tested end to end against a self-hosted Future AGI stack on localhost, with a model behind an OpenAI-compatible endpoint. Not tested against the hosted `api.futureagi.com`, with a browser UI session on 0.12.3 (API-driven chats were used), with multiple Open WebUI workers, or with Pipelines.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | Open WebUI **0.12.3** (latest stable at test time, released 2026-10-16) and **0.11.4** (the version the filter was built against). Python 3.12. OpenTelemetry exporter and SDK 1.45.1 (the exporter is installed by Open WebUI from the filter's frontmatter). |
+| Filter version | 0.3.0, traceAI pull request 207 |
+| Future AGI | Self-hosted stack on localhost, 2026-10-16 |
+| Not tested | Hosted Future AGI, Pipelines containers, multi-worker deployments, Open WebUI native OpenTelemetry export together with the filter |
+
+## 1. Install the filter
+
+1. In Open WebUI open **Admin Panel, Functions** and create a function. Paste the whole of `futureagi_filter.py`, keeping the opening `"""` block as the first line, and save. Open WebUI installs the requirements named in that block (`opentelemetry-exporter-otlp-proto-http`, `certifi`). If `OFFLINE_MODE=true` or `ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS=false`, install those two packages into the Open WebUI environment yourself or saving fails.
+2. Turn the function **on** and either mark it **Global**, or attach it to the models you want traced (**Workspace, Models, model, Filters**). A filter that is off, or neither global nor attached, never runs.
+3. Open the function's **Valves** (gear icon) and set:
+
+| Valve | Default | Meaning |
+| --- | --- | --- |
+| `api_key`, `secret_key` | empty | Future AGI keys, sent as `X-Api-Key` and `X-Secret-Key`. With either one empty nothing is exported. |
+| `endpoint` | `https://api.futureagi.com` | Future AGI origin. The filter posts to `{endpoint}/tracer/v1/traces`. For a self-hosted stack use the collector origin, for example `http://localhost:4318`. |
+| `project` | `open-webui` | The Observe project, sent as the resource attribute `project_name` with `project_type=observe`. |
+| `redact` | `true` | Keeps prompts and replies out of every span. Set `false` to opt in to content. |
+| `include_email_hash` | `false` | Adds a pseudonymous HMAC of the user's email as `user.email_hash`. |
+| `email_hash_salt` | empty | Optional secret salt for that HMAC. |
+| `max_chars` | `32000` | Maximum characters copied into each input or output value. `0` means unlimited. |
+
+Set `ENABLE_VALVE_ENCRYPTION=true` so Open WebUI encrypts the valves in its database.
+
+4. Send a chat message. After a few seconds (the filter batches spans, 5 s delay) open the project in Observe.
+
+## 2. What is captured
+
+| Span | Type | Attributes |
+| --- | --- | --- |
+| `openwebui.chat` | chain | `session.id` and `gen_ai.conversation.id` (the Open WebUI chat id), `user.id`. With `redact=false`: `input.value` (last user message) and `output.value`. |
+| `openwebui.llm` (child) | llm | `gen_ai.request.model`, `llm.model_name`, token usage, the same ids. With `redact=false`: the conversation as `input.value` and the reply as `output.value`. |
+
+- **Tokens** come from the usage Open WebUI stored for the reply. When a tool loop ran, the cumulative input and output tokens of the loop are used. If Open WebUI has no usage for the reply the span carries `gen_ai.usage.unavailable=true` and no token counts. Tokens are never estimated.
+- **Latency** of the llm span is the **turn** latency between `inlet` and `outlet`. It includes Open WebUI preprocessing, retrieval, tools and database work, not only the model call.
+- **Tool calls and retrieval** are not separate spans. A turn that used a native tool produces the same two spans; the tool name and arguments are not exported, and the usage covers the whole loop.
+- **Errors**: a turn whose provider stream carried an error object, or whose reply is empty with no usage, is exported with status `ERROR` on both spans and the fixed message `provider returned a failed response`. The provider's own error text is never exported.
+- The root span is detached from Open WebUI's own server span, so it is a real trace root even when native Open WebUI tracing is on.
+
+## 3. Privacy
+
+- **Default: no content.** With `redact=true` no message text, no tool arguments or results and no error text leave Open WebUI. Ids, model, status and token counts are still sent. This was checked by sending a unique marker in the prompt and scanning every stored column of every span (inputs, outputs, attributes, resource attributes, events, status message): zero matches.
+- **Opt in** with `redact=false`. The same marker then appears in the `openwebui.chat` and `openwebui.llm` input and output values. For a saved chat the stored history is copied; it does not necessarily include the system prompt, RAG context or tool results. Temporary chats (`temporary:` or `local:` chat ids) stay redacted even with `redact=false`.
+- The user's email is never sent as a standalone attribute. `include_email_hash=true` adds an HMAC-SHA256 of the normalised email (pseudonymous, not anonymous). If you turn content capture on, treat prompt text as able to contain any user field, including an email.
+- Local paths, host names and stack traces are not exported in either mode.
+- The Future AGI keys travel only as request headers, never as span attributes. The filter ignores `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_BSP_*`, sampler, certificate and compression environment variables of the Open WebUI process and sends uncompressed OTLP/HTTP.
+- Valves are stored by Open WebUI. Without `ENABLE_VALVE_ENCRYPTION=true` they are stored in plain text.
+
+## 4. Native Open WebUI tracing (optional, separate)
+
+Open WebUI's own exporter (`ENABLE_OTEL`, `ENABLE_OTEL_TRACES`) is independent of the filter. It sends HTTP, database and Redis spans with no chat content, and those traces are not joined to the filter's traces. It was not tested here. If you enable it against Future AGI it needs the same `project_name` resource attribute and the Future AGI auth headers; prefer the filter when you want the chat content.
+
+## 5. Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| No spans at all | The function is off, or neither Global nor attached to the model. Or `api_key` / `secret_key` is empty. Or the Observe project in `project` does not exist in the key's workspace. |
+| Function fails to save | The OpenTelemetry exporter could not be installed (offline mode, or no `pip` in the Open WebUI environment). Install `opentelemetry-exporter-otlp-proto-http` and `certifi` yourself and restart. |
+| 401 in the Open WebUI log, chat still works | Wrong keys. The filter sends `X-Api-Key` and `X-Secret-Key`; Bearer tokens are ignored. |
+| Chat works but spans stop after the collector is down | Expected. The filter never blocks or fails a chat; queued spans are dropped. |
+| Input and output are empty | `redact` is `true` (the default), or the chat is temporary. |
+| The last few spans are missing after a restart | Spans still queued when the worker is killed are lost. |
+| A failed request has no span | See limitations. |
+
+## 6. Limitations
+
+- A provider **HTTP error** (for example a 500 from the model connection) and a user **Stop** bypass the filter's hooks in Open WebUI, so no span is produced for those turns. Only failures that reach the stream or the outlet are exported as `ERROR`. Verified on 0.12.3 with a stub provider returning HTTP 500: no span.
+- No per-tool and per-retrieval spans (see section 2).
+- Each Open WebUI worker process exports on its own; function edits create a new instance and shut the old provider down.
+- Model ids are Open WebUI's, which can differ from the provider's model name.
+- A client that starts a chat with no `chat_id` (the API "new chat" form, `parent_id: null`) produced no filter hooks in our test on 0.12.3, so no span; chats that exist in Open WebUI's database, as the web UI creates them, are traced.
+
+## 7. How this differs from related integrations
+
+- **Native Open WebUI OpenTelemetry**: infrastructure spans only, no model or token data. The filter adds the GenAI view. The two are not correlated.
+- **traceAI instrumentors** (for example OpenAI): patch an SDK client inside your own code. Open WebUI makes the model call itself, so there is no client to patch; the filter observes Open WebUI's hooks instead.
+- **Open WebUI Pipelines**: a separate container that can also run filters. This integration is a Function and needs no extra container.
