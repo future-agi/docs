@@ -1,0 +1,224 @@
+---
+title: "OpenAI Realtime session tracing with Future AGI"
+description: "Trace the OpenAI Realtime WebSocket sessions your Python server opens with client.realtime.connect(): one trace per session with user turns, model responses, tool calls, barge-in and errors, listed as a call in the Voice tab. Audio bytes never leave your process."
+---
+
+## About
+
+`traceAI-openai-realtime` traces the speech-to-speech sessions your own Python process opens with the official `openai` SDK's `client.realtime.connect()`. Add one `instrument()` call next to `register()`; your Realtime code does not change. Each connection becomes one trace:
+
+```
+openai.realtime.session         the session; listed as a call in the Voice tab when it carried audio
+├── openai.realtime.user_turn   one per user utterance: input transcription, speech timing
+├── openai.realtime.response    one per model response: model, tokens, transcript, cancelled or not
+│   └── openai.realtime.tool    one per function call: name, arguments, your result
+└── realtime.error              one per server error event
+```
+
+<Note>
+**Verified against OpenAI's live Realtime API on 2026-10-17** (`gpt-realtime-mini`, `openai` 3.33.0): session, typed question with a spoken answer, a function call, token usage, server `error` events, a text-only session, a refused API key and content hiding. See [Live vendor verification](#live-vendor-verification-2026-10-17).
+
+Still tested only against a local stand-in server that speaks OpenAI's documented events, not against the live API: barge-in and `conversation.item.truncate` (`realtime.cancelled`, `realtime.audio_end_ms`, `realtime.truncation`), real microphone audio (so `call.talk_ratio` has not been seen on a live call), an abnormal socket drop mid-response with a 1011 close, and the `openai` 3.24.0 and 2.0.0 legs.
+</Note>
+
+This is not the same as:
+
+- **[OpenAI](/docs/integrations/traceai/openai)** (`traceAI-openai`), which traces chat completions, the Responses API and embeddings over HTTP. It does not see the Realtime WebSocket, and this package does not change it. Install both if your process does both.
+- **[LiveKit](/docs/integrations/traceai/livekit)** and **[Pipecat](/docs/integrations/traceai/pipecat)**, which can run an OpenAI Realtime model inside their own pipelines. Keep using those packages there. This package does not hook LiveKit or Pipecat classes, so nothing is counted twice.
+
+| | |
+| --- | --- |
+| Tested with | `openai` 3.33.0 (live, 2026-10-17); 3.31.0, 3.24.0 and 2.0.0 against the stand-in; Python 3.12; `fi-instrumentation-otel` 1.1.0; `websockets` 15.0.1 |
+| Supported | `openai>=2.0.0,<4` (`client.realtime.connect` first appears in 2.0.0), Python 3.10 to 3.13 |
+| OpenAI docs used | [Realtime API with WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket), [server events](https://developers.openai.com/api/reference/resources/realtime/server-events), [client events](https://developers.openai.com/api/reference/resources/realtime/client-events), read 2026-10-15 |
+| Source | [traceAI `python/frameworks/openai-realtime`](https://github.com/future-agi/traceAI/tree/main/python/frameworks/openai-realtime) |
+
+## 1. Install
+
+```bash
+pip install traceAI-openai-realtime "openai[realtime]>=2.0.0,<4"
+```
+
+`openai[realtime]` brings `websockets`, which the SDK needs to open the socket.
+
+<Note>
+`traceAI-openai-realtime` ships with [traceAI PR #257](https://github.com/future-agi/traceAI/pull/257). Until it is released to PyPI, install it from source:
+
+```bash
+git clone --depth 1 --branch feat/th-8242-openai-realtime https://github.com/future-agi/traceAI.git
+pip install ./traceAI/python/frameworks/openai-realtime "openai[realtime]>=2.0.0,<4"
+```
+</Note>
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+## 3. Register and instrument
+
+Call `register()` first, then `instrument()`, before you open a connection.
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai_realtime import OpenAIRealtimeInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-voice-agent",
+)
+OpenAIRealtimeInstrumentor().instrument(tracer_provider=trace_provider)
+```
+
+The project comes from `register()`, never from anything on the socket, so two processes with two keys write to two projects.
+
+## 4. Run your session as usual
+
+```python
+import asyncio
+
+from openai import AsyncOpenAI
+
+
+async def main() -> None:
+    client = AsyncOpenAI()
+    async with client.realtime.connect(model="gpt-realtime-2.1") as connection:
+        await connection.session.update(
+            session={
+                "type": "realtime",
+                "instructions": "You are a concise weather assistant.",
+                "audio": {"input": {"transcription": {"model": "gpt-4o-mini-transcribe"}}},
+            }
+        )
+        async for event in connection:
+            ...  # stream mic audio, play model audio, run tools, handle barge-in
+
+
+asyncio.run(main())
+```
+
+The sync client (`OpenAI().realtime.connect()`), connections opened with `.enter()` and closed with `.close()`, and sessions read with `recv()`, `recv_bytes()` or `dispatch_events()` are traced the same way. A complete example (session setup, a tool, playback and barge-in with `conversation.item.truncate`) is [`examples/voice_agent.py`](https://github.com/future-agi/traceAI/tree/main/python/frameworks/openai-realtime/examples/voice_agent.py). To try it without a microphone, run it with `--typed "What's the weather in Paris?"`: a typed question, a tool call and a spoken answer.
+
+Turn on input transcription (as above) if you want the user's words in the trace and the Voice tab: without it, user turns are still traced, with timing but no text.
+
+## 5. Check the result
+
+Open **Observe**, pick your project. An audio session is one row in the Voice tab (call list) and one trace in **Tracing**; a text-only session is a trace only.
+
+To check every field the Voice tab and voice evals read, run the [voice verifier](/docs/cookbook/quickstart/instrument-and-verify-voice) with `FI_VOICE_NO_RECORDING=1` (this package attaches no recording). In our test all twelve gates passed.
+
+## What is captured
+
+| Span | What it carries |
+| --- | --- |
+| Session | `gen_ai.system=openai`, model, `session.id` (yours if you set one, else OpenAI's session id), `user.id` only if you pass one, voice, output modalities, the session instructions as input, how it ended (`realtime.end_reason`). For audio sessions also `call.duration`, `call.total_turns`, `call.talk_ratio` and the transcript (`conversation.transcript`, `fi.conversation.transcript` and one row per turn). |
+| User turn | The input transcription, VAD start and end, speech duration, whether transcription completed, failed or was off. |
+| Response | Model, response id, token usage (input, output, audio and text detail, cached) copied from `response.done`, the conversation items added since the previous response as input, the transcript or text as output, the function calls it made, status. On barge-in: `realtime.cancelled`, how much audio was heard (`realtime.audio_end_ms`) and whether your truncate was confirmed. |
+| Tool | Function name, call id, arguments, the result you sent back. A result for a call id the session never announced is an ERROR span, so it is visible rather than dropped. |
+| Error | The server's error type, code and parameter, and the message. |
+
+Missing data is left out rather than written as zero: no usage in `response.done` means no token fields, and a call that ends before any turn has no `call.total_turns`. `call.talk_ratio` is written only when both sides' audio durations are known (user from the server's VAD timestamps, assistant from the length of the audio received, capped at what was heard if you truncated). No cost in currency is sent; Future AGI may estimate one from the model and tokens.
+
+Not captured: audio itself (see Privacy), OpenAI's own `session.tracing` dashboard, rate-limit events, and per-chunk deltas (audio deltas are counted on the response as `realtime.audio_delta_count`).
+
+## Privacy
+
+| | Default | How to change it |
+| --- | --- | --- |
+| Audio bytes | **Never** captured, in any mode. Audio is counted and measured, never stored. | Cannot be turned on. |
+| Transcripts, user text, instructions, tool arguments and results, error messages | Captured, like every traceAI integration. | The standard traceAI switches: `FI_HIDE_INPUTS=true` drops what the user said, the instructions and tool arguments; `FI_HIDE_OUTPUTS=true` drops what the model said, tool results and error messages. Set both to drop all content. `TraceConfig(hide_inputs=True, hide_outputs=True)` passed as `instrument(config=...)` does the same in code. |
+| API keys | Never recorded: not the `Authorization` header, not a key in a URL or in the browser subprotocol. Error text is scrubbed of anything shaped like a key. | |
+| URLs, hosts, stack traces | Never recorded. Exceptions are recorded by type (and by message only when outputs are captured). | |
+| `OpenAI-Safety-Identifier` | Not copied into `user.id`. | |
+
+```bash
+export FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true   # before the process starts, or:
+```
+
+```python
+from fi_instrumentation import TraceConfig
+
+OpenAIRealtimeInstrumentor().instrument(
+    tracer_provider=trace_provider,
+    config=TraceConfig(hide_inputs=True, hide_outputs=True),
+)
+```
+
+In a Realtime session the transcripts are the messages, so `FI_HIDE_INPUT_MESSAGES` and `FI_HIDE_INPUT_TEXT` drop the user side the same way `FI_HIDE_INPUTS` does, and the `OUTPUT` variants drop the model side. Either side on its own drops the combined call transcript.
+
+With both sides hidden you keep names, timings, token counts, tool names, error types and codes, model and voice. The Voice tab still lists the call, but its transcript column is empty and transcript-based evals have nothing to read.
+
+In our test (stand-in and, on 2026-10-17, the live API) we sent a unique marker through the instructions, both sides' transcripts, a tool call's arguments, its result and a server error, with an email address and a local file path in the tool result, once with `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true`: none of them appeared in any stored column (attributes, input and output, events, resource attributes, metadata) in any Future AGI table, and that call's trace carried no transcript, tool arguments or tool results. With the default settings they appeared where expected.
+
+## Reconnects, drops and errors
+
+- **Socket drops.** If the socket closes abnormally, the response in flight and the session end with status ERROR (`realtime.end_reason=socket_closed`, plus the close code) and the exporter is flushed once. The instrumentor never opens a socket or retries one.
+- **SDK reconnect.** `openai` 3.x reconnects only when you pass `on_reconnecting` to `connect()`. Then a drop closes the spans in flight and the session stays open: the same connection object stays one trace. A second `connect()` you write is a new trace; the Realtime API has no resume handle.
+- **Server `error` events** become `realtime.error` spans; the session continues.
+- **Exceptions** raised out of your `async with` block are recorded on the session and re-raised unchanged. Cancelling the task ends the session with `realtime.end_reason=task_cancelled`.
+- **Refused connections.** With a wrong OpenAI key the live API accepts the WebSocket upgrade and then closes it with code 3000 (`invalid_request_error.invalid_api_key`). That is one session span (`fi.span.kind` CHAIN) with status ERROR, the close code in the status message and `realtime.end_reason=socket_closed`. If the server instead rejects the HTTP upgrade (for example an HTTP 401 from a proxy), the span ends with `realtime.end_reason=connect_failed`. Neither is a call, so both are in Tracing, not the Voice tab.
+- **Process exit.** Sessions still open when the interpreter exits are ended before the tracer provider flushes, provided `register()` ran before `instrument()`. A process that is killed outright loses its open session.
+- Exporting never blocks your socket reader: spans go to the batch processor `register()` set up, which drops spans rather than wait when its queue is full.
+
+## Not supported
+
+- **GPT-Live** (`client.live.connect()`, `/v1/live/sessions`). Not instrumented. A `client.realtime.connect()` whose `websocket_base_url` points at a `/live/` path logs one warning and runs untraced.
+- **WebRTC** and browser WebSocket sessions, `client.beta.realtime`, and transcription-only Realtime sessions.
+- **Node.js.** Python only for now.
+- **Azure OpenAI** Realtime clients: not tested.
+- **Recordings.** The instrumentor does not record the microphone or attach audio files, so audio-based voice evals have no recording to read.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| No trace at all | `instrument()` ran before `register()`, or not before `connect()`. Check `FI_API_KEY` and `FI_SECRET_KEY`. |
+| A trace, but no Voice tab row | The session was text-only (`fi.span.kind` is `CHAIN`), the connection was refused, or the root has a parent. The session span is always started as a new trace (your active span, if any, is linked, not used as the parent). |
+| User turns have no text | Input transcription is off in your `session.update`. Turns still close and carry timing. |
+| The Voice tab shows the call as completed though the trace is ERROR | The call list's status column does not read the span status today. Open the trace: the session span carries status ERROR and `realtime.end_reason`. |
+| `realtime.truncation` is `client_sent_unconfirmed` | Your `conversation.item.truncate` was sent, but the session ended before `conversation.item.truncated` came back. |
+| One warning, no trace | The connect pointed at a GPT-Live (`/live/`) URL. |
+| Two traces for one conversation | Your code called `connect()` twice. Only the SDK's own reconnect keeps one trace. |
+| `call.total_turns` or `call.talk_ratio` missing | No turn completed, or one side's audio duration was unknown. They are omitted rather than written as 0. |
+
+## Live vendor verification (2026-10-17)
+
+Run exactly as this page says: a fresh Python 3.12.10 virtualenv, `traceAI-openai-realtime` 0.1.0 installed from the PR branch with pip (git URL), `openai[realtime]` 3.33.0 (latest), `fi-instrumentation-otel` 1.1.0, `websockets` 15.0.1. `register()` then `instrument()`, a real `client.realtime.connect(model="gpt-realtime-mini")` against OpenAI, OTLP/HTTP to a self-hosted Future AGI (project `th8103-rest-openai-realtime-live`). Each session was a typed question ("What's the weather in Paris?") with one `get_weather` function and a spoken answer, so it needs no microphone and costs cents.
+
+| Case | Trace id | Result |
+| --- | --- | --- |
+| Defaults, plus two invalid client events | `2d98da7a-e53d-4fd3-a537-f134626d1315` | CONVERSATION root, 2 responses, 1 tool, 2 `realtime.error` spans; listed in the Voice tab |
+| `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true`, same session | `ae82118c-c8a7-4049-8389-5fcc0233a125` | same shape and token counts, no content |
+| Text-only session | `0325b42b-b8d3-425c-829e-f93a5a4f485b` | CHAIN root, not in the Voice tab |
+| Wrong API key | `f4c2898e-4dbc-4152-8e86-68475c7848ec` | one CHAIN span, ERROR, close code 3000 `invalid_api_key` |
+
+`fi_verify` (hierarchy, model, tokens, errors) excerpt:
+
+```
+trace 2d98da7a-e53d-4fd3-a537-f134626d1315 (6 spans)
+- [conversation] openai.realtime.session model=gpt-realtime-mini in=120B out=181B (4546ms)
+  - [chain] realtime.error status=ERROR:Cancellation failed: no active response found (0ms)
+  - [chain] realtime.error status=ERROR:Error deleting item: the item with id 'item_FI-MARK-shown170 (0ms)
+  - [llm] openai.realtime.response model=gpt-realtime-mini tok=76/34 in=61B out=147B (387ms)
+    - [tool] openai.realtime.tool in=50B out=187B (5ms)
+  - [llm] openai.realtime.response model=gpt-realtime-mini tok=174/166 in=234B out=135B (947ms)
+trace ae82118c-c8a7-4049-8389-5fcc0233a125 (6 spans)
+- [conversation] openai.realtime.session model=gpt-realtime-mini in=0B out=0B (4120ms)
+  - [chain] realtime.error status=ERROR:invalid_request_error: response_cancel_not_active (0ms)
+  ...
+trace f4c2898e-4dbc-4152-8e86-68475c7848ec (1 spans)
+- [chain] openai.realtime.session status=ERROR:ConnectionClosedError: received 3000 (registered) invalid_re
+PASS
+```
+
+What the live run showed that the stand-in could not:
+
+- Token counts in `gen_ai.usage.*` come from OpenAI's `response.done` (76/34 and 174/166 for the two responses above).
+- With content hidden, server error messages are reduced to the error type and code; with defaults the message text is kept, including any id you sent.
+- A typed session has no microphone audio, so `call.talk_ratio` is omitted rather than zeroed; the Voice tab row shows duration, turns and the user id.
+
+Privacy scan of every stored row in all 13 ClickHouse tables holding the project (24 span rows, 46 span columns): with content hidden the unique marker, the email and local path embedded in the tool result, the OpenAI key, the Future AGI keys, host name, user name, home directory, `Bearer ` and `Traceback` were found in 0 rows. With defaults the marker, email and path appear in the span input, output, attributes and error text, as designed.
