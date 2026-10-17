@@ -1,0 +1,142 @@
+---
+title: "Gradio Integration with Future AGI for Chat App Tracing"
+description: "Trace a Gradio chat app in Future AGI. There is no Gradio package: traceAI-openai traces the OpenAI client your chat function calls."
+---
+
+Gradio does not emit GenAI spans, and there is no `traceAI-gradio` package. Do not install one. The span you see in Future AGI comes from `traceAI-openai` instrumenting the OpenAI-compatible client that your Gradio chat function calls. Remove the instrumentor and the same Gradio turn exports zero spans.
+
+This page is a recipe: a runnable example app, [`python/examples/gradio`](https://github.com/future-agi/traceAI/tree/dev/python/examples/gradio) in the traceAI repository.
+
+## 1. Installation
+
+```bash
+pip install gradio openai fi-instrumentation-otel traceAI-openai
+```
+
+Gradio requires Python 3.10 or later. `fi-instrumentation-otel` and `traceAI-openai` require Python below 3.14.
+
+## 2. Set Environment Variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"        # sent as X-Api-Key
+export FI_SECRET_KEY="your-futureagi-secret-key"  # sent as X-Secret-Key
+export FI_PROJECT_NAME="my-chatbot"
+export OPENAI_API_KEY="your-model-key"            # the key of your model host
+# optional: OPENAI_BASE_URL for any OpenAI-compatible host, OPENAI_MODEL
+```
+
+## 3. Register, instrument, and chat
+
+```python
+import hashlib, hmac, os, secrets
+from contextlib import nullcontext
+
+import gradio as gr
+from fi_instrumentation import TraceConfig, register, using_session
+from fi_instrumentation.fi_types import ProjectType
+from openai import OpenAI
+from traceai_openai import OpenAIInstrumentor
+
+MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+
+def init_tracing(trace_content: bool = False):
+    provider = register(
+        project_name=os.environ["FI_PROJECT_NAME"],
+        project_type=ProjectType.OBSERVE,
+        verbose=False,
+    )
+    config = TraceConfig() if trace_content else TraceConfig(hide_inputs=True, hide_outputs=True)
+    OpenAIInstrumentor().instrument(tracer_provider=provider, config=config)
+    return provider
+
+
+client = OpenAI()  # reads OPENAI_API_KEY and OPENAI_BASE_URL
+
+_SESSION_KEY = globals().get("_SESSION_KEY") or secrets.token_bytes(32)
+
+
+def _session_id(request):
+    if request is None or not request.session_hash:
+        return None
+    return hmac.new(_SESSION_KEY, request.session_hash.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _text(content):  # Gradio 6 passes history content as a list of parts
+    if isinstance(content, str):
+        return content
+    return "".join(p["text"] for p in content if p.get("type") == "text")
+
+
+def predict(message, history, request: gr.Request = None):
+    messages = [{"role": m["role"], "content": _text(m["content"])} for m in history]
+    messages.append({"role": "user", "content": message})
+    session_id = _session_id(request)
+    with using_session(session_id) if session_id else nullcontext():
+        response = client.chat.completions.create(model=MODEL, messages=messages)
+    return response.choices[0].message.content or ""
+
+
+demo = gr.ChatInterface(predict, analytics_enabled=False)
+
+if __name__ == "__main__":
+    init_tracing()
+    demo.launch()
+```
+
+Run it with `python app.py` and chat. Each turn is one LLM span in the `my-chatbot` project. The complete, tested file is `src/app.py` in the example folder.
+
+## What is captured
+
+One span per chat turn, from `traceAI-openai`:
+
+| Field | Value |
+|---|---|
+| Span | `ChatCompletion`, span kind `llm`. Each turn is its own trace (no parent) |
+| Model | the model the response names, for example `gpt-6-luna` |
+| Tokens | prompt, completion and total, as the model host reports them |
+| Session | `session.id` and `gen_ai.conversation.id`, the same for every turn of one browser session |
+| Error | a failed model call is one `ChatCompletion` span with status `ERROR` |
+
+Not captured: Gradio's own events, queue, analytics and Spaces hosting, and `gradio[mcp]`. Streaming (`stream=True`) is the OpenAI instrumentor's existing behavior and is not covered by this recipe.
+
+## Privacy
+
+Content is off by default in this recipe: `input.value` and `output.value` are stored as `__REDACTED__`, and the message text is in no stored column.
+
+To turn content on, call `init_tracing(trace_content=True)`. The span then carries the whole conversation your function sends (every history message and the new one) and the answer, on every turn. With content on, traceAI's `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS` environment variables apply again.
+
+The session id is not Gradio's session hash. A Gradio session hash is also the key to that session's live state in the running app, so the recipe exports a keyed HMAC-SHA256 of it (32 hex characters, key random per process). Ids change after a process restart.
+
+Not covered by the content switch: when the model call raises, the span records the error type and message, and for an HTTP error that includes the error body the model host returned. A host that echoes the prompt in its error body would put it in the span.
+
+No Future AGI key, secret or model key is exported. The recipe never prints the prompt.
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| gradio | 6.30.0 (latest on 2026-10-16) and 6.29.1 (the example pin) |
+| openai | 3.33.0 (latest) and 3.24.0 (the example pin) |
+| fi-instrumentation-otel | 1.1.0 |
+| traceAI-openai | 0.1.10 |
+| Python | 3.12 live run; example tests on 3.10 to 3.13 |
+
+## Troubleshooting
+
+- **No span.** `init_tracing()` did not run. In the example it runs under `if __name__ == "__main__":`. If you import `demo` from another module (for example to mount it in FastAPI), call `init_tracing()` there.
+- **Turns are not grouped.** `predict` ran without a `gr.Request`, so no session id was set.
+- **Generator chat functions.** If you stream by making `predict` a generator, make the model call before the first `yield`. After the first `yield`, Gradio runs each step in a fresh context copy and a span opened around the generator is lost as a parent.
+- **Reload mode (`gradio app.py`).** Gradio re-runs the file in the same process; the first instrumentation stays in force. Changes to the tracing setup need a restart. You will see `Attempting to instrument while already instrumented` once at startup and once per save.
+- **Nothing exported after kill.** `register()` flushes on normal exit, SIGINT and SIGTERM. SIGKILL skips the flush.
+
+## Limitations
+
+- The example is tested with loopback fakes in CI-style tests and with a real local run; no CI job runs it.
+- Async chat functions and streaming are not tested.
+- Errors with the OpenAI client's default retries were verified for a non-retried 400 only.
+
+## How this differs from other integrations
+
+- [OpenAI](/docs/integrations/traceai/openai) documents the instrumentor itself. This page shows where to put it in a Gradio app and how to tag sessions.
+- There is no Gradio instrumentor: UI events and queue metrics are not traced.
