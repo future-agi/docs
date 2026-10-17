@@ -1,0 +1,121 @@
+---
+title: "Trace AG2 1.x with Future AGI"
+description: "Send AG2 1.x agent, model-call and tool spans to Future AGI with traceAI-ag2, which attaches AG2's own TelemetryMiddleware. Not AutoGen and not AG2 Classic."
+---
+
+## About
+
+AG2 1.x is the PyPI package `ag2`, imported as `ag2`. `traceAI-ag2` attaches AG2's own `TelemetryMiddleware` to your agents and normalizes its spans for Future AGI (span kind, token keys, input and output). It does not wrap `Agent`.
+
+It is not Microsoft AutoGen and not AG2 Classic:
+
+| You installed | Import | Use |
+|---|---|---|
+| `ag2` 1.x | `ag2` | This page (`traceAI-ag2`) |
+| `autogen-agentchat` | `autogen_agentchat` | [Autogen](/docs/integrations/traceai/autogen) (`traceAI-autogen`) |
+| `autogen` 0.14.x (AG2 Classic) | `autogen` | Not covered by this package |
+
+Do not run `traceAI-autogen` in a process that uses `ag2`: you would get duplicate spans.
+
+Tested with `ag2` 1.1.2 (latest stable on PyPI at the time of writing, 2026-10-16) and `fi-instrumentation-otel` 1.1.0, Python 3.12. The offline test suite also passes on ag2 1.0.0 and 1.0.3 (Python 3.11). Alpha.
+
+## 1. Install
+
+```bash
+pip install traceAI-ag2 "ag2[openai]"   # the openai extra is only needed for OpenAIConfig
+```
+
+Requires `ag2>=1.0.0`, `fi-instrumentation-otel>=1.1.0` and Python 3.10 to 3.13.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export OPENAI_API_KEY="YOUR_OPENAI_KEY"
+```
+
+## 3. Register and instrument
+
+AG2 attaches middleware per agent, so pass your agents to `setup`:
+
+```python
+import asyncio
+from ag2 import Agent
+from ag2.config import OpenAIConfig
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_ag2 import setup
+
+trace_provider = register(project_type=ProjectType.OBSERVE, project_name="my-ag2-app")
+
+def get_weather(city: str) -> str:
+    """Return the weather for a city."""
+    return f"sunny in {city}"
+
+agent = Agent(
+    "weather_bot",
+    "You answer weather questions. Always call get_weather.",
+    config=OpenAIConfig(model="gpt-4o-mini"),
+    tools=[get_weather],
+)
+setup(agent, tracer_provider=trace_provider)
+
+async def main():
+    reply = await agent.ask("What's the weather in Paris?")
+    print(reply.body)
+    trace_provider.force_flush()  # short scripts: flush before exit
+
+asyncio.run(main())
+```
+
+For agents created later, or per-call middleware, use `create_telemetry_middleware(tracer_provider=trace_provider, agent_name=agent.name)` and call `setup(tracer_provider=trace_provider)` once so the span processor is installed.
+
+Sessions and users come from the traceAI context helpers:
+
+```python
+from fi_instrumentation import using_session
+
+with using_session("chat-123"):
+    await agent.ask("Hello")   # every AG2 span gets session.id="chat-123"
+```
+
+## What is captured
+
+| Span | Future AGI kind | Notes |
+|---|---|---|
+| `invoke_agent <name>` | AGENT | Input is the first model input of the turn, output the last reply |
+| `chat <model>` | LLM | `gen_ai.request.model`, `gen_ai.response.model`, input and output tokens, messages |
+| `execute_tool <name>` | TOOL | Tool name, call id, arguments, result |
+| `record_usage <kind>` (ag2 1.0.3+) | none | AG2's usage bookkeeping; its tokens are kept under `ag2.usage.*` where a chat span already counts them, so the trace total counts each model call once |
+
+Failing tool, model or agent spans have status `ERROR`. Cache read/write and thinking tokens are copied to the keys Future AGI reads. Cost is not emitted by AG2.
+
+## Privacy
+
+Like every traceAI package, content (prompts, replies, tool arguments and results) is captured by default and hidden with the standard variables:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+# finer: FI_HIDE_INPUT_MESSAGES, FI_HIDE_OUTPUT_MESSAGES, FI_HIDE_INPUT_TEXT, FI_HIDE_OUTPUT_TEXT
+```
+
+or `setup(agent, tracer_provider=trace_provider, config=TraceConfig(hide_inputs=True, hide_outputs=True))` (`from fi_instrumentation.instrumentation.config import TraceConfig`). With the hide flags on, none of the prompt, reply, tool arguments or tool result is stored.
+
+In both modes, local file paths, user names, stack traces and raw exception text are not exported. A traceback inside a tool message is replaced by `[stack trace removed]`, absolute paths by `[path]`, and an `ERROR` span carries the exception class name (for example `RuntimeError`) instead of the message.
+
+## Limits
+
+- AG2 emits no conversation id; set `session.id` through `using_session` or `setup(..., span_attributes={"session.id": ...})`.
+- A middleware that answers a model call or turn without calling the next handler leaves no span for that call (AG2's own halt behaves the same with `Agent(assembly=...)`).
+- The Anthropic cached-input adjustment makes the trace total exceed AG2's own `UsageReport` by the cached tokens.
+- Sub-agents with the same name as an instrumented agent can undercount a `subtask` rollup; use distinct names.
+- `setup(...)` without `tracer_provider` registers one provider and reuses it; pass `tracer_provider=` to use another project.
+
+## Troubleshooting
+
+- **No traces:** `register()` needs `project_name` or `FI_PROJECT_NAME`; a batch without it is dropped. Short scripts must call `force_flush()`.
+- **Duplicate spans:** do not attach a second `TelemetryMiddleware` and do not enable `traceAI-autogen` in the same process.
+- **Spans without a kind:** the provider runs processors concurrently (`ConcurrentMultiSpanProcessor`); use the default synchronous processor.
+- **Content missing:** a `FI_HIDE_*` variable or `TraceConfig` hide flag is set.
