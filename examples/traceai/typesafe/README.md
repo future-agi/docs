@@ -5,8 +5,10 @@ Runnable companion to the docs page `src/pages/docs/integrations/traceai/typesaf
 official `typesafe-sdk` Python client using the `traceAI-typesafe` instrumentor
 ([traceAI PR #264](https://github.com/future-agi/traceAI/pull/264)).
 
-Status: alpha. **No TypeSafe account or API key was used.** The success path ran against the local
-stand-in below; one failure case ran against the real `api.typesafe.ai` with a deliberately invalid key.
+Status: verified against the live TypeSafe API on 2026-10-17 (typesafe-sdk 0.7.5, model `jev-1.13.0`): two real
+decisions (sync and async), a real 422 and a real 401, traced into a local Future AGI. The default `./run_e2e.sh`
+(no `TYPESAFE_API_KEY`) still uses the local STANDIN server below, so it needs no account. Not yet seen live: 429
+(`retry_after_ms`), `box` answers, image assets.
 
 ## Contents
 
@@ -30,7 +32,7 @@ PRIVACY=1 ./run_e2e.sh                          # also: hide flags on vs default
 REAL_AUTH_PROBE=1 ./run_e2e.sh                  # also: one invalid-key call to the real api.typesafe.ai (HTTP 401)
 ```
 
-Against the real TypeSafe API (needs your own account and key; a run is billed by TypeSafe):
+Against the real TypeSafe API (needs your own account and key; a run is billed by TypeSafe, two decisions of a few hundred tokens each):
 
 ```bash
 export TYPESAFE_API_KEY=...       # goes to the SDK only
@@ -47,6 +49,6 @@ Until `traceAI-typesafe` is on PyPI, `run_e2e.sh` installs it from the traceAI P
 | --- | --- |
 | `typesafe-sdk` client (0.7.5), `traceAI-typesafe`, `fi-instrumentation-otel` (`register()`), OTLP export | Real |
 | Future AGI collector, storage and Observe UI | Real (a local Future AGI) |
-| System One answers (`noul`, `choice`, `score`) | **STAND-IN** (`standin/systemone_stub.py`) |
-| HTTP 401 for an invalid key | Real `api.typesafe.ai` with `REAL_AUTH_PROBE=1`; the stand-in otherwise |
-| HTTP 422 validation error | STAND-IN, using the FastAPI error shape TypeSafe's OpenAPI document declares |
+| System One answers (`noul`, `choice`, `score`) | **Real** `api.typesafe.ai` when `TYPESAFE_API_KEY` is set (verified 2026-10-17); **STANDIN** (`standin/systemone_stub.py`, hash-derived numbers, not Jev) otherwise, and in `tests/` |
+| HTTP 401 for an invalid key | Real `api.typesafe.ai` (`REAL_AUTH_PROBE=1`, or any run with a key set); the stand-in otherwise |
+| HTTP 422 validation error | Real `api.typesafe.ai` when a key is set; STANDIN otherwise (FastAPI error shape from TypeSafe's OpenAPI document) |
