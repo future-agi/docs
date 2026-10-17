@@ -1,0 +1,98 @@
+---
+title: "Firecrawl Integration with Future AGI Tracing"
+description: "Trace the Firecrawl v2 Python client (scrape, search, map, crawl) in Future AGI with traceAI-firecrawl. One span per call, one span per blocking crawl."
+---
+
+`traceAI-firecrawl` instruments the Firecrawl **v2** Python client. Each `scrape`, `search`, `map`, `crawl`, `start_crawl`, `get_crawl_status` and `cancel_crawl` call becomes one span, sync or async.
+
+<Note>
+**Status: beta, not yet on PyPI.** The package is in [traceAI PR #206](https://github.com/future-agi/traceAI/pull/206) (`python/frameworks/firecrawl`). Until it is released, install it from that source tree. Verified against the live Firecrawl API (`api.firecrawl.dev`) on 2026-10-17; see "Live vendor verification" below.
+</Note>
+
+## v1, v2 and OpenLIT
+
+`firecrawl-py` 4.x ships two clients. This package wraps the v2 client (`from firecrawl import Firecrawl`, `AsyncFirecrawl`). It does not wrap the feature-frozen v1 `FirecrawlApp`. OpenLIT's `FireCrawlInstrumentor` wraps `FirecrawlApp.scrape_url` (v1). If you build both clients and enable both instrumentors you get two spans for different calls; pick the one that matches your client.
+
+## 1. Install
+
+```bash
+pip install firecrawl-py fi-instrumentation-otel
+pip install ./python/frameworks/firecrawl   # from a traceAI checkout, until published
+```
+
+Supported: `firecrawl-py >=4.46.2,<5`, Python 3.10 to 3.13.
+
+## 2. Configure
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+```
+
+## 3. Instrument
+
+Call `instrument()` **before** constructing the client.
+
+```python
+from firecrawl import Firecrawl
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_firecrawl import FirecrawlInstrumentor
+
+tracer_provider = register(project_name="firecrawl", project_type=ProjectType.OBSERVE)
+FirecrawlInstrumentor().instrument(tracer_provider=tracer_provider)
+
+client = Firecrawl(api_key="your-firecrawl-api-key")
+client.scrape("https://example.com")
+```
+
+Put the calls inside your own agent or chain span and they show up as its children.
+
+## What is captured
+
+| Method | Span | Kind | Attributes |
+|---|---|---|---|
+| `scrape`, `map` | `firecrawl.scrape`, `firecrawl.map` | TOOL | `server.address` (host of the target URL only) |
+| `search` | `firecrawl.search` | RETRIEVER | `gen_ai.retrieval.query`, `input.value`, `firecrawl.result_count` |
+| `crawl` (blocking) | `firecrawl.crawl` | TOOL | one span for the whole crawl, plus `firecrawl.job_id`, `firecrawl.limit`, `firecrawl.page_count`, `firecrawl.status` |
+| `start_crawl`, `get_crawl_status`, `cancel_crawl` | `firecrawl.<method>` | TOOL | `firecrawl.job_id` (shared across the job) |
+
+A blocking `crawl()` that fetches many pages is one span, not one per page. A crawl job that returns status `failed` or `cancelled` ends the span ERROR. SDK exceptions end the span ERROR with a safe event that carries only the exception type; the original exception is re-raised unchanged.
+
+## Privacy
+
+- Captured by default: the **search query** (API key redacted, capped at 1024 characters) and the target host.
+- Never captured: page content (markdown, HTML, screenshots), URL paths and query strings, JSON-format prompts or schemas, the Firecrawl API key, raw exception text and tracebacks.
+- Turn the query off with the standard traceAI switches: `FI_HIDE_INPUTS=true`, or `TraceConfig(hide_inputs=True)` passed as `instrument(config=...)`. Shared PII redaction (`FI_PII_REDACTION=true`) applies to the query when enabled.
+
+## Verified
+
+| | |
+|---|---|
+| firecrawl-py | 4.46.2 (pinned) and 4.50.0 (latest on 2026-10-16) |
+| Python | 3.12 run end to end; 3.10 to 3.13 is the declared range, and the 168-test suite was run on all four in the PR |
+| Ingestion | local Future AGI, 10 spans per run: AGENT parent, 7 methods, 1 ERROR scrape, 1 async search |
+
+## Live vendor verification (2026-10-17)
+
+Run exactly as the install and usage steps above say, with a real Firecrawl key, against `https://api.firecrawl.dev` (no base-URL override), exporting to a local Future AGI project. Versions: `firecrawl-py` 4.50.0, `fi-instrumentation-otel` 1.1.0, `traceAI-firecrawl` 0.1.0, Python 3.12.
+
+- Trace `fc0dbe7b-cf70-494e-a5ed-d3b06b91e4df`, 9 spans, `fi_verify` PASS: an AGENT parent with `scrape` (TOOL), `search` (RETRIEVER), `map`, `start_crawl`, `get_crawl_status`, `cancel_crawl` and a blocking `crawl` (all TOOL) as children, plus a second `scrape` with a wrong key that ends ERROR `UnauthorizedError` with `firecrawl.error.status_code=401`.
+- Real attributes seen: `server.address=example.com`, `firecrawl.formats=["markdown"]`, `firecrawl.result_count=2` on a live search, one shared `firecrawl.job_id` across start, status and cancel, `firecrawl.status=completed`, `firecrawl.page_count=1`, `firecrawl.credits_used=1` on the blocking crawl.
+- Rate limit: on the free plan the live API returned HTTP 429 for a fourth crawl request inside a minute. The `start_crawl` span ended ERROR `RateLimitError` with `firecrawl.error.status_code=429`, and the vendor message (which contains plan text) was not copied onto the span.
+- Privacy scan over every stored column of the default run: the search query appears only in `gen_ai.retrieval.query` and `input.value`; the page body (`Example Domain`), the URL path and query string, the wrong key and the real key appear nowhere. With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` (trace `0e189c43-63d1-4420-b7c1-42bdb92dbca5`) the query marker appears nowhere.
+- Not proven live: the async client, the `watcher()` helpers, and a failed or cancelled crawl job status. These are covered only by the test suite and a stand-in of the HTTP API.
+- Note: `cancel_crawl` recorded `firecrawl.cancelled=false` for a job that had just started; the span reports whatever the SDK returns.
+
+## Troubleshooting
+
+- **No spans:** the client was constructed before `instrument()`. Construct it afterwards. Outside the supported version range `instrument()` logs an error and wraps nothing.
+- **Duplicate spans:** both this package and OpenLIT's Firecrawl instrumentor are enabled for the same client; enable one.
+- **`firecrawl.credits_used` is `0` on crawls:** the SDK fills `0` when the API omits it, so `0` can mean "not reported".
+
+## Limitations
+
+- Facades constructed before `instrument()` are not traced; facades built while instrumented keep tracing until you build a new one after `uninstrument()`.
+- `Firecrawl.watcher()` polls from its own thread, so each poll is a separate root span.
+- Format metadata (`firecrawl.formats`) is not recorded when `scrape_options["formats"]` is a raw nested dict; use the typed `ScrapeOptions` / `ScrapeFormats`.
+- No `agent`, `interact`, `parse` or browser-session spans.
