@@ -1,0 +1,122 @@
+---
+title: "Exa Integration with Future AGI for Search Tracing"
+description: "Trace Exa search, contents and answer calls in Future AGI with the traceAI-exa instrumentor for the exa-py client."
+---
+
+## About
+
+`traceAI-exa` wraps the official [`exa-py`](https://github.com/exa-labs/exa-py) client so every `search`, `get_contents` and `answer` call becomes a span in Future AGI. It is a client wrapper, not an Exa exporter: Exa does not publish an OpenTelemetry exporter, and the package does not patch the HTTP layer.
+
+The package is released from [future-agi/traceAI](https://github.com/future-agi/traceAI) (`python/frameworks/exa`). Until a release is on PyPI, install it from that directory of the repository.
+
+## 1. Installation
+
+```bash
+pip install traceAI-exa
+```
+
+Tested with `exa-py` 2.25.0 (the latest release when this page was written, 2026-10-16) on Python 3.10, 3.12 and 3.13. The package accepts `exa-py>=2.25.0,<3`.
+
+## 2. Set environment variables
+
+```python
+import os
+
+os.environ["EXA_API_KEY"] = "your-exa-api-key"
+os.environ["FI_API_KEY"] = "your-futureagi-api-key"
+os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+```
+
+## 3. Register and instrument
+
+```python
+import os
+from exa_py import Exa
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_exa import ExaInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="exa-search",
+)
+ExaInstrumentor().instrument(tracer_provider=trace_provider)
+
+exa = Exa(api_key=os.environ["EXA_API_KEY"])
+exa.search("recent retrieval research", num_results=5)
+```
+
+Call `register()` first so the instrumentor has a tracer provider. A script that only calls `register()` exports the Exa span as a root trace. Under an active span (for example an agent span) the Exa span is its child.
+
+## What is captured
+
+`Exa` and `AsyncExa` calls each produce one span. `search_and_contents` (deprecated upstream) is traced as `exa.search`. `stream_search` and `stream_answer` produce one span that ends when the stream is read to the end or closed.
+
+| Call | Span name | Span kind |
+|---|---|---|
+| `search`, `search_and_contents`, `stream_search` | `exa.search` | `RETRIEVER` |
+| `answer`, `stream_answer` | `exa.answer` | `RETRIEVER` |
+| `get_contents` | `exa.get_contents` | `TOOL` |
+
+| Attribute | Value |
+|---|---|
+| `gen_ai.retrieval.query`, `input.value` | The query, cut to 1 KB. |
+| `exa.result_count` | Number of results (citations for `answer`). Absent when unknown. |
+| `exa.url_count` | Number of URLs passed to `get_contents`. |
+| `exa.urls` | Only with `instrument(capture_urls=True)`: at most 20 URLs. |
+| `exa.cancelled` | `true` when a call or stream was cancelled or closed early. |
+
+An Exa error (for example an invalid key, HTTP 401) ends the span with status `ERROR` and the message `ValueError: Request failed with status code 401: ...`; your code still receives the exception unchanged.
+
+Not captured: result titles, page text, highlights, answer text, model name, token counts and cost (Exa does not return model tokens for search). The Exa API key is never recorded, and no stack trace or local path is exported.
+
+## Privacy
+
+traceAI instrumentors follow the standard `TraceConfig`: the query is recorded by default. To turn it off, set `FI_HIDE_INPUTS=true` or pass a config:
+
+```python
+from fi_instrumentation import TraceConfig
+
+ExaInstrumentor().instrument(
+    tracer_provider=trace_provider, config=TraceConfig(hide_inputs=True)
+)
+```
+
+With hidden inputs, `input.value` is `__REDACTED__`, the query and URL attributes are dropped, and the query or URLs are removed from error text. Counts stay. `pii_redaction` and `using_session`, `using_user`, `using_metadata` and `using_tags` also apply.
+
+## Live vendor verification (2026-10-17)
+
+Run against the real Exa API (`api.exa.ai`) with `exa-py` 2.25.0 and `fi-instrumentation-otel` 1.1.0 on Python 3.12, exactly as the steps above describe, exporting to a local Future AGI deployment (project `th8103-rick-exa-live`).
+
+- Trace `fa0ce113-0c73-48a7-bbd8-6852d6062ddb`: `[agent] research-agent` with children `[retriever] exa.search`, `[tool] exa.get_contents`, `[retriever] exa.answer`, `[retriever] exa.search` (from `stream_search`) and `[retriever] exa.answer` (from `stream_answer`). `exa.result_count` was 1, 1 (`url_count` 1), 8, 0 and 8.
+- Trace `edad9ed7-1183-4554-9b15-9aa2e3b20a38`: `AsyncExa.search`.
+- Trace `14aa18fd-a5e5-4a5f-a019-3ba6faf7cd7b`: a call with an invalid key ends `ERROR` with `ValueError: Request failed with status code 401` and the server's `INVALID_API_KEY` message; the span has an exception event without a stack trace.
+- `fi_verify` passed (hierarchy, span kinds, the `ERROR` span). Exa returns no model or token usage, so none is recorded.
+- Privacy: with defaults the query appears in the stored spans. With `FI_HIDE_INPUTS=true` (traces `967cfabf-72c6-4813-86bc-9b13de89bfc2`, `2fc3dcb4-bb86-4a8d-8bb4-ec8c50f247dc`) the query marker appears in none of the stored columns and `input.value` is `__REDACTED__`. The Exa key, local paths, the user name and stack traces appear in no row in either mode.
+- Observed: `stream_search` with `num_results=1` returned no chunks from the live API, so its span has a result count of 0; `stream_answer` yielded text chunks and a final citations chunk, and the span counted 8 citations.
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| `exa-py` | 2.25.0 |
+| `traceAI-exa` | 0.1.0 |
+| Python | 3.10, 3.12, 3.13 (unit tests); 3.12 (live run) |
+
+## Troubleshooting
+
+- **No spans appear.** Check `FI_API_KEY` and `FI_SECRET_KEY`, and that `instrument()` runs before the first Exa call.
+- **Duplicate spans.** Do not combine this package with another instrumentor that wraps the same Exa client methods.
+- **`ValueError` when creating `Exa()`.** The client raises when no API key is set, before any traced call, so no span is recorded.
+- **Stream span stays open.** Read the stream to the end or call `close()`.
+
+## Limitations
+
+- `find_similar` and `find_similar_and_contents` are not traced.
+- Only the Python client. `exa-js`, websets, monitors and `beta.agent` are not traced.
+- Only verbatim copies of the key, query or URLs are removed from error text; escaped or truncated copies are not.
+
+## Difference from related integrations
+
+- [MCP](/docs/integrations/traceai/mcp) traces Model Context Protocol servers and clients. `traceAI-exa` traces direct calls to the Exa API, whether or not an MCP server is involved.
+- Exa as a tool inside an agent framework (LangChain, OpenAI Agents and others) is traced by that framework's instrumentor as a tool call. `traceAI-exa` adds the span for the Exa request itself, nested under it.
