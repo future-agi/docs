@@ -1,0 +1,407 @@
+---
+title: "OpenRouter Agent tracing with Future AGI"
+description: "Trace @openrouter/agent callModel runs in Future AGI with the package's own lifecycle hooks: one trace per run, with a span per model request and per tool call, model, tokens, duration and errors. Prompts and tool data stay off by default."
+---
+
+## About
+
+This page is for **`@openrouter/agent`**, OpenRouter's TypeScript agent toolkit (npm package `@openrouter/agent`, repository `OpenRouterTeam/typescript-agent`, Apache-2.0). Its `callModel()` runs the whole agent loop: model request, tool calls, follow-up request, until the model answers.
+
+`callModel()` emits no OpenTelemetry spans and takes no endpoint, headers or resource. It does fire typed [lifecycle hooks](https://www.npmjs.com/package/@openrouter/agent) (`SessionStart`, `PostModelCall`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SessionEnd`), and the upstream README calls `PostModelCall` the telemetry primitive: one span per model call. The helper below turns those hooks into spans and exports them to Future AGI. You pass it as the `hooks` option. Nothing wraps or patches `callModel`, and there is no traceAI package for this.
+
+This is not the OpenRouter client (`@openrouter/sdk`), and it is not OpenRouter Broadcast. A client span has no loop turn and no tool call; this page traces the agent loop.
+
+<Note>
+Verified live on 2026-10-17 against `openrouter.ai` (model `openai/gpt-4o-mini`) and a self-hosted Future AGI stack: the agent tree, tokens, cost, the ERROR cases and the privacy default all behave as described. Still untested: the hosted `api.futureagi.com`, streaming consumption, multi-message input, sub-agents, MCP tools and approval pauses. See [Live vendor verification](#live-vendor-verification-2026-10-17).
+</Note>
+
+| | |
+| --- | --- |
+| Tested with | `@openrouter/agent` 0.11.0 (npm `latest`, published 2026-08-22), which installs `@openrouter/sdk` 0.13.67. `@opentelemetry/sdk-trace-base` and `@opentelemetry/resources` 2.12.0, `@opentelemetry/exporter-trace-otlp-http` 0.223.0, `@opentelemetry/api` 1.9.1, `zod` 4.6.7. Node 26.8.1 for the end-to-end run, Node 22.18.0 for the unit tests. |
+| Model | `openai/gpt-4o-mini` through `https://openrouter.ai/api/v1` (live run, 2026-10-17, with `maxOutputTokens` capped at 100 per request). An earlier run with `gpt-5.6-terra` behind an OpenAI-compatible proxy gave the same tree; the proxy rejects the id format `@openrouter/agent` puts on tool results, which is why the example ships `tools/responses-shim.mjs`. OpenRouter accepts the original request, so you do not need the shim. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-16 and 2026-10-17. |
+| Not tested | The hosted `api.futureagi.com`, streaming consumption, multi-message input, sub-agents, MCP tools, approval pauses, and Node versions other than 22 and 26. |
+| Upstream used | The `@openrouter/agent` 0.11.0 package contents (README and type declarations), read 2026-10-16. |
+| Source | [examples/frameworks/openrouter-agent](https://github.com/future-agi/docs/tree/main/examples/frameworks/openrouter-agent): the helper below, a demo app, tests and an end-to-end script. |
+
+## 1. Install
+
+```bash
+npm install @openrouter/agent@0.11.0 @openrouter/sdk@0.13.67 zod \
+  @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/resources \
+  @opentelemetry/exporter-trace-otlp-http
+```
+
+`@openrouter/agent` is ESM only. Pin `@openrouter/sdk` to the version the agent installs (`^0.13.7`); the newest `@openrouter/sdk` (1.x) is a different major version.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_PROJECT_NAME="my-agent"            # the Observe project the traces land in
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318" # default: https://api.futureagi.com
+# export FI_CAPTURE_CONTENT=1                # opt in to the prompt, tool arguments and results, error text
+```
+
+Set `FI_BASE_URL` to the origin only. The code adds `/tracer/v1/traces`.
+
+## 3. Add the helper file
+
+Save this as `futureagi-tracing.mjs`:
+
+```js title="futureagi-tracing.mjs"
+// Trace @openrouter/agent runs in Future AGI.
+//
+// callModel() emits no OpenTelemetry spans of its own and takes no endpoint, headers or resource.
+// It does fire lifecycle hooks (SessionStart, PostModelCall, PreToolUse, PostToolUse,
+// PostToolUseFailure, SessionEnd), and PostModelCall is documented upstream as the telemetry
+// primitive: one span per model call. This file turns those hooks into spans:
+//
+//   invoke_agent openrouter-agent   one callModel() run            fi.span.kind AGENT
+//   |- chat <model>                 one model request              LLM: model, tokens, duration
+//   |- execute_tool <tool>          one tool execution             TOOL: duration, ERROR on failure
+//   `- chat <model> ...             the follow-up request after the tool result
+//
+// Nothing here wraps or monkey-patches callModel. Use one hooks object per callModel() call.
+//
+// Privacy: by default only metadata leaves the process. The prompt, tool arguments, tool results
+// and error text are exported only with captureContent / FI_CAPTURE_CONTENT=1. A stack trace is
+// never exported, because it holds absolute local file paths.
+import { context, trace, SpanStatusCode } from '@opentelemetry/api';
+import { BasicTracerProvider, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+
+const TRUE = new Set(['1', 'true', 'yes', 'on']);
+export const envCaptureContent = () => TRUE.has((process.env.FI_CAPTURE_CONTENT ?? '').toLowerCase());
+
+/** A tracer provider that exports to Future AGI (traces only, OTLP over HTTP, no gzip). */
+export function buildTracerProvider({
+  projectName = process.env.FI_PROJECT_NAME ?? 'openrouter-agent-app',
+  baseUrl = process.env.FI_BASE_URL ?? 'https://api.futureagi.com',
+  apiKey = process.env.FI_API_KEY,
+  secretKey = process.env.FI_SECRET_KEY,
+  spanProcessors,
+} = {}) {
+  if (!spanProcessors && (!apiKey || !secretKey)) throw new Error('set FI_API_KEY and FI_SECRET_KEY');
+  const exporter = spanProcessors
+    ? null
+    : new OTLPTraceExporter({
+        url: `${baseUrl.replace(/\/+$/, '')}/tracer/v1/traces`,
+        headers: { 'X-Api-Key': apiKey, 'X-Secret-Key': secretKey },
+        // The exporter sends no compression by default; the Future AGI collector rejects gzip.
+      });
+  return new BasicTracerProvider({
+    // Future AGI files spans by the RESOURCE attribute project_name.
+    resource: resourceFromAttributes({ project_name: projectName, project_type: 'observe' }),
+    spanProcessors: spanProcessors ?? [new BatchSpanProcessor(exporter)],
+  });
+}
+
+const json = (value) => {
+  try {
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+};
+const MAX_CONTENT = 32_000;
+const clip = (text) => (text.length > MAX_CONTENT ? `${text.slice(0, MAX_CONTENT)}...[truncated]` : text);
+const errorName = (error) => (error instanceof Error ? error.name : typeof error);
+const errorMessage = (error) => (error instanceof Error ? error.message : json(error));
+
+/**
+ * Lifecycle hooks for one callModel() run:
+ *   callModel(client, { model, input, tools, hooks: createTraceHooks(provider) })
+ */
+export function createTraceHooks(provider, { captureContent = envCaptureContent(), agentName = 'openrouter-agent' } = {}) {
+  const tracer = provider.getTracer('futureagi-openrouter-agent');
+  let root;
+  let prompt;
+  const pendingTools = new Map(); // tool name -> FIFO of { start, input }
+  const childCtx = () => trace.setSpan(context.active(), root);
+  const ensureRoot = () => {
+    if (!root) {
+      root = tracer.startSpan(`invoke_agent ${agentName}`, {
+        attributes: {
+          'fi.span.kind': 'AGENT',
+          'gen_ai.operation.name': 'invoke_agent',
+          'gen_ai.provider.name': 'openrouter',
+          'gen_ai.agent.name': agentName,
+        },
+      });
+      if (captureContent && prompt !== undefined) root.setAttribute('input.value', clip(prompt));
+    }
+    return root;
+  };
+
+  return {
+    SessionStart: [{ handler: () => void ensureRoot() }],
+    UserPromptSubmit: [
+      {
+        // Fires after SessionStart, before the first request; observe only (no mutation).
+        handler: ({ prompt: text }) => {
+          prompt = text;
+          if (captureContent && root) root.setAttribute('input.value', clip(text));
+        },
+      },
+    ],
+    PostModelCall: [
+      {
+        handler: ({ model, responseId, durationMs, usage, turnType, turnNumber }) => {
+          ensureRoot();
+          const end = Date.now();
+          const span = tracer.startSpan(
+            `chat ${model}`,
+            {
+              startTime: end - durationMs,
+              attributes: {
+                'fi.span.kind': 'LLM',
+                'gen_ai.operation.name': 'chat',
+                'gen_ai.provider.name': 'openrouter',
+                'gen_ai.request.model': model,
+                'gen_ai.response.id': responseId,
+                'openrouter.agent.turn_type': turnType,
+                'openrouter.agent.turn_number': turnNumber,
+              },
+            },
+            childCtx(),
+          );
+          if (usage) {
+            span.setAttributes({
+              'gen_ai.usage.input_tokens': usage.inputTokens,
+              'gen_ai.usage.output_tokens': usage.outputTokens,
+              'gen_ai.usage.total_tokens': usage.totalTokens,
+            });
+            if (usage.cost !== undefined) span.setAttribute('gen_ai.cost.total', usage.cost);
+          }
+          span.end(end);
+        },
+      },
+    ],
+    PreToolUse: [
+      {
+        handler: ({ toolName, toolInput }) => {
+          ensureRoot();
+          const queue = pendingTools.get(toolName) ?? [];
+          queue.push({ start: Date.now(), input: toolInput });
+          pendingTools.set(toolName, queue);
+        },
+      },
+    ],
+    PostToolUse: [
+      {
+        handler: ({ toolName, toolOutput, durationMs }) => {
+          const call = pendingTools.get(toolName)?.shift();
+          const span = toolSpan(toolName, call, durationMs);
+          if (captureContent) {
+            span.setAttribute('input.value', clip(json(call?.input ?? {})));
+            span.setAttribute('output.value', clip(json(toolOutput)));
+          }
+          span.end();
+        },
+      },
+    ],
+    PostToolUseFailure: [
+      {
+        handler: ({ toolName, error }) => {
+          const call = pendingTools.get(toolName)?.shift();
+          const span = toolSpan(toolName, call);
+          span.setAttribute('error.type', errorName(error));
+          // Error text can hold user data and paths, so it follows the content switch. Never the stack.
+          span.setStatus({ code: SpanStatusCode.ERROR, message: captureContent ? clip(errorMessage(error)) : errorName(error) });
+          if (captureContent) {
+            span.setAttribute('input.value', clip(json(call?.input ?? {})));
+            span.setAttribute('error.message', clip(errorMessage(error)));
+          }
+          span.end();
+        },
+      },
+    ],
+    SessionEnd: [
+      {
+        handler: ({ reason, totalUsage }) => {
+          ensureRoot();
+          root.setAttribute('openrouter.agent.end_reason', reason);
+          if (totalUsage) root.setAttribute('openrouter.agent.model_calls', totalUsage.modelCalls);
+          // Token totals stay on the chat spans only, so a sum over the trace counts each call once.
+          if (reason !== 'complete') root.setStatus({ code: SpanStatusCode.ERROR, message: reason });
+          root.end();
+        },
+      },
+    ],
+  };
+
+  function toolSpan(toolName, call, durationMs) {
+    ensureRoot();
+    const end = Date.now();
+    const start = call?.start ?? (durationMs !== undefined ? end - durationMs : end);
+    return tracer.startSpan(
+      `execute_tool ${toolName}`,
+      {
+        startTime: start,
+        attributes: { 'fi.span.kind': 'TOOL', 'gen_ai.operation.name': 'execute_tool', 'gen_ai.tool.name': toolName },
+      },
+      childCtx(),
+    );
+  }
+}
+```
+
+What it sets up:
+
+| Piece | Value |
+| --- | --- |
+| Endpoint | `$FI_BASE_URL/tracer/v1/traces`, OTLP over HTTP. Not gRPC. |
+| Headers | Both `X-Api-Key` and `X-Secret-Key`. One header is a failed setup. |
+| Compression | None. The Future AGI collector answers a gzip body with HTTP 400, and this exporter sends none. |
+| Resource | `project_name` and `project_type=observe`. A span attribute with that key does not count, and `service.name` is not read as a project name: the collector answers HTTP 400 to a batch without the resource attribute. |
+
+## 4. Pass the hooks to callModel
+
+```js title="app.mjs"
+import { OpenRouterCore } from '@openrouter/sdk/core.js';
+import { callModel, tool } from '@openrouter/agent';
+import { z } from 'zod';
+import { buildTracerProvider, createTraceHooks } from './futureagi-tracing.mjs';
+
+const client = new OpenRouterCore({ apiKey: process.env.OPENROUTER_API_KEY });
+const provider = buildTracerProvider();
+
+const getWeather = tool({
+  name: 'get_weather',
+  description: 'Get the current weather for a city',
+  inputSchema: z.object({ city: z.string() }),
+  execute: async ({ city }) => ({ city, temperature_c: 21, condition: 'sunny' }),
+});
+
+const run = callModel(client, {
+  model: 'openai/gpt-4o-mini',
+  input: 'What is the weather in Lisbon? Use the get_weather tool.',
+  tools: [getWeather],
+  hooks: createTraceHooks(provider), // one hooks object per callModel() call
+});
+console.log(await run.getText());
+
+await provider.shutdown(); // flush before the process ends
+```
+
+Use `OpenRouterCore` from `@openrouter/sdk/core.js`: that is the client type `callModel` takes. To use another server that speaks the OpenRouter Responses API, add `serverURL` to the client options.
+
+The trace appears in your Observe project a few seconds later:
+
+```text
+invoke_agent openrouter-agent              one callModel() run
+├── chat openai/gpt-4o-mini                first model request: model, input and output tokens, duration
+├── execute_tool get_weather               the tool run: duration
+└── chat openai/gpt-4o-mini                follow-up request with the tool result
+```
+
+| Span | Future AGI type | What you see |
+| --- | --- | --- |
+| `invoke_agent openrouter-agent` | agent | Whole-run duration, why the run ended (`openrouter.agent.end_reason`), number of model requests, ERROR when the run did not complete |
+| `chat <model>` | llm | Model, provider `openrouter`, input, output and total tokens, duration, response id, turn type and number |
+| `execute_tool <tool>` | tool | Tool name, duration, ERROR status and error class when the tool throws |
+
+All three spans are children of the agent span: the SDK emits no span of its own to nest under, so tool spans are siblings of the model requests, in time order. The model is stored as the endpoint reports it.
+
+## What is captured
+
+| Data | Default | `FI_CAPTURE_CONTENT=1` |
+| --- | --- | --- |
+| Span names, timing, parent links, status code | Yes | Yes |
+| Model id, provider, response id, turn type and number | Yes | Yes |
+| Input, output and total token counts per model request | Yes | Yes |
+| Cost (`gen_ai.cost.total`), when the endpoint reports it | Yes | Yes |
+| Tool name, end reason, number of model requests | Yes | Yes |
+| Error class (`error.type`, ERROR status text) | Yes | Yes |
+| The prompt (`input.value` on the agent span) | No | Yes |
+| Tool arguments and result (`input.value`, `output.value` on the tool span) | No | Yes |
+| Tool error text (`error.message`) | No | Yes |
+| Stack traces | Never | Never |
+| Model answer text | Not available | Not available |
+
+The resource carries `project_name`, `project_type`, `service.name`, and the `telemetry.sdk.*` attributes. No host name, user name or file path was found in any stored column in our runs.
+
+## Privacy
+
+**Default: metadata only.** The hooks never read the prompt, tool arguments or results into a span unless you opt in, and Future AGI stores what the helper sets. The model API key never reaches a span in either mode.
+
+**Opt in: `FI_CAPTURE_CONTENT=1`**, or `createTraceHooks(provider, { captureContent: true })`. The prompt, tool arguments and results, and the text of a tool error are then exported, each clipped to 32,000 characters. The stack trace is not exported, because it holds absolute local file paths.
+
+The names you choose are exported in both modes: tool names and the agent name. Do not put user text, emails or customer names in them.
+
+How this was checked: each run put a unique marker in the prompt and the tool result, the tool error and the model's answer. With the default, the marker was in no row of any ClickHouse table (the spans table was scanned for the project, because a full scan exceeds the test stack's memory limit) and not in a Postgres dump. The tool-error text, the local user name, the host name and `/Users/` were not in the project's spans or traces rows either. With `FI_CAPTURE_CONTENT=1` the marker was stored on the agent and tool spans. The same checks run without keys in the example's unit tests.
+
+## How it behaves
+
+- **One hooks object per run.** `createTraceHooks` keeps the run's state in a closure. Create a new one for each `callModel()`; do not share one across concurrent runs. `@openrouter/agent` hands hook handlers an empty session id in 0.11.0, so the helper cannot tell concurrent runs apart on its own.
+- **Tracing never breaks the run.** By default the SDK logs a hook handler that throws as a warning and carries on.
+- **Flushing.** `BatchSpanProcessor` exports in the background. A process that ends with `process.exit()`, is killed, or is a short serverless handler loses the last batch unless you `await provider.shutdown()` or `forceFlush()` first, as `app.mjs` does.
+- **Model request spans are built after the fact.** `PostModelCall` fires when a response has fully arrived, so the helper starts the span at that moment minus the reported `durationMs`.
+- **Tokens once.** Token counts are on the `chat` spans only, never added to the agent span, so a sum over a trace counts each request once. The agent span's own token cells in the trace view show 0.
+- **A failed tool is not a failed run.** The SDK hands the tool error to the model, which can answer anyway. The tool span is ERROR and the agent span stays complete unless the run itself ends with a non-`complete` reason.
+- **A rejected model request.** If the request fails (unknown model, bad key), `callModel` throws, `SessionEnd` fires with reason `error`, and the trace is one ERROR agent span with no `chat` child. The SDK's error text is not available to hooks and is not exported.
+
+## Limitations
+
+- **No model answer text, and no model input on `chat` spans.** The hooks carry usage and timing for a model request, not its messages or output, so the Input and Output panes of `chat` spans are empty even with `FI_CAPTURE_CONTENT=1`. Capturing them needs a wrapper around the SDK client, which this page does not ship. We propose, but have not built, an `@traceai/openrouter-agent` package for that; it is not required for the tree, tokens and errors shown here.
+- **Agent span tokens.** The trace view shows 0 total tokens on the agent span, as above.
+- **Cached and reasoning tokens, and cost.** Hooks report cached and reasoning token counts, and cost when the server reports it; the helper exports input, output and total tokens and `gen_ai.cost.total` only. Cost was exercised in the live run: OpenRouter reported `cost` in the hook usage and it was stored on each `chat` span (about $0.00002 per request).
+- **Prompt.** The prompt comes from `UserPromptSubmit`. A string `input` and a one-message array were tested; longer conversations and non-text input were not.
+- **Parallel calls to the same tool.** `PreToolUse` and `PostToolUse` carry no call id, so the helper pairs them first in, first out per tool name. Two parallel calls to one tool can swap start times.
+- **Sub-agents, MCP tools, approvals and streaming.** Upstream says child agents started with `tool.agent()` do not inherit the parent's hooks, so they are not traced unless you pass hooks in the child spec. An approval pause ends the session, so a resumed run would be a second trace. The README also says no-tools streaming paths fire `PostModelCall` at teardown. None of these were tested.
+- **Not Braintrust's span tree.** Braintrust documents a nested tree with a span per turn. This page does not copy it: the tree here is what the hooks expose.
+
+## Troubleshooting
+
+- **No traces in the project.** The collector answers HTTP 400 to a batch whose resource has no `project_name` and to a gzip body, and the export then fails quietly in the background. Check that both `FI_API_KEY` and `FI_SECRET_KEY` are set, and that `FI_BASE_URL` is an origin without a path.
+- **HTTP 401 from the collector.** One of the two keys is wrong, or one header is missing (a request with only `X-Api-Key` got 401).
+- **The last spans never arrive.** The process ended without a flush. Call `await provider.shutdown()` first.
+- **`import` errors under CommonJS.** `@openrouter/agent` is ESM only, per its README. Use `.mjs` files or `"type": "module"`.
+- **`Invalid 'input[2].id' ... Expected an ID that begins with 'fc'`.** Your model endpoint is an OpenAI-compatible proxy, not OpenRouter, and rejects the id `@openrouter/agent` puts on tool results. Use OpenRouter, or the shim in the example.
+- **The run ends with `PaymentRequiredResponseError` (HTTP 402) and the trace is one ERROR agent span.** OpenRouter reserves credit for the model's maximum output length. With a low balance it answers "This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 157". Top up, or pass `maxOutputTokens` to `callModel`.
+- **A second trace per run, or spans from two runs mixed.** You reused one hooks object. Create one per `callModel()`.
+- **Agent span has the wrong type.** Future AGI types a span from `fi.span.kind` or `gen_ai.operation.name`; `invoke_agent` alone does not map to agent, which is why the helper sets `fi.span.kind`.
+
+## Live vendor verification (2026-10-17)
+
+Run exactly as this page describes (`run_e2e.sh`, helper unchanged), against the real OpenRouter API, exporting to a self-hosted Future AGI stack.
+
+| | |
+| --- | --- |
+| Endpoint and model | `https://openrouter.ai/api/v1`, `openai/gpt-4o-mini`, `maxOutputTokens=100` |
+| Versions | `@openrouter/agent` 0.11.0, `@openrouter/sdk` 0.13.67, `@opentelemetry/sdk-trace-base` 2.12.0, `exporter-trace-otlp-http` 0.223.0, Node 26.8.1 |
+| Spend | Under $0.001 in total |
+| Projects | `th8103-rest-openrouter-agent-live2` (metadata only), `th8103-rest-openrouter-agent-live2-content` (`FI_CAPTURE_CONTENT=1`) |
+
+Trace ids (metadata-only project):
+
+- Agent run with one tool call: `38b62a53-b2e9-d790-2485-46a38cf68936`
+- Tool throws, model still answers: `707517fb-1bd5-3469-4893-0f4594ff60ec`
+- Rejected model request (unknown model, HTTP 400): `079f52d0-a031-dcd6-a539-8166127dde16`
+- Content opt-in project: `033f8d1e-bb3d-3fda-a002-744ff7d4d259`, `726b5e2d-d031-da9f-38d2-8945db7a7635`, `ce1f0082-acbd-bc63-696e-0f237f518b85`
+
+`fi_verify` (agent, llm and tool spans expected) printed PASS:
+
+```text
+trace 38b62a53-b2e9-d790-2485-46a38cf68936 (4 spans)
+- [agent] invoke_agent openrouter-agent (1521ms)
+  - [llm] chat openai/gpt-4o-mini model=openai/gpt-4o-mini tok=75/15 (846ms)
+  - [tool] execute_tool get_weather (2ms)
+  - [llm] chat openai/gpt-4o-mini model=openai/gpt-4o-mini tok=123/17 (660ms)
+trace 707517fb-1bd5-3469-4893-0f4594ff60ec (4 spans)
+  - [tool] execute_tool get_weather status=ERROR:Error (3ms)
+trace 079f52d0-a031-dcd6-a539-8166127dde16 (1 span)
+- [agent] invoke_agent openrouter-agent status=ERROR:error (144ms)
+```
+
+Cost was stored on the `chat` spans (for example 0.0000200475 for the 75/15-token request). Privacy: with the default, the unique marker in the prompt and tool result, the tool-error text, `Lisbon`, the user name, host name, `/Users/`, `sk-or` and `at file:` were in 0 rows of the project's spans and traces. With `FI_CAPTURE_CONTENT=1` the marker was on 5 spans and the tool-error text on 1; the user name, host name, paths, key and stack text were still absent.
+
+## Next Steps
+
+- [Send your first trace](/docs/get-started/send-your-first-trace)
+- [OpenAI instrumentor](/docs/integrations/traceai/openai): trace the OpenAI SDK directly
+- [Integrations overview](/docs/integrations)
