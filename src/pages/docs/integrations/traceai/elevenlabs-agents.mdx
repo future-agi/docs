@@ -19,7 +19,7 @@ elevenlabs.conversation               CONVERSATION: Voice-tab call, session.id =
 Each conversation shows up once in Observe, in **Tracing** and in the project's **Voice** call list. Future AGI never sees your ElevenLabs signing secret or API key.
 
 <Warning>
-**Alpha, verified against a stand-in.** The forwarder was tested end to end against a Future AGI collector with ElevenLabs **stood in** by a local sender that builds deliveries from the documented payload shape and signs them exactly as documented. It has not yet received a delivery from a live ElevenLabs workspace. Field names ElevenLabs does not document (tool arguments, LLM usage, turn index) follow what the [Langfuse ElevenLabs cookbook](https://langfuse.com/integrations/no-code/elevenlabs) reads from real exports.
+**Alpha. The backfill path is verified against live ElevenLabs; webhook delivery is not.** On 2026-10-17 a real ElevenLabs Agents conversation was exported with `GET /v1/convai/conversations/{id}?format=opentelemetry`, run through `traceai-elevenlabs-agents backfill` and stored in Future AGI (see [Live vendor verification](#live-vendor-verification-2026-10-17)). The forwarder has **not** yet received a `post_call_transcription_otel` webhook from ElevenLabs: the signature check, retries and the webhook body were tested with a local sender that builds deliveries from the documented payload shape and signs them as documented. The GET export and the webhook carry the same `otlp_traces` object according to the ElevenLabs docs, but the live check only covered the GET.
 </Warning>
 
 This is not the same as:
@@ -32,7 +32,7 @@ This is not the same as:
 | --- | --- |
 | Tested with | `traceAI-elevenlabs-agents` 0.1.0: end-to-end run on Python 3.12 against a Future AGI collector (with the defaults, and with the `FI_HIDE_*` switches on), unit tests on Python 3.10, 3.12 and 3.13 with `fi-instrumentation-otel` 1.1.0 and 0.1.11. Signature check cross-checked against the `elevenlabs` Python SDK `construct_event` 2.73.0 (latest on 2026-10-15) and 2.70.0 |
 | ElevenLabs surface | Post-call webhook type `post_call_transcription_otel` and `GET /v1/convai/conversations/{id}?format=opentelemetry`, as documented on [OpenTelemetry traces](https://elevenlabs.io/docs/eleven-agents/customization/opentelemetry-traces) (read 2026-10-15) |
-| Live ElevenLabs delivery | Not yet tested (stand-in only, see the warning above) |
+| Live ElevenLabs | `backfill` (the GET export) tested live on 2026-10-17 with `elevenlabs` SDK 2.73.0 creating the conversation. Webhook delivery (HMAC, `post_call_transcription_otel`, ElevenLabs retries) not yet tested live: stand-in only |
 | Requires | Python 3.10 to 3.13. One dependency, `fi-instrumentation-otel`, for `TraceConfig`, the privacy switch every traceAI package shares. No ElevenLabs SDK |
 | Source | [python/frameworks/elevenlabs-agents](https://github.com/future-agi/traceAI/tree/dev/python/frameworks/elevenlabs-agents) in traceAI |
 
@@ -104,7 +104,7 @@ This calls `GET /v1/convai/conversations/{id}?format=opentelemetry` once and for
 
 ## Duplicates
 
-ElevenLabs keeps the trace id stable for a conversation but creates new span ids every time it exports it (the [Langfuse cookbook](https://langfuse.com/integrations/no-code/elevenlabs) documents this from real exports). Forwarding the same conversation twice would put a second copy of every turn and tool span into the same trace. So the forwarder records each conversation id it forwarded and answers a webhook retry or a backfill of the same conversation with `200 duplicate` without exporting.
+ElevenLabs keeps the trace id stable for a conversation but creates new span ids every time it exports it (the [Langfuse cookbook](https://langfuse.com/integrations/no-code/elevenlabs) documents this, and the live check on 2026-10-17 confirmed it: the same conversation exported twice had the same trace id and no span id in common). Forwarding the same conversation twice would put a second copy of every turn and tool span into the same trace. So the forwarder records each conversation id it forwarded and answers a webhook retry or a backfill of the same conversation with `200 duplicate` without exporting.
 
 `backfill --force` exports anyway. Use it only for a conversation whose first export never reached Future AGI.
 
@@ -122,7 +122,7 @@ The content, captured by default like every traceAI instrumentor: the transcript
 | `elevenlabs.tool.{name}` | `fi.span.kind=TOOL`, `tool.name` |
 | Every span | `session.id`, so the conversation also groups as one session |
 
-Fields ElevenLabs did not send are left out, never filled with 0 or an empty string. Span names the forwarder does not know (for example a future `elevenlabs.event.*`) pass through without a kind. A root status ERROR, which ElevenLabs sets when the call did not end with a normal client disconnect, stays ERROR, and so does a failing tool span.
+Fields ElevenLabs did not send are left out, never filled with 0 or an empty string. Span names the forwarder does not know (for example a future `elevenlabs.event.*`) pass through without a kind. A root status ERROR, which ElevenLabs sets when the call did not end with a normal client disconnect, stays ERROR, and so does a tool span ElevenLabs marks as an error. A tool call that fails inside ElevenLabs (an HTTP 404 from a webhook tool, or a client tool that was never answered) was exported by ElevenLabs with status OK in the live check, with the failure text in `elevenlabs.tool.result`; the forwarder does not reinterpret it, so the span is OK in Future AGI and the failure is visible in the tool's output.
 
 `elevenlabs.cost_fiat` is ElevenLabs' total cost for the call, including speech-to-text and text-to-speech. It is kept as an attribute and is not added to the LLM cost column.
 
@@ -184,6 +184,40 @@ ElevenLabs treats 2xx as success, retries 5xx, 429 and 408 up to five times when
 | Accepted by Future AGI | 200 `forwarded` | one trace |
 
 The forwarder answers 2xx only after Future AGI accepted the batch, so a retry after any failure is safe.
+
+## Live vendor verification (2026-10-17)
+
+Run as a customer would, against the real ElevenLabs API and a local Future AGI (project `th8103-rest-elevenlabs-agents-live`, plus `th8103-rest-elevenlabs-agents-live-hidden` with the four `FI_HIDE_*` switches on).
+
+- **Conversations.** A throwaway agent (`gpt-4o-mini`, one webhook tool that succeeds, one that returns HTTP 404, one client tool nobody answers) was created through the API. Three short text-only conversations were run with the `elevenlabs` Python SDK 2.73.0 (about 17 s each, ElevenLabs reported about $0.02 per conversation). The agent and its tools were deleted afterwards.
+- **Export.** `traceai-elevenlabs-agents backfill --conversation-id ...` (installed with the git command above, `traceAI-elevenlabs-agents` 0.1.0, `fi-instrumentation-otel` 1.1.0, Python 3.12) pulled each conversation with `GET ...?format=opentelemetry` and forwarded it. A repeat of the same backfill answered `duplicate`.
+- **Shape confirmed.** The GET body is the whole conversation object with the OpenTelemetry trace under `otlp_traces` (the field the forwarder reads). Real attribute names: `elevenlabs.tool.params`, `elevenlabs.tool.result`, `elevenlabs.tool.name`, `elevenlabs.producing_llm`, `elevenlabs.turn.index`, `elevenlabs.llm_usage.<model>.input` and `.output_total` (each a JSON string `{"tokens": n, "price": x}`), `elevenlabs.cost_fiat`, and `user_id` null for an SDK conversation. Span ids differ between two exports of one conversation; the trace id does not.
+- **Not as documented.** ElevenLabs sent status OK for every span, including the two tool calls that failed (`Error code: 404. Details: HTTP 404`, `Tool 'ask_client' is not registered`). No live ERROR span was produced, so the ERROR mapping is verified only against stand-in fixtures.
+
+Traces (conversation, 3 LLM turns, user turn, tool; 7 spans each):
+
+| Case | Trace id | Result |
+| --- | --- | --- |
+| Tool succeeds | `ea5d20b167de14804539f834f26d0630` | `gpt-4o-mini`, 717/11 and 745/9 tokens |
+| Tool returns 404 | `38962487f46b48524a4dd423e98839bb` | `gpt-4o-mini`, 715/10 and 744/12 tokens; tool span OK |
+| Client tool unanswered | `0269cc4314b821f1047fc94ab7ec7f2d` | `gpt-4o-mini`, 754/10 and 780/10 tokens; tool span OK |
+
+`fi_verify` (PASS, 3 traces, 21 spans):
+
+```text
+trace ea5d20b1-67de-1480-4539-f834f26d0630 (7 spans)
+- [conversation] elevenlabs.conversation in=24B out=39B (17000ms)
+  - [chain] elevenlabs.recv.user_transcript in=24B out=0B (9ms)
+  - [llm] elevenlabs.recv.agent_response model=gpt-4o-mini tok=717/11 in=24B out=0B (9ms)
+    - [tool] elevenlabs.tool.get_zen in=2B out=39B (89ms)
+  - [llm] elevenlabs.recv.agent_response model=gpt-4o-mini tok=745/9 in=24B out=39B (16000ms)
+```
+
+**Privacy.** Every stored column of the two projects was scanned (spans including `resource_attrs`, events and metadata, traces, sessions, rollups, Postgres rows). With the defaults the message, reply and tool-result text appear. With the four `FI_HIDE_*` switches on, none of them appear (including the ElevenLabs call summary), and the account e-mail, the user's name, home path and host name appear in neither project.
+
+**Voice tab.** The calls are listed once each, with duration and turn count. The published voice checker passes V2 to V6 and V8 to V12 and fails V1 (no SDK receipt) and V7 (no talk ratio) for a webhook forwarder, as above.
+
+Still not verified live: the webhook (HMAC header, retry and duplicate behaviour, body size of a long call), a root or tool span with status ERROR, and `time_in_call_secs`. They stay marked as stand-in above.
 
 ## Troubleshooting
 
