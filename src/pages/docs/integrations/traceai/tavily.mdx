@@ -1,0 +1,137 @@
+---
+title: "Tavily Integration with Future AGI for Search Tracing"
+description: "Trace Tavily search and extract calls in Future AGI with the traceAI-tavily instrumentor for the tavily-python client, and see which Tavily paths need no extra package."
+---
+
+## About
+
+`traceAI-tavily` wraps the official [`tavily-python`](https://github.com/tavily-ai/tavily-python) client so every `search` and `extract` call on `TavilyClient` and `AsyncTavilyClient` becomes a span in Future AGI. It is a client wrapper, not a Tavily exporter: Tavily does not publish one, and the bare client contains no OpenTelemetry code, so with only `register()` it emits no spans.
+
+The package is Alpha. It is released from [future-agi/traceAI](https://github.com/future-agi/traceAI) (`python/frameworks/tavily`). It is not on PyPI yet; until it is, install it from a checkout of that directory.
+
+## Which path do you use?
+
+| How you use Tavily | What traces it |
+|---|---|
+| `from tavily import TavilyClient` (or `AsyncTavilyClient`) and call `search` / `extract` | `traceAI-tavily` (this page) |
+| The LangChain / LangGraph tool `TavilySearchResults` (deprecated) or its replacement `langchain_tavily.TavilySearch` (`langchain-tavily` 0.2.18) | `traceAI-langchain`. Neither calls `TavilyClient`, so this package adds no span there (checked live for `TavilySearch`: results returned, 0 `traceAI-tavily` spans). |
+| `tavily-mcp` (the MCP server) | The [MCP](/docs/integrations/traceai/mcp) integration |
+
+## 1. Installation
+
+```bash
+pip install traceAI-tavily
+```
+
+Until the package is on PyPI:
+
+```bash
+pip install ./python/frameworks/tavily   # from a traceAI checkout
+```
+
+The package accepts `tavily-python>=0.8.4,<1` and `fi-instrumentation-otel>=1.1.0`.
+
+## 2. Set environment variables
+
+```python
+import os
+
+os.environ["TAVILY_API_KEY"] = "your-tavily-api-key"
+os.environ["FI_API_KEY"] = "your-futureagi-api-key"
+os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+```
+
+## 3. Register and instrument
+
+```python
+import os
+from tavily import TavilyClient
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_tavily import TavilyInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="tavily-search",
+)
+TavilyInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+client.search("What is OpenTelemetry?", max_results=2)
+client.extract(["https://example.com/a"])
+```
+
+Call `register()` first so the instrumentor has a tracer provider. Each Tavily span is a child of the active span (for example an agent span), or a root span when none is active. The span is current while `tavily-python` sends the request, so an HTTP-client instrumentation nests under it.
+
+## What is captured
+
+| Call | Span name | Span kind |
+|---|---|---|
+| `search` | `tavily.search` | `RETRIEVER` |
+| `extract` | `tavily.extract` | `TOOL` |
+
+| Attribute | Value |
+|---|---|
+| `input.value`, `gen_ai.retrieval.query` (`search` only) | The query, cut to 1 KB. For `extract`, only when the optional `query` is given. |
+| `gen_ai.tool.name` | `tavily.search` or `tavily.extract` |
+| `tavily.url_count` | Number of URLs passed to `extract`. |
+| `tavily.result_count` | Length of the response's `results`. Absent when unknown. |
+| `tavily.failed_result_count` | Length of `failed_results` on a successful `extract`. |
+| `tavily.cancelled` | `true` when an async call was cancelled. |
+
+A Tavily error (for example an invalid key) ends the span with status `ERROR` and `<ExceptionType>: <message>`, records one exception event, and your code receives the original exception. A cancelled `AsyncTavilyClient` call ends with status `ERROR` and description `cancelled`.
+
+Not captured: result titles, content, raw content, answers, images, extracted pages and URLs; model name and tokens (Tavily search has none); credits, request id and search parameters. `crawl`, `map`, `research`, `get_search_context`, `qna_search` and `get_company_info` are not traced.
+
+## Privacy
+
+traceAI instrumentors follow the standard `TraceConfig`: the query is recorded by default. To turn it off, set `FI_HIDE_INPUTS=true` or pass a config:
+
+```python
+from fi_instrumentation import TraceConfig
+
+TavilyInstrumentor().instrument(
+    tracer_provider=trace_provider, config=TraceConfig(hide_inputs=True)
+)
+```
+
+With hidden inputs, `input.value` is `__REDACTED__`, `gen_ai.retrieval.query` is dropped, and verbatim copies of the query are removed from error text. Counts stay. `FI_PII_REDACTION=true` also masks emails and phone numbers in error text.
+
+The Tavily API key is never recorded, wherever the client keeps it. Response content and URLs are never recorded in either mode, and no local path, username, hostname or raw stack trace is exported. An error span's exception event holds only the exception type and the same key-redacted message as the status; `exception.stacktrace` is that one-line summary, not the Python traceback (your code still receives the original exception).
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| `tavily-python` | 0.8.4 and 0.8.5 (latest on 2026-10-16) |
+| `traceAI-tavily` | 0.1.0 |
+| `fi-instrumentation-otel` | 1.1.0 |
+| Python | 3.10, 3.11, 3.12, 3.13 (suite); 3.12 (local Future AGI run) |
+
+Verified against a local Future AGI deployment with the real `tavily-python` client, first against a local stand-in for the Tavily API and then live against `api.tavily.com` (below). The hierarchy (agent, then `tavily.search` / `tavily.extract`), the span kinds, `ERROR` spans and the privacy switch were checked in the stored spans.
+
+### Live vendor verification (2026-10-17)
+
+`tavily-python` 0.8.5 against the real Tavily API, exporting to a local Future AGI: one `search` (RETRIEVER), one `extract` (TOOL), one keyless `search`, and one call with an invalid key (`ERROR`, `InvalidAPIKeyError: Unauthorized: missing or invalid API key`), all under one agent span. The pinned `tavily-python` 0.8.4 gave the same hierarchy and an `ERROR` span (search, extract, bad key; the keyless client is 0.8.5 only). Scanning every stored column of the 5 spans, including events and resource attributes: the key, response text and URLs, `Traceback`, `File "`, `/Users/`, the username and the hostname appear in none. A query marker is stored by default and absent with `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`.
+
+### Keyless clients
+
+`tavily-python` 0.8.5 allows `TavilyClient()` with no key (`search` and `extract` only). These calls are traced like keyed ones; the free allowance running out is an `ERROR` span. The client's `project_id` and session header options are not recorded.
+
+## Troubleshooting
+
+- **No spans appear.** Check `FI_API_KEY` and `FI_SECRET_KEY`, and that `instrument()` runs before the first Tavily call. The bare client emits nothing without the instrumentor.
+- **A warning says a method was not found.** A `tavily-python` release moved a class or method; that call is skipped and the rest stay instrumented.
+- **Nothing is wrapped on a new release.** The instrumentor only wraps `tavily-python>=0.8.4,<1` and logs the conflict otherwise.
+- **Two spans for one LangChain tool call.** If your own LangChain tool calls `TavilyClient.search` and `traceAI-langchain` is on, you get the tool span and a `tavily.search` span. `traceAI-langchain` does not make its span current, so wrap the call in `trace.use_span(traceai_langchain.get_current_span(), end_on_exit=False, record_exception=False, set_status_on_exception=False)` to nest them, or do not instrument Tavily in that process.
+
+## Limitations
+
+- Python client only; only `search` and `extract`.
+- Only verbatim copies of the key and (with hidden inputs) the query are removed from error text. A very short query can over-redact error text.
+- Live verification was one search, one extract, one keyless search and one bad-key call.
+
+## Difference from related integrations
+
+- [LangChain](/docs/integrations/traceai/langchain) traces the `TavilySearchResults` tool as a tool span, with the tool's result text. `traceAI-tavily` traces direct `tavily-python` calls and never records response content.
+- [MCP](/docs/integrations/traceai/mcp) traces Model Context Protocol servers and clients, including `tavily-mcp`.
