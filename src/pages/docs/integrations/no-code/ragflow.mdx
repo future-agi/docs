@@ -1,0 +1,151 @@
+---
+title: "Send RAGFlow chats to Observe"
+description: "Save Future AGI keys for a RAGFlow tenant on a RAGFlow build from the future-agi fork, and every chat turn becomes a trace in Observe: the turn, the retrieval with chunk ids and scores, and the answer call with model and tokens. Fork only until it is accepted upstream."
+---
+
+## About
+
+RAGFlow is an open-source RAG engine: chat assistants answer from knowledge bases (and optionally web search) with citations. RAGFlow already has a per-tenant Langfuse integration. The Future AGI exporter sits next to it: a tenant saves Future AGI keys once, and from then on every chat turn of that tenant's chat assistants lands in an Observe project as one trace.
+
+You configure RAGFlow only. Chat assistants do not change, and there is nothing to install in your application.
+
+| | |
+| --- | --- |
+| Tested with | The fork branch [`future-agi/ragflow` `feat/th-8233-futureagi-export`](https://github.com/future-agi/ragflow/pull/1), which is RAGFlow `main` at `2400ca8` (the `v1.0.0-rc1` Go tree) plus the exporter; and the same commits merged onto RAGFlow `v1.0.0-rc2` (released 2026-10-16, the newest release on GitHub; still a release candidate, there is no `v1.0.0` yet). Go 1.27. |
+| Not supported | Stock RAGFlow images and releases (they do not contain the exporter), and the Python-era `v0.x` line (latest `v0.27.2`). |
+| Future AGI side | A self-hosted Future AGI stack built from `dev` (collector on `/tracer/v1/traces`). |
+| Models used | A real GPT model through RAGFlow's **OpenAI-API-Compatible** model provider. Web search through RAGFlow's Tavily provider. |
+
+<Warning>
+Alpha, fork only. What ran: RAGFlow's own services in process, with real model and Tavily calls, exporting to a real Future AGI collector: the model provider and chat assistant services, the chat session completion (`/api/v1/chat/completions`, the path the RAGFlow web chat uses; streamed, with web search), the OpenAI-compatible endpoint (`/api/v1/openai/{chat_id}/chat/completions`, not streamed), a chat whose model key is wrong, hidden content, wrong Future AGI keys and a collector that refuses connections, on both RAGFlow trees above. SQLite stood in for MySQL and no document engine was running. What did not run: the full RAGFlow Docker stack and its web UI (it needs more memory than our test machine had), knowledge-base retrieval against Elasticsearch or Infinity, the embedded chatbot endpoint (`/api/v1/chatbots/{id}/completions`), agentic reasoning mode, and the hosted Future AGI service.
+</Warning>
+
+## Where the exporter comes from
+
+The exporter is in the [future-agi/ragflow](https://github.com/future-agi/ragflow) fork, next to RAGFlow's Langfuse client in the Go API server: a `tenant_futureagi` table, a `/api/v1/futureagi/api-key` settings API shaped like `/api/v1/langfuse/api-key`, and a few hooks in the chat pipeline. It has not been submitted to `infiniflow/ragflow` yet.
+
+RAGFlow's own OpenTelemetry settings (the `otel` block, `OTEL_HOST` and `OTEL_PORT`) are not used. They have no field for headers, no exporter is wired to them in `v1.0.0-rc1` or `v1.0.0-rc2`, and the spans RAGFlow creates for its agent graph engine carry no model, prompt or token data.
+
+## Before you start
+
+- A Future AGI API key and secret key, and the name of the Observe project you want the traces in. The self-hosted stack we tested created the project on the first trace. If you are not sure your workspace does the same, create the project first.
+- A RAGFlow server built from the fork, and a RAGFlow API key (or login token) of the account that owns the chat assistants. Keys are saved per tenant, the same as Langfuse keys: the account that owns a chat assistant decides where its chats are traced.
+
+## Build RAGFlow from the fork
+
+Build the image the way RAGFlow's [Build RAGFlow Docker image](https://github.com/infiniflow/ragflow/blob/main/docs/develop/build_docker_image.mdx) guide describes, from the fork branch:
+
+```bash
+git clone --branch feat/th-8233-futureagi-export https://github.com/future-agi/ragflow.git
+cd ragflow
+docker build --platform linux/amd64 -f Dockerfile -t ragflow:go-local .
+# then set RAGFLOW_IMAGE=ragflow:go-local in docker/.env
+cd docker && docker compose -f docker-compose.yml up -d
+```
+
+The container runs RAGFlow's database migration at start, which creates the `tenant_futureagi` table. We did not build or run this image ourselves; the runs above used the same Go code in process.
+
+## Configure
+
+Save the keys once per tenant with the settings API:
+
+```bash
+curl -X POST "http://<ragflow-host>/api/v1/futureagi/api-key" \
+  -H "Authorization: Bearer <RAGFlow API key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "api_key": "<Future AGI API key>",
+        "secret_key": "<Future AGI secret key>",
+        "project_name": "my-ragflow-app",
+        "endpoint": "https://api.futureagi.com",
+        "redact": false
+      }'
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `api_key` | Yes | Future AGI API key. Sent as the `X-Api-Key` header. |
+| `secret_key` | Yes | Future AGI secret key. Sent as the `X-Secret-Key` header. |
+| `project_name` | Yes | The Observe project for every chat of this tenant. |
+| `endpoint` | No | Default `https://api.futureagi.com`. For a self-hosted collector, for example `http://collector:4318`. RAGFlow appends `/tracer/v1/traces`. |
+| `redact` | No | Default `false`. `true` hides content. See [Privacy](#privacy). |
+
+Before it stores anything, RAGFlow posts an empty trace export with the keys to the collector. Wrong keys fail the save with `invalid Future AGI keys`, an unreachable collector with `cannot verify the Future AGI keys: ...`, and the stored settings stay as they were.
+
+The same path also answers `PUT` (same body), `GET` (the stored settings, with both keys masked to their last four characters) and `DELETE` (stop exporting). Changes apply from the next chat turn; there is no restart.
+
+There is no settings dialog in the RAGFlow web UI yet; use the API.
+
+The exporter sends OTLP/HTTP JSON, uncompressed (the Future AGI collector does not accept gzip), with the resource attributes `project_name`, `project_type=observe` and `service.name=ragflow`. The trace is sent when the chat turn ends.
+
+## What you see in Observe
+
+One trace per chat turn, from every chat entry point: the RAGFlow web chat and `/api/v1/chat/completions`, the OpenAI-compatible endpoint `/api/v1/openai/{chat_id}/chat/completions`, and embedded chatbots `/api/v1/chatbots/{id}/completions` (the last one was not run).
+
+| Span | What it is |
+| --- | --- |
+| `ragflow.chat` (root, `chain`) | The turn. Input is the user's question, output the answer. ERROR when RAGFlow answered with an error. |
+| `ragflow.retrieval` (`retriever`) | When the chat retrieved (knowledge bases and/or web search). Input is the search question. Each retrieved chunk is a `retrieval.documents.N.document.*` entry: chunk id, similarity score, chunk text, and metadata (document id, document name, knowledge base id, vector and term similarity, URL for web results). Also `ragflow.retrieval.chunk_count`, `top_n`, `top_k`, `similarity_threshold`, `vector_similarity_weight`, `ragflow.kb_count`, and the rerank model when one is set. |
+| `ragflow.llm` (`llm`) | The answer call. `llm.model_name` / `gen_ai.request.model`, `gen_ai.provider.name` (the RAGFlow model provider), the input messages (system prompt with the retrieved knowledge, then the conversation), the answer, and prompt / completion / total tokens. |
+
+Root attributes: `session.id` and `gen_ai.conversation.id` (the RAGFlow conversation id; the chat assistant id on the OpenAI-compatible endpoint, which has no conversation), `user.id` and `ragflow.tenant_id` (the tenant id, not an end user), `ragflow.chat_id`, `ragflow.pipeline` (`rag`, `solo` for assistants without retrieval, `other`), `ragflow.stream`.
+
+Token counts are the ones RAGFlow computes itself with the `cl100k` tokenizer, the same numbers it reports to Langfuse (`ragflow.usage.source=ragflow_cl100k_count`). They can differ slightly from the provider's own count.
+
+Real example from the tested chat (web search on, streamed): three spans. `ragflow.chat` 6.2 s, `ragflow.retrieval` 2.3 s with six Tavily results (ids, scores 0.87 to 0.90, page text), `ragflow.llm` 3.8 s with `gpt-6-luna` and 1,844 / 82 tokens. The OpenAI-compatible call on an assistant without retrieval is two spans: `ragflow.chat` and `ragflow.llm` (39 / 38 tokens).
+
+Not captured: the steps inside agentic reasoning mode and SQL answers (only the `ragflow.chat` span), query refinement and keyword-extraction model calls, embedding and rerank calls (no separate spans), RAGFlow agent canvases, document ingestion, cost when the model is unknown to Future AGI, and a second Observe project for the same tenant.
+
+## Privacy
+
+Content is exported by default, like RAGFlow's Langfuse integration and the traceAI convention: questions, answers, the prompt sent to the model (including the retrieved knowledge), chunk text and document names.
+
+To hide content for a tenant, save the settings with `"redact": true`. With redact on, the export keeps the trace shape, span names, model, token counts, timings, status, chunk ids and similarity scores, and drops every question, answer, message, system prompt, chunk text and document name. Web-search chunk ids, which RAGFlow builds from the page URL, are replaced by a stable hash, and error text is replaced by a fixed line.
+
+This was checked, not assumed. A unique marker and an email address were put into the question of a web-search chat, a failing chat and an OpenAI-compatible call with redact on. Every stored column for those traces (ClickHouse `spans` including resource attributes, span events and the extra-attributes column, plus `traces`, `trace_sessions` and `end_users`) was searched: neither was found, nor the question text, the system prompt, a web result host or the model's error text. With the defaults, the marker, question and system prompt were found in the stored spans.
+
+In both modes:
+
+- Error text has URLs, IP addresses, email addresses, file paths, and the server's user and host names masked, and is capped at 512 characters. For example, a model call rejected with a wrong key is stored as `API request failed with status 401: {"error":"Invalid API key"}`, without the model host.
+- The server's home directory is replaced with `~` in every exported value.
+- The resource carries only `project_name`, `project_type` and `service.name`. No host name, user name or process path. A search of every stored column for the OS user name, host name, home directory, the model host and port, and all keys used found none of them.
+- `user.id` is the RAGFlow tenant id and `session.id` the RAGFlow conversation or assistant id. Both are opaque ids and stay when redact is on.
+
+The Future AGI keys are stored as plain columns in `tenant_futureagi`, the same protection RAGFlow gives Langfuse keys today. `GET` returns them masked.
+
+## Errors and failure behaviour
+
+A failed turn is marked ERROR on `ragflow.chat`, and on `ragflow.llm` when the model call failed. The tested chat with a wrong model key gave two ERROR spans, both with `API request failed with status 401: {"error":"Invalid API key"}`.
+
+Tracing never changes the chat:
+
+- **Wrong keys at save time.** The save fails; nothing is stored.
+- **Collector down later.** Chats answered normally and in their usual time (6 s for the web-search chat), the traces were dropped, and RAGFlow logged at most one warning a minute: `Future AGI: chat trace dropped; chats are not affected` with `reason: Future AGI collector unreachable`.
+- **Busy collector.** Each tenant has one background exporter with a queue of 1,024 traces and a 5 s request timeout. A full queue drops the trace instead of waiting.
+- **Shutdown.** When the API server stops, it waits up to 2 s for queued traces to be sent. A hard kill can lose the last traces.
+
+## How this differs from related integrations
+
+- **RAGFlow's Langfuse integration.** Both can be on at once; they are independent. The Langfuse client is only called from the OpenAI-compatible endpoint and records a generation whose output is RAGFlow's timing block; the Future AGI exporter covers every chat entry point, records the answer text and adds the retrieval span. Future AGI does not accept RAGFlow's Langfuse payloads.
+- **RAGFlow's OpenTelemetry settings (`OTEL_HOST`).** Do not point them at Future AGI: they cannot send the API key headers or `project_name`, and nothing exports chat spans through them.
+- **traceAI packages ([LangChain](/docs/integrations/traceai/langchain) and others).** Those instrument code you write yourself. RAGFlow is a server with its own Go pipeline, so use this exporter instead of a traceAI package.
+- **Other no-code builders (Dify, Flowise, Langflow).** Each has its own integration; this page covers RAGFlow only.
+
+## Limits and what was not tested
+
+- Fork only. Stock RAGFlow images do not have the exporter. It is not in an upstream release.
+- One Observe project per tenant. All chat assistants of a tenant share it.
+- Not run: the full RAGFlow Docker stack and its web UI, knowledge-base retrieval against a real document engine (the retrieval span maps the same chunk fields RAGFlow's knowledge-base retrieval returns; that mapping is unit tested), the embedded chatbot endpoint, agentic reasoning mode, MySQL, and the hosted Future AGI service.
+- No settings dialog in the RAGFlow web UI; configure with the API.
+- Agent canvases (RAGFlow's agent builder) are not traced by this exporter.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| `invalid Future AGI keys` when saving | The collector rejected the API key / secret key pair. Nothing was stored. |
+| `cannot verify the Future AGI keys: Future AGI collector unreachable` | RAGFlow cannot reach `endpoint`. Check the URL; RAGFlow adds `/tracer/v1/traces` itself. |
+| `Future AGI: chat trace dropped; chats are not affected` in the RAGFlow log | The collector stopped answering, or answered with an error (the `reason` field says which). Chats are unaffected. |
+| No traces and no log line | No settings are saved for the tenant that owns the chat assistant (`GET /api/v1/futureagi/api-key` with that account), or this RAGFlow build does not have the exporter. |
+| Traces have no inputs or outputs | `redact` is `true` for the tenant. |
+| Agentic or SQL answers have only one span | Expected: those paths are traced as the `ragflow.chat` span only. |
