@@ -1,8 +1,10 @@
-"""Google Antigravity IDE hooks -> normalized span events.
+"""Google Antigravity IDE and Antigravity CLI hooks -> normalized span events.
 
-Payload shapes: https://antigravity.google/docs/hooks?tab=ide (read
-2026-10-14), checked against the hook protobuf schema shipped in Antigravity
-IDE 2.5.5 (``exa.hooks_pb`` in the language server). Payloads are camelCase and
+Payload shapes: https://antigravity.google/docs/hooks (IDE and CLI tabs, read
+2026-10-14 and 2026-10-18), checked against the hook protobuf schema shipped in
+Antigravity IDE 2.5.5 (``exa.hooks_pb`` in the language server) and against
+payloads captured from a live Antigravity CLI 1.1.8 (``agy``) run
+(tests/fixtures/antigravity/real-cli-1.1.8*.jsonl). Payloads are camelCase and
 do NOT name the event, so the hook command passes it on argv
 (``emit.py antigravity PreToolUse``). Every payload carries ``conversationId``
 (the session) and ``modelName``.
@@ -13,7 +15,17 @@ do NOT name the event, so the hook command passes it on argv
     PostInvocation  -> model call end
     PostToolUse     -> completed tool span            toolCall.args/result = content,
                        (gen_ai.tool.call.id = step-<stepIdx>), ERROR when ``error`` is set
-    Stop            -> turn end                        ERROR when terminationReason is "error"
+    Stop            -> turn end                        ERROR when terminationReason is
+                                                       "error" (docs) / "ERROR" (CLI 1.1.8)
+
+Observed in CLI 1.1.8: PostInvocation fires after the tools of that model
+response have run (PreInvocation -> PostToolUse... -> PostInvocation), so a
+Model call span covers the response and its tool calls. A resumed conversation
+(``agy --conversation``) sends no SessionStart and restarts invocationNum at 0,
+which opens the next turn. terminationReason is the executor enum name
+(``NO_TOOL_CALL``, ``ERROR``, ``USER_CANCELED``, ...), not the documented
+lower-case values. A tool call rejected before it runs (for example view_file
+on an unreadable file) fires no PostToolUse, so it has no span.
 
 PreToolUse is a permission hook (its ``decision`` can auto-allow, deny or ask), so
 the recipe does not register it and the adapter ignores it: tool spans come from
@@ -25,9 +37,11 @@ every batch and stays open in between.
 
 The Antigravity app, CLI and IDE share this hook schema but keep conversations
 in different app data directories (``~/.gemini/antigravity``,
-``~/.gemini/antigravity-cli``, ``~/.gemini/antigravity-ide``). This adapter is
-for the IDE: an event whose ``artifactDirectoryPath`` / ``transcriptPath``
-sits under the app or CLI directory is dropped (POSIX or Windows separators).
+``~/.gemini/antigravity-cli``, ``~/.gemini/antigravity-ide``). This adapter
+traces the IDE and the CLI and records which one as ``antigravity.surface``
+(``ide`` / ``cli``) on the session and turn spans. An event whose
+``artifactDirectoryPath`` / ``transcriptPath`` sits under the Antigravity app
+directory is dropped (POSIX or Windows separators): the app is not verified.
 The path is only compared as a string; it is never opened or exported.
 
 Never exported and never opened: ``transcriptPath``, ``artifactDirectoryPath``,
@@ -46,9 +60,12 @@ from adapters.base import (
 
 APP = "antigravity"
 DISPLAY_NAME = "Antigravity"
-SERVICE_NAME = "antigravity-ide"
+SERVICE_NAME = "antigravity"
 
-OTHER_SURFACES = ("/.gemini/antigravity/", "/.gemini/antigravity-cli/")
+# App data directory in the payload paths -> surface. "app" (Antigravity 2.0) is dropped.
+SURFACES = (("/.gemini/antigravity-ide/", "ide"), ("/.gemini/antigravity-cli/", "cli"),
+            ("/.gemini/antigravity/", "app"))
+TRACED_SURFACES = ("ide", "cli")
 EVENTS = ("SessionStart", "PreInvocation", "PostInvocation", "PostToolUse", "Stop")
 _ENUM = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
 
@@ -84,32 +101,37 @@ def _tool(payload: Dict[str, Any]) -> Dict[str, Any]:
     return call if isinstance(call, dict) else {}
 
 
-def _other_surface(payload: Dict[str, Any]) -> bool:
+def surface(payload: Dict[str, Any]) -> Optional[str]:
+    """``ide``, ``cli`` or ``app`` from the payload's app data directory; None if unknown."""
     for key in ("artifactDirectoryPath", "transcriptPath"):
         value = payload.get(key)
         if isinstance(value, str):
             normalized = value.replace("\\", "/")
-            if any(marker in normalized for marker in OTHER_SURFACES):
-                return True
-    return False
+            for marker, name in SURFACES:
+                if marker in normalized:
+                    return name
+    return None
 
 
 def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
     conversation = first(payload, "conversationId")
-    if not conversation or event not in EVENTS or _other_surface(payload):
-        return []  # never invent a session id; IDE sessions only
+    where = surface(payload)
+    if not conversation or event not in EVENTS or where not in TRACED_SURFACES + (None,):
+        return []  # never invent a session id; IDE and CLI sessions only
     sid = str(conversation)
     model = first(payload, "modelName")
     model = str(model) if model is not None else None
+    labels = compact({"antigravity.surface": where})
 
     if event == "SessionStart":
-        return [SpanEvent(START, SESSION, sid, model=model)]
+        return [SpanEvent(START, SESSION, sid, model=model, attributes=labels)]
 
     if event == "PreInvocation":
         invocation = _num(payload, "invocationNum")
         events = []
         if invocation == 0:
-            events.append(SpanEvent(START, TURN, sid, model=model, input=payload.get("lastUserInput")))
+            events.append(SpanEvent(START, TURN, sid, model=model, attributes=labels,
+                                    input=payload.get("lastUserInput")))
         events.append(SpanEvent(START, LLM, sid, key=_llm_key(payload), name="Model call", model=model,
                                 attributes=compact({
                                     "antigravity.invocation.num": invocation,
@@ -138,7 +160,7 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
 
     # Stop
     reason = payload.get("terminationReason")
-    failed = reason == "error" or bool(payload.get("error"))
+    failed = (isinstance(reason, str) and reason.lower() == "error") or bool(payload.get("error"))
     return [SpanEvent(END, TURN, sid, model=model,
                       status=ERROR if failed else OK,
                       status_message="execution ended with error" if failed else None,

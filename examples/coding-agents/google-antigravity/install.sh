@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the Future AGI hook emitter for the Antigravity IDE.
+# Install the Future AGI hook emitter for the Antigravity IDE and Antigravity CLI (agy).
 #
 #   ./install.sh <project-dir>   workspace hooks: <project>/.agents/hooks.json
 #   ./install.sh --user          global hooks:    ~/.gemini/config/hooks.json

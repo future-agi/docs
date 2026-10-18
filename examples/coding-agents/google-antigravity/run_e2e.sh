@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Drive the real emitter with Antigravity IDE hook payloads into a Future AGI collector.
+# Drive the real emitter with Antigravity hook payloads into a Future AGI collector.
 #
 #   FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:14338 \
 #   FI_PROJECT_NAME=antigravity-e2e ./run_e2e.sh [fixture.jsonl]
 #
 # Default input is the session in ../hook-to-otlp/tests/fixtures/antigravity/session.jsonl,
-# shaped as https://antigravity.google/docs/hooks documents the IDE payloads.
+# shaped as https://antigravity.google/docs/hooks documents the IDE payloads. Pass
+# ../hook-to-otlp/tests/fixtures/antigravity/real-cli-1.1.8.jsonl (or -tool-error.jsonl)
+# with FIXTURE_CONV=fixture-agy-conv-0001 (0002) to replay payloads captured from a live
+# Antigravity CLI 1.1.8 run. For a live run, install the hooks into a project and run agy there.
 # Each line runs emit.py as its own process with the event name on argv, exactly
 # as the hooks.json command does. Every run gets a fresh conversation id, printed
 # at the end with its trace id. Set FI_HOOK_CAPTURE_CONTENT=1 to exercise the
@@ -38,7 +41,7 @@ PY
   echo "via installed .agents/hooks.json, transport=$HOOK_TRANSPORT"
 fi
 python3 -B "$EMITTER/replay.py" antigravity "$FIXTURE" "${VIA[@]}" \
-  --replace "fixture-ag-conv-0001=$RUN_ID" \
+  --replace "${FIXTURE_CONV:-fixture-ag-conv-0001}=$RUN_ID" \
   --sleep "${REPLAY_SLEEP:-0.3}"
 
 TRACE_ID="$(cd "$EMITTER" && python3 -B -c 'import sys, emit; print(emit.trace_id("antigravity", sys.argv[1]))' "$RUN_ID")"
