@@ -5,10 +5,11 @@ This is NOT Vercel. It is a small HTTP server shaped like the OpenAI-compatible
 Chat Completions API that Vercel documents at
 https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions
 (base URL path /v1, "Authorization: Bearer <key>", SSE streaming ending in
-"data: [DONE]", tool calls, and the documented error body). It exists so the
-recipe in ../app.py can be exercised without a Vercel account, a payment
-method or any spend. Nothing here was captured from a real Vercel response;
-fields Vercel documents are produced, fields it does not document are not.
+"data: [DONE]", tool calls). Its status codes, error bodies, routes and stream
+usage copy what the live gateway (https://ai-gateway.vercel.sh/v1) answered on
+2026-10-18. Its reply text is made up, and the routing and cost metadata it
+adds are a trimmed copy of the live fields with placeholder values. It exists
+so the recipe in ../app.py and its tests can run without a Vercel key or spend.
 
 Behaviour (deterministic, no model is called):
 
@@ -16,13 +17,17 @@ Behaviour (deterministic, no model is called):
   prompt shows up in the response, in tool-call arguments and in tool results.
 * A request that carries "tools" and no "tool" message yet returns one tool
   call whose arguments are {"query": <last user message>}.
-* model "does-not-exist/..." returns 404; a missing "model" returns 400 with
-  the error body from Vercel's page; a wrong bearer token returns 401.
+* Errors, as the live gateway answered them: no Authorization header or a wrong
+  key -> 401 authentication_error; model "does-not-exist/..." -> 404
+  model_not_found; a missing "model" -> 400 invalid_request_error; another path
+  under /v1 (for example a doubled /v1/v1) -> 404 not_found_error (JSON); a path
+  outside /v1 (a base URL without /v1) -> 404 with an HTML page.
 * STUB_RESPONSE_MODEL (or --response-model) makes the response "model" differ
-  from the requested one, to see what the instrumentor records in that case.
-* "stream": true returns SSE; a usage chunk is added only when the request
-  sets stream_options.include_usage (as OpenAI does). Vercel's streaming page
-  does not document that option, so the recipe does not send it by default.
+  from the requested one, to see what the instrumentor records in that case
+  (the live gateway answers a model id sent without its provider prefix with
+  the full canonical id).
+* "stream": true returns SSE. The finish chunk carries "usage" whether or not
+  the request sets stream_options.include_usage, as the live gateway did.
 
 The server records what it received (header names, the Authorization value,
 the request body) and serves it at GET /__requests so tests can assert that
@@ -36,6 +41,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WORD = " "
+
+# Copied from the live gateway's 401 body for a wrong key (2026-10-18).
+AUTH_FAILED = (
+    "Authentication failed. Create an API key and set in AI_GATEWAY_API_KEY environment variable: "
+    "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys%3FshowCreateKeyModal"
+)
+# The live gateway serves a full HTML page here; this is a short placeholder of the same type.
+HTML_404 = "<!DOCTYPE html><html><head><title>404: This page could not be found.</title></head><body>404</body></html>"
 
 
 def _count_tokens(text):
@@ -85,6 +98,14 @@ def make_handler(stub):
             self.end_headers()
             self.wfile.write(data)
 
+        def _send_html(self, status, html):
+            data = html.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def _error(self, status, message, etype, param=None, code=None):
             self._send_json(status, {"error": {"message": message, "type": etype, "param": param, "code": code}})
 
@@ -104,17 +125,26 @@ def make_handler(stub):
             except ValueError:
                 body = {"_unparsed": raw.decode("utf-8", "replace")}
             stub.record(self.path, dict(self.headers.items()), body)
-            if self.headers.get("Authorization") != f"Bearer {stub.api_key}":
-                return self._error(401, "Invalid or missing authentication", "invalid_request_error", code="invalid_api_key")
-            if self.path.rstrip("/") != "/v1/chat/completions":
-                return self._error(404, "Not found", "invalid_request_error")
+            path = self.path.rstrip("/")
+            if not path.startswith("/v1/"):
+                # a base URL without /v1: the live gateway answers with its HTML 404 page
+                return self._send_html(404, HTML_404)
+            auth = self.headers.get("Authorization")
+            if not auth:
+                return self._send_json(401, {"error": {"message": "Missing Authorization header", "type": "authentication_error"}})
+            if auth != f"Bearer {stub.api_key}":
+                return self._send_json(401, {"error": {"message": AUTH_FAILED, "type": "authentication_error"}})
+            if path != "/v1/chat/completions":
+                return self._error(404, f"The requested resource was not found: {path}", "not_found_error", None, "not_found_error")
             model = body.get("model")
             if not model:
                 return self._error(
-                    400, "Invalid request: missing required parameter 'model'", "invalid_request_error", "model", "missing_parameter"
+                    400, "Invalid input: expected string, received undefined", "invalid_request_error", "model", "invalid_request_error"
                 )
             if str(model).startswith("does-not-exist"):
-                return self._error(404, f"Model '{model}' not found", "invalid_request_error", "model", "model_not_found")
+                return self._send_json(
+                    404, {"error": {"message": f"Model '{model}' not found", "type": "model_not_found", "param": {"modelId": model}}}
+                )
             return self._complete(body, model)
 
         def _complete(self, body, model):
@@ -123,7 +153,7 @@ def make_handler(stub):
             last_text = _message_text(last)
             prompt_tokens = sum(_count_tokens(_message_text(m)) for m in messages) or 1
             response_model = stub.response_model or model
-            call_id = f"chatcmpl-stub-{int(time.time() * 1000)}"
+            call_id = f"gen_STUB{int(time.time() * 1000)}"
             created = int(time.time())
             wants_tool = bool(body.get("tools")) and last.get("role") != "tool"
             if wants_tool:
@@ -149,7 +179,25 @@ def make_handler(stub):
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
+                # the live gateway adds its cost to usage (placeholder value here)
+                "cost": 0.0000012,
+                "is_byok": False,
             }
+            # The live gateway puts routing and cost metadata on the message and on the last stream
+            # delta. Trimmed copy of the field names, placeholder values.
+            gateway_meta = {
+                "gateway": {
+                    "routing": {
+                        "originalModelId": model,
+                        "resolvedProvider": "example-provider",
+                        "finalProvider": "example-provider",
+                        "modelAttemptCount": 1,
+                    },
+                    "cost": "0.0000012",
+                    "generationId": call_id,
+                }
+            }
+            message["provider_metadata"] = gateway_meta
             if not body.get("stream"):
                 return self._send_json(
                     200,
@@ -160,6 +208,7 @@ def make_handler(stub):
                         "model": response_model,
                         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
                         "usage": usage,
+                        "generationId": call_id,
                     },
                 )
             self.send_response(200)
@@ -179,7 +228,8 @@ def make_handler(stub):
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": response_model,
-                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}] if with_usage is None else [],
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+                    "generationId": call_id,
                 }
                 if with_usage is not None:
                     payload["usage"] = with_usage
@@ -194,9 +244,8 @@ def make_handler(stub):
                 event({"role": "assistant", "content": ""})
                 for i, w in enumerate(words):
                     event({"content": w if i == 0 else WORD + w})
-            event({}, finish_reason=finish)
-            if (body.get("stream_options") or {}).get("include_usage"):
-                event(None, with_usage=usage)
+            # Live: the finish chunk carries usage, with or without stream_options.include_usage.
+            event({"provider_metadata": gateway_meta}, finish_reason=finish, with_usage=usage)
             chunk("[DONE]")
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()

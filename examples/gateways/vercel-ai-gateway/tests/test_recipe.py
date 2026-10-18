@@ -33,13 +33,14 @@ def test_every_scenario_runs_and_the_trace_has_the_expected_shape(run_app, colle
     for name in ("chat", "stream", "tools"):
         assert f"RESULT {name}: echo:" in result.stdout
     assert "RESULT error: HTTP 401" in result.stdout
+    assert "RESULT bad-model: HTTP 404" in result.stdout
 
     spans = collector.spans()
     assert len({s["trace_id"] for s in spans}) == 1
     by_kind = {}
     for s in spans:
         by_kind.setdefault(kind(s), []).append(s)
-    assert len(by_kind["AGENT"]) == 1 and len(by_kind["TOOL"]) == 1 and len(by_kind["LLM"]) == 5
+    assert len(by_kind["AGENT"]) == 1 and len(by_kind["TOOL"]) == 1 and len(by_kind["LLM"]) == 6
     root = by_kind["AGENT"][0]
     assert not root.get("parent_span_id")
     for child in by_kind["LLM"] + by_kind["TOOL"]:
@@ -64,25 +65,50 @@ def test_chat_and_tool_calls_carry_model_and_usage(run_app, collector):
     assert "lookup_record" in tool_first["_attrs"]["gen_ai.tool.definitions"]
 
 
-def test_streaming_without_reported_usage_has_no_token_attributes(run_app, collector):
+def test_streamed_call_has_tokens_from_the_finish_chunk(run_app, collector):
+    """The live gateway puts usage on the finish chunk even without stream_options (2026-10-18),
+    and the recipe does not send that option. The stand-in copies that, so the span has tokens."""
     assert run_app("--scenario", "stream").returncode == 0
     (stream,) = llm_spans(collector)
     attrs = stream["_attrs"]
-    # Unknown is not zero: no usage in the stream means no token attributes, not 0.
-    assert not [k for k in attrs if k.startswith("gen_ai.usage.")]
+    assert int(attrs["gen_ai.usage.input_tokens"]) > 0
+    assert int(attrs["gen_ai.usage.output_tokens"]) > 0
     assert [e["name"] for e in stream.get("events", [])] == ["First Token Stream Event"]
     # traceai-openai 0.1.10 leaves the model off streamed spans; traceAI PR 249 records it.
     assert attrs.get("gen_ai.request.model") in (None, MODEL)
     assert (attrs.get("gen_ai.request.model") == MODEL) == HAS_PROVIDER_TABLE
 
 
-def test_failed_call_is_an_error_span(run_app, collector):
-    assert run_app("--scenario", "error").returncode == 0
+@pytest.mark.parametrize(
+    "scenario,status,body_text,sent_model",
+    [
+        ("error", "401", "authentication_error", MODEL),
+        ("bad-model", "404", "model_not_found", "does-not-exist/no-such-model"),
+    ],
+)
+def test_failed_call_is_an_error_span(run_app, collector, scenario, status, body_text, sent_model):
+    result = run_app("--scenario", scenario)
+    assert result.returncode == 0
+    assert f"RESULT {scenario}: HTTP {status}" in result.stdout
     (failed,) = llm_spans(collector)
     assert failed["status"]["code"] == "STATUS_CODE_ERROR"
-    assert "401" in failed["status"]["message"]
-    assert failed["_attrs"].get("gen_ai.request.model") in (None, MODEL)
+    # status message = exception class + HTTP status + the gateway's error body
+    assert status in failed["status"]["message"] and body_text in failed["status"]["message"]
+    # traceai-openai 0.1.10 records no model on a failed call; traceAI PR 249 records the id sent
+    assert failed["_attrs"].get("gen_ai.request.model") in (None, sent_model)
+    assert (failed["_attrs"].get("gen_ai.request.model") == sent_model) == HAS_PROVIDER_TABLE
     assert "exception" in [e["name"] for e in failed.get("events", [])]
+
+
+def test_gateway_routing_metadata_is_not_on_the_span(run_app, collector):
+    """The live gateway returns routing, attempt and cost metadata (provider_metadata.gateway,
+    usage.cost, generationId). traceai-openai keeps the message text only, so none of it is
+    exported, by default or otherwise."""
+    assert run_app("--scenario", "chat").returncode == 0
+    assert run_app("--scenario", "stream").returncode == 0
+    blob = "\n".join(collector.raw_texts())
+    for field in ("provider_metadata", "originalModelId", "resolvedProvider", "generationId", "gen_STUB", "is_byok"):
+        assert field not in blob, field
 
 
 @pytest.mark.parametrize("scenario", ["chat", "tools"])

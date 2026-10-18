@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Trace calls to the Vercel AI Gateway with traceAI-openai.
 
-This is the recipe from docs/integrations/gateways/vercel-ai-gateway, plus four
+This is the recipe from docs/integrations/gateways/vercel-ai-gateway, plus five
 small scenarios so it can be run end to end:
 
-  chat    one non-streaming Chat Completions call
-  stream  one streaming call
-  tools   a tool round trip: model asks for a tool, the app runs it, the model answers
-  error   a call with a wrong gateway key (the failure case)
+  chat       one non-streaming Chat Completions call
+  stream     one streaming call
+  tools      a tool round trip: model asks for a tool, the app runs it, the model answers
+  error      a call with a wrong gateway key (failure case: the gateway answers 401
+             authentication_error)
+  bad-model  the right key and a model id that does not exist (failure case: 404
+             model_not_found)
 
 The integration is only these lines (everything else is demo scaffolding):
 
@@ -18,6 +21,7 @@ The integration is only these lines (everything else is demo scaffolding):
 Environment
   AI_GATEWAY_API_KEY   Vercel AI Gateway API key. Goes to the OpenAI client only.
   AI_GATEWAY_MODEL     A model id copied from Vercel's model list (provider/model).
+  AI_GATEWAY_BAD_MODEL Model id for the bad-model scenario (default: a made-up id).
   AI_GATEWAY_BASE_URL  Override of https://ai-gateway.vercel.sh/v1. Use it only to
                        point at a local stand-in; a real setup leaves it unset.
   FI_API_KEY, FI_SECRET_KEY, FI_BASE_URL   Future AGI. Go to the tracer only.
@@ -39,6 +43,9 @@ from openai import OpenAI
 from traceai_openai import OpenAIInstrumentor
 
 DEFAULT_BASE_URL = "https://ai-gateway.vercel.sh/v1"
+
+# Not a Vercel model id. The bad-model scenario sends it to show what an unknown id looks like.
+BAD_MODEL = "does-not-exist/no-such-model"
 
 TOOLS = [
     {
@@ -105,9 +112,18 @@ def run_error(base_url, model, prompt):
     return "no error (unexpected)"
 
 
+def run_bad_model(client, bad_model, prompt):
+    """The right key and a model id that does not exist: the gateway answers 404 model_not_found."""
+    try:
+        client.chat.completions.create(model=bad_model, messages=[{"role": "user", "content": prompt}])
+    except openai.APIStatusError as exc:
+        return f"HTTP {exc.status_code}"
+    return "no error (unexpected)"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--scenario", choices=["all", "chat", "stream", "tools", "error"], default="all")
+    ap.add_argument("--scenario", choices=["all", "chat", "stream", "tools", "error", "bad-model"], default="all")
     ap.add_argument("--prompt", default="Say hello to the Vercel AI Gateway in five words.")
     ap.add_argument("--system", default="")
     ap.add_argument("--session-id", default=None)
@@ -118,7 +134,8 @@ def main(argv=None):
     if not api_key or not model:
         print("set AI_GATEWAY_API_KEY and AI_GATEWAY_MODEL (a model id from Vercel's model list)", file=sys.stderr)
         return 2
-    base_url = os.environ.get("AI_GATEWAY_BASE_URL", DEFAULT_BASE_URL)
+    base_url = os.environ.get("AI_GATEWAY_BASE_URL") or DEFAULT_BASE_URL
+    bad_model = os.environ.get("AI_GATEWAY_BAD_MODEL") or BAD_MODEL
 
     # 1. Future AGI tracing. The Future AGI key pair is read from FI_API_KEY / FI_SECRET_KEY.
     trace_provider = register(
@@ -132,7 +149,7 @@ def main(argv=None):
 
     tracer = FITracer(trace_provider.get_tracer("vercel-ai-gateway-example"), config=TraceConfig())
     session_id = a.session_id or f"vercel-ai-gateway-{uuid.uuid4()}"
-    wanted = ["chat", "stream", "tools", "error"] if a.scenario == "all" else [a.scenario]
+    wanted = ["chat", "stream", "tools", "error", "bad-model"] if a.scenario == "all" else [a.scenario]
     trace_id = None
     # Optional app-level parent span and session, so the calls are grouped in Observe.
     with using_session(session_id), tracer.start_as_current_span(
@@ -141,14 +158,19 @@ def main(argv=None):
         ctx = root.get_span_context()
         trace_id = str(uuid.UUID(int=ctx.trace_id))
         for name in wanted:
-            if name == "chat":
-                out = run_chat(client, model, a.prompt, a.system)
-            elif name == "stream":
-                out = run_stream(client, model, a.prompt, a.system)
-            elif name == "tools":
-                out = run_tools(client, model, a.prompt, a.system, tracer)
-            else:
-                out = run_error(base_url, model, a.prompt)
+            try:
+                if name == "chat":
+                    out = run_chat(client, model, a.prompt, a.system)
+                elif name == "stream":
+                    out = run_stream(client, model, a.prompt, a.system)
+                elif name == "tools":
+                    out = run_tools(client, model, a.prompt, a.system, tracer)
+                elif name == "error":
+                    out = run_error(base_url, model, a.prompt)
+                else:
+                    out = run_bad_model(client, bad_model, a.prompt)
+            except openai.OpenAIError as exc:  # keep the demo going; the span already records the failure
+                out = type(exc).__name__
             print(f"RESULT {name}: {out}")
     trace_provider.force_flush()
     trace_provider.shutdown()

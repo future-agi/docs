@@ -7,16 +7,16 @@
 #   1. creates ./.venv (Python 3.12 or 3.13: traceAI-openai needs < 3.14) and installs requirements.txt
 #      (set VENV_DIR to reuse an existing environment)
 #   2. runs the tests (they use the local stand-in and a recording collector; no Future AGI needed)
-#   3. runs app.py (chat, stream, tools, error) against a GATEWAY, with tracing on to FI_BASE_URL
+#   3. runs app.py (chat, stream, tools, error, bad-model) against a GATEWAY, with tracing on to FI_BASE_URL
 #   4. replays the drain-shaped fixture three ways: without project_name (a drain's shape, expected
 #      to be rejected), with project_name (expected to be accepted), and with a Bearer token (401)
 #
 # Which gateway
 #   default                     the local stand-in in standin/ (NOT Vercel)
 #   GATEWAY_BASE_URL=...        any OpenAI-compatible base URL, e.g. https://ai-gateway.vercel.sh/v1
-#   GATEWAY_API_KEY, GATEWAY_MODEL   the key and model id for that base URL
-# A run against the real Vercel AI Gateway needs a Vercel account and a gateway key; this
-# script never creates either.
+#   GATEWAY_API_KEY, GATEWAY_MODEL   the key (default: $AI_GATEWAY_API_KEY) and model id for that base URL
+# A run against the real Vercel AI Gateway needs a Vercel AI Gateway API key; this script never
+# creates one.
 #
 # Other knobs: FI_PROJECT_NAME (default vercel-ai-gateway-e2e), DRAIN_PROJECT_NAME (default
 # <FI_PROJECT_NAME>-drain), SKIP_TESTS=1, FI_HIDE_INPUTS / FI_HIDE_OUTPUTS (passed through).
@@ -53,9 +53,13 @@ cleanup() { [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
 if [ -n "${GATEWAY_BASE_URL:-}" ]; then
-  : "${GATEWAY_API_KEY:?set GATEWAY_API_KEY for GATEWAY_BASE_URL}" "${GATEWAY_MODEL:?set GATEWAY_MODEL}"
+  GATEWAY_API_KEY="${GATEWAY_API_KEY:-${AI_GATEWAY_API_KEY:-}}"
+  : "${GATEWAY_API_KEY:?set GATEWAY_API_KEY (or AI_GATEWAY_API_KEY) for GATEWAY_BASE_URL}" "${GATEWAY_MODEL:?set GATEWAY_MODEL}"
   export AI_GATEWAY_BASE_URL="$GATEWAY_BASE_URL" AI_GATEWAY_API_KEY="$GATEWAY_API_KEY" AI_GATEWAY_MODEL="$GATEWAY_MODEL"
-  echo "gateway: $GATEWAY_BASE_URL"
+  case "$GATEWAY_BASE_URL" in
+    https://ai-gateway.vercel.sh/*) echo "gateway: REAL Vercel AI Gateway, $GATEWAY_BASE_URL" ;;
+    *) echo "gateway: $GATEWAY_BASE_URL (not Vercel)" ;;
+  esac
 else
   PORT="$("$PYBIN" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
   "$PYBIN" standin/vercel_gateway_stub.py --port "$PORT" --api-key e2e-stand-in-key >/dev/null 2>&1 &

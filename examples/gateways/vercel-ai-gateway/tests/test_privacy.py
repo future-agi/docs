@@ -74,7 +74,11 @@ def test_documented_residue_of_the_hide_flags(run_app, collector):
     assert all(s["_attrs"].get("session.id") for s in spans)
     # error text: status message and exception event (type, message, stack trace)
     failed = [s for s in spans if s.get("status", {}).get("code") == "STATUS_CODE_ERROR"]
-    assert failed and "401" in failed[0]["status"]["message"]
-    exc = [e for e in failed[0]["events"] if e["name"] == "exception"][0]
-    keys = {a["key"] for a in exc["attributes"]}
-    assert {"exception.type", "exception.message", "exception.stacktrace"} <= keys
+    messages = " ".join(s["status"]["message"] for s in failed)
+    assert len(failed) == 2 and "401" in messages and "404" in messages
+    # the 404 body names the model id that was sent
+    assert "does-not-exist/no-such-model" in messages
+    for span in failed:
+        exc = [e for e in span["events"] if e["name"] == "exception"][0]
+        keys = {a["key"] for a in exc["attributes"]}
+        assert {"exception.type", "exception.message", "exception.stacktrace"} <= keys
