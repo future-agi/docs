@@ -1,4 +1,5 @@
-"""The stand-in only claims the parts of the Novita chat route that Novita documents."""
+"""The stand-in claims only the parts of the Novita chat route that Novita documents, and its
+statuses, error bodies, routes and stream usage match the live API as observed on 2026-10-18."""
 import json
 import urllib.error
 import urllib.request
@@ -31,32 +32,36 @@ def test_chat_completion_has_the_documented_fields(stub):
     assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
 
 
-def test_the_error_envelope_and_status_codes(stub):
+def test_the_error_envelope_and_status_codes_match_the_live_api(stub):
     status, body = _post(stub, {"model": MODEL, "messages": []}, key="wrong")
-    err = json.loads(body)
     assert status == 401
-    assert (err["code"], err["reason"]) == (401, "FAILED_TO_AUTH") and "trace_id" in err["metadata"]
+    assert json.loads(body) == {"code": 401, "reason": "FAILED_TO_AUTH", "message": "failed to authenticate API key", "metadata": {}}
+    status, body = _post(stub, {"model": "novita-ai-example/no-such-model", "messages": []})
+    assert status == 404
+    assert json.loads(body) == {
+        "code": 404,
+        "reason": "MODEL_NOT_FOUND",
+        "message": "model not found",
+        "metadata": {"reason": "model: novita-ai-example/no-such-model not found"},
+    }
     status, body = _post(stub, {"messages": []})
-    assert status == 400 and json.loads(body)["reason"] == "INVALID_REQUEST_BODY"
+    assert status == 404 and json.loads(body)["metadata"] == {"reason": "model:  not found"}
 
 
-def test_both_openai_client_paths_are_routed_and_nothing_else(stub):
-    assert _post(stub, {"model": MODEL, "messages": []}, root=stub.root + "/openai/v1")[0] == 200
-    assert _post(stub, {"model": MODEL, "messages": []}, root=stub.root + "/openai")[0] == 200
-    for root in (stub.root + "/v3/openai", stub.root, stub.root + "/v1", stub.root + "/openai/v1/v1"):
-        status, body = _post(stub, {"model": MODEL, "messages": []}, root=root)
-        assert status == 404 and json.loads(body)["reason"] == "PATH_NOT_FOUND"
+def test_the_three_live_routes_are_served_and_nothing_else(stub):
+    for root in ("/openai/v1", "/openai", "/v3/openai"):
+        assert _post(stub, {"model": MODEL, "messages": []}, root=stub.root + root)[0] == 200
+    for root in (stub.root, stub.root + "/v1", stub.root + "/openai/v1/v1"):
+        assert _post(stub, {"model": MODEL, "messages": []}, root=root) == (404, "404 page not found")
 
 
-def test_stream_usage_chunk_only_when_asked(stub):
+def test_stream_usage_chunk_with_or_without_the_option(stub):
     base = {"model": MODEL, "messages": [{"role": "user", "content": "a b"}], "stream": True}
-    for options, expect_usage in (({"include_usage": True}, True), (None, False)):
+    for options in ({"include_usage": True}, None):
         payload = dict(base, **({"stream_options": options} if options else {}))
         _, body = _post(stub, payload)
         events = [e[len("data: "):] for e in body.split("\n\n") if e.startswith("data: ")]
         assert events[-1] == "[DONE]"
         chunks = [json.loads(e) for e in events[:-1]]
-        usage_chunks = [c for c in chunks if "usage" in c]
-        assert bool(usage_chunks) == expect_usage
-        if expect_usage:
-            assert usage_chunks[0]["choices"] == [] and usage_chunks[0]["usage"]["total_tokens"] > 0
+        (usage_chunk,) = [c for c in chunks if "usage" in c]
+        assert usage_chunk["choices"] == [] and usage_chunk["usage"]["total_tokens"] > 0

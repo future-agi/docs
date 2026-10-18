@@ -1,44 +1,37 @@
 #!/usr/bin/env python3
 """Local STAND-IN for Novita AI's OpenAI-compatible chat completions route.
 
-This is NOT Novita. It is a small HTTP server shaped like the route that
-Novita documents at https://docs.novita.ai/api-reference/model-apis-llm-create-chat-completion
-and https://docs.novita.ai/guides/quickstart (`POST .../openai/v1/chat/completions`,
+This is NOT Novita. It is a small HTTP server shaped like the route that Novita documents at
+https://docs.novita.ai/api-reference/model-apis-llm-create-chat-completion and
+https://docs.novita.ai/guides/quickstart (`POST .../openai/v1/chat/completions`,
 `Authorization: Bearer <key>`, the documented response fields, SSE chunks that end with
-`data: [DONE]`). It exists so the recipe in ../app.py can be exercised without a
-Novita account, an API key or any spend. Nothing here was captured from a real Novita
-response. Fields the documentation lists are produced; fields it does not list are not.
+`data: [DONE]`). It lets the tests in ../tests exercise the recipe without a Novita key or spend.
 
-Behaviour (deterministic, no model is called):
+The status codes, error bodies, routes and streaming usage below match what the live API at
+api.novita.ai returned on 2026-10-18 (meta-llama/llama-3.1-8b-instruct). The reply text and token
+counts are made up: no model is called.
 
-* Routes. Novita's own pages show two request paths for the OpenAI client: the curl
-  examples and the quickstart use `/openai/v1/chat/completions`, and several SDK
-  examples set `base_url="https://api.novita.ai/openai"`, which makes the client request
-  `/openai/chat/completions`. The stand-in serves BOTH by default so a test can show the
-  span is the same for either. That is the stand-in's choice. Whether the live service
-  routes both was not checked, because no request was ever sent to api.novita.ai. Pass
-  `paths=` to serve only one and see the other fail. Every other path (for example
-  Langfuse's `/v3/openai/chat/completions`, or a base URL with no `/openai` at all)
-  answers 404.
-* The reply echoes the last user or tool message, so a unique marker in a prompt shows
-  up in the response, in tool-call arguments and in tool results.
-* A request that carries "tools" and no "tool" message yet returns one tool call whose
-  arguments are {"query": <last user message>}. The id is "0", as in Novita's
-  function-calling guide.
+* Routes. The live API answered 200 on all three base URL forms that appear in Novita's and
+  Langfuse's pages: `/openai/v1/chat/completions` (the recipe), `/openai/chat/completions`
+  (`base_url="https://api.novita.ai/openai"`) and `/v3/openai/chat/completions` (Langfuse's
+  string). The stand-in serves all three by default; pass `paths=` to serve fewer. Any other path
+  answers 404 with the plain-text body `404 page not found`, as the live API did for
+  `/chat/completions`, `/v1/chat/completions` and `/openai/v1/v1/chat/completions`.
+* The reply echoes the last user or tool message, so a unique marker in a prompt shows up in the
+  response, in tool-call arguments and in tool results.
+* A request that carries "tools" and no "tool" message yet returns one tool call whose arguments
+  are {"query": <last user message>}. The id is "0", as in Novita's function-calling guide.
 * usage has the three documented fields (prompt_tokens, completion_tokens, total_tokens).
-* "stream": true returns SSE. A usage chunk (empty `choices`, full `usage`) is added
-  before `[DONE]` only when `stream_options.include_usage` is true, which is the option
-  Novita's reference documents. What Novita sends without the option was not checked.
-* Errors use the `{code, reason, message, metadata}` envelope that Novita's platform
-  documents on its Exa Search page (https://docs.novita.ai/api-reference/model-apis-exa-search).
-  That page is not the chat route, so the envelope here is an assumption. A wrong or
-  missing bearer token returns 401 FAILED_TO_AUTH (a name from Novita's Error Codes page);
-  Novita's pages also say the gateway can return 403 INVALID_API_KEY. Which one a live
-  chat call returns was not checked.
+* "stream": true returns SSE. A usage chunk (empty `choices`, full `usage`) comes before
+  `[DONE]` whether or not `stream_options.include_usage` is set: the live API sent it in both cases.
+* Errors use the envelope the live API returned, `{code, reason, message, metadata}`:
+  a wrong key is 401 `FAILED_TO_AUTH` "failed to authenticate API key" with empty metadata; a
+  missing or unknown model id is 404 `MODEL_NOT_FOUND` "model not found" with
+  `metadata.reason` "model: <id> not found". The stand-in treats the ids in `unknown_models`
+  (default: UNKNOWN_MODEL) as unknown and accepts every other id.
 
-The server records what it received (header names, the Authorization value, the request
-path and body) and serves it at GET /__requests so tests can assert that Future AGI keys
-never reach Novita.
+The server records what it received (header names, the Authorization value, the request path and
+body) and serves it at GET /__requests so tests can assert that Future AGI keys never reach Novita.
 """
 import argparse
 import json
@@ -49,7 +42,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 V1_PATH = "/openai/v1/chat/completions"
 BARE_PATH = "/openai/chat/completions"
-DEFAULT_PATHS = (V1_PATH, BARE_PATH)
+V3_PATH = "/v3/openai/chat/completions"
+DEFAULT_PATHS = (V1_PATH, BARE_PATH, V3_PATH)
+# A model id the stand-in answers with 404 MODEL_NOT_FOUND (the app's bad-model scenario uses it).
+UNKNOWN_MODEL = "novita-ai-example/no-such-model"
 WORD = " "
 
 
@@ -64,16 +60,17 @@ def _message_text(message):
     return content or ""
 
 
-def trace_id(counter=[0]):
+def next_id(counter=[0]):
     counter[0] += 1
     return f"{int(time.time() * 1000):013d}{counter[0]:04d}00000000"
 
 
 class Stub:
-    def __init__(self, api_key, paths=DEFAULT_PATHS, response_model=None):
+    def __init__(self, api_key, paths=DEFAULT_PATHS, response_model=None, unknown_models=(UNKNOWN_MODEL,)):
         self.api_key = api_key
         self.paths = tuple(paths)
         self.response_model = response_model
+        self.unknown_models = set(unknown_models)
         self.requests = []
         self.lock = threading.Lock()
 
@@ -106,11 +103,16 @@ def make_handler(stub):
             self.end_headers()
             self.wfile.write(data)
 
-        def _error(self, status, reason, message):
-            self._send_json(
-                status,
-                {"code": status, "reason": reason, "message": message, "metadata": {"trace_id": trace_id()}},
-            )
+        def _error(self, status, reason, message, metadata=None):
+            self._send_json(status, {"code": status, "reason": reason, "message": message, "metadata": metadata or {}})
+
+        def _not_found(self):
+            data = b"404 page not found"
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
 
         def do_GET(self):
             if self.path == "/__requests":
@@ -118,7 +120,7 @@ def make_handler(stub):
                     return self._send_json(200, stub.requests)
             if self.path == "/healthz":
                 return self._send_json(200, {"ok": True})
-            self._error(404, "PATH_NOT_FOUND", "path not found")
+            self._not_found()
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length") or 0)
@@ -129,12 +131,12 @@ def make_handler(stub):
                 body = {"_unparsed": raw.decode("utf-8", "replace")}
             stub.record(self.path, dict(self.headers.items()), body)
             if self.path.rstrip("/") not in stub.paths:
-                return self._error(404, "PATH_NOT_FOUND", "path not found")
+                return self._not_found()
             if self.headers.get("Authorization") != f"Bearer {stub.api_key}":
-                return self._error(401, "FAILED_TO_AUTH", "authentication failed")
-            model = body.get("model")
-            if not model:
-                return self._error(400, "INVALID_REQUEST_BODY", "Invalid request body | model is required")
+                return self._error(401, "FAILED_TO_AUTH", "failed to authenticate API key")
+            model = body.get("model") or ""
+            if not model or model in stub.unknown_models:
+                return self._error(404, "MODEL_NOT_FOUND", "model not found", {"reason": f"model: {model} not found"})
             return self._complete(body, model)
 
         def _complete(self, body, model):
@@ -143,7 +145,7 @@ def make_handler(stub):
             last_text = _message_text(last)
             prompt_tokens = sum(_count_tokens(_message_text(m)) for m in messages) or 1
             response_model = stub.response_model or model
-            call_id = "chatcmpl-" + trace_id()
+            call_id = "chatcmpl-" + next_id()
             created = int(time.time())
             wants_tool = bool(body.get("tools")) and last.get("role") != "tool"
             if wants_tool:
@@ -228,8 +230,7 @@ def make_handler(stub):
                 for i, w in enumerate(words):
                     event({"content": w if i == 0 else WORD + w})
             event({}, finish_reason=finish)
-            if (body.get("stream_options") or {}).get("include_usage"):
-                event(None, usage_value=usage, choices=False)
+            event(None, usage_value=usage, choices=False)  # sent with or without stream_options, as live
             chunk("[DONE]")
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
@@ -238,8 +239,9 @@ def make_handler(stub):
     return Handler
 
 
-def serve(host="127.0.0.1", port=0, api_key="stub-novita-key", paths=DEFAULT_PATHS, response_model=None):
-    stub = Stub(api_key, paths, response_model)
+def serve(host="127.0.0.1", port=0, api_key="stub-novita-key", paths=DEFAULT_PATHS, response_model=None,
+          unknown_models=(UNKNOWN_MODEL,)):
+    stub = Stub(api_key, paths, response_model, unknown_models)
     server = ThreadingHTTPServer((host, port), make_handler(stub))
     server.stub = stub
     return server
@@ -253,11 +255,11 @@ def main():
     ap.add_argument("--response-model", default=os.environ.get("STUB_RESPONSE_MODEL"))
     ap.add_argument(
         "--only",
-        choices=["v1", "bare"],
-        help="serve only /openai/v1/chat/completions (v1) or only /openai/chat/completions (bare); default serves both",
+        choices=["v1", "bare", "v3"],
+        help="serve only /openai/v1/... (v1), /openai/... (bare) or /v3/openai/... (v3); default serves all three",
     )
     a = ap.parse_args()
-    paths = {"v1": (V1_PATH,), "bare": (BARE_PATH,)}.get(a.only, DEFAULT_PATHS)
+    paths = {"v1": (V1_PATH,), "bare": (BARE_PATH,), "v3": (V3_PATH,)}.get(a.only, DEFAULT_PATHS)
     server = serve(a.host, a.port, a.api_key, paths, a.response_model)
     print(
         f"STAND-IN for Novita listening on http://{a.host}:{server.server_address[1]}/openai/v1 (not Novita); "

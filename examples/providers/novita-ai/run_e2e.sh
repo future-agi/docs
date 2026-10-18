@@ -8,7 +8,7 @@
 #      (set VENV_DIR to reuse an existing environment)
 #   2. runs the tests (they use the local stand-in, a recording collector and a refusing
 #      CONNECT probe; no Future AGI and no Novita needed)
-#   3. runs app.py (chat, stream, tools, error) with tracing on to FI_BASE_URL
+#   3. runs app.py (chat, stream, tools, error, bad-model) with tracing on to FI_BASE_URL
 #   4. PRIVACY=1: runs app.py twice more with a unique marker in the prompts, once with content
 #      capture off (FI_HIDE_*) and once with the default, into <project>-private and <project>-optin,
 #      and prints the markers so you can search your own Future AGI store for them
@@ -24,7 +24,8 @@
 #                                        NOVITA_MODEL.
 #
 # Other knobs: FI_PROJECT_NAME (default novita-ai-e2e), SKIP_TESTS=1, APP_ARGS="--scenario chat",
-# NOVITA_MAX_TOKENS (default 128; 0 omits max_tokens, only for a stand-in whose model rejects it).
+# NOVITA_TOOLS_MODEL (model for the tools scenario; Novita answers 400 for tools on a model without
+# function calling), NOVITA_MAX_TOKENS (default 128; 0 omits max_tokens).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -58,11 +59,11 @@ trap cleanup EXIT
 
 if [ -n "${NOVITA_API_KEY:-}" ]; then
   : "${NOVITA_MODEL:?set NOVITA_MODEL (a model id copied from the Novita Model Hub)}"
-  if [ -n "${NOVITA_BASE_URL:-}" ]; then
-    echo "target: custom base URL $NOVITA_BASE_URL (not necessarily Novita)"
-  else
-    echo "target: REAL Novita, https://api.novita.ai/openai/v1"
-  fi
+  case "${NOVITA_BASE_URL:-}" in
+    "") echo "target: REAL Novita, https://api.novita.ai/openai/v1" ;;
+    https://api.novita.ai/*) echo "target: REAL Novita, $NOVITA_BASE_URL" ;;
+    *) echo "target: custom base URL $NOVITA_BASE_URL (not Novita)" ;;
+  esac
 else
   PORT="$("$PYBIN" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
   "$PYBIN" standin/novita_stub.py --port "$PORT" --api-key e2e-stand-in-key >/dev/null 2>&1 &

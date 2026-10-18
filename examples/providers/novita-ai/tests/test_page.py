@@ -74,7 +74,8 @@ def test_the_page_names_every_url_form_and_keeps_secrets_out():
     assert not re.search(r"sk[-_][A-Za-z0-9]{16,}", text)
 
 
-def test_the_page_does_not_claim_a_live_novita_call_or_a_novita_provider_label():
+def test_the_page_records_the_live_run_and_does_not_claim_a_novita_provider_label():
     text = PAGE.read_text()
-    assert "no request was sent to `api.novita.ai`" in text
+    assert "## Live vendor verification (2026-10-18)" in text
+    assert "no request was sent" not in text
     assert "`openai`, not Novita" in text

@@ -4,10 +4,11 @@
 This is the recipe from docs/integrations/providers/novita-ai, plus a few small
 scenarios so it can be run end to end:
 
-  chat      one non-streaming chat completion
-  stream    one streaming call (asks for the usage chunk Novita documents)
-  tools     a tool round trip: model asks for a tool, the app runs it, the model answers
-  error     a call with a wrong API key (the failure case)
+  chat       one non-streaming chat completion
+  stream     one streaming call (asks for the usage chunk Novita documents)
+  tools      a tool round trip: model asks for a tool, the app runs it, the model answers
+  error      a call with a wrong API key (failure case: Novita answers 401 FAILED_TO_AUTH)
+  bad-model  a call with a model id that does not exist (failure case: 404 MODEL_NOT_FOUND)
 
 The integration is only these lines (everything else is demo scaffolding):
 
@@ -18,12 +19,16 @@ The integration is only these lines (everything else is demo scaffolding):
 Environment
   NOVITA_API_KEY     Novita API key. Goes to the OpenAI client only.
   NOVITA_MODEL       A model id copied from Novita's Model Hub. Not frozen here.
-  NOVITA_BASE_URL    Override of https://api.novita.ai/openai/v1. Use it only to point at a
-                     local stand-in or another OpenAI-compatible server; a real setup
-                     leaves it unset.
+  NOVITA_TOOLS_MODEL Model id for the tools scenario only (default: NOVITA_MODEL). Novita answers
+                     400 "model features function calling not support" for a model without
+                     function calling, so pick one whose Model Hub entry lists it.
+  NOVITA_BAD_MODEL   Model id for the bad-model scenario (default: a made-up id).
+  NOVITA_BASE_URL    Override of https://api.novita.ai/openai/v1: the other form Novita shows
+                     (https://api.novita.ai/openai), a local stand-in, or another
+                     OpenAI-compatible server. A real setup leaves it unset.
   NOVITA_MAX_TOKENS  max_tokens sent on every call (default 128). Novita's reference lists
-                     max_tokens as a required field. Set it to 0 to omit it, which only
-                     matters for a stand-in server whose model rejects the field.
+                     max_tokens as a required field; the live API accepted a call without it on
+                     2026-10-18. Set it to 0 to omit it.
   FI_API_KEY, FI_SECRET_KEY, FI_BASE_URL   Future AGI. Go to the tracer only.
   FI_PROJECT_NAME    Observe project (default: novita-ai).
   FI_HIDE_INPUTS, FI_HIDE_OUTPUTS, FI_HIDE_LLM_INVOCATION_PARAMETERS
@@ -45,7 +50,7 @@ from traceai_openai import OpenAIInstrumentor
 # The base URL the recipe uses. Novita's quickstart and LLM API guide curl against
 # https://api.novita.ai/openai/v1/chat/completions, so this is the base URL under which the
 # OpenAI client builds exactly that request URL. Novita's API overview and several SDK
-# guides also show https://api.novita.ai/openai; see the docs page for how the two relate.
+# guides also show https://api.novita.ai/openai; the live API answered on both on 2026-10-18.
 NOVITA_BASE_URL = "https://api.novita.ai/openai/v1"
 
 TOOLS = [
@@ -62,6 +67,10 @@ TOOLS = [
         },
     }
 ]
+
+
+# Not a Novita model id. The bad-model scenario sends it to show what an unknown id looks like.
+BAD_MODEL = "novita-ai-example/no-such-model"
 
 
 def lookup_record(query):
@@ -129,9 +138,18 @@ def run_error(base_url, model, prompt, max_tokens):
     return "no error (unexpected)"
 
 
+def run_bad_model(client, bad_model, prompt, max_tokens):
+    """The right key and a model id that does not exist: Novita answers 404 MODEL_NOT_FOUND."""
+    try:
+        client.chat.completions.create(model=bad_model, messages=[{"role": "user", "content": prompt}], **_limit(max_tokens))
+    except openai.APIStatusError as exc:
+        return f"HTTP {exc.status_code}"
+    return "no error (unexpected)"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--scenario", choices=["all", "chat", "stream", "tools", "error"], default="all")
+    ap.add_argument("--scenario", choices=["all", "chat", "stream", "tools", "error", "bad-model"], default="all")
     ap.add_argument("--prompt", default="Say hello to Novita in five words.")
     ap.add_argument("--system", default="")
     ap.add_argument("--no-stream-usage", action="store_true", help="stream without stream_options.include_usage (the span then has no token counts)")
@@ -145,6 +163,8 @@ def main(argv=None):
         return 2
     base_url = resolve_base_url()
     max_tokens = int(os.environ.get("NOVITA_MAX_TOKENS", "128"))
+    tools_model = os.environ.get("NOVITA_TOOLS_MODEL") or model
+    bad_model = os.environ.get("NOVITA_BAD_MODEL") or BAD_MODEL
 
     # 1. Future AGI tracing. The Future AGI key pair is read from FI_API_KEY / FI_SECRET_KEY.
     trace_provider = register(
@@ -158,7 +178,7 @@ def main(argv=None):
 
     tracer = FITracer(trace_provider.get_tracer("novita-ai-example"), config=TraceConfig())
     session_id = a.session_id or f"novita-ai-{uuid.uuid4()}"
-    wanted = ["chat", "stream", "tools", "error"] if a.scenario == "all" else [a.scenario]
+    wanted = ["chat", "stream", "tools", "error", "bad-model"] if a.scenario == "all" else [a.scenario]
     # Optional app-level parent span and session, so the calls are grouped in Observe.
     with using_session(session_id), tracer.start_as_current_span(
         "novita-ai-demo", fi_span_kind=FiSpanKindValues.AGENT
@@ -171,9 +191,11 @@ def main(argv=None):
                 elif name == "stream":
                     out = run_stream(client, model, a.prompt, a.system, max_tokens, include_usage=not a.no_stream_usage)
                 elif name == "tools":
-                    out = run_tools(client, model, a.prompt, a.system, max_tokens, tracer)
-                else:
+                    out = run_tools(client, tools_model, a.prompt, a.system, max_tokens, tracer)
+                elif name == "error":
                     out = run_error(base_url, model, a.prompt, max_tokens)
+                else:
+                    out = run_bad_model(client, bad_model, a.prompt, max_tokens)
             except openai.OpenAIError as exc:  # keep the demo going; the span already records the failure
                 out = f"{type(exc).__name__}"
             print(f"RESULT {name}: {out}")

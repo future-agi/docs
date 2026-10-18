@@ -104,12 +104,12 @@ def test_documented_residue_of_the_hide_flags(run_app, collector):
     # session id
     assert all(s["_attrs"].get("session.id") for s in spans)
     # error text: status message and exception event (type, message, stack trace with local file paths)
-    failed = [s for s in spans if s.get("status", {}).get("code") == "STATUS_CODE_ERROR"]
-    assert failed and "401" in failed[0]["status"]["message"]
+    failed = [s for s in spans if s.get("status", {}).get("code") == "STATUS_CODE_ERROR" and "401" in s["status"]["message"]]
+    assert failed
     assert "AuthenticationError" in failed[0]["status"]["message"]
     exc = [e for e in failed[0]["events"] if e["name"] == "exception"][0]
     attrs = {a["key"]: next(iter(a["value"].values())) for a in exc["attributes"]}
     assert {"exception.type", "exception.message", "exception.stacktrace"} <= set(attrs)
     assert "site-packages" in attrs["exception.stacktrace"]  # a local file path
-    # Novita's error body, here the stand-in's envelope with its trace id, is part of the error text the span keeps
-    assert "FAILED_TO_AUTH" in attrs["exception.message"] and "trace_id" in attrs["exception.message"]
+    # Novita's error body (the live 401 envelope, which the stand-in copies) is part of the error text the span keeps
+    assert "FAILED_TO_AUTH" in attrs["exception.message"] and "failed to authenticate API key" in attrs["exception.message"]

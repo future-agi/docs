@@ -2,11 +2,13 @@
 
 Novita's own pages show two base URLs for the OpenAI client: https://api.novita.ai/openai/v1
 (quickstart, Hermes guide, the curl examples) and https://api.novita.ai/openai (API overview and
-several SDK guides). Langfuse's Novita page shows a third, https://api.novita.ai/v3/openai.
+several SDK guides). Langfuse's Novita page shows a third, https://api.novita.ai/v3/openai. The live
+API answered 200 on all three on 2026-10-18.
 
 These tests show what the unmodified client dials, what request path each form produces, and what
 each form looks like in the trace. Nothing here reaches Novita. The refusing CONNECT probe answers
-403 to the tunnel request and opens nothing, and the local stand-in decides which paths it routes."""
+403 to the tunnel request and opens nothing, and the local stand-in serves the routes the live API
+served."""
 
 import pytest
 from conftest import MODEL, NOVITA_KEY, novita_requests, llm_spans, start_stub
@@ -62,9 +64,10 @@ def test_the_span_is_the_same_whichever_of_novitas_two_urls_the_client_uses(run_
     [(("/openai/v1/chat/completions",), "bare_url"), (("/openai/chat/completions",), "url")],
 )
 def test_a_form_the_server_does_not_route_is_a_failed_call_not_a_tracing_fault(run_app, collector, served, wrong_form):
-    """If the live service routed only one of Novita's two forms, the other would fail. Simulated
-    here by a stand-in that serves only one path: the call is traced as an ERROR span carrying the
-    HTTP status, and the key never appears in it."""
+    """A path the server does not route fails (the live API routed all three forms on 2026-10-18;
+    a typo such as /openai/v1/v1 gets its plain-text 404). Simulated here by a stand-in that serves
+    only one path: the call is traced as an ERROR span carrying the HTTP status, and the key never
+    appears in it."""
     only = start_stub(paths=served)
     try:
         result = run_app("--scenario", "chat", base_url=getattr(only, wrong_form))
@@ -78,16 +81,16 @@ def test_a_form_the_server_does_not_route_is_a_failed_call_not_a_tracing_fault(r
     assert NOVITA_KEY not in span["status"]["message"]
 
 
-def test_langfuses_v3_openai_path_is_not_routed_by_the_stand_in(run_app, collector, stub):
+def test_langfuses_v3_openai_path_gives_the_same_span(run_app, collector, stub):
     """https://api.novita.ai/v3/openai is on Langfuse's Novita page and in no Novita page read on
-    2026-10-15. The stand-in does not route it, so the call fails and is traced as an error. This is
-    the stand-in's choice, not a measurement of Novita."""
-    result = run_app("--scenario", "chat", base_url=stub.root + "/v3/openai")
-    assert result.returncode == 0
-    assert "RESULT chat: NotFoundError" in result.stdout
-    assert {r["path"] for r in novita_requests(stub)} == {"/v3/openai/chat/completions"}
-    (span,) = llm_spans(collector)
-    assert span["status"]["code"] == "STATUS_CODE_ERROR"
+    2026-10-15 or 2026-10-18. The live API still answered on it on 2026-10-18, so the stand-in serves
+    it too, and the span is the same as for the recipe URL."""
+    for url in (stub.url, stub.root + "/v3/openai"):
+        assert run_app("--scenario", "chat", "--session-id", "same-session", base_url=url).returncode == 0
+    assert [r["path"] for r in novita_requests(stub)] == ["/openai/v1/chat/completions", "/v3/openai/chat/completions"]
+    first, second = llm_spans(collector)
+    assert first["status"]["code"] == second["status"]["code"] == "STATUS_CODE_OK"
+    assert first["_attrs"] == second["_attrs"]
 
 
 def test_the_span_records_neither_the_host_nor_the_path(run_app, collector, stub):

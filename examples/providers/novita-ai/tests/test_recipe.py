@@ -32,13 +32,14 @@ def test_every_scenario_runs_and_the_trace_has_the_expected_shape(run_app, colle
     for name in ("chat", "stream", "tools"):
         assert f"RESULT {name}: echo:" in result.stdout
     assert "RESULT error: HTTP 401" in result.stdout
+    assert "RESULT bad-model: HTTP 404" in result.stdout
 
     spans = collector.spans()
     assert len({s["trace_id"] for s in spans}) == 1
     by_kind = {}
     for s in spans:
         by_kind.setdefault(kind(s), []).append(s)
-    assert len(by_kind["AGENT"]) == 1 and len(by_kind["TOOL"]) == 1 and len(by_kind["LLM"]) == 5
+    assert len(by_kind["AGENT"]) == 1 and len(by_kind["TOOL"]) == 1 and len(by_kind["LLM"]) == 6
     root = by_kind["AGENT"][0]
     assert not root.get("parent_span_id")
     for child in by_kind["LLM"] + by_kind["TOOL"]:
@@ -85,15 +86,15 @@ def test_streaming_with_the_documented_usage_option_has_tokens(run_app, collecto
     assert (attrs.get("gen_ai.request.model") == MODEL) == HAS_PROVIDER_TABLE
 
 
-def test_streaming_without_the_usage_option_has_no_token_counts(run_app, collector, stub):
-    """The docs page tells readers to pass stream_options={"include_usage": True}. Against the
-    stand-in, which follows the option as Novita's reference documents it, omitting it leaves the
-    span without token counts."""
+def test_streaming_without_the_usage_option_still_has_token_counts(run_app, collector, stub):
+    """The live API sent a usage chunk on a streamed call without stream_options (2026-10-18), and
+    traceai-openai put its counts on the span. The stand-in does the same. The recipe still passes
+    the documented option."""
     assert run_app("--scenario", "stream", "--no-stream-usage").returncode == 0
     assert "stream_options" not in novita_requests(stub)[0]["body"]
     (stream,) = llm_spans(collector)
     attrs = stream["_attrs"]
-    assert not any(k.startswith("gen_ai.usage.") for k in attrs)
+    assert int(attrs["gen_ai.usage.total_tokens"]) > 0
     assert stream["status"]["code"] == "STATUS_CODE_OK"
 
 
@@ -104,6 +105,29 @@ def test_failed_call_is_an_error_span(run_app, collector):
     assert "AuthenticationError" in failed["status"]["message"] and "401" in failed["status"]["message"]
     assert failed["_attrs"].get("gen_ai.request.model") in (None, MODEL)
     assert "exception" in [e["name"] for e in failed.get("events", [])]
+
+
+def test_an_unknown_model_id_is_an_error_span_with_novitas_404(run_app, collector, stub):
+    """The bad-model scenario: right key, model id that does not exist. The live API answered 404
+    MODEL_NOT_FOUND (2026-10-18); the stand-in returns the same body."""
+    result = run_app("--scenario", "bad-model")
+    assert result.returncode == 0 and "RESULT bad-model: HTTP 404" in result.stdout
+    (request,) = novita_requests(stub)
+    assert request["body"]["model"] == "novita-ai-example/no-such-model"
+    assert request["authorization"] == f"Bearer {NOVITA_KEY}"
+    (failed,) = llm_spans(collector)
+    assert failed["status"]["code"] == "STATUS_CODE_ERROR"
+    message = failed["status"]["message"]
+    assert "NotFoundError" in message and "404" in message and "MODEL_NOT_FOUND" in message
+    assert NOVITA_KEY not in message
+    assert "exception" in [e["name"] for e in failed.get("events", [])]
+
+
+def test_the_tools_scenario_can_use_its_own_model(run_app, stub):
+    """Novita answers 400 for tools on a model without function calling, so the example lets the
+    tools scenario use a different model id than the rest."""
+    assert run_app("--scenario", "tools", env={"NOVITA_TOOLS_MODEL": "tools-model-id"}).returncode == 0
+    assert {r["body"]["model"] for r in novita_requests(stub)} == {"tools-model-id"}
 
 
 def test_span_model_is_the_model_in_the_response_body(run_app, collector, stub):
