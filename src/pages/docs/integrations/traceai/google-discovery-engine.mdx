@@ -24,7 +24,7 @@ pip install "fi-instrumentation-otel>=1.1.0" "google-cloud-discoveryengine>=0.20
   ./python/frameworks/discoveryengine
 ```
 
-Tested with `google-cloud-discoveryengine` 0.20.5 (the latest release when this page was written, 2026-10-16) on Python 3.10, 3.11, 3.12 and 3.13. The package accepts `google-cloud-discoveryengine>=0.20.5,<1`; outside that range `instrument()` logs an error and wraps nothing.
+Tested with `google-cloud-discoveryengine` 0.20.5 (still the latest release on PyPI on 2026-10-18), against the live API on Python 3.12 and in the test suite on Python 3.10, 3.11, 3.12 and 3.13. The package accepts `google-cloud-discoveryengine>=0.20.5,<1`; outside that range `instrument()` logs an error and wraps nothing.
 
 ## 2. Set environment variables
 
@@ -35,7 +35,7 @@ os.environ["FI_API_KEY"] = "your-futureagi-api-key"
 os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
 ```
 
-Google credentials stay where the Google client already reads them: Application Default Credentials (`gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`), credentials you pass to the client, or `client_options={"api_key": ...}` for `search_lite`. The package never reads ADC and never records a credential.
+Google credentials stay where the Google client already reads them: Application Default Credentials (`gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`), credentials you pass to the client, or `client_options={"api_key": ...}` for `search_lite` (public website search only). The package never reads ADC and never records a credential.
 
 The Future AGI project (`project_name` below) is not your GCP project. The GCP project only appears inside resource names such as the serving config.
 
@@ -69,6 +69,8 @@ answers.answer_query(
 Import the clients from `google.cloud.discoveryengine_v1`. **`from google.cloud import discoveryengine` produces no spans**: at 0.20.5 that unversioned module re-exports the v1beta clients, which are not traced.
 
 An engine in a multi-region location needs its regional endpoint, for example `client_options={"api_endpoint": "eu-discoveryengine.googleapis.com"}`. The gRPC (default), gRPC asyncio and REST (`transport="rest"`) transports are traced the same way.
+
+What the server accepts depends on your app, not on this package. `search_lite` serves public website search with an API key; against any other data store Discovery Engine answers `FAILED_PRECONDITION` ("API key is only supported for public website search."). `answer_query` needs an app with the Large Language Model add-on (Enterprise edition); a Standard edition app answers `FAILED_PRECONDITION` ("This feature is only available when Large Language Model add-on is enabled."). Both show up as `ERROR` spans with `discoveryengine.error.status` = `FAILED_PRECONDITION`.
 
 Call `register()` first so the instrumentor has a tracer provider. Under an active span (an agent or a RAG pipeline step) the Discovery Engine span is its child, so a retrieval followed by an LLM call shows as one trace.
 
@@ -118,15 +120,44 @@ With hidden inputs, `input.value` is `__REDACTED__`, `gen_ai.retrieval.query` is
 | `google-cloud-discoveryengine` | 0.20.5 |
 | `traceAI-discoveryengine` | 0.1.0 |
 | `fi-instrumentation-otel` | 1.1.0 |
-| Python | 3.10, 3.11, 3.12, 3.13 |
+| `google-api-core` / `google-auth` | 2.42.0 / 2.62.0 |
+| `grpcio` / `protobuf` | 1.84.0 / 7.36.2 |
+| Python | 3.10, 3.11, 3.12, 3.13 (live run on 3.12) |
 
-Verified on 2026-10-16 against a local Future AGI deployment: the real `google-cloud-discoveryengine` clients (REST, gRPC and async gRPC transports) called local stand-ins of the documented v1 API, inside an agent span next to an LLM call. The hierarchy, span kinds, an `ERROR` span with `PERMISSION_DENIED`, and the `FI_HIDE_INPUTS` switch were checked in the stored spans. `discoveryengine.googleapis.com` itself was not called (no GCP project was available for the check).
+### Live vendor verification (2026-10-18)
+
+The package was run as this page describes against the real `discoveryengine.googleapis.com` (v1, `global`), exporting to a local Future AGI deployment. The app was the smallest Standard edition setup: one unstructured data store with three short inline documents and one generic search engine without the LLM add-on, deleted after the run. The only change from the code above: ADC was not set up on the test machine, so each client got `credentials=google.oauth2.credentials.Credentials(token=..., quota_project_id=...)`.
+
+| Call | Transport | Result from Google | Span in Future AGI |
+|---|---|---|---|
+| `search` | gRPC, REST, gRPC asyncio | 2 results | `OK`, `discoveryengine.result_count` = 2, query, serving config |
+| `search` on a serving config that does not exist | gRPC, REST | `NotFound` 404 | `ERROR`, `NOT_FOUND` / 404 |
+| `search_lite` with OAuth credentials | gRPC | `FailedPrecondition` 400 | `ERROR`, `FAILED_PRECONDITION` / 400 |
+| `answer_query` on the Standard edition app | gRPC and REST | `FailedPrecondition` 400 (`BadRequest` on REST) | `ERROR`, `FAILED_PRECONDITION` / 400 |
+
+The RAG trace (agent span, three Discovery Engine spans, then an LLM call that used the returned snippets) as stored, trace `276682b6-0d8f-43de-bf3a-ab48b507cf22`:
+
+```text
+- [agent] orbit-support-agent
+  - [retriever] discoveryengine.search
+  - [retriever] discoveryengine.search_lite  status=ERROR: FailedPrecondition: 400 API key is only supported for public website search.
+  - [retriever] discoveryengine.answer_query status=ERROR: FailedPrecondition: 400 This feature is only available when Large Language Model add-on is enabled.
+  - [llm] ChatCompletion model=gpt-5.6-terra tokens=453/31
+```
+
+Privacy was checked in every stored column. With the defaults the query was on each Discovery Engine span; with `FI_HIDE_INPUTS=true` it was in no column (`input.value` = `__REDACTED__`, no `gen_ai.retrieval.query`). In both modes the Discovery Engine spans held no result content, and nothing stored contained a credential, an access token, a local path, a user name, a host name or a stack trace.
+
+Not verified against Google yet, only against local stand-ins of the documented API: a successful `search_lite` (needs a public website data store and an API key), a successful `answer_query` with its answer state, length and session (needs the LLM add-on), pagination, a regional endpoint, the async REST transport, and removing a hidden query from a server error that quotes it (the real errors seen did not quote the query).
 
 ## Troubleshooting
 
 - **No spans appear.** Import the clients from `google.cloud.discoveryengine_v1` (not `google.cloud.discoveryengine`), call `instrument()` before the first call, and check `FI_API_KEY` and `FI_SECRET_KEY`.
 - **`instrument()` logs a version error.** The installed `google-cloud-discoveryengine` is outside `>=0.20.5,<1`; upgrade it.
 - **Only gRPC transport spans, no query.** Those come from a gRPC instrumentation, not from this package. Install and instrument `traceAI-discoveryengine`; the gRPC spans then nest under its spans.
+- **`FailedPrecondition` on `answer_query`: "This feature is only available when Large Language Model add-on is enabled."** The app is Standard edition. Enable the LLM add-on (Enterprise edition) or use `search`.
+- **`FailedPrecondition` on `search_lite`: "API key is only supported for public website search."** `search_lite` only serves public website data stores with an API key. Use `search` with OAuth or service account credentials for other data stores.
+- **`NotFound`: "We were unable to find an engine to service the request."** The engine ID in the serving config is wrong, or the engine was created moments ago. Check the resource name and the location.
+- **`search` returns no results right after you add documents.** Indexing takes a few minutes (about six in our test for three small documents), and `search` returns an empty page until then.
 - **`PermissionDenied` or `Forbidden` on every call.** That is the GCP side: check the credentials, the serving config name and the regional endpoint. The span records the status and code, not the credential.
 - **Duplicate spans.** Do not combine this package with another instrumentor that wraps the same client methods.
 
