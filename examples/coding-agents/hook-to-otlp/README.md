@@ -30,7 +30,7 @@ send is inline (default timeout 3 s) and state files are not locked.
 
 ### Registering the hook (canonical guarded form)
 
-Every app ships its hook commands in this form, so a missing emitter, a missing
+Every app that uses this emitter ships its hook commands in this form, so a missing emitter, a missing
 `python3`, or a crash can never return exit code 2 (which many hosts treat as
 "block") and never prints a decision:
 
@@ -98,9 +98,14 @@ expected (or empty) stdout and that the installed emitter received the payload.
   spans add `llm.model_name` when the payload names a model (the root uses the last model
   reported by a session, turn or llm event).
 - Opted-in content keeps paths but replaces the user name in home-directory paths with
-  `<user>` (`/Users/<user>/...`, `/home/<user>/...`, `C:\Users\<user>\...`, `~<user>/...`),
-  including names with spaces when a path separator follows them, and this machine's own
-  home directory wherever it appears.
+  `<user>` (`/Users/<user>/...`, `/home/<user>/...`, `C:\Users\<user>\...`, `~<user>/...`).
+  The name is the one directory component after the prefix; it stops at whitespace,
+  quotes, and punctuation no account name uses, so the rest of a command stays intact
+  (`cd /Users/<user> && ls src/x`). This machine's own user name (the last component of
+  `os.path.expanduser("~")`) is matched literally, so it is replaced in full even when it
+  contains spaces. Limitation: another account's name with spaces (for example from a
+  log pasted from another machine) keeps the part after the first space
+  (`/Users/<user> Smith/...`).
 
 ## Writing an adapter
 
