@@ -2,8 +2,8 @@
 
 session.jsonl is shaped as https://antigravity.google/docs/hooks?tab=ide
 documents the payloads, plus the extra content fields of the Antigravity IDE
-2.5.5 hook schema. real-cli-1.1.8*.jsonl were captured from a live Antigravity
-CLI 1.1.8 (``agy -p``) run on 2026-10-18 and sanitized (fixture ids, paths and
+2.5.5 hook schema. real-cli-1.4.2*.jsonl were captured from a live Antigravity
+CLI 1.4.2 (``agy -p``) run on 2026-10-18 and sanitized (fixture ids, paths and
 markers only).
 """
 from __future__ import annotations
@@ -181,8 +181,8 @@ class AntigravityAdapterTest(unittest.TestCase):
         self.assertEqual(antigravity.parse("PreToolUse", gemini), [])
 
 
-REAL = FIXTURES / "antigravity" / "real-cli-1.1.8.jsonl"
-REAL_ERRORS = FIXTURES / "antigravity" / "real-cli-1.1.8-tool-error.jsonl"
+REAL = FIXTURES / "antigravity" / "real-cli-1.4.2.jsonl"
+REAL_ERRORS = FIXTURES / "antigravity" / "real-cli-1.4.2-tool-error.jsonl"
 REAL_CONV, REAL_ERROR_CONV = "fixture-agy-conv-0001", "fixture-agy-conv-0002"
 # Present in the captured payloads; never exported by default.
 REAL_DEFAULT_ABSENT = ("/Users/fixture", "/.gemini/", "brain", "transcript", "AGY_TOOL_INPUT_MARKER", "README.md",
@@ -190,7 +190,7 @@ REAL_DEFAULT_ABSENT = ("/Users/fixture", "/.gemini/", "brain", "transcript", "AG
 
 
 class AntigravityRealCliTest(unittest.TestCase):
-    """Payloads from a live Antigravity CLI 1.1.8 run (sanitized)."""
+    """Payloads from a live Antigravity CLI 1.4.2 run (sanitized)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -232,7 +232,7 @@ class AntigravityRealCliTest(unittest.TestCase):
         self.assertEqual(sorted(set(call_ids)), ["step-10", "step-2", "step-3", "step-5"])
 
     def test_model_call_spans_cover_their_tool_calls(self):
-        # CLI 1.1.8 sends PostToolUse before the PostInvocation of the same response.
+        # CLI 1.4.2 sends PostToolUse before the PostInvocation of the same response.
         spans = self.spans(REAL)
         first_call = min({s["spanId"]: s for s in by_name(spans, "Model call")}.values(),
                          key=lambda s: int(s["startTimeUnixNano"]))

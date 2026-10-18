@@ -6,9 +6,9 @@
 #
 # Default input is the session in ../hook-to-otlp/tests/fixtures/antigravity/session.jsonl,
 # shaped as https://antigravity.google/docs/hooks documents the IDE payloads. Pass
-# ../hook-to-otlp/tests/fixtures/antigravity/real-cli-1.1.8.jsonl (or -tool-error.jsonl)
+# ../hook-to-otlp/tests/fixtures/antigravity/real-cli-1.4.2.jsonl (or -tool-error.jsonl)
 # with FIXTURE_CONV=fixture-agy-conv-0001 (0002) to replay payloads captured from a live
-# Antigravity CLI 1.1.8 run. For a live run, install the hooks into a project and run agy there.
+# Antigravity CLI 1.4.2 run. For a live run, install the hooks into a project and run agy there.
 # Each line runs emit.py as its own process with the event name on argv, exactly
 # as the hooks.json command does. Every run gets a fresh conversation id, printed
 # at the end with its trace id. Set FI_HOOK_CAPTURE_CONTENT=1 to exercise the

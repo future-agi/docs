@@ -3,8 +3,8 @@
 Payload shapes: https://antigravity.google/docs/hooks (IDE and CLI tabs, read
 2026-10-14 and 2026-10-18), checked against the hook protobuf schema shipped in
 Antigravity IDE 2.5.5 (``exa.hooks_pb`` in the language server) and against
-payloads captured from a live Antigravity CLI 1.1.8 (``agy``) run
-(tests/fixtures/antigravity/real-cli-1.1.8*.jsonl). Payloads are camelCase and
+payloads captured from a live Antigravity CLI 1.4.2 (``agy``) run
+(tests/fixtures/antigravity/real-cli-1.4.2*.jsonl). Payloads are camelCase and
 do NOT name the event, so the hook command passes it on argv
 (``emit.py antigravity PreToolUse``). Every payload carries ``conversationId``
 (the session) and ``modelName``.
@@ -16,9 +16,9 @@ do NOT name the event, so the hook command passes it on argv
     PostToolUse     -> completed tool span            toolCall.args/result = content,
                        (gen_ai.tool.call.id = step-<stepIdx>), ERROR when ``error`` is set
     Stop            -> turn end                        ERROR when terminationReason is
-                                                       "error" (docs) / "ERROR" (CLI 1.1.8)
+                                                       "error" (docs) / "ERROR" (CLI 1.4.2)
 
-Observed in CLI 1.1.8: PostInvocation fires after the tools of that model
+Observed in CLI 1.4.2: PostInvocation fires after the tools of that model
 response have run (PreInvocation -> PostToolUse... -> PostInvocation), so a
 Model call span covers the response and its tool calls. A resumed conversation
 (``agy --conversation``) sends no SessionStart and restarts invocationNum at 0,

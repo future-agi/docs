@@ -3,7 +3,7 @@
 Antigravity IDE 2.5.5 runs a hook command with ``sh -c`` on Unix (``cmd /c`` on
 Windows), in the folder that contains hooks.json, with the JSON payload on stdin,
 and reads a JSON decision from stdout (embedded hooks reference in the 2.5.5
-language server). Antigravity CLI 1.1.8 did the same in a live run (2026-10-18:
+language server). Antigravity CLI 1.4.2 did the same in a live run (2026-10-18:
 cwd ``<project>/.agents``, payload on stdin). Hooks run synchronously and block the agent loop. Every shipped
 command is the canonical subshell guard
 ``(python3 -B <emit.py> antigravity <Event> 2>/dev/null || true)``: exit 0 and no
