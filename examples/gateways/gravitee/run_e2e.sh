@@ -13,6 +13,7 @@
 # Required env: FI_API_KEY FI_SECRET_KEY FI_BASE_URL
 # Optional:     FI_PROJECT_NAME [gravitee-fi-e2e]  LLM_API_KEY (+ LLM_BASE_URL, LLM_MODEL) for the LLM request
 #               FI_VERIFY=/path/to/fi_verify.py  PREFIX (container name prefix)  GRAVITEE_VERSION OTELCOL_VERSION
+#               READY_TIMEOUT [600] seconds per readiness wait (per component: see lib.sh)
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 : "${FI_API_KEY:?}" "${FI_SECRET_KEY:?}" "${FI_BASE_URL:?}"
@@ -30,6 +31,7 @@ sid() { echo "$1" | cut -d- -f3; }          # caller span id of a traceparent
 log() { echo "$*" | tee -a "$EVID/run.log"; }
 trap 'kill "${BACKEND_PID:-}" 2>/dev/null || true; rm -f "$EVID/llm.hdr"; cleanup_all' EXIT
 : > "$EVID/run.log"
+: > "$EVID/readiness.txt"    # every wait in lib.sh appends the time its component took to become ready
 SINCE=$(date -u +'%Y-%m-%d %H:%M:%S')
 M_OFF="GRAVMARK-OFF-$(hex 10)"; M_V="GRAVMARK-VOFF-$(hex 10)"; M_ON="GRAVMARK-ON-$(hex 10)"; M_ON2="GRAVMARK-ON2-$(hex 10)"
 EXTRA="/Users/someuser/secret-notes.txt someuser@example.com"
@@ -153,6 +155,9 @@ stop_gateway; rm_gateway; clear_gw_headers; stop_otelcol
 log "== backend saw the caller's trace id (W3C traceparent forwarded) =="
 grep -c "$(tid "$TP_OFF")" "$EVID/backend.log" | sed 's/^/backend requests carrying the fi-echo trace id: /' | tee -a "$EVID/run.log"
 printf '%s\n' "$TP_DIRECT" "$TP_OFF" "root-trace-$ROOT_TRACE" "$TP_VOFF" "$TP_FAIL" "$TP_UNTRACED" "$TP_LLM" "$TP_FLUSH" "$TP_ONOFF" "$TP_ON" "$TP_ON2" "$TP_BADKEY" "$TP_BADTOKEN" > "$EVID/traceparents.txt"
+
+log "== readiness (time each start took to pass its readiness probe; READY_TIMEOUT=${READY_TIMEOUT}s) =="
+tee -a "$EVID/run.log" < "$EVID/readiness.txt"
 
 log "== verify =="
 set +e; RC=0

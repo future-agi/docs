@@ -16,7 +16,7 @@ Why a Collector: Future AGI needs the resource attribute `project_name`. Gravite
 | --- | --- |
 | `gravitee-opentelemetry.yml` | The `services.opentelemetry` block the page tells customers to put in the Gateway's `gravitee.yml` (verbose off, HTTP/protobuf, no compression, redaction rules) |
 | `otelcol.yaml` | The Collector config: bearer-token receiver, sets `project_name`/`project_type`, optional content opt-in, plain protobuf to Future AGI |
-| `lib.sh` | Helpers: start/stop MongoDB, Management API, Gateway and Collector in Docker; merge the block into the image's own `gravitee.yml` |
+| `lib.sh` | Helpers: start/stop MongoDB, Management API, Gateway and Collector in Docker and wait until each is ready; merge the block into the image's own `gravitee.yml` |
 | `create_apis.py` | Creates and deploys the test v4 HTTP proxy APIs through the real Management API (per-API tracing switch on/off, verbose on one API) |
 | `echo_server.py` | Tiny backend; logs which requests carried a W3C `traceparent` |
 | `run_e2e.sh` | The real end-to-end run (below) |
@@ -26,13 +26,13 @@ Why a Collector: Future AGI needs the resource attribute `project_name`. Gravite
 | `otlp_dump.py` | Prints an OTLP protobuf body as JSON |
 | `render_gateway_config.py` | Merges `gravitee-opentelemetry.yml` into a `gravitee.yml` |
 | `fixtures/*.pb` | OTLP bodies captured from Gateway 4.12.23: content off, backend down, verbose opt-in, and `extraAttributes` with `project_name` |
-| `tests/` | `test_config.py` (the two config files), `test_fixtures.py` (what the Gateway put on the wire), `test_contract.py` (fixtures replayed at a collector) |
+| `tests/` | `test_config.py` (the two config files), `test_fixtures.py` (what the Gateway put on the wire), `test_contract.py` (fixtures replayed at a collector), `test_readiness.py` (the readiness waits in `lib.sh`, with fake `docker`/`curl`) |
 
 ## Tests
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
-pytest tests                 # test_config.py and test_fixtures.py need nothing else
+pytest tests                 # test_config.py, test_fixtures.py and test_readiness.py need nothing else
 export FI_BASE_URL=http://localhost:14338 FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=my-gravitee-project
 pytest tests                 # now also test_contract.py (skips without FI_*)
 ```
@@ -63,6 +63,22 @@ export FI_VERIFY=/path/to/fi_verify.py        # optional span-tree check from th
 
 It checks every trace id it sent, asserts no key or token appears in the container logs, then scans every stored
 column for the unique markers (absent with content off, the verbose header marker present with the opt-in).
-Evidence goes to `.evidence/` (not committed). Ports: Gateway 18082 and Management API 18083 (loopback only), and
-the backend on 18090 (all interfaces, so the containers can reach it); override with `GW_PORT`, `MAPI_PORT`,
-`BACKEND_PORT`. Containers are named `$PREFIX-*` (default `gravitee-fi-e2e`) and removed on exit.
+Evidence goes to `.evidence/` (not committed). Ports: Gateway 18082, Management API 18083 and the Collector's OTLP
+receiver 18084 (loopback only, used for the readiness probe), and the backend on 18090 (all interfaces, so the
+containers can reach it); override with `GW_PORT`, `MAPI_PORT`, `OTELCOL_PORT`, `BACKEND_PORT`. Containers are named
+`$PREFIX-*` (default `gravitee-fi-e2e`) and removed on exit.
+
+Every start waits for the component's own readiness signal instead of a fixed time:
+
+| Component | Ready when |
+| --- | --- |
+| MongoDB | `mongosh` in the container gets `ok: 1` for `ping` |
+| Management API | `GET /_node/health` on its internal API (inside the container) reports every probe healthy, and the REST API answers 200 |
+| Gateway | `GET /_node/health?probes=http-server,sync-process` on its internal API (inside the container) reports both healthy; then the test API `/fi-untraced/` must answer 200 within `GW_API_GRACE` seconds (default 30) |
+| Collector | its OTLP/HTTP receiver answers (401 to the unauthenticated probe, so nothing is forwarded) |
+
+Each wait lasts up to `READY_TIMEOUT` seconds (default 600; per component `MONGO_READY_TIMEOUT`, `MAPI_READY_TIMEOUT`,
+`GW_READY_TIMEOUT`, `OTELCOL_READY_TIMEOUT`), polled every `READY_POLL` seconds (default 2). If a component is not
+ready in time, or its container stops, the run fails and prints the container's last `LOG_TAIL` (default 80) log lines
+with key and token values redacted. The time each start took is written to `.evidence/readiness.txt` and printed
+before the checks.
