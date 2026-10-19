@@ -1,0 +1,330 @@
+---
+title: "Swiftide tracing with Future AGI"
+description: "Send the tracing spans of a Swiftide (Rust) agent to Future AGI Observe with a tracing-opentelemetry layer and the OTLP/HTTP exporter. Agent, step, model-call and tool spans, flushed on shutdown, with message content off by default."
+---
+
+## About
+
+[Swiftide](https://swiftide.rs) is a Rust library for LLM agents, tasks and indexing pipelines. Its agents are instrumented with the Rust [`tracing`](https://docs.rs/tracing) crate. This page sends those spans to Future AGI: your program installs a [`tracing-opentelemetry`](https://docs.rs/tracing-opentelemetry) layer whose [OTLP/HTTP exporter](https://docs.rs/opentelemetry-otlp) carries your Future AGI keys and the Observe project name. One `agent.query(...)` call becomes one trace:
+
+```text
+agent.query                       one per query / query_once / run / run_once
+├─ step                           one per model turn (attribute step_count = 0, 1, ...)
+│  ├─ complete                    the chat completion call
+│  ├─ tool.get_weather            one per tool call the model asked for
+│  ├─ add_message                 one per message added to the history
+│  └─ add_message
+└─ step
+   ├─ complete
+   └─ add_message
+```
+
+There is no Future AGI package for Rust. Everything on this page is standard `tracing`, `tracing-opentelemetry` and `opentelemetry` code in your application; Swiftide itself is not configured.
+
+<Warning>
+Beta. Everything on this page was run end to end against a self-hosted Future AGI: a real Swiftide 0.33.0 agent with one tool, real model calls through an OpenAI-compatible endpoint, the exporter below, and the trace read back from Future AGI's database and UI. Future AGI shows the spans as Swiftide names them, with no span type, model name or token counts: see [What you see in Observe](#what-you-see-in-observe).
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `swiftide` **0.33.0** (latest, 2026-10-14; needs Rust 1.97 or newer) and 0.32.1, on Rust 1.99.1 (macOS arm64). `tracing-opentelemetry` 0.34.0, `opentelemetry` / `opentelemetry_sdk` / `opentelemetry-otlp` 0.33.1, `tracing-subscriber` 0.3.23, `async-openai` 0.41.3 (0.30.1 with swiftide 0.32.1), `tokio` 1. Checked 2026-10-16: all latest stable releases. |
+| Swiftide source read | Tag [`v0.33.0`](https://github.com/bosun-ai/swiftide/tree/v0.33.0) (`e84e39b`): [`swiftide-agents/src/agent.rs`](https://github.com/bosun-ai/swiftide/blob/v0.33.0/swiftide-agents/src/agent.rs) (`agent.query` on line 369, `step` on line 542, the tool span on line 655, `add_message` on line 790) and [`swiftide-integrations/src/openai/chat_completion.rs`](https://github.com/bosun-ai/swiftide/blob/v0.33.0/swiftide-integrations/src/openai/chat_completion.rs) (`complete` on line 47). Swiftide's README lists `tracing` as an observability surface. |
+| Licenses | Swiftide: MIT. `tracing-opentelemetry`: MIT. `opentelemetry-rust`: Apache-2.0. None of them is bundled with Future AGI. |
+| Source | [examples/frameworks/swiftide](https://github.com/future-agi/docs/tree/main/examples/frameworks/swiftide): the agent, the tracing setup, Rust tests and the end-to-end script |
+
+### How this differs from other pages
+
+- **Swiftide's `langfuse` feature.** Swiftide has a `langfuse` cargo feature and a `LangfuseLayer` ([Langfuse's Swiftide page](https://langfuse.com/integrations/frameworks/swiftide)). That layer posts to Langfuse's own ingestion API, not to OpenTelemetry. Do not enable the feature or install that layer for Future AGI; this page does neither.
+- **traceAI instrumentors** ([OpenAI](/docs/integrations/traceai/openai), [LangChain](/docs/integrations/traceai/langchain) and the rest) are Python, TypeScript and Java packages that set span types, model names, token counts, inputs and outputs. Nothing like that exists for Rust. This page exports Swiftide's own spans unchanged, so those fields are empty.
+- **Other OpenTelemetry instrumentation in the same program.** Spans from other `tracing`-instrumented code at INFO level go to the same project through the same layer. That was not tested beyond Swiftide.
+
+## Set up
+
+<Steps>
+
+<Step title="Add the dependencies">
+
+<CodeBlock title="Cargo.toml" language="toml">
+
+```toml Cargo.toml
+[dependencies]
+# Swiftide: agents + OpenAI only. Do NOT add the `langfuse` feature; it is a different exporter.
+swiftide = { version = "=0.33.0", features = ["swiftide-agents", "openai"] }
+# The OpenAI client swiftide 0.33.0 is built on (its own requirement is "0.41"), used to set the
+# endpoint explicitly.
+async-openai = { version = "=0.41.3", default-features = false }
+anyhow = "1"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Tracing -> OpenTelemetry -> Future AGI. Versions must move together:
+# tracing-opentelemetry 0.34 is built against opentelemetry 0.33.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-opentelemetry = "=0.34.0"
+opentelemetry = { version = "=0.33.1", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["trace"] }
+# OTLP over HTTP + protobuf, uncompressed. No gRPC, no gzip/zstd, no metrics or logs pipelines.
+# internal-logs: export failures are logged through `tracing` (shown by the console layer).
+opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client", "reqwest-rustls", "internal-logs"] }
+```
+
+</CodeBlock>
+
+Keep `tracing-opentelemetry` and the three `opentelemetry` crates on matching releases: each `tracing-opentelemetry` release is built for one `opentelemetry` release, and a mismatch fails to compile. `reqwest-rustls` is needed for an `https://` endpoint. Future AGI does not accept gzip-compressed bodies, which is why no compression feature is enabled.
+</Step>
+
+<Step title="Build the exporter, the resource and the provider">
+
+<CodeBlock title="src/lib.rs" language="rust">
+
+```rust src/lib.rs
+pub fn otlp_exporter(settings: &Settings) -> Result<opentelemetry_otlp::SpanExporter> {
+    let headers = HashMap::from([
+        ("X-Api-Key".to_string(), settings.api_key.clone()),
+        ("X-Secret-Key".to_string(), settings.secret_key.clone()),
+    ]);
+    opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_protocol(Protocol::HttpBinary)
+        .with_endpoint(settings.endpoint.as_str())
+        .with_headers(headers)
+        .with_timeout(Duration::from_secs(10))
+        .build()
+        .context("building the OTLP span exporter")
+}
+
+pub fn resource(settings: &Settings) -> Resource {
+    Resource::builder()
+        .with_service_name(settings.service_name.clone())
+        .with_attributes([
+            KeyValue::new("project_name", settings.project_name.clone()),
+            KeyValue::new("project_type", "observe"),
+        ])
+        .build()
+}
+
+pub fn tracer_provider<E: SpanExporter + 'static>(
+    settings: &Settings,
+    exporter: E,
+) -> SdkTracerProvider {
+    let batch = BatchSpanProcessor::builder(exporter).build();
+    SdkTracerProvider::builder()
+        .with_span_processor(ContentFilter::new(batch, settings.capture_content))
+        .with_resource(resource(settings))
+        .build()
+}
+```
+
+</CodeBlock>
+
+| Setting | Value |
+| --- | --- |
+| Endpoint | `https://api.futureagi.com/tracer/v1/traces` (self-hosted: `<your Future AGI URL>/tracer/v1/traces`). The full URL, because `with_endpoint` is used as given. HTTP, not gRPC. |
+| Headers | Both `X-Api-Key` and `X-Secret-Key`, on the exporter. One of them alone is rejected. Never put them on a span. |
+| Resource | `project_name` (the Observe project; required) and `project_type=observe`. A span attribute named `project_name` does not count, and `service.name` is not read as a project name. |
+
+`Settings` in the example holds these values; `Settings::from_env()` reads `FI_API_KEY`, `FI_SECRET_KEY`, `FI_PROJECT_NAME`, `FI_BASE_URL` (default `https://api.futureagi.com`) and `TRACE_CONTENT`. `ContentFilter` is shown in [Privacy](#privacy).
+</Step>
+
+<Step title="Install the tracing layer">
+
+<CodeBlock title="src/lib.rs" language="rust">
+
+```rust src/lib.rs
+pub fn otel_filter(capture_content: bool) -> FilterFn<impl Fn(&Metadata<'_>) -> bool + Clone> {
+    FilterFn::new(move |meta: &Metadata<'_>| {
+        // The OpenTelemetry SDK's own log lines (export errors) go to the console only.
+        if meta.target().starts_with("opentelemetry") {
+            return false;
+        }
+        let level = *meta.level();
+        if meta.is_span() {
+            return level <= Level::INFO;
+        }
+        if !capture_content {
+            return level == Level::ERROR;
+        }
+        if meta.target().starts_with("swiftide") {
+            level <= Level::DEBUG
+        } else {
+            level <= Level::INFO
+        }
+    })
+}
+
+pub fn otel_layer<S>(
+    provider: &SdkTracerProvider,
+    capture_content: bool,
+) -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    tracing_opentelemetry::layer()
+        .with_tracer(provider.tracer("swiftide-agent"))
+        // code.file.path would carry absolute paths (home directory, user name) of every crate.
+        .with_location(false)
+        .with_threads(false)
+        .with_filter(otel_filter(capture_content))
+}
+
+pub fn init_tracing(settings: &Settings) -> Result<SdkTracerProvider> {
+    let provider = tracer_provider(settings, otlp_exporter(settings)?);
+    let console = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")));
+    Registry::default()
+        .with(otel_layer(&provider, settings.capture_content))
+        .with(console)
+        .try_init()
+        .context("a global tracing subscriber is already installed")?;
+    Ok(provider)
+}
+```
+
+</CodeBlock>
+
+Swiftide's agent spans are INFO spans, so the layer takes spans at INFO and above. With content capture off it takes only ERROR events: they mark the span ERROR, and their text is removed before export. `with_location(false)` matters: the default adds `code.file.path`, the absolute source path of every crate in your Cargo registry, which contains your home directory and user name.
+</Step>
+
+<Step title="Run the agent, then shut the provider down">
+
+<CodeBlock title="src/main.rs" language="rust">
+
+```rust src/main.rs
+fn main() -> Result<()> {
+    let settings = Settings::from_env()?;
+    let question = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "What is the weather in Paris right now?".to_string());
+    let model = std::env::var("MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+
+    let provider = init_tracing(&settings)?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let outcome = runtime.block_on(run_agent(question, model));
+    drop(runtime);
+
+    // Flush the last batch. Without this the spans still in the batch are lost on exit.
+    // (SKIP_SHUTDOWN=1 only exists for run_e2e.sh, to show that loss.)
+    let skip_shutdown = std::env::var("SKIP_SHUTDOWN").as_deref() == Ok("1");
+    if !skip_shutdown && let Err(err) = provider.shutdown() {
+        eprintln!("tracer shutdown: {err}");
+    }
+```
+
+</CodeBlock>
+
+`run_agent` builds an ordinary Swiftide agent (`Agent::builder().llm(&openai).tools(vec![get_weather()])...query(question)`), see [`src/main.rs`](https://github.com/future-agi/docs/tree/main/examples/frameworks/swiftide/src/main.rs). Run it:
+
+```bash
+export FI_API_KEY=<FI_API_KEY> FI_SECRET_KEY=<FI_SECRET_KEY> FI_PROJECT_NAME=swiftide-agent
+export OPENAI_API_KEY=<model provider key> MODEL=gpt-4o-mini   # OPENAI_BASE_URL=... for an OpenAI-compatible endpoint
+cargo run -- "What is the weather in Paris right now?"
+```
+
+`SKIP_SHUTDOWN` exists only so the end-to-end script can show what a missing shutdown costs; see [Flush on shutdown](#flush-on-shutdown).
+</Step>
+
+</Steps>
+
+## What you see in Observe
+
+| Span | Opened by (Swiftide 0.33.0) | Type in Observe | What it carries |
+| --- | --- | --- | --- |
+| `agent.query` (also `agent.query_once`, `agent.run`, `agent.run_once`) | `Agent::query` and friends | unknown | The root of the trace. ERROR when the agent returned an error. |
+| `step` | one per model turn | unknown | `step_count` (0-based). ERROR when the model call or a tool retry limit failed the turn. |
+| `complete` | the OpenAI integration's chat completion | unknown | Duration of the model call. ERROR when the provider returned an error. No model name, no tokens. |
+| `tool.<name>` | each tool call | unknown | Duration of the tool. See failures below. |
+| `add_message` | each message added to the history | unknown | Nothing with content capture off. With it on: the message text in `message`. |
+| `hook.<type>` | each hook you register | unknown | Only if you register hooks (not tested). |
+
+Every span also carries `busy_ns` and `idle_ns` (from `tracing-opentelemetry`) and `target` (the Rust module that opened it, for example `swiftide_agents::agent`).
+
+- **No span types, model names, token counts, cost, input or output.** Swiftide 0.33.0 does not put them on its spans. It records the model and usage only as Langfuse-specific fields, and only when the `langfuse` feature is on ([`chat_completion.rs#L483`](https://github.com/bosun-ai/swiftide/blob/v0.33.0/swiftide-integrations/src/openai/chat_completion.rs#L483)). Future AGI therefore shows every span as type `unknown`, tokens 0 and cost $0.00, and the trace list shows `agent.query` with empty input and output. Token usage is available to your code through the OpenAI builder's `on_usage` callback.
+- **`step`, not `step-1`.** Swiftide renames each step span to `step-<n>` after it has started. `tracing-opentelemetry` 0.34.0 creates the OpenTelemetry span when the tracing span is entered and does not apply a later name, so the span is exported as `step`; use `step_count` to tell them apart.
+- **Failures.** A provider error (tested: an unknown model name) makes `complete`, its `step` and `agent.query` ERROR. A failed tool is different: Swiftide logs a warning, hands the error to the model and carries on, so the `tool.<name>` span is **not** ERROR by itself. Log at error level inside your tool (`tracing::error!(...)`, as the example's `get_weather` does) to mark it.
+- **No sessions or users.** Swiftide sets no session or user id. Each `agent.query` call is its own trace.
+- **Streaming** (`complete_stream`, the `stream` and `responses_stream` spans), the Responses API, other providers, MCP tools, tasks and indexing or query pipelines were not tested.
+
+## Privacy
+
+Content capture is **off by default** in this recipe. `ContentFilter` sits in front of the batch processor:
+
+<CodeBlock title="src/lib.rs" language="rust">
+
+```rust src/lib.rs
+pub const DEFAULT_ALLOWED_ATTRIBUTES: &[&str] = &["busy_ns", "idle_ns", "step_count", "target"];
+
+    fn filter(&self, mut span: SpanData) -> SpanData {
+        if self.capture_content {
+            for kv in span.attributes.iter_mut() {
+                strip_backtrace_value(&mut kv.value);
+            }
+            for event in span.events.events.iter_mut() {
+                for kv in event.attributes.iter_mut() {
+                    strip_backtrace_value(&mut kv.value);
+                }
+            }
+            if let Status::Error { description } = &span.status
+                && let Cow::Owned(clean) = strip_backtrace(description)
+            {
+                span.status = Status::error(clean);
+            }
+            return span;
+        }
+        span.attributes
+            .retain(|kv| self.allowed.iter().any(|k| k.as_ref() == kv.key.as_str()));
+        span.dropped_attributes_count = 0;
+        span.events = SpanEvents::default();
+        if matches!(span.status, Status::Error { .. }) {
+            span.status = Status::error(REDACTED_ERROR);
+        }
+        span
+    }
+```
+
+</CodeBlock>
+
+The full type, with its `SpanProcessor` impl, is in [`src/lib.rs`](https://github.com/future-agi/docs/tree/main/examples/frameworks/swiftide/src/lib.rs).
+
+| | Default (content off) | `TRACE_CONTENT=true` (`capture_content: true`) |
+| --- | --- | --- |
+| Message text on `add_message` (prompts, answers, tool calls, tool results) | **Removed** | Exported in `message` |
+| Swiftide's log lines as span events: the messages sent to the model, tool arguments and results, retry warnings | **Removed** (DEBUG and INFO events never reach the layer; ERROR events are dropped after they set the status) | Exported as span events (DEBUG and above from Swiftide, INFO and above from other crates) |
+| Error text (provider errors, tool errors) | **Replaced** by `error`; the ERROR status stays | Exported in the status message and span events |
+| Any other span attribute | **Removed** unless allow-listed (`ContentFilter::allow_attribute("my.key")` adds one) | Exported |
+| Rust backtraces (`Stack backtrace:` and everything after) | Removed | **Removed** |
+| Source file paths (`code.file.path`) and thread names | Never recorded (`with_location(false)`, `with_threads(false)`) | Never recorded |
+| `X-Api-Key`, `X-Secret-Key`, the model provider key | Headers only, never on a span | Headers only, never on a span |
+| TRACE-level events (Swiftide logs whole provider requests and responses there) | Never exported | Never exported |
+
+`TRACE_CONTENT` is the example's own switch, not a Swiftide or Future AGI variable. The resource carries only `project_name`, `project_type`, `service.name` and the `telemetry.sdk.*` keys: the Rust SDK adds no host, process or user attributes.
+
+Tested on the local stack, with `RUST_BACKTRACE=1` and `RUST_LIB_BACKTRACE=1` so that errors carried backtraces: a unique marker went into the question, into the city the tool failed on (so it is in the tool arguments and the tool error) and into the model name (so it is in the provider's error text). With the defaults it was found **0 times** in every stored column of the project (span attributes, resource attributes, span events, status messages, input, output) and **0 times** on the wire to Future AGI. So were the user name, the host name, the home directory, the working directory, `Stack backtrace`, Cargo registry paths and all three keys. With `TRACE_CONTENT=true` the marker was stored (message text, span events and status messages), and the user name, host name, paths, backtraces and keys were still absent. A scan of every project's spans found the opt-in marker only in its own project.
+
+## Flush on shutdown
+
+The batch processor exports every 5 seconds and on `provider.shutdown()`. The global subscriber holds a reference to the provider for the life of the process, so dropping your `provider` value does not flush, and a program that returns from `main` without `shutdown()` loses whatever is still in the batch. That is always at least the root `agent.query` span, because it ends last. Tested: with the shutdown call skipped, an agent run that answered with one tool call (a few seconds) sent nothing at all to Future AGI, and the project was never created. With it, every span arrived.
+
+`shutdown()` blocks while the last batch is sent, for at most 5 seconds (its default timeout). Call it after the async runtime has finished, as the example does, or through `tokio::task::spawn_blocking` in a `#[tokio::main]` program so it does not hold up a runtime thread.
+
+## Troubleshooting
+
+- **No traces in Observe.** Check that the endpoint ends in `/tracer/v1/traces`, that both `FI_API_KEY` and `FI_SECRET_KEY` are set, and that the resource (not a span) carries `project_name`. Run with `RUST_LOG=warn` to see the exporter's errors on stderr.
+- **`OTLP export exhausted retries - telemetry data will be lost` or `BatchSpanProcessor.ExportError`.** Future AGI was not reachable. The agent is not affected (tested with nothing listening on the endpoint: the agent answered normally and exited 0); the spans of that batch are lost.
+- **`HTTP export failed with status code: 401`.** One of the two keys is missing or wrong.
+- **`gzip compression requested but gzip-http feature not enabled`.** `OTEL_EXPORTER_OTLP_COMPRESSION` (or `OTEL_EXPORTER_OTLP_TRACES_COMPRESSION`) is set in the environment. Unset it: Future AGI does not accept compressed bodies.
+- **The trace is missing its last spans, or the whole trace is missing.** `provider.shutdown()` was not called. See [Flush on shutdown](#flush-on-shutdown).
+- **Spans go to Langfuse, or `swiftide-langfuse` is in your `Cargo.lock`.** The `langfuse` feature is enabled somewhere in your dependency tree, or `LangfuseLayer` is installed. Remove both for this setup.
+- **Compile errors in `swiftide-integrations` with swiftide 0.32.x** (`cannot find type Client in crate async_openai`). Swiftide 0.32 accepts any `async-openai` from 0.29.6 up and now resolves to an incompatible 0.42. Upgrade to swiftide 0.33, or pin the version Swiftide's own v0.32.1 lockfile uses: `async-openai = "=0.30.1"` plus `cargo update -p async-openai@<the 0.4x version> --precise 0.30.1`.
+- **Model calls go to api.openai.com although `OPENAI_BASE_URL` is set.** `async-openai` 0.30 (swiftide 0.32) does not read `OPENAI_BASE_URL`. Set the endpoint on the client with `OpenAIConfig::with_api_base`, as the example does.
+- **Too many `add_message` spans.** They are leaf spans with no content when capture is off. To drop them, add `if meta.name() == "add_message" { return false; }` to `otel_filter`.
+
+## Not covered
+
+- A Future AGI package for Rust. There is none; normalising Swiftide's spans into typed `llm` and `tool` spans with model and token attributes would belong in Future AGI's processing, not in this recipe.
+- Swiftide's other providers (Anthropic, Gemini, Groq, Ollama, Bedrock, ...), streaming, the Responses API, MCP tools, tasks and indexing or query pipelines.
+- OTLP/gRPC export (the `grpc-tonic` feature) and the async `reqwest-client` transport.
+- Swiftide's `metrics` feature. Future AGI ingests traces only.
