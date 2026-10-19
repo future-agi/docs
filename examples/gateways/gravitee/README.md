@@ -74,7 +74,7 @@ Every start waits for the component's own readiness signal instead of a fixed ti
 | --- | --- |
 | MongoDB | `mongosh` in the container gets `ok: 1` for `ping` |
 | Management API | `GET /_node/health` on its internal API (inside the container) reports every probe healthy, and the REST API answers 200 |
-| Gateway | `GET /_node/health?probes=http-server,sync-process` on its internal API (inside the container) reports both healthy; then the test API `/fi-untraced/` must answer 200 within `GW_API_GRACE` seconds (default 30) |
+| Gateway | `GET /_node/health?probes=http-server,sync-process` on its internal API (inside the container) reports both healthy; then the test API `/fi-untraced/` must answer 200: a wrong answer (404, API not deployed) fails after `GW_API_GRACE` seconds (default 30), no answer yet (a slow first request) waits up to `GW_READY_TIMEOUT` |
 | Collector | its OTLP/HTTP receiver answers (401 to the unauthenticated probe, so nothing is forwarded) |
 
 Each wait lasts up to `READY_TIMEOUT` seconds (default 600; per component `MONGO_READY_TIMEOUT`, `MAPI_READY_TIMEOUT`,

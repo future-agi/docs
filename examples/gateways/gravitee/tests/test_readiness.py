@@ -24,7 +24,11 @@ FAKE_CURL = """#!/bin/sh
 echo "$@" >> "$FAKE_DIR/curl.calls"
 for a in "$@"; do url=$a; done
 case "$url" in
-  *fi-untraced*) code=$(cat "$FAKE_DIR/untraced.code" 2>/dev/null || echo 200) ;;
+  *fi-untraced*)
+    # the first FAKE_UNTRACED_SILENT calls get no answer (curl prints 000 after its -m timeout)
+    n=$(cat "$FAKE_DIR/untraced.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_DIR/untraced.count"
+    if [ "$n" -le "${FAKE_UNTRACED_SILENT:-0}" ]; then code=000
+    else code=$(cat "$FAKE_DIR/untraced.code" 2>/dev/null || echo 200); fi ;;
   */v1/traces) code=$(cat "$FAKE_DIR/otelcol.code" 2>/dev/null || echo 401) ;;
   *) code=200 ;;
 esac
@@ -98,6 +102,26 @@ def test_gateway_synced_but_api_missing_is_a_failure_not_a_pass(fake, bash):
     assert "/fi-untraced/ answers HTTP 404: the test APIs are not deployed" in p.stderr
     assert "fake log line 100" in p.stderr
     assert took < 20
+
+
+@pytest.mark.parametrize("bash", BASHES)
+def test_gateway_slow_first_answer_does_not_use_up_the_api_grace(fake, bash):
+    # Under load the first proxied requests can take longer than curl's 5 s (code 000). That is slowness, not a
+    # missing API, so it is bounded by GW_READY_TIMEOUT, not by GW_API_GRACE (0 here would fail within a second).
+    p, _ = run(fake, bash, "start_gateway /dev/null", FAKE_UNTRACED_SILENT="30", GW_API_GRACE="0")
+    assert p.returncode == 0, p.stderr
+    assert int((fake / "untraced.count").read_text()) == 31
+
+
+@pytest.mark.parametrize("bash", BASHES)
+def test_gateway_api_never_answering_fails_at_the_ready_timeout(fake, bash):
+    p, took = run(fake, bash, "start_gateway /dev/null", FAKE_UNTRACED_SILENT="1000000", GW_READY_TIMEOUT="1",
+                  LOG_TAIL="3")
+    assert p.returncode == 1
+    assert "/fi-untraced/ did not answer within 1s (raise GW_READY_TIMEOUT" in p.stderr
+    assert "not deployed" not in p.stderr
+    assert "fake log line 100" in p.stderr and SECRET not in p.stderr
+    assert 1 <= took < 20
 
 
 @pytest.mark.parametrize("bash", BASHES)

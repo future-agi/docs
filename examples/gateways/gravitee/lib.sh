@@ -129,15 +129,23 @@ start_gateway() {
     ${GW_EXTRA_ARGS:-} \
     -v "$1:/opt/graviteeio-gateway/config/gravitee.yml:ro" "graviteeio/apim-gateway:$GRAVITEE_VERSION" >/dev/null
   wait_ready Gateway "$PREFIX-gw" GW_READY_TIMEOUT gw_ready || return 1
-  # sync done means the deployed APIs are loaded: the untraced API (tracing off, so it adds no span) must answer now
-  local code start=$SECONDS
+  # sync done means the deployed APIs are loaded: the untraced API (tracing off, so it adds no span) must answer now.
+  # A wrong HTTP answer (404: API not deployed) fails after GW_API_GRACE seconds. No answer within curl's 5 s (code
+  # 000, a slow first request on a loaded host) does not use up the grace; it is bounded by GW_READY_TIMEOUT.
+  local code start=$SECONDS answered=
   while :; do
     code=$(http_code "http://127.0.0.1:$GW_PORT/fi-untraced/")
     [ "$code" = 200 ] && return 0
-    [ $((SECONDS - start)) -gt "$GW_API_GRACE" ] && break
+    [ "$code" != 000 ] && [ -z "$answered" ] && answered=$SECONDS
+    [ -n "$answered" ] && [ $((SECONDS - answered)) -gt "$GW_API_GRACE" ] && break
+    [ $((SECONDS - start)) -gt "$GW_READY_TIMEOUT" ] && break
     sleep "$READY_POLL"
   done
-  echo "Gateway is ready (sync-process healthy) but /fi-untraced/ answers HTTP $code: the test APIs are not deployed" >&2
+  if [ "$code" = 000 ]; then
+    echo "Gateway is ready (sync-process healthy) but /fi-untraced/ did not answer within ${GW_READY_TIMEOUT}s (raise GW_READY_TIMEOUT or READY_TIMEOUT on a slow host)" >&2
+  else
+    echo "Gateway is ready (sync-process healthy) but /fi-untraced/ answers HTTP $code: the test APIs are not deployed" >&2
+  fi
   print_logs "$PREFIX-gw"
   return 1
 }
