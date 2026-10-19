@@ -1,0 +1,292 @@
+---
+title: "Temporal tracing with Future AGI"
+description: "Trace your own Temporal workflows and activities in Observe: Temporal's workflow and activity spans from OpenTelemetryPlugin, with your model and tool spans inside the activity that ran them. Retries show as attempts, and a replayed workflow is not traced twice."
+---
+
+## About
+
+[Temporal](https://temporal.io) runs your workflows as durable executions. It records every step in a history, retries a failed activity, and replays the history to rebuild a workflow after a worker restart or a cache eviction. The Temporal Python SDK ships `OpenTelemetryPlugin`, which creates spans for the workflow and its activities and carries the trace context between the process that starts a workflow, the workflow, and each activity. This page shows one workflow run as one trace in Observe:
+
+```text
+StartWorkflow:WeatherAgentWorkflow                      starter process
+└─ RunWorkflow:WeatherAgentWorkflow                     worker, exported when the workflow finishes
+   ├─ StartActivity:llm_plan
+   │  └─ RunActivity:llm_plan                           one span per attempt
+   │     └─ ChatCompletion  (llm)                       your activity, traceai-openai
+   ├─ StartActivity:get_weather
+   │  ├─ RunActivity:get_weather                        attempt 1, ERROR: the tool failed
+   │  │  └─ get_weather  (tool, ERROR)                  your activity
+   │  └─ RunActivity:get_weather                        attempt 2, the retry
+   │     └─ get_weather  (tool)
+   └─ StartActivity:llm_answer
+      └─ RunActivity:llm_answer
+         └─ ChatCompletion  (llm)
+```
+
+The plugin only makes spans and passes context. You build the tracer provider and the exporter yourself, and that is where the Future AGI endpoint, the two key headers and the project name go. There is no traceAI package for Temporal: the recipe is a `tracing.py` file, and the model calls are traced by the traceAI instrumentor you already use (`traceai-openai` here).
+
+This page is about the Temporal application you write and run. It is not about how Future AGI itself uses Temporal.
+
+<Warning>
+Beta. Everything on this page was run end to end against a self-hosted Future AGI: a real Temporal dev server, the real `temporalio` SDK, real traceAI, and real model calls through an OpenAI-compatible endpoint. Temporal's plugin and `create_tracer_provider` are marked experimental by Temporal and may change. Temporal Cloud and production Temporal clusters were not tested.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `temporalio` **1.34.0** (latest, 2026-09-30), end to end against Future AGI: every scenario on Python 3.13.15, and a full run with no workflow cache on Python 3.10.17. `temporalio` 1.33.0 and 1.32.0 on Python 3.13: the example's unit tests and its Temporal dev-server tests (47 tests), not the Future AGI run. Temporal dev server from Temporal CLI 1.9.1 (server 1.32.0). `fi-instrumentation-otel` 1.1.0, `traceai-openai` 0.1.10, `openai` 3.31.0, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1. |
+| Temporal docs used | [OpenTelemetry tracing in the Python SDK](https://docs.temporal.io/develop/python/observability), and the `temporalio.contrib.opentelemetry` source at the [1.34.0 tag](https://github.com/temporalio/sdk-python/tree/1.34.0/temporalio/contrib/opentelemetry), read 2026-10-16 |
+| License | `temporalio`: [MIT](https://github.com/temporalio/sdk-python/blob/1.34.0/LICENSE). It is not bundled with Future AGI. |
+| Source | [examples/frameworks/temporal](https://github.com/future-agi/docs/tree/main/examples/frameworks/temporal): the tracing module, workflow, activities, worker, starter, tests and the end-to-end script |
+
+### How this differs from other pages
+
+- **Temporal's older `TracingInterceptor`.** The Temporal SDK has a second integration that creates zero-duration workflow spans. This page does not use it; it uses `OpenTelemetryPlugin`, which gives workflow spans their real duration.
+- **[OpenAI](/docs/integrations/traceai/openai).** That page traces OpenAI calls on their own. Here the same instrumentor runs inside a Temporal activity, so its spans join the workflow's trace instead of starting a new trace per call.
+- **Temporal's metrics and logs.** The SDK can also export metrics (`MetricsExporter`) and replay-safe logs (`ReplaySafeLoggerProvider`). Future AGI accepts traces only, so do not point those at Future AGI.
+- **Exactly-once is Temporal's job, not Future AGI's.** Future AGI does not deduplicate spans. The plugin gives spans deterministic ids and does not end a span while a workflow replays, so each span is exported once.
+
+## Set up
+
+<Steps>
+
+<Step title="Install">
+
+```bash
+pip install "temporalio[opentelemetry]" opentelemetry-exporter-otlp-proto-http fi-instrumentation-otel traceai-openai openai
+```
+
+For a local test, start a Temporal dev server with `temporal server start-dev` (the [Temporal CLI](https://docs.temporal.io/cli) is free and needs no account). Point `TEMPORAL_ADDRESS` at your own cluster otherwise.
+</Step>
+
+<Step title="Build the tracer provider">
+
+`OpenTelemetryPlugin` does not choose an endpoint, headers or a project. It reads the global tracer provider, which must come from Temporal's `create_tracer_provider`. That function takes no endpoint or header parameters (`create_tracer_provider(sampler, resource, shutdown_on_exit, active_span_processor, id_generator, span_limits)`), so you pass the project as the `resource` and add the exporter as a span processor. This is `tracing.py` in the example:
+
+```python
+# file: tracing.py
+import os
+
+from fi_instrumentation.otel import BatchSpanProcessor
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http import Compression
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from temporalio.contrib.opentelemetry import ReplaySafeTracerProvider, create_tracer_provider
+
+...
+
+def setup_tracing(
+    instrument_openai: bool = True, exporter: Optional[SpanExporter] = None
+) -> ReplaySafeTracerProvider:
+    if exporter is None:
+        base_url = os.environ.get("FI_BASE_URL", "https://api.futureagi.com").rstrip("/")
+        exporter = OTLPSpanExporter(
+            endpoint=f"{base_url}/tracer/v1/traces",
+            headers={"X-Api-Key": os.environ["FI_API_KEY"], "X-Secret-Key": os.environ["FI_SECRET_KEY"]},
+            compression=Compression.NoCompression,  # the Future AGI HTTP receiver rejects gzip bodies
+        )
+    provider = create_tracer_provider(
+        resource=Resource.create(
+            {"project_name": os.environ.get("FI_PROJECT_NAME", "temporal-agent"), "project_type": "observe"}
+        )
+    )
+    provider.add_span_processor(WorkflowIdAsSession())
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            span_exporter=SafeSpanExporter(
+                exporter, keep_error_text=os.environ.get("KEEP_TEMPORAL_ERROR_TEXT", "").lower() == "true"
+            )
+        )
+    )
+    # OpenTelemetryPlugin reads the global provider, and refuses one that is not replay-safe.
+    trace.set_tracer_provider(provider)
+    if instrument_openai:
+        from traceai_openai import OpenAIInstrumentor
+
+        OpenAIInstrumentor().instrument(tracer_provider=provider)
+    return provider
+```
+
+- **`project_name` is a resource attribute**, and it is required: a batch without it is dropped. `service.name` is not read as a project name, and a span attribute called `project_name` does not count.
+- **Both key headers are required.** `X-Api-Key` and `X-Secret-Key` go on the exporter and nowhere else, never on a span.
+- **No gzip.** The Future AGI HTTP receiver rejects compressed bodies, so the exporter is built with `Compression.NoCompression`. Do not set `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` for this exporter.
+- **`set_tracer_provider` before `Client.connect`.** Without it the worker refuses to start with `When using OpenTelemetryPlugin, the global trace provider must be a ReplaySafeTracerProvider`.
+- **`fi_instrumentation.otel.BatchSpanProcessor`** is OpenTelemetry's batch processor with traceAI's usual rule that a span that ended without a status is stored as OK. You can use OpenTelemetry's own `BatchSpanProcessor` instead.
+- **`WorkflowIdAsSession` and `SafeSpanExporter`** are two small classes in the same file: the first makes the Temporal workflow id the Future AGI [session](/docs/observe/features/session) of every span; the second removes error text (see [Privacy](#privacy)).
+</Step>
+
+<Step title="Put model and tool calls in activities">
+
+LLM calls and tool calls belong in activities. Workflow code is replayed and has to stay deterministic. This is the shape of `activities.py`:
+
+```python
+# file: activities.py
+client = AsyncOpenAI(max_retries=0)
+
+
+@activity.defn
+async def llm_plan(model: str, messages: list[dict]) -> dict:
+    return await _chat(model, messages, with_tools=True)
+
+
+@activity.defn
+async def get_weather(arguments: str, flaky: bool) -> str:
+    """The tool. With flaky=True the first attempt fails, so Temporal retries the activity."""
+    args = json.loads(arguments or "{}")
+    with _tracer().start_as_current_span("get_weather", fi_span_kind="tool") as span:
+        span.set_input(json.dumps(args))
+        if flaky and activity.info().attempt == 1:
+            raise TimeoutError(f"weather backend timed out for {args.get('city')}")
+        result = f"{args.get('city', 'unknown')}: 21C and sunny"
+        span.set_output(result)
+        return result
+```
+
+Temporal retries a failed activity itself, so the OpenAI client is built with `max_retries=0`; otherwise one Temporal attempt could hide several model calls. Both async activities and synchronous activities (which Temporal runs in a thread pool) were tested: spans created inside either are children of its `RunActivity` span.
+</Step>
+
+<Step title="Keep the workflow free of tracing code">
+
+Workflow code must not construct or import the exporter, the tracer module or the model SDK. It refers to the activities by name. `workflows.py` imports only `temporalio` and the standard library:
+
+```python
+# file: workflows.py
+from dataclasses import dataclass
+from datetime import timedelta
+
+from temporalio import workflow
+from temporalio.common import RetryPolicy
+
+...
+
+@workflow.defn
+class WeatherAgentWorkflow:
+    @workflow.run
+    async def run(self, req: AgentRequest) -> str:
+        retry = RetryPolicy(initial_interval=timedelta(milliseconds=200), maximum_attempts=2)
+        plan = await workflow.execute_activity(
+            "llm_plan", args=[req.model, messages], start_to_close_timeout=timedelta(seconds=60), retry_policy=retry
+        )
+```
+
+The plugin lets the `opentelemetry` package through the workflow sandbox, so you can also create your own spans inside workflow code with `opentelemetry.trace.get_tracer(...)`. Nothing else tracing-related belongs there.
+</Step>
+
+<Step title="Put the plugin on the client, in the starter and in the worker">
+
+Both processes call `setup_tracing()` first, then connect a client with the plugin. A worker built from that client uses the plugin too; do not add it to the worker a second time. This is `worker.py`:
+
+```python
+# file: worker.py
+provider = setup_tracing()
+# The plugin goes on the client. A worker built from that client gets it too.
+client = await Client.connect(
+    os.environ.get("TEMPORAL_ADDRESS", "localhost:7233"),
+    namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"),
+    plugins=[OpenTelemetryPlugin(add_temporal_spans=True)],
+)
+...
+async with worker:
+    print("worker ready", flush=True)
+    await stop.wait()
+provider.force_flush()  # spans of the last activities and workflows are still batched
+provider.shutdown()
+```
+
+and `starter.py`, which flushes before it exits:
+
+```python
+# file: starter.py
+provider = setup_tracing(instrument_openai=False)
+client = await Client.connect(
+    os.environ.get("TEMPORAL_ADDRESS", "localhost:7233"),
+    namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"),
+    plugins=[OpenTelemetryPlugin(add_temporal_spans=True)],
+)
+...
+finally:
+    # A starter exits right after the call. Without this the StartWorkflow span is lost.
+    provider.force_flush()
+    provider.shutdown()
+```
+
+`add_temporal_spans=True` is what creates the `StartWorkflow`, `RunWorkflow`, `StartActivity` and `RunActivity` spans. Its default is `False`, and then the plugin only carries context: your own spans still nest correctly, but there are no Temporal spans in the trace.
+</Step>
+
+<Step title="Run it">
+
+```bash
+export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=temporal-agent
+export FI_BASE_URL=https://api.futureagi.com         # or your self-hosted Future AGI
+export OPENAI_API_KEY=...                            # and OPENAI_BASE_URL for an OpenAI-compatible endpoint
+python worker.py                                     # terminal 1
+python starter.py "What is the weather in Lisbon today?"                 # terminal 2
+python starter.py "What is the weather in Lisbon today?" --flaky         # the tool fails once and is retried
+```
+
+The trace shows up in Observe under the project from `FI_PROJECT_NAME`. Use the same `FI_PROJECT_NAME` in the starter and in the worker (see [Troubleshooting](#troubleshooting)).
+</Step>
+
+</Steps>
+
+## What you see in Observe
+
+| Span | From | Type in Observe | What it carries |
+| --- | --- | --- | --- |
+| `StartWorkflow:<type>` | starter | unknown | `temporalWorkflowID`. Covers the call that starts the workflow, not the workflow's run. The root of the trace. |
+| `RunWorkflow:<type>` | worker | unknown | Workflow id and run id. Covers the whole run. Exported once, when the workflow finishes: a workflow that is still running has no `RunWorkflow` span yet. |
+| `StartActivity:<name>` | worker, inside the workflow | unknown | Scheduling of one activity. One per activity call, however many attempts it takes. |
+| `RunActivity:<name>` | worker | unknown | One per attempt. ERROR when the attempt failed. |
+| `ChatCompletion` | your activity, `traceai-openai` | llm | Model, token counts, prompt and response (unless hidden) |
+| your own spans, e.g. `get_weather` | your activity, `FITracer` | tool, chain, ... | Whatever you set |
+| `HandleSignal:<name>`, `HandleQuery:<name>`, `HandleUpdate:<name>` | worker | unknown | Only with `add_temporal_spans=True`. A signal sent from outside the trace (the Temporal CLI, another service) has no trace context, so it starts its own trace. It carries the same session id. |
+
+- **One workflow, one trace.** The starter's trace context travels in the workflow's headers, so the workflow and every activity join the starter's trace.
+- **Retries are attempts.** Each attempt of an activity is its own `RunActivity` span with the spans of what really ran in it. A failed attempt is ERROR, the next one is not. Temporal does not put the attempt number on the span.
+- **Replay does not duplicate spans.** Span ids are deterministic and a span is not ended while a workflow replays, so a worker restart or a cache eviction does not add spans. Tested three ways: a worker with `max_cached_workflows=0` (every workflow task replays the whole history from the first event; the run had four workflow tasks), Temporal's `Replayer` over the stored history of a finished workflow (it started the workflow's spans again and exported none), and a worker process killed with SIGTERM while the workflow waited for a signal, with a second worker process finishing it. In all three the span count of the workflow is the same as for an undisturbed run, and the wire capture shows no span sent twice.
+- **The Temporal spans have no span type.** They show as `unknown`: they are runtime spans, not model or tool spans.
+- **Sessions.** The example sets the [session](/docs/observe/features/session) of every span to the Temporal workflow id, so the workflow's trace and any signal, query or update traces of the same workflow are one session. Pick workflow ids that mean something (`chat-42`). Temporal itself sets no session.
+- **Failures.** A model call that fails on every attempt gives an ERROR `ChatCompletion` and an ERROR `RunActivity` per attempt, and the workflow's `RunWorkflow` span is ERROR when the workflow fails.
+
+## Privacy
+
+| | Default | How to change it |
+| --- | --- | --- |
+| Prompts, responses, tool arguments and results, model request parameters (your activities) | **Captured**, as in every traceAI instrumentor | `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS`, `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_LLM_INVOCATION_PARAMETERS` set to `true` on the worker ([environment variables](/docs/sdk/tracing/environment-variables), [TraceConfig](/docs/sdk/tracing/trace-config)) |
+| Error text: the status text of a failed span (`<ExceptionType>: <message>`) and `exception.message` | **Removed** by `SafeSpanExporter` in `tracing.py`. The status text becomes `error`; the ERROR status and `exception.type` stay. | `KEEP_TEMPORAL_ERROR_TEXT=true`, or `keep_error_text=True` in code |
+| Stack traces (`exception.stacktrace`: local file paths and user names) | **Always removed** | Not configurable in the example |
+| Workflow id, run id, activity ids, workflow and activity type names | **Exported.** They are the span attributes `temporalWorkflowID`, `temporalRunID`, `temporalActivityID` and the span names, and the workflow id is the session id. | Do not put personal data in workflow ids or workflow and activity names |
+| Workflow input and output, activity arguments and results | **Not captured by the plugin.** It sends context in headers and puts only ids on its spans. They are on a span only if you put them there (the tool span above) or traceAI does (the model call). | |
+| Host name, user name, local paths | **Not on any span.** The resource carries `project_name`, `project_type`, `service.name`, `service.instance.id` (a random UUID) and `telemetry.sdk.*`. Temporal's worker identity (`pid@host`) is stored in Temporal's own history, not on spans. | |
+| `X-Api-Key`, `X-Secret-Key`, the model key | Sent as headers only, never as span attributes | |
+
+Tested: with the five `FI_HIDE_*` switches on and the default `SafeSpanExporter`, a unique marker placed in the question, in the city the tool looked up (tool arguments, result and the error text of a failed attempt) and in the error text of a failed model call was found **0 times** in every stored column of the project (span attributes, resource attributes, span events, status messages, input, output) and **0 times** on the wire from the example to Future AGI. So were the user name, host name, home directory, the example's directory, the model endpoint address, the Temporal address, `Traceback`, `exception.stacktrace` and the key values. With the `FI_HIDE_*` switches off and `KEEP_TEMPORAL_ERROR_TEXT=true`, the marker was stored in the prompt, the tool and the error text, and the stack traces, host name, user name, paths, addresses and keys were still absent.
+
+## Flush on shutdown
+
+`create_tracer_provider` registers OpenTelemetry's exit hook by default (`shutdown_on_exit=True`), so a script that returns normally exports what is still batched. That hook does not run when a process ends through `os._exit()`, a signal, a crash or a serverless freeze, and spans still in the batch are lost. Call `provider.force_flush()` before a starter exits (the example does), and shut the provider down when a worker stops.
+
+Tested: a starter that starts a workflow and exits through `os._exit(0)` without flushing sent no `StartWorkflow` span; the same starter with `provider.force_flush()` first sent it. A starter that waits for the workflow's result for longer than the batch delay (5 seconds by default) exports its batch before it exits; the loss shows up in fire-and-forget starters, such as a request handler or a CLI that starts a workflow and returns. The worker in the example handles SIGINT and SIGTERM, then flushes and shuts down; a SIGKILL loses the spans still in its batch. Temporal is not affected by lost spans: the workflow completes either way.
+
+## Troubleshooting
+
+- **No traces in Observe.** The provider's resource has no `project_name`. `service.name` is not read as a project name. Check that the worker log shows no `Transient error ... encountered while exporting spans batch` lines, which mean the endpoint is not reachable.
+- **401 from Future AGI.** One of the two headers is missing. The exporter needs both `X-Api-Key` and `X-Secret-Key`.
+- **The worker does not start: `the global trace provider must be a ReplaySafeTracerProvider`.** The provider was not made with `create_tracer_provider`, or `trace.set_tracer_provider(provider)` was not called before `Client.connect`.
+- **A workflow fails to load in the sandbox (`Failed validating workflow`).** The workflow module, or something it imports, imports the exporter, the tracer module or the model SDK. Move that to an activity and refer to the activity by name.
+- **Only your own spans, no `StartWorkflow` / `RunWorkflow` / `RunActivity`.** `add_temporal_spans` is `False` by default. Pass `OpenTelemetryPlugin(add_temporal_spans=True)`.
+- **Model spans are separate traces, one per call.** The plugin is missing on the worker's client, so the trace context never reaches the activity (tested: the model and tool spans start new traces, and no `RunActivity` or `RunWorkflow` span exists). Both the starter and the worker need the plugin on their client.
+- **No `StartWorkflow` span, and the trace starts at `RunWorkflow`.** The plugin is missing on the starter's client, or the starter exited before it flushed.
+- **`StartWorkflow` in one project and the rest in another.** The starter and the worker have different `FI_PROJECT_NAME` values. The project comes from each process's resource, so the trace splits across the two projects (tested). Use the same project name in both.
+- **`RunWorkflow` is missing for a workflow that is still running.** Expected. It is exported when the workflow finishes.
+- **Duplicate spans.** Two tracer providers export the same spans, or workflow code builds its own exporter. Temporal's plugin itself does not duplicate spans on replay.
+
+## Not covered
+
+- Temporal Cloud, production clusters and mTLS connections were not tested. The dev server from `temporal server start-dev` was.
+- The TypeScript, Java, Go and .NET SDKs have their own OpenTelemetry integrations and are not covered here.
+- Child workflows, Nexus operations, continue-as-new, local activities, workflow updates and queries were not tested. The plugin creates spans for them; a signal was tested.
+- Temporal's metrics and logs integrations are not wired to Future AGI, which accepts traces only.
+- Agent frameworks that run on Temporal (for example the OpenAI Agents SDK integration) are untested; the pattern is the same, with their instrumentor in place of `traceai-openai`.
+- `temporalio` older than 1.32.0 was not tested (1.31.0 does not export `ReplaySafeTracerProvider` from `temporalio.contrib.opentelemetry`).
+- Temporal does not put the attempt number on `RunActivity` spans, so an attempt is told apart by its order and its status.
