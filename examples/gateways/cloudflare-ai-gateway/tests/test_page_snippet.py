@@ -71,10 +71,46 @@ def test_cloudflare_headers_carry_the_collector_token_and_never_the_future_agi_k
 
 
 def test_cloudflares_attribute_names_are_used_unchanged(page):
-    for name in ("gen_ai.request.model", "gen_ai.model.provider", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens",
-                 "gen_ai.prompt_json", "gen_ai.completion_json", "gen_ai.usage.cost", "cf-aig-metadata",
-                 "cf-aig-otel-trace-id", "cf-aig-otel-parent-span-id"):
+    real = ("cf.aig.request", "gen_ai.request.model", "gen_ai.provider.name", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens",
+            "gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.usage.cost")
+    documented = ("gen_ai.model.provider", "gen_ai.prompt_json", "gen_ai.completion_json")
+    for name in real + documented + ("cf-aig-metadata", "cf-aig-otel-trace-id", "cf-aig-otel-parent-span-id"):
         assert f"`{name}`" in page, name
+
+
+def test_the_page_names_match_the_captured_payload(page):
+    with open(os.path.join(HERE, "tests", "fixtures", "cloudflare-2026-10-18-chat.json")) as f:
+        body = json.load(f)
+    rs = body["resourceSpans"][0]
+    span = rs["scopeSpans"][0]["spans"][0]
+    assert f"named `{span['name']}`" in page and f"scope `{rs['scopeSpans'][0]['scope']['name']}`" in page
+    for a in span["attributes"]:
+        if a["key"].startswith("gen_ai."):
+            assert f"`{a['key']}`" in page, a["key"]
+
+
+def test_cloud_run_command_provides_everything_the_config_reads(blocks):
+    cmd = block(blocks, "bash", "gcloud run deploy")
+    with open(os.path.join(HERE, "otelcol.yaml")) as f:
+        names = set(re.findall(r"\$\{env:([A-Z_]+)", f.read())) - {"FI_CAPTURE_CONTENT"}
+    secrets = re.search(r"--set-secrets=(\S+)", cmd).group(1).split(",")
+    env = re.search(r"--set-env-vars=(\S+)", cmd).group(1).split(",")
+    provided = {s.split("=")[0] for s in secrets + env}
+    assert names <= provided, names - provided
+    for secret_var in ("GATEWAY_TOKEN", "FI_API_KEY", "FI_SECRET_KEY"):
+        assert secret_var not in {e.split("=")[0] for e in env}, "keys come from Secret Manager, not plain env"
+    mount = next(s.split("=")[0] for s in secrets if s.startswith("/"))
+    assert f"--args=--config={mount}" in cmd
+    assert "--port 4318" in cmd and "docker.io/otel/opentelemetry-collector-contrib:0.162.0" in cmd
+    assert "FI_CAPTURE_CONTENT" not in cmd
+
+
+def test_api_example_sets_the_same_exporter_fields(blocks):
+    cmd = block(blocks, "bash", "ai-gateway/gateways")
+    data = json.loads(re.search(r"--data '(.*?)'", cmd, flags=re.S).group(1))
+    (otel,) = data["otel"]
+    assert otel["url"].endswith("/v1/traces") and otel["content_type"] in ("json", "protobuf")
+    assert otel["headers"] == {"Authorization": "Bearer YOUR_GATEWAY_TOKEN"}
 
 
 def test_the_removed_keys_the_page_lists_are_removed_by_the_config(page):
@@ -111,6 +147,7 @@ def test_internal_links_point_at_pages_that_exist(page):
         assert any(os.path.exists(c) for c in candidates), href
 
 
-def test_the_page_says_cloudflare_was_not_run_and_names_the_stand_in(page):
-    assert "Nobody ran Cloudflare AI Gateway" in page and "stand-in" in page
-    assert "| Cloudflare | Not run." in page
+def test_the_page_reports_the_live_verification_and_what_it_did_not_cover(page):
+    assert "## Live vendor verification (2026-10-18)" in page
+    assert "Not covered by the live run" in page
+    assert "Nobody ran Cloudflare" not in page and "STANDIN" not in page

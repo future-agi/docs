@@ -1,4 +1,7 @@
-"""gateway_fixture.py: the stand-in's request body follows Cloudflare's documented attribute names."""
+"""gateway_fixture.py: the stand-in's request body has the shape the real gateway exported (tests/fixtures/)."""
+import json
+import os
+
 import pytest
 
 import gateway_fixture as gf
@@ -8,15 +11,50 @@ def span_of(req):
     return req["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
 
 
-def test_documented_attributes_use_cloudflares_names():
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def real(name):
+    with open(os.path.join(FIXTURES, name)) as f:
+        return json.load(f)
+
+
+@pytest.mark.parametrize("name", ["cloudflare-2026-10-18-chat.json", "cloudflare-2026-10-18-stream.json"])
+def test_stand_in_has_the_shape_of_the_captured_real_payload(name):
+    got, want = gf.build_request(gf.GatewayRequest()), real(name)
+    g, w = span_of(got), span_of(want)
+    assert got["resourceSpans"][0]["resource"] == want["resourceSpans"][0]["resource"]
+    assert got["resourceSpans"][0]["scopeSpans"][0]["scope"] == want["resourceSpans"][0]["scopeSpans"][0]["scope"]
+    assert (g["name"], g["kind"]) == (w["name"], w["kind"]) == ("cf.aig.request", 1)
+    gen_ai = lambda s: {k for k in gf.attr_dict(s) if k.startswith("gen_ai.")}  # noqa: E731
+    assert gen_ai(g) == gen_ai(w)
+    kinds = lambda s: {x["key"]: next(iter(x["value"])) for x in s["attributes"]}  # noqa: E731
+    assert {k: v for k, v in kinds(g).items() if k.startswith("gen_ai.")} == {k: v for k, v in kinds(w).items() if k.startswith("gen_ai.")}
+
+
+def test_captured_payload_carries_request_and_response_bodies_as_json():
+    a = gf.attr_dict(span_of(real("cloudflare-2026-10-18-chat.json")))
+    assert json.loads(a["gen_ai.input.messages"])["messages"][0]["role"] == "user"
+    assert json.loads(a["gen_ai.output.messages"])["choices"][0]["message"]["role"] == "assistant"
+    assert a["gen_ai.provider.name"] == "openai" and "gen_ai.model.provider" not in a and "gen_ai.prompt_json" not in a
+
+
+def test_default_attributes_use_the_names_the_real_gateway_sends():
     r = gf.GatewayRequest(model="gpt-4o", provider="openai", input_tokens=11, output_tokens=7)
     a = gf.attr_dict(span_of(gf.build_request(r)))
-    assert a["gen_ai.request.model"] == "gpt-4o"
-    assert a["gen_ai.model.provider"] == "openai"
-    assert "gen_ai.provider.name" not in a               # Cloudflare's name is gen_ai.model.provider
+    assert a["gen_ai.request.model"] == "gpt-4o" and a["gen_ai.operation.name"] == "chat"
+    assert a["gen_ai.provider.name"] == "openai" and "gen_ai.model.provider" not in a
     assert a["gen_ai.usage.input_tokens"] == 11 and a["gen_ai.usage.output_tokens"] == 7
     assert isinstance(a["gen_ai.usage.cost"], float)
+    assert json.loads(a["gen_ai.input.messages"])["model"] == "gpt-4o"
+    assert json.loads(a["gen_ai.output.messages"])["choices"][0]["message"]["role"] == "assistant"
+
+
+def test_doc_names_builds_the_names_on_cloudflares_page():
+    a = gf.attr_dict(span_of(gf.build_request(gf.GatewayRequest(doc_names=True))))
+    assert a["gen_ai.model.provider"] == "openai" and "gen_ai.provider.name" not in a
     assert a["gen_ai.prompt_json"].startswith("[") and a["gen_ai.completion_json"].startswith("{")
+    assert "gen_ai.input.messages" not in a
 
 
 def test_cost_is_the_given_value_when_given():
@@ -60,7 +98,7 @@ def test_error_request_is_status_error_with_an_optional_exception_event():
 def test_missing_usage_and_prompt_are_absent_not_zero():
     a = gf.attr_dict(span_of(gf.build_request(gf.GatewayRequest(input_tokens=None, output_tokens=None, prompt=None))))
     assert "gen_ai.usage.input_tokens" not in a and "gen_ai.usage.output_tokens" not in a
-    assert "gen_ai.prompt_json" not in a and "gen_ai.usage.cost" not in a
+    assert "gen_ai.input.messages" not in a and "gen_ai.usage.cost" not in a
 
 
 def test_resource_has_no_project_name_unless_a_stamp_is_simulated():
@@ -77,7 +115,7 @@ def test_protobuf_round_trip_keeps_ids_and_attributes():
     msg.ParseFromString(gf.to_protobuf(req))
     sp = msg.resource_spans[0].scope_spans[0].spans[0]
     assert sp.trace_id.hex() == "0123456789abcdef0123456789abcdef" and sp.parent_span_id.hex() == "0123456789abcdef"
-    assert {a.key for a in sp.attributes} >= {"gen_ai.request.model", "gen_ai.model.provider", "gen_ai.prompt_json"}
+    assert {a.key for a in sp.attributes} >= {"gen_ai.request.model", "gen_ai.provider.name", "gen_ai.input.messages"}
 
 
 def test_caller_span_is_the_parent_of_the_linked_gateway_span():

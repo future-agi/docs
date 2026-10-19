@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """STAND-IN for the Cloudflare AI Gateway OpenTelemetry exporter (the sending side only).
 
-No Cloudflare code or account is involved. This script posts what Cloudflare's documentation says the
-exporter posts (see gateway_fixture.py), from your machine, with the exporter's own knobs:
+For trying the collector without a Cloudflare account. No Cloudflare code or account is involved. This script
+posts the span shape a real gateway exported on 2026-10-18 (see gateway_fixture.py; `--doc-names` posts the
+attribute names on Cloudflare's page instead), from your machine, with the exporter's own knobs:
 
   --headers      the exporter's Headers field: a JSON object ({"Authorization": "Bearer <token>"})
   --header N=V   one header, value read from environment variable V (keeps keys out of shell history)
   --content-type json (Cloudflare's default) or protobuf
-  --gzip         gzip the body (Cloudflare documents no compression either way)
+  --gzip         gzip the body (the real gateway sent plain bodies; the collector accepts both)
 
   standin_cloudflare.py send --endpoint http://localhost:4318/v1/traces \\
       --header Authorization=EXPORT_AUTH --scenario success --live
@@ -90,7 +91,7 @@ def scenario_request(a: argparse.Namespace) -> gf.GatewayRequest:
     marker = a.marker or gf.env_marker()
     meta = {"team": "engineering", "feature": a.meta_marker or "support-bot"}
     prompt = [{"role": "user", "content": f"Order {marker} has this customer note: {marker}-note. In one short sentence, what should support do?"}]
-    r = gf.GatewayRequest(prompt=prompt, metadata=meta, big_chars=a.big_chars,
+    r = gf.GatewayRequest(prompt=prompt, metadata=meta, big_chars=a.big_chars, doc_names=a.doc_names,
                           otel_trace_id=a.otel_trace_id, otel_parent_span_id=a.otel_parent_span_id)
     if a.live:
         resp = chat(prompt)
@@ -124,7 +125,9 @@ def main() -> int:
     p.add_argument("--header", action="append", default=[], metavar="NAME=ENVVAR")
     p.add_argument("--content-type", default="json", choices=["json", "protobuf"])
     p.add_argument("--gzip", action="store_true")
-    p.add_argument("--scenario", default="success", choices=["success", "error", "no-usage", "no-prompt"])
+    p.add_argument("--scenario", default="success", choices=["success", "error", "no-usage", "no-prompt"],
+                   help="error is SYNTHETIC: the real gateway exported no span for a failed request")
+    p.add_argument("--doc-names", action="store_true", help="use the attribute names on Cloudflare's page")
     p.add_argument("--live", action="store_true", help="real model call through STANDIN_UPSTREAM_* / CLIPROXY_* first")
     p.add_argument("--marker", help="unique string placed in the prompt, the completion and (error scenario) the error text")
     p.add_argument("--meta-marker", help="value of the custom metadata key `feature` (metadata is not content-gated)")

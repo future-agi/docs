@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
 """OTLP requests shaped like the Cloudflare AI Gateway OpenTelemetry exporter.
 
-STAND-IN. Nothing here was captured from Cloudflare. The span carries the attributes Cloudflare
-documents (https://developers.cloudflare.com/ai-gateway/observability/otel-integration/, page
-"Last updated Sep 24, 2026", read 2026-10-16):
+STAND-IN for running without Cloudflare. The default shape is the one a real gateway exported on 2026-10-18
+(captured payloads in tests/fixtures/, OpenAI behind the gateway, content type json and protobuf):
 
-  gen_ai.request.model        string
-  gen_ai.model.provider       string   (Cloudflare's name; NOT gen_ai.provider.name)
+  resource  service.name = "ai-gateway"           scope  name = "ai"
+  span      name "cf.aig.request", kind INTERNAL, one span per request the provider answered successfully
+  gen_ai.operation.name       string   "chat"
+  gen_ai.request.model        string   the model the provider reported, e.g. gpt-4o-mini-2024-07-18
+  gen_ai.provider.name        string   e.g. openai
   gen_ai.usage.input_tokens   int
   gen_ai.usage.output_tokens  int
-  gen_ai.prompt_json          string   JSON-encoded prompt/messages
-  gen_ai.completion_json      string   JSON-encoded completion
-  gen_ai.usage.cost           double   estimated cost
-  <key>                       custom metadata from the `cf-aig-metadata` request header, one attribute per
-                              key (keys starting with `gen_ai.` are dropped by Cloudflare)
+  gen_ai.input.messages       string   the request body, as JSON
+  gen_ai.output.messages      string   the response body, as JSON
+  gen_ai.usage.cost           double   Cloudflare's estimate
+  <key>                       custom metadata from the `cf-aig-metadata` request header, one attribute per key
 
-Trace linking follows the same page: `cf-aig-otel-trace-id` (32 hex) is used as the trace id and
-`cf-aig-otel-parent-span-id` (16 hex) as the parent span id.
+Cloudflare's page (https://developers.cloudflare.com/ai-gateway/observability/otel-integration/, "Last updated
+Sep 24, 2026") names gen_ai.model.provider, gen_ai.prompt_json and gen_ai.completion_json instead. The real
+exporter did not send them; `doc_names=True` builds that documented shape so the collector is tested on both.
 
-Where the page is silent the choice made here is marked ASSUMED, and the docs page says the same:
-  * span name, span kind, instrumentation scope and resource attributes (one span per gateway request)
-  * the exact JSON shape of gen_ai.prompt_json / gen_ai.completion_json
-  * how a failed request is expressed (status ERROR plus message)
-  * the value of gen_ai.usage.cost (SYNTHETIC here: tokens times a made-up rate)
+Trace linking: `cf-aig-otel-trace-id` (32 hex) becomes the trace id and `cf-aig-otel-parent-span-id` (16 hex)
+the parent span id (seen on the real gateway).
+
+SYNTHETIC here: the cost value (tokens times a made-up rate), and the error scenario. The real gateway exported
+no span at all for a request the provider rejected (HTTP 400, 401, 404) and none for a cache hit; the error
+scenario stays so the collector's error-text rule is still tested.
 """
 from __future__ import annotations
 
@@ -34,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 STATUS_UNSET, STATUS_OK, STATUS_ERROR = 0, 1, 2
-KIND_CLIENT = 3
+KIND_INTERNAL = 1
 TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 SPAN_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 COST_PER_1K_TOKENS = 0.0005     # SYNTHETIC
@@ -67,10 +70,11 @@ class GatewayRequest:
     metadata: dict[str, Any] = field(default_factory=lambda: {"team": "engineering"})  # cf-aig-metadata
     otel_trace_id: str | None = None              # cf-aig-otel-trace-id
     otel_parent_span_id: str | None = None        # cf-aig-otel-parent-span-id
-    error_message: str | None = None              # ASSUMED: status ERROR + message
+    error_message: str | None = None              # SYNTHETIC: status ERROR + message (not exported by the real gateway)
     exception_event: bool = False                 # SYNTHETIC: an OTel exception event, to exercise the privacy rule
     latency_ms: int = 900
     big_chars: int = 0
+    doc_names: bool = False                       # the names on Cloudflare's page instead of the ones it sends
 
 
 def sanitize_metadata(meta: dict[str, Any]) -> dict[str, Any]:
@@ -85,18 +89,30 @@ def build_span(r: GatewayRequest) -> dict:
         raise ValueError("cf-aig-otel-parent-span-id must be 16 lowercase hex characters")
     end = time.time_ns()
     start = end - r.latency_ms * 1_000_000
-    a: list[dict] = [kv("gen_ai.request.model", r.model), kv("gen_ai.model.provider", r.provider)]
+    if r.doc_names:
+        a: list[dict] = [kv("gen_ai.request.model", r.model), kv("gen_ai.model.provider", r.provider)]
+    else:
+        a = [kv("gen_ai.operation.name", "chat"), kv("gen_ai.request.model", r.model), kv("gen_ai.provider.name", r.provider)]
     if r.input_tokens is not None:
         a.append(kv("gen_ai.usage.input_tokens", r.input_tokens))
     if r.output_tokens is not None:
         a.append(kv("gen_ai.usage.output_tokens", r.output_tokens))
     if r.prompt is not None:
-        text = json.dumps(r.prompt, ensure_ascii=False)
+        if r.doc_names:
+            text = json.dumps(r.prompt, ensure_ascii=False)
+        else:   # the real exporter sends the whole request body
+            text = json.dumps({"model": r.model, "messages": r.prompt, "max_tokens": 64}, ensure_ascii=False)
         if r.big_chars:
             text += " " + "x" * r.big_chars
-        a.append(kv("gen_ai.prompt_json", text))
+        a.append(kv("gen_ai.prompt_json" if r.doc_names else "gen_ai.input.messages", text))
     if r.completion is not None:
-        a.append(kv("gen_ai.completion_json", json.dumps(r.completion, ensure_ascii=False)))
+        if r.doc_names:
+            a.append(kv("gen_ai.completion_json", json.dumps(r.completion, ensure_ascii=False)))
+        else:   # and the whole response body
+            usage = {"prompt_tokens": r.input_tokens, "completion_tokens": r.output_tokens}
+            body = {"id": "chatcmpl-standin", "object": "chat.completion", "model": r.model,
+                    "choices": [{"index": 0, "message": r.completion, "finish_reason": "stop"}], "usage": usage}
+            a.append(kv("gen_ai.output.messages", json.dumps(body, ensure_ascii=False, indent=2)))
     cost = r.cost
     if cost is None and r.input_tokens is not None and r.output_tokens is not None:
         cost = round((r.input_tokens + r.output_tokens) / 1000 * COST_PER_1K_TOKENS, 8)
@@ -106,11 +122,12 @@ def build_span(r: GatewayRequest) -> dict:
     span = {
         "traceId": r.otel_trace_id or secrets.token_hex(16),
         "spanId": secrets.token_hex(8),
-        "name": "ai-gateway.request",                      # ASSUMED
-        "kind": KIND_CLIENT,                               # ASSUMED
+        "name": "cf.aig.request",
+        "kind": KIND_INTERNAL,
         "startTimeUnixNano": str(start),
         "endTimeUnixNano": str(end),
         "attributes": a,
+        # SYNTHETIC error: the real gateway exported nothing for failed requests.
         "status": {"code": STATUS_ERROR, "message": r.error_message} if r.error_message else {"code": STATUS_UNSET},
     }
     if r.otel_parent_span_id:
@@ -131,11 +148,11 @@ def build_span(r: GatewayRequest) -> dict:
 def build_request(r: GatewayRequest, resource: dict[str, str] | None = None) -> dict:
     """The JSON body of one export. `resource` adds resource attributes (for example project_name) to stand in for a stamp;
     the exporter itself has no field for them."""
-    res = [kv("service.name", "cloudflare-ai-gateway")]           # ASSUMED
+    res = [kv("service.name", "ai-gateway")]
     res += [kv(k, v) for k, v in (resource or {}).items()]
     return {"resourceSpans": [{
         "resource": {"attributes": res},
-        "scopeSpans": [{"scope": {"name": "cloudflare-ai-gateway"}, "spans": [build_span(r)]}],   # ASSUMED scope
+        "scopeSpans": [{"scope": {"name": "ai"}, "spans": [build_span(r)]}],
     }]}
 
 

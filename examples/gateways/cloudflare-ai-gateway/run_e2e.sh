@@ -2,14 +2,15 @@
 # End-to-end run of the Cloudflare AI Gateway recipe against a self-hosted Future AGI.
 #
 #   source <env with FI_API_KEY, FI_SECRET_KEY, FI_BASE_URL, CLIPROXY_API_KEY, CLIPROXY_OPENAI_BASE_URL>
-#   PYTHON=/path/to/venv/bin/python VERIFY=/path/to/fi_verify.py ./run_e2e.sh [direct|collector|all]
+#   PYTHON=/path/to/venv/bin/python VERIFY=/path/to/fi_verify.py ./run_e2e.sh [direct|collector|replay|all]
 #
 # What is real and what is not:
 #   real     the OpenTelemetry Collector container running otelcol.yaml, the Future AGI collector and storage
-#            you point it at, and (with --live) the model call behind each gateway request
-#   STAND-IN Cloudflare AI Gateway. standin_cloudflare.py posts what Cloudflare's documentation says the
-#            exporter posts. No Cloudflare account, gateway, key, tunnel or code is involved, and nothing
-#            here was captured from Cloudflare.
+#            you point it at, (with --live) the model call behind each gateway request, and in `replay` the
+#            payloads a real Cloudflare AI Gateway exported on 2026-10-18 (tests/fixtures/)
+#   STAND-IN in `direct` and `collector`: standin_cloudflare.py posts the span shape the real gateway sent, from
+#            your machine, so the run needs no Cloudflare account. Its error scenario is SYNTHETIC: the real
+#            gateway exported no span for a failed request.
 #
 # Needs: Docker, a self-hosted Future AGI in Docker (the scan reads its Postgres and ClickHouse containers; set
 #   FI_PG_CONTAINER and FI_CH_CONTAINER if yours are named differently, or SKIP_SCAN=1), Python 3.10+, and
@@ -33,9 +34,9 @@ OTELCOL_VERSION="${OTELCOL_VERSION:-0.162.0}"
 export STANDIN_UPSTREAM_BASE_URL="${STANDIN_UPSTREAM_BASE_URL:-${CLIPROXY_OPENAI_BASE_URL:-}}"
 export STANDIN_UPSTREAM_API_KEY="${STANDIN_UPSTREAM_API_KEY:-${CLIPROXY_API_KEY:-}}"
 export STANDIN_MODEL="${STANDIN_MODEL:-gpt-6-luna}"
-CNAME="th8103-rest-cloudflare-ai-gateway-otelcol"
-TAP_PORT=18299
-RECV_PORT=14499
+CNAME="${OTELCOL_CONTAINER:-th8103-rest-cloudflare-ai-gateway-otelcol}"
+TAP_PORT="${TAP_PORT:-18299}"
+RECV_PORT="${RECV_PORT:-14499}"
 HOST_ALIAS="${DOCKER_HOST_ALIAS:-host.docker.internal}"
 # The secret the exporter's Headers field would carry. Invented per run, never printed.
 GATEWAY_TOKEN="cfg-$("$PY" -c 'import secrets; print(secrets.token_hex(16))')"
@@ -140,7 +141,7 @@ run_direct() {
   expect "D5 protobuf with project_name" 200 CF send --endpoint "$url" "${FIH[@]}" --content-type protobuf --marker "CFGD5$(uid)" --resource "project_name=$p"
   expect "D6 JSON gzipped" 400 CF send --endpoint "$url" "${FIH[@]}" --gzip --marker "CFGD6$(uid)" --resource "project_name=$p"
   expect "D7 the /tracer/v1/traces path" 200 CF send --endpoint "$FI_BASE_URL/tracer/v1/traces" "${FIH[@]}" --marker "CFGD7$(uid)" --resource "project_name=$p"
-  expect "D8 no prompt_json in the span" 200 CF send --endpoint "$url" "${FIH[@]}" --scenario no-prompt --marker "CFGD8$(uid)" --resource "project_name=$p"
+  expect "D8 no prompt in the span" 200 CF send --endpoint "$url" "${FIH[@]}" --scenario no-prompt --marker "CFGD8$(uid)" --resource "project_name=$p"
   sleep 6
   verify "$p" 4
   scan "$p" "" found "marker=$d4" || true
@@ -167,7 +168,7 @@ run_collector() {
 
   say "K4 usage missing, prompt missing, gzipped body"
   expect "K4a no usage fields" 200 CF send --endpoint "$RECV" --header Authorization=GATEWAY_AUTH --scenario no-usage --marker "CFGE$(uid)"
-  expect "K4b no prompt_json" 200 CF send --endpoint "$RECV" --header Authorization=GATEWAY_AUTH --scenario no-prompt --marker "CFGF$(uid)"
+  expect "K4b no prompt" 200 CF send --endpoint "$RECV" --header Authorization=GATEWAY_AUTH --scenario no-prompt --marker "CFGF$(uid)"
   expect "K4c gzip" 200 CF send --endpoint "$RECV" --header Authorization=GATEWAY_AUTH --gzip --marker "CFGG$(uid)"
 
   say "K5 gateway span linked to an application trace (cf-aig-otel-trace-id and cf-aig-otel-parent-span-id)"
@@ -180,7 +181,7 @@ run_collector() {
   stop_tap
   note "collector memory after the content-off run: $(docker stats --no-stream --format '{{.MemUsage}}' "$CNAME") (limit 512m)"
   save_logs off
-  verify "$P" 9 --expect-type llm --expect-type chain
+  verify "$P" 8 --expect-type llm --expect-type chain   # K2, K2b, K3, K4a-c, K5a, K5b: eight spans
   grep -q 'status=ERROR' "$OUT/verify-$P.txt" 2>/dev/null && note "ERROR status present  $P" || fail "no ERROR status in $P"
   grep -q -- "$tid" <(tr -d '-' < "$OUT/verify-$P.txt") && note "linked trace stored under the id the caller sent  $P" || fail "linked trace id not found in $P"
   for want in "tok=" "model=gpt-6-luna"; do
@@ -226,11 +227,51 @@ run_collector() {
   note "collector memory limit: $(docker inspect -f '{{.HostConfig.Memory}}' "$CNAME") bytes"
 }
 
+# ---------------------------------------------------------------- real Cloudflare payloads (tests/fixtures) -> collector
+replay_fixtures() { # posts every captured payload once, each under a fresh trace id
+  "$PY" -I - "$RECV" "$HERE/tests/fixtures" <<'PYEOF'
+import json, os, secrets, sys, urllib.error, urllib.request
+url, d = sys.argv[1], sys.argv[2]
+for name in sorted(os.listdir(d)):
+    if not (name.startswith("cloudflare-") and name.endswith(".json")):
+        continue
+    body = json.load(open(os.path.join(d, name)))
+    span = body["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    span["traceId"] = secrets.token_hex(16)
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": os.environ["GATEWAY_AUTH"]})
+    try:
+        status = urllib.request.urlopen(req, timeout=10).status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    print(json.dumps({"cmd": "replay", "fixture": name, "status": status, "trace_id": span["traceId"]}))
+PYEOF
+}
+
+run_replay() {
+  say "replay: payloads a real Cloudflare AI Gateway exported on 2026-10-18, through otelcol.yaml"
+  local pr="$P-replay" po="$P-replay-optin"
+  start_collector "$pr" false FI "$FI_URL_FROM_DOCKER/v1/traces" || return 1
+  expect "R1 real payloads, content off" 200 replay_fixtures
+  sleep 8; save_logs replay
+  verify "$pr" 2 --expect-type llm
+  grep -q 'cf.aig.request' "$OUT/verify-$pr.txt" && note "span cf.aig.request stored as llm  $pr" || fail "no cf.aig.request span in $pr"
+  scan "$pr" "" absent "prompt=Reply with exactly" "response_id=chatcmpl-" "reply=OK CFLIVE" "stream_chunks=streamed_data" || true
+  scan "$pr" "" found "metadata_key=run_marker" || true
+  start_collector "$po" true FI "$FI_URL_FROM_DOCKER/v1/traces" || return 1
+  expect "R2 real payloads, content on" 200 replay_fixtures
+  sleep 8; save_logs replay-optin
+  verify "$po" 2 --expect-type llm
+  scan "$po" "" found "prompt=Reply with exactly" "reply=OK CFLIVE" || true
+  if grep -E '\- \[llm\].*in=[1-9][0-9]*B.*out=[1-9][0-9]*B' "$OUT/verify-$po.txt" >/dev/null 2>&1; then note "Input and Output panes filled with content on  $po"; else fail "Input or Output pane empty with content on  $po"; fi
+}
+
 case "$MODE" in
   direct) run_direct ;;
   collector) run_collector ;;
-  all) run_direct; run_collector ;;
-  *) echo "usage: $0 [direct|collector|all]"; exit 2 ;;
+  replay) run_replay ;;
+  all) run_direct; run_collector; run_replay ;;
+  *) echo "usage: $0 [direct|collector|replay|all]"; exit 2 ;;
 esac
 
 say "summary"

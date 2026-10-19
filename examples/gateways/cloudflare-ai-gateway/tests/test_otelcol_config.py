@@ -75,14 +75,23 @@ def test_content_switch_defaults_to_off_everywhere(text):
     assert uses and all(u == "${env:FI_CAPTURE_CONTENT:-false}" for u in uses)
 
 
-def test_cloudflares_prompt_and_completion_are_always_removed_after_the_optional_copy(cfg):
+@pytest.mark.parametrize("src,dst", [
+    ("gen_ai.input.messages", "input.value"), ("gen_ai.output.messages", "output.value"),   # what the real gateway sends
+    ("gen_ai.prompt_json", "input.value"), ("gen_ai.completion_json", "output.value"),      # the names on Cloudflare's page
+])
+def test_cloudflares_prompt_and_completion_are_always_removed_after_the_optional_copy(cfg, src, dst):
     span = statements(cfg, "span")
-    copy_in = next(i for i, s in enumerate(span) if s.startswith('set(attributes["input.value"], attributes["gen_ai.prompt_json"])'))
-    copy_out = next(i for i, s in enumerate(span) if s.startswith('set(attributes["output.value"], attributes["gen_ai.completion_json"])'))
-    del_in = span.index('delete_key(attributes, "gen_ai.prompt_json")')
-    del_out = span.index('delete_key(attributes, "gen_ai.completion_json")')
-    assert copy_in < del_in and copy_out < del_out
-    assert '== "true"' in span[copy_in] and '== "true"' in span[copy_out]
+    copy = next(i for i, s in enumerate(span) if s.startswith(f'set(attributes["{dst}"], attributes["{src}"])'))
+    delete = span.index(f'delete_key(attributes, "{src}")')
+    assert copy < delete
+    assert '== "true"' in span[copy]
+
+
+def test_input_and_output_are_marked_json_only_with_the_opt_in(cfg):
+    span = statements(cfg, "span")
+    for side in ("input", "output"):
+        s = next(s for s in span if s.startswith(f'set(attributes["{side}.mime_type"]'))
+        assert '"application/json"' in s and '== "true"' in s
 
 
 def test_other_content_spellings_are_removed_only_when_not_opted_in(cfg):
@@ -107,6 +116,7 @@ def test_error_text_and_exception_details_are_removed_unless_opted_in(cfg):
 
 def test_cloudflare_names_are_mapped_for_observe_and_the_originals_kept(cfg):
     span = statements(cfg, "span")
+    # the real gateway sends gen_ai.provider.name itself; the copy covers the name on Cloudflare's page
     assert any(s.startswith('set(attributes["gen_ai.provider.name"], attributes["gen_ai.model.provider"])') for s in span)
     assert any(s.startswith('set(attributes["gen_ai.cost.total"], attributes["gen_ai.usage.cost"])') for s in span)
     assert not any(re.match(r'delete_key\(attributes, "gen_ai\.(model\.provider|usage\.cost)"\)', s) for s in span)
