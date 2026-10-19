@@ -1,0 +1,168 @@
+---
+title: "NVIDIA NeMo Agent Toolkit tracing with Future AGI"
+description: "Send NVIDIA NeMo Agent Toolkit workflow traces to a Future AGI Observe project with the futureagi trace exporter: install, YAML configuration, what is captured, hiding content with FI_HIDE_INPUTS and FI_HIDE_OUTPUTS, tested versions and known toolkit limitations."
+---
+
+## About
+
+[NVIDIA NeMo Agent Toolkit](https://github.com/NVIDIA/NeMo-Agent-Toolkit) (NAT, PyPI `nvidia-nat`) builds agent workflows from YAML and already turns every workflow, function, LLM and tool step into OpenTelemetry spans. The `futureagi` trace exporter sends those spans to a Future AGI Observe project over OTLP. You add one block to the workflow YAML; no application code changes.
+
+<Warning>
+Preview. The `futureagi` exporter is not in an NVIDIA release yet. It lives on the `feat/futureagi-tracing-exporter` branch of Future AGI's fork, [future-agi/NeMo-Agent-Toolkit](https://github.com/future-agi/NeMo-Agent-Toolkit/pull/1), inside the toolkit's own `nvidia-nat-opentelemetry` package. Until it is accepted upstream, install the toolkit from that branch. Tested end to end against a self-hosted Future AGI stack, not against the hosted `api.futureagi.com` collector.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | The fork branch (NAT `develop` at `c7e1162`, reports as `1.10.0.dev`), the same exporter commits applied to the NAT `v1.9.0` release source (latest stable, 2026-09-10) and to NVIDIA `develop` at `26410de` (2026-10-16). Python 3.12.10, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`/`-grpc` 1.45.1, `grpcio` 1.84.0. |
+| Workflow | The toolkit's `simple_calculator_observability` example: `react_agent` with the calculator and `current_datetime` tools. |
+| Model | A real model behind an OpenAI-compatible endpoint, through the toolkit's `nim` LLM client with `base_url` set. The example's default is NVIDIA-hosted NIM, which needs an `NVIDIA_API_KEY`. |
+| Transports | OTLP/HTTP (default) and OTLP/gRPC, both verified. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-16. |
+| Not tested | The hosted collector. Workflows other than the calculator example. `nat serve` and `nat eval`. |
+
+## 1. Install
+
+The toolkit needs Python 3.11, 3.12 or 3.13, [uv](https://docs.astral.sh/uv/) and [Git LFS](https://git-lfs.com/).
+
+```bash
+git lfs install
+git clone --branch feat/futureagi-tracing-exporter \
+  https://github.com/future-agi/NeMo-Agent-Toolkit.git
+cd NeMo-Agent-Toolkit
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e ".[opentelemetry,profiler]"
+uv pip install -e examples/observability/simple_calculator_observability/
+```
+
+The `opentelemetry` extra contains the exporter. The `profiler` extra records the LLM spans (model name and token counts); without it you get workflow and function spans only. The last line installs the calculator example used below.
+
+Check that the toolkit finds the exporter:
+
+```bash
+nat info components -t tracing | grep futureagi
+```
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-nat-workflow"       # the Observe project the traces land in
+# Self-hosted Future AGI only:
+# export FI_BASE_URL="http://localhost:4318"    # HTTP: the path is replaced with /tracer/v1/traces
+# export FI_GRPC_URL="http://localhost:4317"    # gRPC: include the scheme
+```
+
+| Variable | Used for | Default |
+| --- | --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | Sent as `X-Api-Key` and `X-Secret-Key` (lowercase `x-api-key`, `x-secret-key` metadata over gRPC). Both are required. | none |
+| `FI_PROJECT_NAME` | `project_name` resource attribute when `project` is empty in the YAML | none (required) |
+| `FI_BASE_URL` | HTTP collector. Its path is replaced, so `https://collector.example:8443/old/` becomes `https://collector.example:8443/tracer/v1/traces`. | `https://api.futureagi.com` |
+| `FI_GRPC_URL` | gRPC collector, with scheme. A bare `host:port` is rejected. | `https://grpc.futureagi.com` |
+| `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` | Hide span content, see [Privacy](#privacy) | `false` |
+
+A missing key, secret or project stops the workflow at start with a message that names the field and the variable, never the value.
+
+## 3. Add the exporter to the workflow YAML
+
+```yaml
+general:
+  telemetry:
+    tracing:
+      futureagi:
+        _type: futureagi
+        project: ${FI_PROJECT_NAME:-my-nat-workflow}
+        # FI_API_KEY and FI_SECRET_KEY are read from the environment.
+        # protocol: grpc                            # HTTP is the default
+        # endpoint: https://collector.example:8443/tracer/v1/traces   # used verbatim, wins over FI_BASE_URL/FI_GRPC_URL
+        # hide_inputs: true                         # or FI_HIDE_INPUTS=true
+        # hide_outputs: true                        # or FI_HIDE_OUTPUTS=true
+        # resource_attributes:
+        #   deployment.environment: production
+```
+
+| Field | Value |
+| --- | --- |
+| `protocol` | `http` (default) or `grpc`. |
+| `endpoint` | Full OTLP URL, used as is. `http://` is allowed for a local collector and logs a plaintext warning. Credentials, query strings, fragments and whitespace in the URL are rejected without echoing it. |
+| `resource_attributes` | Extra string resource attributes. `service.name` defaults to the project and can be overridden. `project_name`, `project_type`, `project_version_id`, `project_version_name`, `eval_tags`, `metadata` and every `fi.*` key are reserved. |
+| `batch_size`, `flush_interval`, `max_queue_size`, `drop_on_overflow`, `shutdown_timeout` | The toolkit's standard batching options. Pending spans are sent on normal shutdown. |
+
+Every batch carries the resource attributes `project_name`, `project_type=observe` and `service.name`. Bodies are not compressed.
+
+## 4. Run a workflow
+
+The calculator example calls an NVIDIA-hosted NIM model, so export `NVIDIA_API_KEY` first, or change its `llms` block to another model the toolkit supports.
+
+```bash
+nat run --config_file examples/observability/simple_calculator_observability/configs/config-futureagi.yml \
+  --input "What is the current time? Then multiply 1234 by 5678."
+```
+
+Open the project in **Observe → Tracing**. A failed export never changes the workflow result: an authentication error is logged by the OpenTelemetry exporter (`Failed to export spans batch code: 401, reason: Unauthorized`) and the workflow still prints its answer.
+
+A runnable copy of this setup, with an end-to-end script that checks the stored spans, is in [examples/frameworks/nemo-agent-toolkit](https://github.com/future-agi/docs/tree/main/examples/frameworks/nemo-agent-toolkit).
+
+## What is captured
+
+One trace per workflow run. For the calculator `react_agent` example:
+
+```text
+[chain] <workflow>
+  [chain] <workflow>
+    [chain] LangGraph
+      [chain] agent
+        [chain] RunnableSequence
+          [chain] ChatPromptTemplate
+          [llm]   <model name>         model, prompt/completion/total tokens
+        [chain] conditional_edge
+```
+
+| Toolkit attribute | Shown in Future AGI as | Note |
+| --- | --- | --- |
+| `openinference.span.kind` (`CHAIN`, `LLM`, `TOOL`, ...) | Span type | Set by the toolkit for every step. |
+| `llm.model_name`, `llm.token_count.prompt`, `.completion`, `.total` | Model and token counts | LLM spans, with the `profiler` extra. |
+| `input.value`, `output.value` (and the `_obj` JSON copies) | Input and output | Workflow input and final answer on the root span; prompt and response on LLM spans. |
+| `nat.metadata` | Attribute | A JSON copy of chat and tool inputs and outputs. |
+| `user.id`, `nat.*` ids | Attributes | `nat run` sets the placeholder user id `nat_run_user_id`. |
+
+Read the two toolkit limitations under [Limitations](#limitations) before relying on tool spans or error status.
+
+## Privacy
+
+The exporter follows the same convention as the Future AGI tracing SDK and the toolkit's other trace exporters: span content is exported by default, and the standard Future AGI variables turn it off.
+
+| | Default | `FI_HIDE_INPUTS=true` | `FI_HIDE_OUTPUTS=true` |
+| --- | --- | --- | --- |
+| Workflow input, prompts, tool arguments (`input.value`, `input.value_obj`) | Exported | `__REDACTED__` | Exported |
+| Answers, responses, tool results (`output.value`, `output.value_obj`) | Exported | Exported | `__REDACTED__` |
+| `nat.metadata` (holds both) | Exported | `__REDACTED__` | `__REDACTED__` |
+| Span names, hierarchy, timing, model name, token counts | Exported | Exported | Exported |
+
+`hide_inputs` and `hide_outputs` in the YAML take precedence over the variables. Only `true` and `false` are accepted; any other value logs a warning and keeps the default. The replacement is done by the toolkit's own span redaction processor before the batch leaves the process. The other `FI_HIDE_*` variables of the SDK do not apply: the toolkit emits no message-level attributes for them to act on. If you set `NAT_SPAN_PREFIX`, the metadata attribute follows that prefix.
+
+Verified on 2026-10-16 with a unique marker in the workflow input: with both variables set, the marker was absent from every stored column of every Future AGI table holding the project's rows (spans, traces, rollups, end users), while 58 `__REDACTED__` values were present; with the defaults the marker was present. No local paths, user names, host names, email addresses or stack traces were found in either mode. The toolkit does not attach exception stack traces to spans.
+
+Credentials: keep `FI_API_KEY` and `FI_SECRET_KEY` out of the YAML. The toolkit's secret type prints masked but serializes in plain text with `model_dump()`, so do not log configuration dumps.
+
+## Limitations
+
+- **Preview, not in an NVIDIA release.** Install from the fork branch above. Traces only: no logs, metrics, evaluation runs or prompt versions.
+- **Graph agents lose every span after the first graph node.** With `react_agent` and `tool_calling_agent` the toolkit gives each later LangGraph node (the tool node and every later agent turn) the previous, already finished node as its parent, and its span exporter drops those spans and their children (log line `No parent span found for step ...`). Tool calls still run and the final answer is on the root span, but tool spans and later LLM turns do not reach any trace exporter. Reproduced on `v1.9.0`, `develop` `c7e1162` and `develop` `26410de`, on Python 3.11 and 3.12, with the stock `otelcollector` exporter side by side producing the same spans. This is toolkit behavior, not the Future AGI exporter.
+- **No `ERROR` status.** The toolkit exports every span with status `OK`. A failing LLM call leaves its unfinished spans unexported on `v1.9.0`; on current `develop` the failed LLM span is exported with `"status": "Exception"` inside `nat.metadata`, still with span status `OK`. A tool that raises is retried by the agent and reported as text in the answer.
+- **Hosted collector not tested.** Verified against a self-hosted Future AGI only.
+
+## Troubleshooting
+
+- **`futureagi` is not listed by `nat info components -t tracing`.** The toolkit was installed from PyPI or from NVIDIA's repository. Install from the fork branch.
+- **`project is required for futureagi` / `api_key is required` / `secret_key is required`.** Set `FI_PROJECT_NAME`, `FI_API_KEY` and `FI_SECRET_KEY`, or the matching YAML fields.
+- **`endpoint scheme must be https or http`.** `FI_GRPC_URL` or `endpoint` has no scheme. Use `https://host:4317`, or `http://localhost:4317` for a local collector.
+- **`Failed to export spans batch code: 401` or gRPC `UNAUTHENTICATED`.** Wrong key pair, or one of the two headers missing. The workflow result is unaffected; that batch is lost.
+- **Only workflow and function spans, no LLM span.** Install the `profiler` extra.
+- **Tool spans are missing.** See the graph-agent limitation above. The `No parent span found` warnings in the log confirm it.
+- **Last spans missing.** They are flushed on normal shutdown within `shutdown_timeout` (10 s by default). A killed process loses them.
+- **`git-lfs filter-process: git-lfs: command not found` while cloning.** Install Git LFS and run `git lfs install`, then clone again.
+
+## How this differs from the LangChain traceAI integration
+
+The toolkit's built-in agents run on LangChain and LangGraph, but you do not need the [LangChain traceAI instrumentor](/docs/integrations/traceai/langchain) here. The `futureagi` exporter reads the spans the toolkit already produces for every component, configured from the workflow YAML, and uses the toolkit's own attribute names (`openinference.span.kind`, `input.value`, `llm.token_count.*`). Adding the traceAI LangChain instrumentor on top would trace the same calls twice. Use the traceAI page when you run LangChain or LangGraph directly, outside the toolkit.
