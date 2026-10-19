@@ -1,0 +1,437 @@
+---
+title: "AgentScope tracing with Future AGI"
+description: "Send the OpenTelemetry traces of an AgentScope 2.x agent to Future AGI with the framework's own TracingMiddleware and an exporter you configure. Covers what is captured, the metadata-only default and the opt-in for content, and the AgentScope 1.x path."
+---
+
+## About
+
+This page is for AgentScope, the open-source Python agent framework in the `agentscope-ai/agentscope` repository (PyPI package `agentscope`, Apache-2.0). It is not about AgentScope Studio, which is AgentScope's own trace viewer.
+
+AgentScope 2.x already emits OpenTelemetry spans for every agent reply, model call and tool call, through its `TracingMiddleware`. It sends them nowhere on its own. The middleware records spans on the global OpenTelemetry tracer and takes no endpoint, no headers and no resource, so your application owns the tracer provider. You point that provider's OTLP exporter at Future AGI. There is no traceAI package for AgentScope and you do not need one.
+
+<Warning>
+Alpha. This page was tested end to end against a self-hosted Future AGI stack, with a real model behind an OpenAI-compatible endpoint. It was not tested against the hosted `api.futureagi.com` endpoint, and the only model provider run end to end was OpenAI-compatible (a Gemini run was attempted five times and the Gemini API answered `503 UNAVAILABLE` every time, so it is not claimed).
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `agentscope` 2.0.10 (latest, published 2026-10-12): end to end on Python 3.13.15 and 3.11.12, tests on both. `agentscope` 2.0.9: tests and end to end on Python 3.13.15. `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1, `openai` 3.31.0. 1.x: `agentscope` 1.0.21, the last 1.x release (see [AgentScope 1.x](#agentscope-1x)). |
+| Model | A real model behind an OpenAI-compatible endpoint, through `OpenAIChatModel`. The spans do not depend on the model provider. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-15 and 2026-10-16. |
+| Not tested | The hosted `api.futureagi.com` collector. Model classes other than `OpenAIChatModel`. Human-in-the-loop and external-execution replies. Multi-agent pipelines. Agents behind AgentScope's `create_app` service. |
+| AgentScope docs used | [Middleware, Tracing](https://docs.agentscope.io/en/versions/2.0.10/building-blocks/middleware.md) for 2.0.10 and [2.0.9](https://docs.agentscope.io/en/versions/2.0.9/building-blocks/middleware.md), and the [1.x observability page](https://docs.agentscope.io/versions/1.0.21/en/observe-and-evaluate/observability). Read 2026-10-16. The `_tracing` module of 2.0.9 and 2.0.10 is identical apart from one added provider name (`minimax`). |
+| Source | [examples/frameworks/agentscope](https://github.com/future-agi/docs/tree/main/examples/frameworks/agentscope): the tracing module, a runnable agent, tests, and an end-to-end script. |
+
+## 1. Install
+
+```bash
+pip install agentscope
+```
+
+`agentscope` depends on `opentelemetry-sdk` and `opentelemetry-exporter-otlp`, and the second one includes the OTLP/HTTP exporter used below. Python 3.11 or later is required.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-chatbot"             # the Observe project the traces land in
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"    # default: https://api.futureagi.com
+# export FI_CAPTURE_CONTENT=1                   # opt in to prompts, answers and tool payloads
+```
+
+Set `FI_BASE_URL` to the origin only. The code adds `/tracer/v1/traces`.
+
+## 3. Add the tracing module
+
+AgentScope does not configure an exporter, so this module does. Save it next to your agent code as `futureagi_tracing.py`. It builds the tracer provider and installs it as the global one.
+
+| Piece | Value |
+| --- | --- |
+| Endpoint | `https://api.futureagi.com/tracer/v1/traces`. HTTP, not gRPC. Traces only: the collector has no logs or metrics route. |
+| Headers | Both `X-Api-Key` and `X-Secret-Key`. A Bearer token does not authenticate. |
+| Resource | `project_name` and `project_type=observe`. Future AGI files spans by the resource attribute `project_name`. A span attribute with that key does not count, and a batch without it is rejected. `service.name` is not read as a project name. |
+| Compression | Off. The collector rejects gzip bodies with a `400`, and the module sets compression explicitly so `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` in the environment cannot turn it on. |
+| Content | Off by default. See [Privacy](#privacy). |
+
+```python title="futureagi_tracing.py"
+"""Send AgentScope 2.x traces to Future AGI.
+
+AgentScope 2.x does not take an endpoint, headers or a resource. Its
+``TracingMiddleware`` creates spans on the global OpenTelemetry tracer and nothing else,
+so the application owns the tracer provider. ``setup_tracing`` builds that provider:
+
+* the resource carries ``project_name`` (Future AGI files spans by it) and ``project_type``;
+* the OTLP/HTTP exporter carries ``X-Api-Key`` and ``X-Secret-Key``, sends no gzip, and
+  posts to ``<FI_BASE_URL>/tracer/v1/traces`` (traces only, no logs or metrics);
+* by default only metadata leaves the process (see ``METADATA_ATTRIBUTES``). Set
+  ``FI_CAPTURE_CONTENT=1`` (or ``capture_content=True``) to also export prompts, answers,
+  tool arguments and tool results, and the text of an error;
+* a stack trace is never exported, in either mode: it holds local file paths.
+
+AgentScope itself has no switch for content: ``TracingMiddleware`` always writes the
+messages and tool payloads onto the spans. ``ContentFilterExporter`` is the off switch.
+
+Call ``setup_tracing`` once, before the first agent reply.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping, Sequence
+
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+    Compression,
+    OTLPSpanExporter,
+)
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import Event, ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
+from opentelemetry.trace import Status, StatusCode
+
+# Attributes of AgentScope's own spans that describe a call without containing what was
+# said or done. Anything not listed here is dropped unless content capture is on, so an
+# attribute added by a later AgentScope release stays private until it is reviewed.
+METADATA_ATTRIBUTES = frozenset(
+    {
+        "gen_ai.operation.name",
+        "gen_ai.provider.name",
+        "gen_ai.request.model",
+        "gen_ai.request.temperature",
+        "gen_ai.request.top_p",
+        "gen_ai.request.top_k",
+        "gen_ai.request.max_tokens",
+        "gen_ai.request.presence_penalty",
+        "gen_ai.request.frequency_penalty",
+        "gen_ai.request.seed",
+        "gen_ai.response.id",
+        "gen_ai.response.finish_reasons",
+        "gen_ai.usage.input_tokens",
+        "gen_ai.usage.output_tokens",
+        "agentscope.usage.cache_input_tokens",
+        "agentscope.usage.cache_creation_input_tokens",
+        "gen_ai.agent.name",
+        "gen_ai.conversation.id",
+        "gen_ai.tool.name",
+        "gen_ai.tool.call.id",
+        "agentscope.agent.reply_id",
+        "agentscope.agent.hitl_pending_tools",
+        "agentscope.agent.external_execution_pending_tools",
+        "agentscope.agent.incoming_event_type",
+        "agentscope.agent.is_external_execution",
+    }
+)
+
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def _filter_event(event: Event, capture_content: bool) -> Event:
+    """Keep an event's name and time. The stack trace of an exception event is always
+    dropped (it holds local file paths); its message, which can hold user text, is kept
+    only with content on."""
+    attributes = dict(event.attributes or {})
+    if event.name == "exception":
+        keep = {"exception.type", "exception.message"} if capture_content else {"exception.type"}
+        attributes = {key: value for key, value in attributes.items() if key in keep}
+    elif not capture_content:
+        attributes = {}
+    return Event(name=event.name, attributes=attributes, timestamp=event.timestamp)
+
+
+class _FilteredSpan:
+    """A read-only view of a finished span, with the content removed.
+
+    Everything the OTLP encoder reads is delegated to the real span, except the
+    attributes, the events and the status.
+    """
+
+    def __init__(self, span: ReadableSpan, capture_content: bool) -> None:
+        self._span = span
+        self._attributes = {
+            key: value
+            for key, value in (span.attributes or {}).items()
+            if capture_content or key in METADATA_ATTRIBUTES
+        }
+        self._events = tuple(_filter_event(event, capture_content) for event in span.events)
+        status = span.status
+        description = status.description
+        if status.status_code == StatusCode.ERROR and not capture_content:
+            # The status message is str(exception). Keep the class name instead.
+            description = next(
+                (
+                    event.attributes["exception.type"]
+                    for event in self._events
+                    if "exception.type" in event.attributes
+                ),
+                None,
+            )
+        self._status = Status(status.status_code, description)
+
+    def __getattr__(self, name: str):
+        return getattr(self._span, name)
+
+    @property
+    def attributes(self) -> Mapping[str, object]:
+        return self._attributes
+
+    @property
+    def events(self) -> Sequence[Event]:
+        return self._events
+
+    @property
+    def status(self) -> Status:
+        return self._status
+
+
+class ContentFilterExporter(SpanExporter):
+    """Wrap an exporter so that content, and always stack traces, never leave the process."""
+
+    def __init__(self, inner: SpanExporter, capture_content: bool = False) -> None:
+        self._inner = inner
+        self._capture_content = capture_content
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        return self._inner.export([_FilteredSpan(span, self._capture_content) for span in spans])
+
+    def shutdown(self) -> None:
+        self._inner.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._inner.force_flush(timeout_millis)
+
+
+def setup_tracing(
+    project_name: str | None = None,
+    *,
+    capture_content: bool | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    secret_key: str | None = None,
+) -> TracerProvider:
+    """Install a tracer provider that exports AgentScope's spans to Future AGI."""
+    project_name = project_name or os.environ.get("FI_PROJECT_NAME") or "agentscope-app"
+    if capture_content is None:
+        capture_content = os.environ.get("FI_CAPTURE_CONTENT", "").lower() in _TRUE
+    base_url = (base_url or os.environ.get("FI_BASE_URL") or "https://api.futureagi.com").rstrip("/")
+    api_key = api_key or os.environ["FI_API_KEY"]
+    secret_key = secret_key or os.environ["FI_SECRET_KEY"]
+
+    exporter = OTLPSpanExporter(
+        endpoint=f"{base_url}/tracer/v1/traces",
+        headers={"X-Api-Key": api_key, "X-Secret-Key": secret_key},
+        compression=Compression.NoCompression,  # the Future AGI collector refuses gzip
+    )
+
+    provider = TracerProvider(
+        resource=Resource.create({"project_name": project_name, "project_type": "observe"})
+    )
+    provider.add_span_processor(BatchSpanProcessor(ContentFilterExporter(exporter, capture_content)))
+    trace.set_tracer_provider(provider)
+    return provider
+```
+
+The `ContentFilterExporter` is there because AgentScope has no switch for content. `TracingMiddleware` always writes the messages, tool arguments and tool results onto its spans, so keeping them out has to happen on the way to the exporter. If you want everything AgentScope records, set `FI_CAPTURE_CONTENT=1` and skip nothing else.
+
+## 4. Add the middleware to your agent
+
+Call `setup_tracing` once, before the first reply, then add `TracingMiddleware()` to the agent. Both steps are needed: without the middleware there are no spans, and without a provider the middleware does nothing. Save this as `quickstart.py`.
+
+```python title="quickstart.py"
+import asyncio
+import os
+
+from agentscope.agent import Agent
+from agentscope.credential import OpenAICredential
+from agentscope.message import UserMsg
+from agentscope.middleware import TracingMiddleware
+from agentscope.model import OpenAIChatModel
+from agentscope.permission import PermissionBehavior, PermissionDecision
+from agentscope.state import AgentState
+from agentscope.tool import FunctionTool, Toolkit
+
+from futureagi_tracing import setup_tracing
+
+# 1. Install the tracer provider once, before the first reply.
+provider = setup_tracing(project_name="my-chatbot")
+
+
+def get_weather(city: str) -> str:
+    """Get the current weather for a city.
+
+    Args:
+        city (`str`): The city name.
+    """
+    return f"It is 21 C and sunny in {city}."
+
+
+agent = Agent(
+    name="weather-agent",
+    system_prompt="You are a weather assistant. Always call get_weather before answering.",
+    model=OpenAIChatModel(
+        credential=OpenAICredential(
+            api_key=os.environ["OPENAI_API_KEY"],
+            base_url=os.environ.get("OPENAI_BASE_URL"),  # any OpenAI-compatible endpoint
+        ),
+        model=os.environ.get("OPENAI_MODEL", "gpt-4.1"),
+    ),
+    toolkit=Toolkit(
+        tools=[
+            FunctionTool(
+                get_weather,
+                permission=PermissionDecision(behavior=PermissionBehavior.ALLOW, message="allowed"),
+            )
+        ]
+    ),
+    # 2. Add the middleware. It creates the spans.
+    middlewares=[TracingMiddleware()],
+    state=AgentState(session_id="support-chat-42"),
+)
+
+reply = asyncio.run(agent.reply(UserMsg(name="user", content="What is the weather in Paris?")))
+print(reply.get_text_content())
+
+# 3. Short scripts: send what is buffered before the process exits.
+provider.force_flush()
+```
+
+Three things about the order and the lifecycle:
+
+- The middleware looks the provider up on every call, so building the agent before `setup_tracing` still works. A reply that runs before the provider exists produces no spans and no error.
+- The provider batches spans and flushes when the process exits, so a script that never calls `force_flush` still exports on a normal exit. Call it in short-lived scripts, notebooks and serverless handlers.
+- Only the middleware on the agent matters. Calling `agentscope.init` does not configure tracing in 2.x. If that is all you called, nothing leaves the process.
+
+## 5. Look at the trace
+
+Open **Observe**, select the project (`my-chatbot` above), and open a trace. One reply is one trace:
+
+```
+invoke_agent weather-agent       the reply (type shown as unknown)
+├── chat gpt-4.1                 llm    first model call, asks for the tool
+├── execute_tool get_weather     tool
+└── chat gpt-4.1                 llm    second model call, writes the answer
+```
+
+Model calls and tool calls hang under the reply span, in the order they ran. AgentScope sets the hierarchy and this page does not change it.
+
+## What is captured
+
+| Signal | What you get |
+| --- | --- |
+| Reply | One `invoke_agent <agent name>` span per `agent.reply(...)`, with the agent name and a reply id. Future AGI types it `unknown`, not `agent`. See the note below the table. |
+| Model | One `chat <model>` span per model call, with the model id, `gen_ai.provider.name`, finish reasons, and any request parameters you set (temperature, `max_tokens`, and so on). The provider name comes from the AgentScope model class, and for `OpenAIChatModel` from the base URL. An OpenAI-compatible endpoint that AgentScope does not recognise shows as `openai`. |
+| Tokens | Input and output tokens from the provider's `usage`, on streamed and non-streamed calls. If a provider reports none, the span has none: nothing is estimated. Cache token counts appear as `agentscope.usage.*` attributes when the provider reports them. |
+| Streaming | A streamed model call is one span, closed after the last chunk, and its usage comes from the last chunk. |
+| Tool | One `execute_tool <name>` span per tool call, with the tool name and call id. Arguments and result are content, so they are in the span only with the opt-in. |
+| Session | `gen_ai.conversation.id` carries the AgentScope session id on every span. Set it with `AgentState(session_id=...)`. Without one, AgentScope generates a random id for each `AgentState`. It is kept as a span attribute and is not mapped to Future AGI's Sessions view (the session column was empty in every run). |
+| Cost | Not captured. |
+| Input and output columns | Empty, even with content on. AgentScope writes prompts and answers to `gen_ai.input.messages` and `gen_ai.output.messages`, which Future AGI stores as span attributes. They are not mapped to the Input and Output columns. |
+| Retrieval, embeddings, memory | Not captured. `TracingMiddleware` only instruments the reply, the model call and the tool call. |
+| Human-in-the-loop and external-execution replies | AgentScope adds attributes for them (pending tool names, a continuation event type). Not run for this page. |
+
+In the Future AGI build this was tested on, `gen_ai.operation.name` values `chat` and `execute_tool` become the types `llm` and `tool`, and `invoke_agent` stays `unknown`. The tree, model, tokens and latency are all there. Typing the reply span as an agent, and filling the Input and Output columns from the `gen_ai.*` message attributes, is normalization that belongs in Future AGI's shared span processor, not in this recipe. This page does not add it, and the reply span's own token total reads 0 because the tokens are on the model spans under it.
+
+### Errors
+
+| Failure | What you see |
+| --- | --- |
+| The model call fails (a model id the endpoint does not serve, a refused key, an unreachable endpoint) | The `chat` span and the `invoke_agent` span are `ERROR`. The trace is still exported, with no token counts. The status message is the exception class (for example `openai.BadRequestError`) by default, and the full error text with the opt-in. |
+| A tool raises | The `execute_tool` span stays `OK`. AgentScope catches the exception and returns an error result to the model, so nothing propagates through the middleware. With content on, the result attribute contains `ToolResultState.ERROR` and the error text. With the metadata-only default there is no signal on the span that the tool failed. |
+| The collector is unreachable, slow, or rejects the batch | Your agent is not affected. The exporter retries, logs a warning and drops the batch, so those spans are lost. |
+
+## Privacy
+
+Default. Only metadata is exported: model id, provider, token counts, finish reasons, agent name, tool names, tool call ids, the session id, reply id, span names, timings and status. The prompt, the system prompt, the model's answer, tool definitions, tool arguments, tool results and the text of an error are removed before the exporter sees them. The agent still gets its full answer.
+
+Why this needs code. AgentScope 2.x has no setting for it. `TracingMiddleware` writes `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.definitions`, `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` onto its spans every time. The module's `METADATA_ATTRIBUTES` list is an allow-list, so an attribute added by a later AgentScope release stays private until you review it. The example's tests fail when AgentScope emits an attribute that is on neither the allow-list nor the reviewed content list.
+
+Opt in. Set `FI_CAPTURE_CONTENT=1` before the process starts, or call `setup_tracing(capture_content=True)`. The spans then carry everything AgentScope records, unchanged, including the full prompt history on every model call, the system prompt and tool definitions, tool arguments and results, and the message of an exception. AgentScope's converter writes base64 media blocks into the message attributes, so they are exported too (read in the source, not run). A stack trace is never exported, in either mode, because it holds local file paths.
+
+Proof. A unique marker was placed in the system prompt and the user prompt, and the model carried it into a tool argument, a tool result and an answer. The run used the unchanged recipe against a real model, then a scan of every stored byte of the local Future AGI stack.
+
+| Run | Result |
+| --- | --- |
+| Default, four scenarios (tool round trip, non-streaming, a raising tool, a failing model call) | 0 occurrences of the marker in all 47 ClickHouse tables (the `spans` table scanned row by row: 262,975 rows, every column, including `resource_attrs`, `span_events`, `attrs_string`, `input`, `output` and `status_message`) and in a full data dump of the Postgres database. No username, host name, `/Users/` path, `Traceback`, `site-packages` path, or API key in any stored row that carries the project's id. |
+| `FI_CAPTURE_CONTENT=1`, a tool round trip and a raising tool | That run's marker is in 7 rows of the `spans` table, in the `attrs_string` column only, and in no other table. The same residue scan found no username, host name, path, `Traceback` or key in this project either. |
+
+The same marker test runs without a Future AGI stack in the example's tests, against the bytes the collector receives: every span attribute, event and resource attribute, plus request headers and paths.
+
+What the default does not remove:
+
+- The model id, token counts, agent name, tool names, span names, timings and status. These are what the trace is for.
+- The session id. If you set `AgentState(session_id=...)` to something personal, such as an email address, it is exported. Use an opaque id.
+- The exception class name (for example `openai.BadRequestError`), as the status message and as the `exception.type` of the exception event.
+- Resource attributes from the OpenTelemetry SDK: `telemetry.sdk.*`, `service.name` and a random `service.instance.id`. If you add resource detectors or set `OTEL_RESOURCE_ATTRIBUTES`, whatever they add is exported as well. No host name is added by default.
+
+Your model provider sees every prompt whatever you set here. This page only controls what Future AGI receives.
+
+## AgentScope 1.x
+
+AgentScope 1.x has a different activation: `agentscope.init(tracing_url=...)` creates an OTLP/HTTP exporter and a tracer provider inside AgentScope, and 2.x removed it. Do not copy a 1.x snippet into a 2.x project, or the other way round.
+
+1.x takes no headers and no resource, so `tracing_url` alone sends an unauthenticated batch with no `project_name`, which Future AGI rejects. The standard OpenTelemetry environment variables are the only way to supply them. AgentScope's own 1.x docs do the same for Arize Phoenix and Langfuse, with `OTEL_EXPORTER_OTLP_HEADERS`:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="X-Api-Key=$FI_API_KEY,X-Secret-Key=$FI_SECRET_KEY"
+export OTEL_RESOURCE_ATTRIBUTES="project_name=my-chatbot,project_type=observe"
+```
+
+```python
+import agentscope
+
+agentscope.init(tracing_url="https://api.futureagi.com/tracer/v1/traces")  # call before building agents
+```
+
+Tested with 1.0.21 (the last 1.x release), a `ReActAgent` with one tool and a streaming `OpenAIChatModel`. The spans arrived in the named project, one trace, with the reply, model and tool spans, model id and tokens. 1.x also emits one `format` span per formatter call (typed `unknown`).
+
+Limits of the 1.x path:
+
+- There is no content switch. 1.x always exports prompts, answers and tool payloads, and also the full input and output of every instrumented function. Use 2.x if you need the metadata-only default.
+- A clean install of `agentscope==1.0.21` did not import on 2026-10-15 (macOS arm64, Python 3.13, `uv`). Its `mcp` requirement is unbounded and `mcp` 2.x removed a function 1.x imports, and `greenlet` and `tqdm` were not installed with it. The leg was run with `mcp<2` (1.23.0), `greenlet` and `tqdm` added.
+- 1.0.21 crashes on streamed OpenAI responses with the `openai` package 3.x (`TypeError: argument of type 'NoneType' is not iterable`, from `choice.delta.audio`). The leg was run with `openai` 1.109.1, and `openai<3` avoids it. AgentScope 2.x does not have this problem: 2.0.10 ran streamed with `openai` 3.31.0.
+
+## How this differs from related pages
+
+| Page or tool | Difference |
+| --- | --- |
+| AgentScope Studio | AgentScope's own viewer. Its trace endpoint is not a Future AGI ingestion path. This page does not use it, and `studio_url` is not needed. |
+| traceAI instrumentors, such as [OpenAI](/docs/integrations/traceai/openai) | An instrumentor patches a client library. `TracingMiddleware` is AgentScope's own tracing, so the recipe adds no instrumentor. Do not add one on top. With a non-streaming model, `traceAI-openai` 0.1.10 added a second `ChatCompletion` span under every `chat` span (so two model spans per call). With AgentScope's default streaming model, the same instrumentor made the call fail with `TypeError: '_AsyncStream' object does not support the asynchronous context manager protocol`. |
+| Other agent framework pages, such as [CrewAI](/docs/integrations/traceai/crewai) | Those use a `traceAI-*` package and `register()`. AgentScope 2.x does not, because the framework already emits spans and only needs an exporter. |
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| No traces for the project | The batch has no `project_name` resource attribute, or the provider was never installed. Check that `setup_tracing()` ran before the first reply and that `TracingMiddleware()` is on the agent. A span attribute named `project_name` does not count. |
+| `Failed to export spans batch due to timeout, max retries or shutdown` | The collector did not answer within the exporter's timeout (10 seconds) and the batch was dropped after retries. The agent is not affected. This happened once against a heavily loaded local stack. Check `FI_BASE_URL` and that the collector is reachable, or raise `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` (seconds). |
+| `401 missing credentials` in the exporter log | A key is wrong, only one of `X-Api-Key` and `X-Secret-Key` was sent, or a Bearer token was used. |
+| `400 ... have no project_name` | The `project_name` resource attribute is missing. Set it on the provider's resource, as `setup_tracing` does. |
+| Traces never leave the process | You called `agentscope.init` and nothing else. 2.x has no `tracing_url`. Install a provider with `setup_tracing()`. |
+| A short script exits and the last spans are missing | Call `provider.force_flush()` before the end of the script, in notebooks and in serverless handlers. A normal exit flushes by itself. |
+| `400 decode protobuf` | A gzip body. `setup_tracing` turns compression off. If you build your own exporter, do the same: `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` in the environment switches it on for an exporter that does not set it. |
+| A second provider is ignored | OpenTelemetry allows one global provider per process. The second `set_tracer_provider` call logs `Overriding of current TracerProvider is not allowed` and changes nothing. Install yours first, or add the exporter to the provider your app already has. |
+| The reply span shows as `unknown` | Expected. See [What is captured](#what-is-captured). |
+| The Input and Output columns are empty | Expected, with content on or off. The content is in span attributes. |
+| A tool failed and its span is `OK` | Expected. See [Errors](#errors). |
+
+## Run the example
+
+The example runs the recipe with a real model if you give it one, and with a small local stand-in otherwise.
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+cd fi-docs/examples/frameworks/agentscope
+FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:4318 \
+OPENAI_API_KEY=... OPENAI_BASE_URL=... OPENAI_MODEL=... ./run_e2e.sh
+```
+
+`run_e2e.sh` creates a virtual environment, runs the tests, then runs the agent through four scenarios into your project and once more with content capture on, into `<project>-content`. Without `OPENAI_API_KEY` it starts a local OpenAI-compatible stand-in (not a real model) so the script still runs.
+
+## Next Steps
+
+- [Future AGI integrations](/docs/integrations/traceai) for the other frameworks and providers.
