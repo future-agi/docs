@@ -6,7 +6,8 @@
 happy        every turn: chat_turn > invoke_agent (agent, no own token usage) > chat (llm, model, tokens) +
              execute_tool (tool); no ERROR; a session; no Durable Object storage spans
 tool-error   as happy, but execute_tool is ERROR with message "Error" (the class name, not the text)
-model-error  invoke_agent and chat are ERROR with message "AI_APICallError"; no execute_tool
+model-error  invoke_agent and chat are ERROR with message "AI_APICallError"; no execute_tool. On a deployed Worker the
+             provider `fetch` span is ERROR too (Cloudflare marks the HTTP 404 subrequest, no message): allowed.
 Prints trace ids. Exit 1 on the first failed check.
 """
 import argparse
@@ -74,6 +75,7 @@ def main():
         if not errors or any(n != "execute_tool lookup_order" or m != "Error" for n, m in errors):
             fail(f"ERROR spans {errors}, want execute_tool lookup_order / Error")
     if mode == "model-error":
+        errors = [(n, m) for n, m in errors if not (n == "fetch" and not m)]
         names = {n for n, _ in errors}
         if not {"invoke_agent support-chat"} <= names or not any(n.startswith("chat ") for n in names):
             fail(f"ERROR spans {errors}, want invoke_agent and chat")

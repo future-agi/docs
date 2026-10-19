@@ -35,7 +35,23 @@ test("collector: stamps project_name as a resource attribute, drops storage span
   assert.match(st, /STATUS_CODE_ERROR\) where attributes\["error\.type"\] != nil/);
   assert.match(st, /session\.id"\], attributes\["gen_ai\.conversation\.id"\]/);
   assert.match(st, /delete_matching_keys\(attributes, "\^gen_ai\\\\\.usage\\\\\."\) where attributes\["gen_ai\.operation\.name"\] == "invoke_agent"/);
-  assert.deepEqual(cfg.service.pipelines.traces.processors, ["filter/storage_spans", "resource/future_agi", "transform/cloudflare_agents", "batch"]);
+  assert.deepEqual(cfg.service.pipelines.traces.processors, ["filter/preflight", "filter/storage_spans", "resource/future_agi", "transform/cloudflare_agents", "batch"]);
+});
+
+test("collector: fixes from the real Cloudflare export (2026-10-18)", () => {
+  // The destination's pre-flight test span (sent when you create or edit the destination) is dropped.
+  assert.deepEqual(cfg.processors["filter/preflight"].traces.span, ['resource.attributes["telemetry.sdk.name"] == "pre-flight-check"']);
+  const st = cfg.processors["transform/cloudflare_agents"].trace_statements[0].statements;
+  // A WebSocket upgrade that ends because the client closed the socket is not an error.
+  assert.ok(st.includes('set(status.code, STATUS_CODE_UNSET) where attributes["cloudflare.outcome"] == "responseStreamDisconnected"'));
+  const unset = st.findIndex((x) => x.includes("STATUS_CODE_UNSET"));
+  const error = st.findIndex((x) => x.includes("STATUS_CODE_ERROR"));
+  assert.ok(unset >= 0 && unset < error, "clear the disconnect status before mapping error.type");
+  // Query strings and the caller's city/region are removed in both modes (no FI_CAPTURE_CONTENT condition).
+  assert.ok(st.includes('delete_key(attributes, "url.query")'));
+  const geo = st.find((x) => x.includes("geo"));
+  assert.match(geo, /locality\|region/);
+  assert.doesNotMatch(geo, /FI_CAPTURE_CONTENT/);
 });
 
 test("collector: content is off unless FI_CAPTURE_CONTENT=true", () => {
