@@ -43,7 +43,11 @@ test("collector: stamps project_name as a resource attribute, drops storage span
   // the conversation id wins over the Durable Object id when both are present: it is set last
   assert.ok(st.findIndex((s) => s.includes('"cloudflare.agents.session.id"]) where')) < st.findIndex((s) => s.includes('"gen_ai.conversation.id"]) where')));
   assert.deepEqual(cfg.service.pipelines.traces.processors,
-    ["filter/storage_spans", "resource/future_agi", "transform/cloudflare_agents", "filter/span_events", "batch"]);
+    ["filter/preflight", "filter/storage_spans", "resource/future_agi", "transform/cloudflare_agents", "filter/span_events", "batch"]);
+});
+
+test("collector: the destination's pre-flight test span is not forwarded (seen in the real export)", () => {
+  assert.deepEqual(cfg.processors["filter/preflight"].traces.span, ['resource.attributes["telemetry.sdk.name"] == "pre-flight-check"']);
 });
 
 test("collector: content is off unless FI_CAPTURE_CONTENT=true", () => {
@@ -64,10 +68,18 @@ test("collector: content is off unless FI_CAPTURE_CONTENT=true", () => {
 test("collector: URLs keep the path only; e-mail-shaped values are replaced on spans and span events in both modes", () => {
   const ts = cfg.processors["transform/cloudflare_agents"].trace_statements;
   assert.ok(ts[0].statements.some((s) => s.startsWith('replace_pattern(attributes["url.full"]') && !s.includes("FI_CAPTURE_CONTENT")));
+  // Cloudflare also sends the query string on its own (url.query): dropped in both modes
+  assert.ok(ts[0].statements.includes('delete_key(attributes, "url.query")'));
   for (const ctx of ts) {
     const r = ctx.statements.find((s) => s.startsWith("replace_all_patterns(attributes"));
     assert.ok(r && r.includes("(@|%40)") && !r.includes("FI_CAPTURE_CONTENT"), ctx.context);
   }
+});
+
+test("collector: the caller's location and network (Cloudflare request spans) are out unless FI_CAPTURE_CONTENT=true", () => {
+  const st = cfg.processors["transform/cloudflare_agents"].trace_statements[0].statements;
+  assert.ok(st.includes(`delete_matching_keys(attributes, "^geo\\\\.") where ${OFF}`));
+  assert.ok(st.includes(`delete_key(attributes, "cloudflare.asn") where ${OFF}`));
 });
 
 test("collector: no secret literals", () => {

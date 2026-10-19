@@ -5,10 +5,10 @@
 # field for resource attributes, and Future AGI rejects any batch whose resource has no `project_name`. This
 # collector fills that gap and keeps your Future AGI keys out of Cloudflare:
 #   1. accepts OTLP/HTTP from the destination, only with your bearer token (a custom header on the destination),
-#   2. drops the per-call Durable Object storage spans (dozens per turn, no AI information),
+#   2. drops the destination's pre-flight test span and the per-call Durable Object storage spans,
 #   3. sets the Observe project,
 #   4. maps the Agents SDK span names onto Observe span types, errors and sessions,
-#   5. keeps prompts, completions, tool arguments/results and error text OUT unless you opt in,
+#   5. keeps prompts, completions, tool arguments/results, error text and the caller's location OUT unless you opt in,
 #   6. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
 #
 # Tested with otel/opentelemetry-collector-contrib 0.162.0.
@@ -19,9 +19,9 @@
 #   FI_PROJECT_NAME             Observe project every Worker trace goes to
 #   FI_TRACES_URL               full traces URL: https://api.futureagi.com/tracer/v1/traces
 #                               or, self-hosted, http://<your-host>:<port>/v1/traces
-#   FI_CAPTURE_CONTENT          optional, default false. `true` lets message text, tool arguments/results and error
-#                               text through. Cloudflare only records them when wrapAISDK gets storeMessages /
-#                               storeTools, so content needs both switches.
+#   FI_CAPTURE_CONTENT          optional, default false. `true` lets message text, tool arguments/results, error
+#                               text and the caller's location through. Cloudflare only records messages and tool
+#                               payloads when wrapAISDK gets storeMessages / storeTools, so content needs both switches.
 
 extensions:
   # Cloudflare sends from its network, so this endpoint must be reachable from the internet. Never leave it open.
@@ -36,9 +36,18 @@ receivers:
         endpoint: 0.0.0.0:4318
         auth:
           authenticator: bearertokenauth/cloudflare
+        # Cloudflare sends OTLP/HTTP JSON with Content-Encoding: gzip; this receiver accepts both by default.
         # Put TLS in front of this (load balancer or reverse proxy), or set `tls:` here with cert_file and key_file.
 
 processors:
+  # When you create a destination, Cloudflare sends one test span ("Hello from Cloudflare ...", resource
+  # telemetry.sdk.name=pre-flight-check) to check the endpoint. The 200 answers it; the span itself is not forwarded.
+  filter/preflight:
+    error_mode: ignore
+    traces:
+      span:
+        - resource.attributes["telemetry.sdk.name"] == "pre-flight-check"
+
   # durable_object_storage_get / _put / _exec ...: one span per storage call. They are leaves (no children), so
   # dropping them keeps every other parent link intact. Delete this processor to keep them.
   filter/storage_spans:
@@ -90,7 +99,13 @@ processors:
           - delete_matching_keys(attributes, "^gen_ai\\.(input\\.messages|output\\.messages|system_instructions|tool\\.call\\.arguments|tool\\.call\\.result|prompt|completion)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
           - delete_matching_keys(attributes, "^(input|output)\\.value$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
           # Request URLs: keep the path, drop scheme, host, query string and fragment (tokens often ride in queries).
+          # Cloudflare also sends the query string on its own as url.query.
           - replace_pattern(attributes["url.full"], "^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*([^?#]*).*$", "$$1")
+          - delete_key(attributes, "url.query")
+          # The caller's approximate location (geo.locality.name is the city; also region, country, continent,
+          # timezone) and network (cloudflare.asn), which Cloudflare adds to request spans: out unless you opt in.
+          - delete_matching_keys(attributes, "^geo\\.") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "cloudflare.asn") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
           # E-mail-shaped values (agent instance names, URLs) are replaced in both modes.
           - replace_all_patterns(attributes, "value", "[A-Za-z0-9._+-]+(@|%40)[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}", "<email>")
       - context: spanevent
@@ -133,5 +148,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [filter/storage_spans, resource/future_agi, transform/cloudflare_agents, filter/span_events, batch]
+      processors: [filter/preflight, filter/storage_spans, resource/future_agi, transform/cloudflare_agents, filter/span_events, batch]
       exporters: [otlp_http/future_agi]

@@ -1,11 +1,14 @@
 // Contract test of otelcol.yaml with the real collector image and no Future AGI: the shipped config, with only the
-// exporter swapped for a file exporter, transforms the recorded turn plus injected content, identities, log lines and
-// errors. Needs Docker (skipped otherwise, or with SKIP_DOCKER=1).
+// exporter swapped for a file exporter, transforms (1) the turn workerd recorded plus injected content, identities, log
+// lines and errors, and (2) a real export from Cloudflare's Workers OTLP traces destination (fixtures/cloudflare-export.json:
+// the destination's pre-flight span and one turn, sent gzip-compressed as Cloudflare sends it).
+// Needs Docker (skipped otherwise, or with SKIP_DOCKER=1).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, chmodSync } from "node:fs";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { rowsToOtlp } from "../standin/destination.mjs";
 
 const IMAGE = `otel/opentelemetry-collector-contrib:${process.env.OTELCOL_VERSION || "0.162.0"}`;
@@ -46,7 +49,15 @@ function fixture() {
   return req;
 }
 
-async function runCollector(capture) {
+// The real Cloudflare export: two request bodies (the pre-flight span, then one turn), placeholders for the caller's
+// location and network, and a fake token in url.query (see _source in the fixture).
+function cloudflareExport() {
+  const { preflight, happy_turn: turn } = JSON.parse(readFileSync(new URL("./fixtures/cloudflare-export.json", import.meta.url)));
+  return [preflight, turn];
+}
+
+// runCollector(capture, bodies?, { gzip }) posts each body in turn and returns every exported span (all output lines).
+async function runCollector(capture, bodies = null, { gzip = false } = {}) {
   // Under this directory, not the system temp dir: Docker Desktop does not always share the latter.
   const dir = mkdtempSync(join(HERE, ".ctest-"));
   chmodSync(dir, 0o777);
@@ -69,14 +80,23 @@ async function runCollector(capture) {
     assert.ok(ready, "collector did not start");
     const noAuth = await fetch(`http://127.0.0.1:${port}/v1/traces`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fixture()) });
     assert.equal(noAuth.status, 401);
-    const res = await fetch(`http://127.0.0.1:${port}/v1/traces`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify(fixture()),
-    });
-    assert.equal(res.status, 200);
+    const sent = bodies ?? [fixture()];
+    for (const body of sent) {
+      const headers = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
+      if (gzip) headers["content-encoding"] = "gzip";
+      const json = JSON.stringify(body);
+      const res = await fetch(`http://127.0.0.1:${port}/v1/traces`, { method: "POST", headers, body: gzip ? gzipSync(json) : json });
+      assert.equal(res.status, 200);
+    }
     const out = join(dir, "spans.json");
-    for (let i = 0; i < 40 && !(existsSync(out) && readFileSync(out, "utf8").trim()); i++) await new Promise((r) => setTimeout(r, 500));
+    // wait for the last span the pipeline keeps (storage spans are filtered out)
+    const last = sent.at(-1).resourceSpans.flatMap((rs) => rs.scopeSpans.flatMap((ss) => ss.spans))
+      .filter((s) => !s.name.startsWith("durable_object_storage_")).at(-1).spanId;
+    for (let i = 0; i < 40 && !(existsSync(out) && readFileSync(out, "utf8").includes(last)); i++) await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 500));
     const text = readFileSync(out, "utf8");
-    return { text, req: JSON.parse(text.trim().split("\n")[0]) };
+    const reqs = text.trim().split("\n").map((l) => JSON.parse(l));
+    return { text, req: reqs[0], reqs };
   } finally {
     spawnSync("docker", ["rm", "-f", name], { stdio: "ignore" });
     rmSync(dir, { recursive: true, force: true });
@@ -143,4 +163,43 @@ test("collector, content on (FI_CAPTURE_CONTENT=true)", { skip: !docker && "dock
   const start = spans.find((s) => s.name === "agent_start");
   assert.equal(get(start, "cloudflare.agents.session.name"), "<email>", "e-mail-shaped values are replaced in both modes");
   assert.doesNotMatch(text, /jane@example\.com|jane\.[a-z0-9]+(@|%40)example\.com/);
+});
+
+// A real export from Cloudflare's destination (2026-10-18): what the live run revealed beyond workerd.
+const allSpans = (reqs) => reqs.flatMap(spansOf);
+
+test("collector, real Cloudflare export, content off (default)", { skip: !docker && "docker or the collector image is not available" }, async () => {
+  const { text, reqs } = await runCollector(false, cloudflareExport(), { gzip: true });
+  const spans = allSpans(reqs);
+  assert.ok(!spans.some((s) => s.name.startsWith("Hello from Cloudflare")), "the destination's pre-flight span is not forwarded");
+  assert.doesNotMatch(text, /pre-flight-check/);
+  assert.ok(!spans.some((s) => s.name.startsWith("durable_object_storage_")));
+  for (const rs of reqs.flatMap((r) => r.resourceSpans)) {
+    assert.equal(get({ attributes: rs.resource.attributes }, "project_name"), "ctest-project");
+  }
+  // the caller's location and network, and the query string: gone in the default mode
+  assert.doesNotMatch(text, /"geo\.|Testville|Test Region|cloudflare\.asn|"url\.query"|fixture-secret/);
+  const root = spans.find((s) => !s.parentSpanId);
+  assert.equal(root.name, "POST");
+  assert.equal(get(root, "url.full"), "/agents/weather-agent/conv-happy-1");
+  assert.equal(get(root, "session.id"), get(root, "gen_ai.conversation.id"));
+  const agent = spans.find((s) => s.name === "invoke_agent weather-agent");
+  assert.equal(get(agent, "fi.span.kind"), "AGENT");
+  assert.equal(get(agent, "gen_ai.usage.input_tokens"), undefined, "token copies removed from invoke_agent");
+  assert.equal(get(agent, "session.id"), get(root, "session.id"), "root and Agent spans share the session");
+  const chats = spans.filter((s) => s.name === "chat gpt-4o-mini");
+  assert.equal(chats.length, 2);
+  for (const c of chats) assert.ok(Number(get(c, "gen_ai.usage.input_tokens")) > 0, "chat keeps its token counts");
+  const approval = spans.find((s) => s.name === "tool_approval get_weather");
+  assert.equal(get(approval, "fi.span.kind"), "CHAIN", "tool_approval is not a second tool run");
+  assert.equal(get(spans.find((s) => s.name === "agent_start"), "session.id"), get(root, "session.id"));
+});
+
+test("collector, real Cloudflare export, content on (FI_CAPTURE_CONTENT=true)", { skip: !docker && "docker or the collector image is not available" }, async () => {
+  const { text, reqs } = await runCollector(true, cloudflareExport(), { gzip: true });
+  const root = allSpans(reqs).find((s) => !s.parentSpanId);
+  assert.equal(get(root, "geo.locality.name"), "Testville", "the caller's location passes only when you opt in");
+  assert.equal(get(root, "cloudflare.asn"), "64496");
+  assert.doesNotMatch(text, /"url\.query"|fixture-secret/, "the query string is dropped in both modes");
+  assert.ok(!allSpans(reqs).some((s) => s.name.startsWith("Hello from Cloudflare")));
 });

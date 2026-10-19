@@ -7,7 +7,9 @@ happy        every turn: root POST (chain, session) > ... > POST (the Agent's in
              no own token usage) > chat (llm, model, tokens) + execute_tool (tool) > tool_approval (chain, approved);
              every agent-side span in the trace's one session; no ERROR; no Durable Object storage spans
 tool-error   as happy, but execute_tool is ERROR with message "Error" (the class name, not the text)
-model-error  invoke_agent and chat are ERROR with message "AI_APICallError"; no execute_tool
+model-error  invoke_agent and chat are ERROR with message "AI_APICallError"; no execute_tool. Runtime spans (POST, fetch)
+             may be ERROR too, with no message: a deployed Worker marks 5xx responses and failed fetches ERROR
+             (seen in the real Cloudflare export, not in local workerd).
 Prints trace ids. Exit 1 on the first failed check.
 """
 import argparse
@@ -86,8 +88,12 @@ def check(spans, mode, model):
         names = {n for n, _ in errors}
         if "invoke_agent weather-agent" not in names or not any(n.startswith("chat ") for n in names):
             fail(f"ERROR spans {errors}, want invoke_agent and chat")
-        if any(m != "AI_APICallError" for _, m in errors):
-            fail(f"error messages {errors}, want AI_APICallError only")
+        runtime = [(n, m) for n, m in errors if n in ("POST", "fetch")]
+        genai = [(n, m) for n, m in errors if (n, m) not in runtime]
+        if any(m != "AI_APICallError" for _, m in genai):
+            fail(f"error messages {genai}, want AI_APICallError only on the GenAI spans")
+        if any(m not in ("", "error") for _, m in runtime):
+            fail(f"runtime ERROR spans carry a message {runtime}, want none (no error text)")
     return errors
 
 
