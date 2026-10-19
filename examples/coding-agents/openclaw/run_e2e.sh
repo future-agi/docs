@@ -7,9 +7,15 @@
 #
 # Optional: FI_BASE_URL (default https://api.futureagi.com), FI_PROJECT_NAME
 # (default openclaw), OPENCLAW_BIN (default openclaw on PATH),
+# DIAGNOSTICS_OTEL_VERSION (default: the OpenClaw version),
 # CAPTURE_CONTENT=1 for the content opt-in, GATEWAY=1 to start a Gateway on
 # GATEWAY_PORT (default 28789) and dispatch the turn through it instead of
 # `openclaw agent --local`, KEEP_WORK=1 to keep the temporary directory.
+#
+# Needs OpenClaw 2026.10.5 or later. The plugin is installed pinned to the
+# OpenClaw version: each diagnostics-otel release requires OpenClaw (plugin API)
+# at least its own version, so an unpinned install takes ClawHub's latest and
+# fails on an older OpenClaw.
 #
 # OpenClaw runs with OPENCLAW_HOME set to a temporary directory, so your own
 # ~/.openclaw config, sessions and Gateway are not read or changed. That
@@ -28,7 +34,16 @@ FI_BASE_URL="${FI_BASE_URL:-https://api.futureagi.com}"
 FI_PROJECT_NAME="${FI_PROJECT_NAME:-openclaw}"
 GATEWAY_PORT="${GATEWAY_PORT:-28789}"
 
+MIN_OPENCLAW_VERSION="2026.10.5"
+PLUGIN_PACKAGE="clawhub:@openclaw/diagnostics-otel"
+
+# Resolved path: on macOS mktemp returns /var/folders/..., and /var is a symlink
+# to /private/var. With OPENCLAW_HOME under a symlinked prefix, OpenClaw rejects
+# its links to the bundled plugin skills and warns "[skills] Skipping invalid
+# skill ... symlink prefix resolves outside the root ancestry" (harmless: the
+# skills still load from the OpenClaw install).
 WORK="$(mktemp -d)"
+WORK="$(cd "$WORK" && pwd -P)"
 GATEWAY_PID=""
 cleanup() {
   if [ -n "$GATEWAY_PID" ]; then
@@ -48,7 +63,30 @@ STATE="$WORK/.openclaw"
 mkdir -p "$STATE" "$WORK/project"
 printf '# OpenClaw E2E fixture\n\nA throwaway project for the Future AGI recipe.\n' > "$WORK/project/README.md"
 
-"$OPENCLAW_BIN" plugins install clawhub:@openclaw/diagnostics-otel
+# Version rule: OpenClaw >= MIN_OPENCLAW_VERSION, plugin <= OpenClaw.
+VERSIONS="$(python3 - "$("$OPENCLAW_BIN" --version)" "$MIN_OPENCLAW_VERSION" "${DIAGNOSTICS_OTEL_VERSION:-}" <<'EOF'
+import re, sys
+out, minimum, plugin = sys.argv[1:]
+found = re.search(r"OpenClaw (\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)", out)
+if not found:
+    sys.exit(f"could not read the OpenClaw version from {out.strip()!r}")
+def key(version):
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.]+)?", version)
+    if not m:
+        sys.exit(f"not an OpenClaw version: {version!r}")
+    return (int(m[1]), int(m[2]), int(m[3]), m[4] is None)  # a prerelease sorts before its release
+host = found[1]
+plugin = plugin or host
+if key(host) < key(minimum):
+    sys.exit(f"OpenClaw {host} is too old: this recipe needs OpenClaw {minimum} or later (openclaw update, or npm install -g openclaw@latest)")
+if key(plugin) > key(host):
+    sys.exit(f"diagnostics-otel {plugin} needs OpenClaw {plugin} or later, this OpenClaw is {host}: pin the plugin to {host} or upgrade OpenClaw")
+print(host, plugin)
+EOF
+)"
+read -r OPENCLAW_VERSION PLUGIN_VERSION <<<"$VERSIONS"
+echo "OpenClaw $OPENCLAW_VERSION, installing $PLUGIN_PACKAGE@$PLUGIN_VERSION"
+"$OPENCLAW_BIN" plugins install "$PLUGIN_PACKAGE@$PLUGIN_VERSION"
 
 # The documented patch, pointed at FI_BASE_URL and with the content switch applied.
 python3 - "$HERE/futureagi.patch.json5" "$WORK/futureagi.patch.json5" "$FI_BASE_URL" "${CAPTURE_CONTENT:-0}" <<'EOF'
