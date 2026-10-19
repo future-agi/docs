@@ -16,6 +16,7 @@ hex() { python3 -c "import uuid;print(uuid.uuid4().hex[:$1])"; }
 SINCE=$(date -u +'%Y-%m-%d %H:%M:%S')
 M_OFF="KONGMARK-OFF-$(hex 12)"; M_ON="KONGMARK-ON-$(hex 12)"
 echo "$M_OFF $M_ON" > "$EVID/markers.txt"
+: > "$EVID/readiness.txt"   # start_kong appends the time each boot took to pass GET /status/ready
 EXTRA="/Users/someuser/secret-notes.txt someuser@example.com"
 tp() { echo "00-$(hex 32)-$(hex 16)-01"; }
 TP_OFF=$(tp); TP_ON=$(tp); TP_FAIL=$(tp); TP_TOOL=$(tp); TP_STREAM=$(tp); TP_VAULT=$(tp)
@@ -59,12 +60,18 @@ echo "admin API shows header values as: $(curl -s "http://127.0.0.1:$KONG_ADMIN_
 sleep 8; assert_no_secrets_in_logs
 stop_kong
 
+echo "== readiness (GET /status/ready, KONG_READY_TIMEOUT=${KONG_READY_TIMEOUT}s) =="
+cat "$EVID/readiness.txt"
+
 echo "== verify =="
+VERIFIED=0
 for _ in 1 2 3 4 5 6; do   # shared local ClickHouse can hit its memory cap; retry
-  python3 "${FI_VERIFY:-fi_verify.py}" --project "$FI_PROJECT_NAME" --wait 60 --min-spans 2 --expect-type llm --json "$EVID/spans.json" | tee "$EVID/fi_verify.txt" && break; sleep 30
+  python3 "${FI_VERIFY:-fi_verify.py}" --project "$FI_PROJECT_NAME" --wait 60 --min-spans 2 --expect-type llm --json "$EVID/spans.json" | tee "$EVID/fi_verify.txt" && { VERIFIED=1; break; }; sleep 30
 done
+[ "$VERIFIED" = 1 ] || { echo "fi_verify did not pass after 6 attempts" >&2; exit 1; }
 python3 "$HERE/scan_privacy.py" --project "$FI_PROJECT_NAME" --since "$SINCE" \
   --absent "$M_OFF" --absent KONGMARK-FAIL --absent "someuser@example.com" --absent "secret-notes" --absent "/Users/someuser" \
   --absent "CALLERTOKEN-$M_Q" --present "$M_ON" | tee "$EVID/privacy-scan.txt"
 echo "== informational: query string (known Kong behaviour, see page Limits) =="
 python3 "$HERE/scan_privacy.py" --project "$FI_PROJECT_NAME" --since "$SINCE" --present "$M_Q" | tee "$EVID/query-string-scan.txt" || true
+echo "E2E PASS"

@@ -15,14 +15,14 @@ Tested with **kong/kong-gateway 3.16.0.1** (latest tag on Docker Hub on 2026-10-
 | `scan_privacy.py` | Greps EVERY stored column of a project (ClickHouse `spans`, Postgres `tracer_*`) for marker strings |
 | `capture_server.py`, `capture_fixtures.sh` | Re-capture the fixtures from a real Kong (Kong exports to a local sink instead of Future AGI) |
 | `fixtures/*.pb` | OTLP protobuf bodies captured from a real Kong 3.16.0.1: statistics only, and with payloads |
-| `tests/` | `test_contract.py` replays the fixtures at a collector; `test_config.py` checks `kong.yml` |
+| `tests/` | `test_contract.py` replays the fixtures at a collector; `test_config.py` checks `kong.yml`; `test_readiness.py` checks the readiness wait in `lib.sh` with fake `docker`/`curl` |
 
 ## Tests
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 export FI_BASE_URL=http://localhost:14338 FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=my-kong-project
-pytest tests            # test_config.py needs nothing; test_contract.py needs a collector (skips if FI_* unset)
+pytest tests            # test_config.py and test_readiness.py need nothing; test_contract.py needs a collector (skips if FI_* unset)
 ```
 
 The storage assertions read ClickHouse with `docker exec` (default container `th8103-e2e-clickhouse-1`, override with
@@ -46,5 +46,14 @@ export FI_VERIFY=/path/to/fi_verify.py        # optional span-tree check from th
 
 It prints the trace ids it sent, asserts no secret value appears in Kong's logs, then scans every stored column for the
 unique content marker (absent with content off, present with content on). Evidence goes to `.evidence/` (not committed).
-Kong runs on host ports 18010 (proxy) and 18011 (admin, loopback only); change with `KONG_PROXY_PORT` / `KONG_ADMIN_PORT`.
-Containers are removed on exit.
+Kong runs on host ports 18010 (proxy), 18011 (admin) and 18012 (Status API), the last two on loopback only; change
+with `KONG_PROXY_PORT` / `KONG_ADMIN_PORT` / `KONG_STATUS_PORT`. Containers are removed on exit.
+
+Each boot waits for Kong's readiness endpoint, `GET /status/ready` on the Status API, which returns 503 until the
+declarative config is loaded and the router and plugins are built, then 200. The wait is up to `KONG_READY_TIMEOUT`
+seconds (default 300, polled every `KONG_READY_POLL` seconds). If Kong is not ready in time, or its container stops,
+the run fails and prints the last `KONG_LOG_TAIL` (default 60) lines of Kong's log with the key values redacted. The
+time each boot took to become ready is written to `.evidence/readiness.txt`.
+
+The run ends with `E2E PASS`. A failed readiness wait, a privacy scan failure, or `fi_verify` still failing after six
+tries stops it with a non-zero exit.
