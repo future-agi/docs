@@ -17,15 +17,32 @@ span types and sessions, keeps payloads out unless you opt in).
 | `tools/scan_stored.py` | Privacy proof: counts a marker in every stored column of a self-hosted Future AGI |
 | `tools/make_fixture.mjs` | Builds `test/fixtures` from a recorded run |
 | `test/` | Unit tests: stand-in conversion and tree checks on recorded Think spans, collector config, page/file drift |
+| `test/collector.docker.test.mjs` | The real collector (Docker) on a real Workers destination export recorded 2026-10-18 (`test/fixtures/cloudflare-export-2026-10-18.json`, sanitized): pre-flight span, storage spans, query strings, token totals, content off and on. Skipped without Docker |
 
 ## Unit tests (no network)
 
 ```bash
 npm install
-npm test
+npm test        # the collector test also needs Docker (it is skipped without it)
 ```
 
-## End to end
+## Live vendor verification (2026-10-18)
+
+The page's path ran once for real, by hand (not scripted here, because it needs a Cloudflare account and a public
+HTTPS host): this agent deployed with `wrangler deploy` to a Workers Paid account (`wrangler secret put
+OPENAI_API_KEY`, `MODEL=gpt-4o-mini`), a Traces destination created with Cloudflare's API pointing at `otelcol.yaml`
+(only the listen port changed) on a public HTTPS host, and Future AGI cloud. Turns: a tool call, a second turn in
+the same conversation, a tool that throws, an unknown model id, and the payload switches on. What the real export
+showed, and what `otelcol.yaml` now handles because of it:
+
+- Cloudflare sends gzip-compressed OTLP/HTTP JSON, one trace over several requests, 1.5 to 3 minutes after the turn.
+- Creating a destination sends a test span `Hello from Cloudflare 👋 (<name>)`: `filter/preflight` drops it.
+- The query string is in `url.query` as well as `url.full`: `url.query` is deleted.
+- `invoke_agent` repeats its chat spans' token totals, which Future AGI added up twice: they move to `think.turn.*`.
+
+`test/collector.docker.test.mjs` replays that export (sanitized) through the real collector.
+
+## End to end (local, no Cloudflare account)
 
 What is real and what is stood in:
 

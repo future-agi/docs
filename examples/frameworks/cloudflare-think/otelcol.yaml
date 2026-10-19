@@ -2,15 +2,16 @@
 #
 # A Workers OTLP destination has a name, an endpoint and custom headers. It has no field for resource
 # attributes, and Future AGI rejects any batch whose resource has no `project_name`. This collector:
-#   1. accepts OTLP/HTTP (Cloudflare sends JSON, not binary protobuf) only with your bearer token,
-#   2. drops the Durable Object storage spans Workers records around every turn (optional, see below),
+#   1. accepts OTLP/HTTP (Cloudflare sends gzip-compressed JSON, not binary protobuf) only with your bearer token,
+#   2. drops the test span Cloudflare sends when you create the destination, and the Durable Object storage
+#      spans Workers records around every turn (optional, see below),
 #   3. sets the Observe project (`project_name`), which the destination cannot,
-#   4. marks Think's spans as agent / LLM / tool, links each conversation as a session, and turns
-#      Think's `error.type` into an error status,
+#   4. marks Think's spans as agent / LLM / tool, links each conversation as a session, turns
+#      Think's `error.type` into an error status, and counts each turn's tokens once,
 #   5. keeps prompts, outputs, tool arguments and results, and error text OUT unless you opt in,
 #   6. forwards uncompressed OTLP to Future AGI with the two Future AGI key headers.
 #
-# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+# Tested with otel/opentelemetry-collector-contrib 0.162.0, receiving a real Workers destination export (2026-10-18).
 #
 # Environment:
 #   COLLECTOR_TOKEN             a secret you invent; the Workers destination sends `Authorization: Bearer <it>`
@@ -36,6 +37,14 @@ receivers:
           authenticator: bearertokenauth/cloudflare
 
 processors:
+  # Creating a destination makes Cloudflare send one test span ("Hello from Cloudflare 👋 (<destination name>)",
+  # resource telemetry.sdk.name = pre-flight-check). Without this it shows up as a one-span trace in your project.
+  filter/preflight:
+    error_mode: ignore
+    traces:
+      span:
+        - resource.attributes["telemetry.sdk.name"] == "pre-flight-check"
+
   # Workers traces every Durable Object storage call: about 250 leaf spans per Think turn, with no
   # GenAI content. Remove this processor (and its name in the pipeline) to keep them.
   filter/storage_spans:
@@ -63,12 +72,19 @@ processors:
           - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
           - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "chat"
           - set(attributes["fi.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "execute_tool"
+          # invoke_agent repeats the token totals of its chat spans. Future AGI adds up tokens and cost over every
+          # span of a trace, so keep the turn totals under other names and count tokens once, on the chat spans.
+          - set(attributes["think.turn.input_tokens"], attributes["gen_ai.usage.input_tokens"]) where attributes["gen_ai.operation.name"] == "invoke_agent" and attributes["gen_ai.usage.input_tokens"] != nil
+          - set(attributes["think.turn.output_tokens"], attributes["gen_ai.usage.output_tokens"]) where attributes["gen_ai.operation.name"] == "invoke_agent" and attributes["gen_ai.usage.output_tokens"] != nil
+          - delete_matching_keys(attributes, "^gen_ai\\.usage\\.") where attributes["gen_ai.operation.name"] == "invoke_agent"
           # One Think conversation (one Durable Object) is one Observe session.
           - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
           # Think records a failed model call or tool as `error.type` without a span status.
           - set(status.code, STATUS_CODE_ERROR) where attributes["error.type"] != nil
-          # Query strings can carry user input or API keys (some providers take `?key=`). Always cut them.
+          # Query strings can carry user input or API keys (some providers take `?key=`). Always cut them:
+          # Workers puts the query string both in url.full and on its own in url.query.
           - replace_pattern(attributes["url.full"], "[?#].*$", "") where attributes["url.full"] != nil
+          - delete_key(attributes, "url.query")
           # Content ON: fill the Input and Output panes from Think's payload attributes.
           - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
           - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
@@ -115,5 +131,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [filter/storage_spans, resource/future_agi, transform/think, filter/span_events, batch]
+      processors: [filter/preflight, filter/storage_spans, resource/future_agi, transform/think, filter/span_events, batch]
       exporters: [otlp_http/future_agi]

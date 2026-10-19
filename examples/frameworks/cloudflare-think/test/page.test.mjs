@@ -27,9 +27,15 @@ test("the page states the tested versions that package.json pins", () => {
   assert.ok(page.includes("otel/opentelemetry-collector-contrib:0.162.0"));
 });
 
-test("the page flags the stand-in and never claims a live Cloudflare export", () => {
-  assert.match(page, /Cloudflare's OTLP destination exporter was a stand-in/);
-  assert.match(page, /No Cloudflare account was used/);
+test("the page states the live verification and keeps the untested parts listed", () => {
+  assert.match(page, /Live vendor verification \(2026-10-18\)/);
+  for (const t of ["useAgentChat", "sub-agents", "`tool_approval`", "sampling below 1", "creating the destination in the dashboard"]) {
+    assert.ok(page.includes(t), t);
+  }
+});
+
+test("the page documents the three fixes the live export needed", () => {
+  for (const t of ["filter/preflight", "url.query", "think.turn.input_tokens"]) assert.ok(page.includes(t), t);
 });
 
 test("no key-looking literal on the page", () => {

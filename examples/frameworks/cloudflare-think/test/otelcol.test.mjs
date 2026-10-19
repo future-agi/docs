@@ -52,7 +52,7 @@ test("content is off unless FI_CAPTURE_CONTENT=true: every payload copy is gated
   const copies = spanStmts.filter((s) => s.startsWith('set(attributes["input.value"]') || s.startsWith('set(attributes["output.value"]'));
   assert.equal(copies.length, 4);
   for (const s of copies) assert.ok(s.endsWith(ON), s);
-  const del = spanStmts.find((s) => s.startsWith("delete_matching_keys"));
+  const del = spanStmts.find((s) => s.startsWith("delete_matching_keys") && s.includes("messages"));
   for (const k of ["input\\\\.messages", "output\\\\.messages", "system_instructions", "tool\\\\.call\\\\.arguments", "tool\\\\.call\\\\.result"]) {
     assert.ok(del.includes(k), k);
   }
@@ -65,13 +65,29 @@ test("content is off unless FI_CAPTURE_CONTENT=true: every payload copy is gated
   assert.ok(spanStmts.indexOf(copies.at(-1)) < spanStmts.indexOf(del));
 });
 
-test("query strings are always cut from url.full", () => {
+test("query strings are always cut: from url.full, and url.query is deleted (the real Workers export has both)", () => {
   const s = spanStmts.find((x) => x.startsWith('replace_pattern(attributes["url.full"]'));
   assert.ok(s);
   assert.ok(!s.includes("FI_CAPTURE_CONTENT"), "not tied to the content switch: query strings can hold keys");
+  assert.ok(spanStmts.includes('delete_key(attributes, "url.query")'), "unconditional delete of url.query");
 });
 
-test("pipeline order: drop storage spans first, guard content before batching", () => {
-  assert.deepEqual(pipeline.processors, ["filter/storage_spans", "resource/future_agi", "transform/think", "filter/span_events", "batch"]);
+test("invoke_agent keeps its turn totals under other names, so Future AGI counts tokens once (on chat spans)", () => {
+  const agent = 'attributes["gen_ai.operation.name"] == "invoke_agent"';
+  for (const k of ["input", "output"]) {
+    assert.ok(spanStmts.includes(
+      `set(attributes["think.turn.${k}_tokens"], attributes["gen_ai.usage.${k}_tokens"]) where ${agent} and attributes["gen_ai.usage.${k}_tokens"] != nil`), k);
+  }
+  const del = spanStmts.indexOf(`delete_matching_keys(attributes, "^gen_ai\\\\.usage\\\\.") where ${agent}`);
+  assert.ok(del > 0, "gen_ai.usage.* deleted on invoke_agent only");
+  assert.ok(spanStmts.findIndex((s) => s.startsWith('set(attributes["think.turn.')) < del, "copied before the delete");
+});
+
+test("the destination's pre-flight test span is dropped", () => {
+  assert.deepEqual(cfg.processors["filter/preflight"].traces.span, ['resource.attributes["telemetry.sdk.name"] == "pre-flight-check"']);
+});
+
+test("pipeline order: drop the pre-flight and storage spans first, guard content before batching", () => {
+  assert.deepEqual(pipeline.processors, ["filter/preflight", "filter/storage_spans", "resource/future_agi", "transform/think", "filter/span_events", "batch"]);
   assert.deepEqual(cfg.processors["filter/storage_spans"].traces.span, ['IsMatch(name, "^durable_object_storage_")']);
 });
