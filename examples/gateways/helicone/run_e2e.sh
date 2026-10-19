@@ -11,8 +11,15 @@
 #   PYTHON              interpreter with requirements.txt installed (default python3)
 #   GATEWAY_VERSION     @helicone/ai-gateway version (default 0.2.0-beta.30)
 #   GATEWAY_PORT        local port for the gateway (default 18303)
-#   FI_GRPC_ENDPOINT    optional, step 7 only: Future AGI OTLP/gRPC endpoint (for example
-#                       http://localhost:14337). Sends the gateway's own OpenTelemetry export there.
+#   FI_GRPC_ENDPOINT    optional, step 7 only: Future AGI OTLP/gRPC endpoint WITH its scheme (for example
+#                       http://localhost:14337). Sends the gateway's own OpenTelemetry export there. Without a
+#                       scheme ("localhost:14337") the gateway exports nothing and logs no error, so the script
+#                       refuses it. Step 7 is skipped when this is unset.
+#   FI_VERIFY           required with FI_GRPC_ENDPOINT: a script, run as
+#                       "$PYTHON $FI_VERIFY --project NAME --wait SECONDS --min-spans N", that reads the project
+#                       back from Future AGI and exits 0 only when it holds at least N stored spans. Step 7 fails
+#                       when it exits non-zero.
+#   STEP7_SETTLE        seconds the gateway keeps running after the step 7 requests (default 5)
 #   E2E_STEPS           steps to run, default "1 2 3 4 5 6 7" (steps 3 to 7 need step 2)
 #
 # It starts the gateway on 127.0.0.1 only and removes it on exit. The hosted Helicone endpoints are not called.
@@ -41,6 +48,22 @@ cleanup() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Step 7 settings are checked before anything is installed or run.
+if want 7 && [ -n "${FI_GRPC_ENDPOINT:-}" ]; then
+  case "$FI_GRPC_ENDPOINT" in
+    http://?*|https://?*) ;;
+    *)
+      echo "FAIL step 7: FI_GRPC_ENDPOINT must include the scheme, for example http://localhost:14337 (got '$FI_GRPC_ENDPOINT')." >&2
+      echo "  With no scheme the gateway starts, serves requests and exports nothing, without logging an error." >&2
+      exit 2 ;;
+  esac
+  if [ -z "${FI_VERIFY:-}" ] || [ ! -f "$FI_VERIFY" ]; then
+    echo "FAIL step 7: set FI_VERIFY to a script that reads the project back from Future AGI (see the header of this file)," >&2
+    echo "  or unset FI_GRPC_ENDPOINT to skip step 7. Without it the export cannot be shown to have been stored." >&2
+    exit 2
+  fi
+fi
 
 wait_for_gateway() {
   for _ in $(seq 1 40); do
@@ -120,11 +143,18 @@ if want 6; then
   MOCK_PID=""
 fi
 
-if want 7 && [ -n "${FI_GRPC_ENDPOINT:-}" ]; then
-  echo "== 7. the gateway's own OpenTelemetry export (gRPC) -> project $FI_PROJECT_NAME-gateway-otlp (not an LLM trace; see the docs page)"
+echo "markers for the privacy scan: $MARKER (content) and $ERR_MARKER (error text)"
+
+if want 7 && [ -z "${FI_GRPC_ENDPOINT:-}" ]; then
+  echo "== 7. skipped: FI_GRPC_ENDPOINT is not set (the gateway's own telemetry was not tested)"
+elif want 7; then
+  P7="$FI_PROJECT_NAME-gateway-otlp"
+  echo "== 7. the gateway's own OpenTelemetry export (gRPC) to $FI_GRPC_ENDPOINT -> project $P7 (not an LLM trace; see the docs page)"
+  [ -s "$WORK/gw-bin.path" ] || { echo "FAIL step 7: run step 2 first (it installs the gateway)"; exit 1; }
   GW_BIN="$(cat "$WORK/gw-bin.path")"
   [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true
   [ -n "$GW_PID" ] && wait "$GW_PID" 2>/dev/null || true
+  GW_PID=""
   cat > "$WORK/gateway-otlp.yaml" <<YAML
 server:
   address: "127.0.0.1"
@@ -139,19 +169,38 @@ providers:
     models:
       - $E2E_UPSTREAM_MODEL
 YAML
+  # Both variables are read by the gateway's OpenTelemetry exporter. OTEL_SERVICE_NAME is not: service.name
+  # comes from the gateway's telemetry.service-name setting (default "ai-gateway").
   OPENAI_API_KEY="$E2E_UPSTREAM_KEY" \
     OTEL_EXPORTER_OTLP_HEADERS="x-api-key=$FI_API_KEY,x-secret-key=$FI_SECRET_KEY" \
-    OTEL_RESOURCE_ATTRIBUTES="project_name=$FI_PROJECT_NAME-gateway-otlp,project_type=observe" \
-    OTEL_SERVICE_NAME=helicone-ai-gateway \
+    OTEL_RESOURCE_ATTRIBUTES="project_name=$P7,project_type=observe" \
     "$GW_BIN" -c "$WORK/gateway-otlp.yaml" >"$WORK/gateway-otlp.log" 2>&1 &
   GW_PID=$!
   wait_for_gateway
-  for _ in 1 2; do
-    curl -s -o /dev/null -X POST "http://127.0.0.1:$GATEWAY_PORT/ai/chat/completions" -H 'Content-Type: application/json' \
-      -d "{\"model\":\"openai/$E2E_UPSTREAM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_completion_tokens\":20}"
+  for i in 1 2; do
+    code="$(curl -s -o "$WORK/step7-response-$i.json" -w '%{http_code}' -X POST "http://127.0.0.1:$GATEWAY_PORT/ai/chat/completions" \
+      -H 'Content-Type: application/json' \
+      -d "{\"model\":\"openai/$E2E_UPSTREAM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_completion_tokens\":20}" || true)"
+    [ "$code" = 200 ] || { echo "FAIL step 7: request $i through the gateway returned HTTP $code (see $WORK/step7-response-$i.json)"; exit 1; }
   done
-  sleep 12   # let the batch exporter flush before the gateway stops
+  sleep "${STEP7_SETTLE:-5}"
+  # Stop the gateway before the check: its shutdown sends the spans it still holds.
+  kill "$GW_PID" 2>/dev/null || true
+  wait "$GW_PID" 2>/dev/null || true
+  GW_PID=""
+  stored=""
+  for _ in 1 2 3; do
+    if "$PYTHON" "$FI_VERIFY" --project "$P7" --wait 120 --min-spans 2 >"$WORK/step7-verify.txt" 2>&1; then stored=1; break; fi
+    grep -qi 'clickhouse error' "$WORK/step7-verify.txt" || break   # retry only when the storage could not be read
+    sleep 30
+  done
+  if [ -z "$stored" ]; then
+    echo "FAIL step 7: no spans stored in project $P7 (gateway log: $WORK/gateway-otlp.log)"
+    sed -n '1,5p' "$WORK/step7-verify.txt" | cut -c1-200
+    exit 1
+  fi
+  echo "PASS step 7: spans stored in project $P7"
+  sed -n '1,2p' "$WORK/step7-verify.txt" | cut -c1-200
 fi
 
-echo "markers for the privacy scan: $MARKER (content) and $ERR_MARKER (error text)"
 echo "done. Open Observe in Future AGI and select the projects above."

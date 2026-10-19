@@ -37,6 +37,8 @@ What the tests assert, with the acceptance criterion from the PRD each one cover
 - **AC-06** No Helicone or provider key reaches the collector; no real key is in this directory.
 - The base URLs the page publishes, built by the OpenAI SDK on an in-process transport (`STANDIN`), give the paths and headers the page describes.
 - TypeScript known gaps are pinned by tests that fail when the gap is fixed: failed calls leave no span, streamed calls have no tokens, the hide settings do not apply.
+- `run_e2e.sh` step 7 (`tests/test_run_e2e_step7.py`, with a stub gateway and a stub read-back, `STANDIN`): it refuses an `FI_GRPC_ENDPOINT` without `http://`/`https://`, refuses to run without `FI_VERIFY`, stops the gateway before the read-back, and fails unless the read-back finds stored spans.
+- Opt-in, the real gateway (`tests/test_gateway_otlp_real.py`, skipped unless `HELICONE_GATEWAY_BIN` points at the `ai-gateway` binary; step 2 of `run_e2e.sh` writes its path to `$E2E_WORKDIR/gw-bin.path`): with `otlp-endpoint: http://127.0.0.1:PORT` it sends OTLP/gRPC trace exports with the `OTEL_EXPORTER_OTLP_HEADERS` headers and the `OTEL_RESOURCE_ATTRIBUTES` resource attributes, and no `gen_ai.*` or `llm.*` attributes; with `127.0.0.1:PORT` (no scheme) it serves the request and exports nothing. No network: a local upstream stub and a local gRPC receiver.
 
 The Python assertions hold for traceAI-openai 0.1.10 and for the unreleased change in future-agi/traceAI#249, and for openai 1.69.0 and 3.31.0.
 
@@ -51,11 +53,18 @@ export E2E_UPSTREAM_MODEL=...                     # a model it serves
 export FI_API_KEY=... FI_SECRET_KEY=...           # Future AGI keys
 export FI_BASE_URL=http://localhost:8080          # self-hosted Future AGI only
 export FI_PROJECT_NAME=helicone-e2e
-export FI_GRPC_ENDPOINT=http://localhost:14337    # optional: step 7, the gateway's own telemetry
+export FI_GRPC_ENDPOINT=http://localhost:14337    # optional: step 7, the gateway's own telemetry (scheme required)
+export FI_VERIFY=/path/to/read_back.py            # required with FI_GRPC_ENDPOINT, see "Step 7" below
 ./run_e2e.sh
 ```
 
 It creates these Observe projects: `helicone-e2e` (default capture), `helicone-e2e-private` (content hidden and error details scrubbed), `helicone-e2e-ts` (TypeScript), `helicone-e2e-proxy-standin` (`STANDIN`: the classic-proxy shape) and, with `FI_GRPC_ENDPOINT`, `helicone-e2e-gateway-otlp`. It prints a unique marker; search your Future AGI storage for it to repeat the privacy check (it must be absent from `-private`).
+
+### Step 7: the gateway's own telemetry
+
+Step 7 restarts the gateway with `telemetry.exporter: otlp` pointed at `FI_GRPC_ENDPOINT`, sends two requests through it, stops it (its shutdown sends the spans it still holds) and then runs `$PYTHON $FI_VERIFY --project helicone-e2e-gateway-otlp --wait 120 --min-spans 2`. `FI_VERIFY` is a script you provide that reads the project back from your Future AGI deployment and exits 0 only when it holds at least that many stored spans. Step 7 prints `PASS step 7` only then, and exits non-zero otherwise. Without `FI_GRPC_ENDPOINT` it prints `== 7. skipped`.
+
+Write `FI_GRPC_ENDPOINT` with its scheme. With `localhost:14337` the gateway starts, serves requests and exports nothing, and its log shows no error, so the script refuses that value. The `error shutting down metrics provider` line in `gateway-otlp.log` appears in passing runs too; it is not the cause of a failure.
 
 ## Single runs
 
