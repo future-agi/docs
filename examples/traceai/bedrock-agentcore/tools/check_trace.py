@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the stored spans of one scenario (the span list `fi_verify.py --json` writes).
 
-    check_trace.py spans.json happy|failure
+    check_trace.py spans.json happy|failure|failure-off
 
 happy:   3 invocations of one AgentCore session. Each is its own trace with an
          `agentcore.invocation` root (stored as chain) and at least one tool span and one
@@ -10,9 +10,12 @@ happy:   3 invocations of one AgentCore session. Each is its own trace with an
 failure: the root is ERROR with only the exception type name as its status message, and at
          least one span under it is ERROR too (the spans were flushed on the error path). The
          request carried a traceparent without JOIN_CALLER_TRACE: the root has no parent and
-         its own trace id.
+         its own trace id. No status message holds a Python traceback.
+failure-off: the same, and every ERROR span's status message is a bare exception type name
+         (content off: no error text).
 """
 import json
+import re
 import sys
 
 PARENT_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
@@ -54,7 +57,7 @@ def main():
         if root["parent_span_id"].replace("-", "")[-16:] != PARENT_SPAN:
             fail(f"root of the caller's trace has parent {root['parent_span_id']}, want {PARENT_SPAN}")
         print(f"ok    happy: 3 traces, {len(spans)} spans, one session, caller trace adopted, tool + llm with model and tokens")
-    elif mode == "failure":
+    elif mode in ("failure", "failure-off"):
         if not roots:
             fail("no root span stored on the error path (not flushed?)")
         for r in roots:
@@ -68,6 +71,14 @@ def main():
         errors = [s for s in spans if s["status"] == "ERROR" and s["name"] != ROOT]
         if not errors:
             fail("no span under the root is ERROR")
+        if any("Traceback (most recent call last)" in (s["status_message"] or "") for s in spans):
+            fail("a status message holds a Python traceback")
+        if mode == "failure-off":
+            bare = [s for s in errors if re.fullmatch(r"[A-Za-z_]\w*", (s["status_message"] or "").strip())]
+            if len(bare) != len(errors):
+                fail(f"content off: {len(errors) - len(bare)} ERROR span(s) keep error text, not just the type name")
+            print(f"ok    failure-off: every ERROR span ({len(errors) + len(roots)}) has the bare type name, e.g. '{errors[0]['status_message']}'")
+            return
         print(f"ok    failure: {len(roots)} ERROR root(s) '{roots[0]['status_message']}', {len(errors)} ERROR child span(s)")
     else:
         fail(f"unknown mode {mode}")

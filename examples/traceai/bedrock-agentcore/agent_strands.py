@@ -35,12 +35,13 @@ from strands.telemetry import StrandsTelemetry
 import agentcore_tracing
 
 # 1. Strands' own provider (set as the global provider). The OTLP exporter reads
-#    OTEL_EXPORTER_OTLP_*. With content off, error spans keep only the exception type name.
+#    OTEL_EXPORTER_OTLP_*. Error spans never carry a stack trace; with content off they keep
+#    only the exception type name.
 telemetry = StrandsTelemetry()
 provider = telemetry.tracer_provider
-exporter = OTLPSpanExporter()
-if agentcore_tracing.strands_redaction_enabled():
-    exporter = agentcore_tracing.ErrorTypeOnlyExporter(exporter)
+exporter = agentcore_tracing.ErrorTextExporter(
+    OTLPSpanExporter(), type_only=agentcore_tracing.strands_redaction_enabled()
+)
 provider.add_span_processor(BatchSpanProcessor(exporter))
 # Stamp only session.id from OpenTelemetry baggage on every Strands span.
 telemetry.setup_baggage_processor(lambda key: key == agentcore_tracing.SESSION_ATTRIBUTE)

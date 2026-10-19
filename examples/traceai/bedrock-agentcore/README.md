@@ -7,13 +7,13 @@ validation pending).
 
 | File | What it is |
 | --- | --- |
-| `agentcore_tracing.py` | The helper you copy next to your agent: `keep_future_agi_exporter`, `traced_invocation`, `traced_stream`, `ErrorTypeOnlyExporter`. |
+| `agentcore_tracing.py` | The helper you copy next to your agent: `keep_future_agi_exporter`, `traced_invocation`, `traced_stream`, `ErrorTextExporter` (error spans: never a stack trace; type name only while content is off), `content_hidden`. |
 | `agent_langchain.py` | Path A: a LangChain agent with one tool, traced with `register()` + `traceAI-langchain`. |
 | `agent_strands.py` | Path B: a Strands agent with one tool, exported by Strands' own OpenTelemetry over plain OTLP. |
 | `Dockerfile` | The runtime container shape (arm64 when built on arm64, uid 1000, port 8080) without the ADOT wrapper, like `agentcore configure --disable-otel` generates. |
 | `requirements.txt` | Pinned versions both paths were tested with. |
-| `tests/` | 29 contract tests against the real `BedrockAgentCoreApp` (in-process, in-memory exporters). |
-| `run_e2e.sh` | End-to-end run against a self-hosted Future AGI you can read back: happy, failure, content off/on, failure with content off, unreachable collector. |
+| `tests/` | 47 contract tests against the real `BedrockAgentCoreApp` (in-process, in-memory exporters). |
+| `run_e2e.sh` | End-to-end run against a self-hosted Future AGI you can read back: happy, failure (scanned for stack traces and local details), content off/on, failure with content off (type name only), unreachable collector. |
 | `tools/` | `invoke.py` (calls `/invocations` like the runtime), `check_trace.py` (trace shape), `scan_columns.py` (counts rows that contain a needle in any stored column of a self-hosted Future AGI). |
 
 ## Tests

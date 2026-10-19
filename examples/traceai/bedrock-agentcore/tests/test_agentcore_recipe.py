@@ -6,6 +6,7 @@ port 8080 in the AgentCore container. Spans go to in-memory exporters; nothing l
 
 import asyncio
 import json
+import os
 import time
 
 import pytest
@@ -387,7 +388,137 @@ def test_traceai_langchain_spans_get_the_agentcore_session(memory_exporter):
     assert format(lc.context.trace_id, "032x") == CALLER_TRACE
 
 
-# --- ErrorTypeOnlyExporter (Strands path) -------------------------------------------------------
+# --- error text of traceAI LangChain spans (keep_future_agi_exporter wraps ErrorTextExporter) ----
+
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _failing_langchain_app(provider, config=None):
+    """A LangChain chain that fails inside an AgentCore entrypoint, traced by the real traceAI-langchain."""
+    from langchain_core.runnables import RunnableLambda
+    from traceai_langchain import LangChainInstrumentor
+
+    instrumentor = LangChainInstrumentor()
+    instrumentor.instrument(tracer_provider=provider, **({"config": config} if config else {}))
+
+    def lookup(order_id):
+        raise ValueError(f"no order {order_id}")
+
+    chain = (RunnableLambda(lambda x: x.strip()) | RunnableLambda(lookup).with_config(run_name="lookup")).with_config(
+        run_name="order_chain"
+    )
+    app = BedrockAgentCoreApp()
+
+    @app.entrypoint
+    def invoke(payload, context):
+        with agentcore_tracing.traced_invocation(context, provider):
+            return {"result": chain.invoke(payload["prompt"])}
+
+    return app, instrumentor
+
+
+def _run_failing_langchain(provider, exporter, config=None):
+    app, instrumentor = _failing_langchain_app(provider, config)
+    try:
+        assert call(app, {SESSION_HEADER: "sess-err"}, {"prompt": f" {MARKER} "}).status_code == 500
+    finally:
+        instrumentor.uninstrument()
+    provider.force_flush()
+    spans = by_name(exporter.get_finished_spans())
+    assert {"agentcore.invocation", "order_chain", "lookup"} <= set(spans)
+    return spans
+
+
+def _lc_error_spans(spans):
+    return [s for name, s in spans.items() if name != "agentcore.invocation" and s.status.status_code is StatusCode.ERROR]
+
+
+def test_traceai_langchain_0_2_0_puts_the_traceback_in_the_status(memory_exporter, monkeypatch):
+    """The package bug the wrapper works around (traceAI-langchain 0.2.0; fix proposed in traceAI#214).
+
+    Without keep_future_agi_exporter, and with FI_HIDE_INPUTS/FI_HIDE_OUTPUTS on, the failing
+    LangChain spans carry LangChain's run.error: repr(error), then the formatted traceback with
+    this file's path. If this test fails after a traceAI-langchain upgrade, the release fixed the
+    bug: update the note on the docs page (the wrapper stays harmless).
+    """
+    monkeypatch.setenv("FI_HIDE_INPUTS", "true")
+    monkeypatch.setenv("FI_HIDE_OUTPUTS", "true")
+    provider = fi_provider(memory_exporter, global_provider=False, keep=False)
+    errors = _lc_error_spans(_run_failing_langchain(provider, memory_exporter))
+    assert errors and all("Traceback (most recent call last)" in s.status.description for s in errors)
+    assert any(THIS_DIR in s.status.description for s in errors)
+
+
+@pytest.mark.parametrize("how", ["env", "config"])
+def test_keep_exporter_reduces_langchain_errors_to_the_type_when_content_is_hidden(memory_exporter, monkeypatch, how):
+    from fi_instrumentation import TraceConfig
+
+    config = None
+    if how == "env":
+        monkeypatch.setenv("FI_HIDE_INPUTS", "true")
+        monkeypatch.setenv("FI_HIDE_OUTPUTS", "true")
+    else:
+        config = TraceConfig(hide_inputs=True, hide_outputs=True)
+    provider = register(project_name="agentcore-unit", project_type=ProjectType.OBSERVE,
+                        set_global_tracer_provider=True, span_exporter=InMemorySpanExporter(), verbose=False)
+    agentcore_tracing.keep_future_agi_exporter(provider, span_exporter=memory_exporter, config=config)
+    spans = _run_failing_langchain(provider, memory_exporter, config)
+    errors = _lc_error_spans(spans)
+    assert {s.name for s in errors} >= {"order_chain", "lookup"}
+    for span in errors:
+        assert span.status.description == "ValueError"
+        assert [dict(e.attributes) for e in span.events if e.name == "exception"] == [{"exception.type": "ValueError"}]
+    assert spans["agentcore.invocation"].status.description == "ValueError"
+    dumped = json.dumps([json.loads(s.to_json()) for s in spans.values()])
+    assert MARKER not in dumped and "Traceback" not in dumped and THIS_DIR not in dumped
+
+
+def test_keep_exporter_never_exports_a_langchain_traceback_with_content_on(memory_exporter):
+    provider = fi_provider(memory_exporter)
+    spans = _run_failing_langchain(provider, memory_exporter)
+    errors = _lc_error_spans(spans)
+    assert {s.name for s in errors} >= {"order_chain", "lookup"}
+    for span in errors:
+        assert span.status.description == f"ValueError('no order {MARKER}')"  # message kept: content is on
+        for event in (e for e in span.events if e.name == "exception"):
+            assert "exception.stacktrace" not in event.attributes
+            assert event.attributes["exception.message"] == f"no order {MARKER}"
+    dumped = json.dumps([json.loads(s.to_json()) for s in spans.values()])
+    assert MARKER in dumped  # content on: the prompt is captured
+    assert "Traceback" not in dumped and THIS_DIR not in dumped
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({}, False),
+        ({"FI_HIDE_INPUTS": "true"}, True),
+        ({"FI_HIDE_OUTPUTS": "true"}, True),
+        ({"FI_HIDE_INPUT_MESSAGES": "true"}, True),
+        ({"FI_HIDE_OUTPUT_MESSAGES": "true"}, True),
+        ({"FI_HIDE_INPUT_TEXT": "true"}, True),
+        ({"FI_HIDE_OUTPUT_TEXT": "true"}, True),
+        ({"FI_HIDE_LLM_INVOCATION_PARAMETERS": "true"}, False),
+        ({"FI_HIDE_INPUTS": "false", "FI_HIDE_OUTPUTS": "false"}, False),
+    ],
+)
+def test_content_hidden_follows_the_fi_hide_variables(monkeypatch, env, expected):
+    for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_INPUT_MESSAGES", "FI_HIDE_OUTPUT_MESSAGES",
+                 "FI_HIDE_INPUT_TEXT", "FI_HIDE_OUTPUT_TEXT", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert agentcore_tracing.content_hidden() is expected
+
+
+def test_content_hidden_with_an_explicit_config():
+    from fi_instrumentation import TraceConfig
+
+    assert agentcore_tracing.content_hidden(TraceConfig(hide_output_messages=True)) is True
+    assert agentcore_tracing.content_hidden(TraceConfig(hide_inputs=False, hide_outputs=False)) is False
+
+
+# --- ErrorTextExporter / ErrorTypeOnlyExporter (both paths) --------------------------------------
 
 
 def _error_span(exporter):
@@ -439,6 +570,55 @@ def test_error_type_only_exporter_leaves_ok_spans_alone(memory_exporter):
     spans = _error_span(memory_exporter)
     ok = spans["ok_span"]
     assert ok.attributes["keep"] == "yes" and ok.status.status_code is not StatusCode.ERROR
+
+
+def _traceback_span_without_event(exporter, type_only):
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(agentcore_tracing.ErrorTextExporter(exporter, type_only=type_only)))
+    span = provider.get_tracer("t").start_span("chain_without_event")
+    span.set_status(StatusCode.ERROR, f"KeyError('{MARKER}')Traceback (most recent call last):\n  File \"/home/someone/app.py\"")
+    span.end()
+    return by_name(exporter.get_finished_spans())["chain_without_event"]
+
+
+def test_error_text_exporter_type_only_reads_the_type_from_a_repr_description(memory_exporter):
+    span = _traceback_span_without_event(memory_exporter, type_only=True)
+    assert span.status.description == "KeyError"
+
+
+def test_error_text_exporter_content_on_cuts_the_traceback(memory_exporter):
+    span = _traceback_span_without_event(memory_exporter, type_only=False)
+    assert span.status.description == f"KeyError('{MARKER}')"
+
+
+def test_error_text_exporter_content_on_keeps_message_drops_stack(memory_exporter):
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(agentcore_tracing.ErrorTextExporter(memory_exporter, type_only=False)))
+    span = provider.get_tracer("t").start_span("failing_span")
+    try:
+        raise PermissionError(f"tool failed for {MARKER}")
+    except PermissionError as exc:
+        span.set_status(StatusCode.ERROR, str(exc))
+        span.record_exception(exc)
+    span.end()
+    failing = by_name(memory_exporter.get_finished_spans())["failing_span"]
+    assert failing.status.description == f"tool failed for {MARKER}"
+    (event,) = failing.events
+    assert dict(event.attributes) == {
+        "exception.type": "PermissionError",
+        "exception.message": f"tool failed for {MARKER}",
+        "exception.escaped": "False",
+    }
+    assert "Traceback" not in failing.to_json() and THIS_DIR not in failing.to_json()
+
+
+def test_error_text_exporter_caps_the_message(memory_exporter):
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(agentcore_tracing.ErrorTextExporter(memory_exporter, type_only=False)))
+    span = provider.get_tracer("t").start_span("long_error")
+    span.set_status(StatusCode.ERROR, "x" * 5000)
+    span.end()
+    assert len(by_name(memory_exporter.get_finished_spans())["long_error"].status.description) == agentcore_tracing.ERROR_TEXT_LIMIT
 
 
 @pytest.mark.parametrize(

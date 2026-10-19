@@ -13,9 +13,13 @@
 # Per path and project:  happy (3 invocations, one session, traceparent on the first and
 #   JOIN_CALLER_TRACE=true, the "caller is traced too" case)
 #   failure (the model rejects the request -> AgentCore answers 500, ERROR spans, flushed; a
-#   traceparent is sent without JOIN_CALLER_TRACE, so the root starts its own, listed trace)
+#   traceparent is sent without JOIN_CALLER_TRACE, so the root starts its own, listed trace;
+#   every stored column scanned: no Traceback, local path, username, hostname or API key even
+#   with the path's default content setting)
 #   privacy (unique marker in the prompt and the tool arguments; every stored column scanned,
 #   for the marker and for the local username, hostname, home path and "Traceback")
+#   failure-off (the failure again with content off: every ERROR span keeps the exception type
+#   name only; nothing of the marker, the error text or a stack trace is stored)
 #   deadend (collector unreachable: the invocations still return)
 #
 # Needs: FI_API_KEY, FI_SECRET_KEY, FI_BASE_URL (Future AGI origin, e.g. http://localhost:8000),
@@ -94,7 +98,8 @@ scan() { # project marker tag -> counts in $OUT/scan-<tag>.txt
 count() { grep -E "^$1:" "$OUT/scan-$2.txt" | sed 's/.*= //'; }
 
 path_suite() {
-  local path="$1" tag="$2${CONTAINER:+-ct}" p m log
+  local path="$1" tag="$2${CONTAINER:+-ct}" p m log k bad
+  m="mk$("$PY" -c 'import secrets;print(secrets.token_hex(6))')"
   note; note "=== $path${CONTAINER:+ (container $IMAGE)} ==="
   # happy: J2 + J3 + J6
   p="$BASE-$tag-happy"; log="$OUT/run-$tag-happy.txt"
@@ -109,15 +114,19 @@ path_suite() {
   # failure: J4 (the model endpoint rejects the model id)
   p="$BASE-$tag-failure"; log="$OUT/run-$tag-failure.txt"
   start_agent "$path" "$p" "$log.server" AGENT_MODEL=th8226-no-such-model || fail "$path failure: server did not start"
-  "$PY" "$HERE/tools/invoke.py" "http://127.0.0.1:$PORT" "e2e-session-$tag-0002" "What is the status of order A-100?" \
+  "$PY" "$HERE/tools/invoke.py" "http://127.0.0.1:$PORT" "e2e-session-$tag-0002" "What is the status of order $m?" \
     --traceparent "$TRACEPARENT" | tee "$log"
   stop_agent
   grep -q '^status=500' "$log" && ok "$path failure: AgentCore answered 500" || fail "$path failure: expected 500"
   verify "$p" 4 "$OUT/spans-$tag-failure.json" && "$PY" "$HERE/tools/check_trace.py" "$OUT/spans-$tag-failure.json" failure | tee -a "$SUMMARY" \
     || fail "$path failure: trace shape"
+  # stack traces and local details are never stored, whatever the content setting
+  scan "$p" "$m" "$tag-failure"
+  bad=0; for k in username hostname home traceback apikey; do [ "$(count $k "$tag-failure")" = 0 ] || bad=1; done
+  [ $bad = 0 ] && ok "$path failure, default content setting: no Traceback, local path, username, hostname or API key stored" \
+    || fail "$path failure: stack trace, path, username, hostname or key stored (see scan-$tag-failure.txt)"
   [ -n "${CONTAINER:-}" ] && return 0
   # privacy: marker in the prompt and in the tool arguments/result
-  m="mk$("$PY" -c 'import secrets;print(secrets.token_hex(6))')"
   local -a off on
   if [ "$path" = langchain ]; then  # traceAI TraceConfig: content on by default, FI_HIDE_* hides it
     off=(FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true); on=()
@@ -130,7 +139,7 @@ path_suite() {
   stop_agent
   verify "$p" 7 "$OUT/spans-$tag-priv-off.json" || fail "$path privacy off: fi_verify"
   scan "$p" "$m" "$tag-priv-off"
-  local k bad=0; for k in marker username hostname home traceback apikey; do [ "$(count $k "$tag-priv-off")" = 0 ] || bad=1; done
+  bad=0; for k in marker username hostname home traceback apikey; do [ "$(count $k "$tag-priv-off")" = 0 ] || bad=1; done
   [ $bad = 0 ] && ok "$path content off: marker, username, hostname, home path, Traceback, API key absent from every stored column" \
     || fail "$path content off: something is stored (see scan-$tag-priv-off.txt)"
   p="$BASE-$tag-priv-on"; log="$OUT/run-$tag-priv-on.txt"
@@ -147,7 +156,8 @@ path_suite() {
   start_agent "$path" "$p" "$log.server" AGENT_MODEL=th8226-no-such-model "${off[@]}" || fail "$path failure off: server"
   "$PY" "$HERE/tools/invoke.py" "http://127.0.0.1:$PORT" "e2e-session-$tag-0005" "What is the status of order $m?" | tee "$log"
   stop_agent
-  verify "$p" 4 "$OUT/spans-$tag-failure-off.json" || fail "$path failure off: fi_verify"
+  verify "$p" 4 "$OUT/spans-$tag-failure-off.json" && "$PY" "$HERE/tools/check_trace.py" "$OUT/spans-$tag-failure-off.json" failure-off | tee -a "$SUMMARY" \
+    || fail "$path failure off: fi_verify or error spans not reduced to the exception type"
   scan "$p" "$m" "$tag-failure-off"
   bad=0; for k in marker username hostname home traceback apikey; do [ "$(count $k "$tag-failure-off")" = 0 ] || bad=1; done
   [ $bad = 0 ] && ok "$path failure, content off: no marker, error text path, username, hostname or Traceback stored" \
