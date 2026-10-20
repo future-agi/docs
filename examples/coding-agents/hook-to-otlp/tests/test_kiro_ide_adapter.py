@@ -159,6 +159,19 @@ class KiroIdeAdapterTest(unittest.TestCase):
         self.assertNotIn("/Users/", encoded)
         self.assertIn("tool reported failure", encoded)
 
+    def test_string_error_response_from_real_agent_is_an_error_span(self):
+        # Shape captured from a real kiro-cli 2.31.1 session (read_file on a missing file).
+        err = "Caught error reading: ENOENT: no such file or directory, stat '/Users/alice.smith/p/missing.txt'"
+        records = self.records[:2] + [{"event": "PostToolUse", "payload": {
+            "session_id": SID, "tool_name": "read_file", "tool_input": {"path": "/Users/alice.smith/p/missing.txt"},
+            "tool_response": err}}]
+        spans = replay(kiro_ide, config("kiro_ide", self.tmp.name), records)
+        tool, = by_name(spans, "read_file")
+        self.assertEqual(tool["status"], {"code": 2, "message": "tool reported failure"})
+        encoded = json.dumps(spans)
+        self.assertNotIn("alice.smith", encoded)
+        self.assertNotIn("ENOENT", encoded)
+
     def test_shipped_commands_fail_open_when_emitter_is_missing(self):
         root = pathlib.Path(__file__).resolve().parents[2] / "kiro-ide"
         for path in (root / "fi-hook-to-otlp.json", root / "fi-hook-to-otlp.user.json"):

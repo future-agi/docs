@@ -63,7 +63,11 @@ def _enum(value: Any) -> Any:
 
 
 def _tool_failed(response: Any) -> bool:
-    return isinstance(response, dict) and response.get("success") is False
+    if isinstance(response, dict):
+        return response.get("success") is False
+    # A real Kiro agent (kiro-cli 2.31.1, same hook engine) reports a failed
+    # built-in tool as a plain string, e.g. "Caught error reading: ENOENT: ...".
+    return isinstance(response, str) and response.startswith("Caught error")
 
 
 def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
