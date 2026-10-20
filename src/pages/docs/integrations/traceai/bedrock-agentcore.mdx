@@ -25,7 +25,7 @@ invocation 2  agentcore.invocation  (chain)   same session.id: grouped in one Fu
 ```
 
 <Warning>
-Alpha. **Local-validated; AWS runtime validation pending.** Everything below was run end to end against a self-hosted Future AGI with the real `bedrock-agentcore` SDK app server (`BedrockAgentCoreApp`, the same HTTP contract the runtime calls), both as a local process and inside an arm64 container built the way the AgentCore deploy tooling builds one. **No AgentCore Runtime was deployed and `InvokeAgentRuntime` was not called** (STANDIN: the requests were sent straight to the container with the headers the runtime forwards). Not verified on AWS: that the managed runtime forwards `traceparent` and the session header to the container exactly as documented, whether it adds a `traceparent` of its own, and span delivery when the runtime freezes or recycles the microVM. No Amazon Bedrock model was called: the examples used an OpenAI-compatible endpoint.
+Alpha. **Verified locally, not on AWS.** Verified (2026-10-19): the same arm64 container AgentCore runs (the Dockerfile the AgentCore starter toolkit generates with `--disable-otel`, with the real `bedrock-agentcore` SDK app server), invoked through the Runtime contract on a local machine (`POST /invocations` on port 8080 with the session header, `GET /ping`) and sending to a self-hosted Future AGI. **Not run: a real AgentCore Runtime deployment in AWS (no AWS account).** No `agentcore deploy`, no `InvokeAgentRuntime`, no Amazon Bedrock model call: the requests were sent straight to the container with the headers the runtime forwards, and the model was an OpenAI-compatible endpoint. Not verified on AWS: that the managed runtime forwards `traceparent` and the session header to the container exactly as documented, whether it adds a `traceparent` of its own, that the deploy settings below are accepted as written, and span delivery when the runtime freezes or recycles the microVM.
 </Warning>
 
 | | |
@@ -40,6 +40,19 @@ Alpha. **Local-validated; AWS runtime validation pending.** Everything below was
 - **[LangChain](/docs/integrations/traceai/langchain).** Path A is that integration, unchanged, plus the AgentCore-specific pieces below. Use the LangChain page alone when the agent does not run in AgentCore.
 - **Strands outside AgentCore.** Path B's exporter and content settings work the same in any Python process; `agentcore_tracing.py` is only needed inside AgentCore.
 - **CloudWatch (ADOT).** AgentCore's default. This recipe replaces it; it does not send to both. Running both was not tested.
+
+## Setup pattern (matches common practice)
+
+The set-up below is the one AWS and the observability vendors that document AgentCore use for a non-CloudWatch backend. Nothing here is specific to Future AGI except the endpoint, the keys and the project name.
+
+1. **Turn ADOT off on the runtime.** `DISABLE_ADOT_OBSERVABILITY=true` in the runtime environment, and start the container without the `opentelemetry-instrument` wrapper (`disable_otel=True` or `--disable-otel` with the starter toolkit, `instrumentation.enableOtel: false` with the AgentCore CLI). Otherwise ADOT registers the global tracer provider first and yours is ignored (`Overriding of current TracerProvider is not allowed`).
+2. **Configure the exporter with the standard `OTEL_EXPORTER_OTLP_*` variables, passed as runtime environment variables at deploy time** (`env_vars={...}` or `--env KEY=VALUE`), not baked into the image. The header value is a comma-separated `key=value` list, without quotes. If the deployment sets `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, those win over the general ones; remove them.
+3. **Set the provider up in code**: a `TracerProvider`, or the framework's own such as `StrandsTelemetry`, reading those variables. Path B does exactly this. Path A uses traceAI's `register()`, which reads `FI_*` instead.
+4. **Put the AgentCore session on the spans** as `session.id`. AWS documents it as OpenTelemetry baggage; frameworks also take it as a trace attribute. The helper reads the session header and does both.
+5. **Flush before the entrypoint returns.** A batch exporter sends on a timer, and the runtime can idle the process between invocations, so the spans of the last invocation can otherwise wait for the next one. The helper calls `force_flush` after every invocation.
+6. **Secrets.** The vendors' guides pass keys as plain runtime environment variables at deploy time. Use Secrets Manager or Parameter Store if you do not want them in the runtime configuration (see step 2 of the set-up below).
+
+Sources (read 2026-10-19): AWS, [Add observability to your AgentCore resources](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html) ("Using other observability platforms", "Session ID support"); the AgentCore guides of [Langfuse](https://langfuse.com/integrations/frameworks/amazon-agentcore) and [Arize AX](https://arize.com/docs/ax/integrations/python-agent-frameworks/aws-strands/bedrock-agentcore) (both launch with `env_vars` holding `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` and `DISABLE_ADOT_OBSERVABILITY`), [Braintrust](https://www.braintrust.dev/articles/how-to-trace-strands-agents-on-bedrock-agentcore) (no `opentelemetry-instrument`, `session.id` attribute, `force_flush`) and [Datadog](https://docs.datadoghq.com/llm_observability/instrument/otel_instrumentation.md) (`OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`, headers in the exporter variables).
 
 ## Set up
 
@@ -65,7 +78,35 @@ Then copy [`agentcore_tracing.py`](https://github.com/future-agi/docs/tree/main/
 
 <Step title="Turn off ADOT and set the environment on the runtime">
 
-Two things stop AgentCore from setting up its own OpenTelemetry: the runtime environment variable `DISABLE_ADOT_OBSERVABILITY=true`, and a container command without the `opentelemetry-instrument` wrapper. With the [AgentCore CLI](https://github.com/aws/agentcore-cli) (`@aws/agentcore`, the tool AWS now recommends) set `instrumentation.enableOtel` to `false` on the runtime in `agentcore.json` and put the variables below in its `envVars`; with the older `bedrock-agentcore-starter-toolkit` (0.3.14 says it is no longer supported) use `agentcore configure --disable-otel` and `agentcore deploy --env KEY=VALUE`. These deploy settings follow the AWS documentation and were not deployed for this page. The [example Dockerfile](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/Dockerfile) has the shape the toolkit generates with `--disable-otel` (uv Python 3.12 base image, uid 1000, port 8080): no `aws-opentelemetry-distro`, and `CMD ["python", "-m", "agent_langchain"]`.
+Two things stop AgentCore from setting up its own OpenTelemetry: the runtime environment variable `DISABLE_ADOT_OBSERVABILITY=true`, and a container command without the `opentelemetry-instrument` wrapper. With the [AgentCore CLI](https://github.com/aws/agentcore-cli) (`@aws/agentcore`, the tool AWS now recommends) set `instrumentation.enableOtel` to `false` on the runtime in `agentcore.json` and put the variables below in its `envVars`; with the older `bedrock-agentcore-starter-toolkit` (0.3.14 says it is no longer supported) use `agentcore configure --disable-otel` and `agentcore deploy --env KEY=VALUE`. These deploy settings follow the AWS documentation and the toolkit's `--help` and were not deployed for this page. The [example Dockerfile](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/Dockerfile) has the shape the toolkit generates with `--disable-otel` (uv Python 3.12 base image, uid 1000, port 8080): no `aws-opentelemetry-distro`, and `CMD ["python", "-m", "agent_langchain"]`.
+
+Deploy with the starter toolkit, as other AgentCore guides do. The `Runtime.configure` and `Runtime.launch` signatures were checked against toolkit 0.3.14; the calls were not run, because they need an AWS account:
+
+```python
+from bedrock_agentcore_starter_toolkit import Runtime
+
+runtime = Runtime()
+runtime.configure(
+    entrypoint="agent_strands.py",          # or agent_langchain.py
+    agent_name="order_agent",
+    requirements_file="requirements.txt",
+    auto_create_execution_role=True,
+    auto_create_ecr=True,
+    region="us-west-2",
+    disable_otel=True,                       # no opentelemetry-instrument in the container command
+)
+runtime.launch(env_vars={
+    "DISABLE_ADOT_OBSERVABILITY": "true",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "https://api.futureagi.com",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+    "OTEL_EXPORTER_OTLP_HEADERS": f"X-Api-Key={FI_API_KEY},X-Secret-Key={FI_SECRET_KEY}",
+    "OTEL_RESOURCE_ATTRIBUTES": "project_name=order-agent,project_type=observe",
+    "OTEL_SERVICE_NAME": "order-agent",
+    "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental,gen_ai_span_attributes_only,gen_ai_unredacted_attributes=",
+})
+```
+
+The same with the CLI: `agentcore configure -e agent_strands.py --disable-otel`, then `agentcore deploy --env DISABLE_ADOT_OBSERVABILITY=true --env OTEL_EXPORTER_OTLP_ENDPOINT=https://api.futureagi.com ...` (one `--env KEY=VALUE` per variable; `agentcore launch` is the older name of `deploy`). For path A set `FI_API_KEY`, `FI_SECRET_KEY`, `FI_BASE_URL` and `FI_PROJECT_NAME` instead of the `OTEL_*` variables.
 
 Path A:
 
@@ -85,6 +126,7 @@ Path B:
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (not gRPC) |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `X-Api-Key=<key>,X-Secret-Key=<secret>` |
 | `OTEL_RESOURCE_ATTRIBUTES` | `project_name=<project>,project_type=observe`. Without `project_name` the batch is dropped. |
+| `OTEL_SERVICE_NAME` | Optional. Default `strands-agents`. Keep it the same across deploys. |
 | `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental,gen_ai_span_attributes_only,gen_ai_unredacted_attributes=` (content off, see [Privacy](#privacy)) |
 
 Do not set `OTEL_EXPORTER_OTLP_COMPRESSION=gzip`: Future AGI rejects gzip bodies. The Python exporter does not compress by default.
@@ -245,6 +287,7 @@ To opt in, remove `gen_ai_unredacted_attributes=` and keep `gen_ai_latest_experi
 
 Against a self-hosted Future AGI, each scenario in its own project, with [`run_e2e.sh`](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/run_e2e.sh), for both paths, with `bedrock-agentcore` 1.24.1 and again with 1.24.0, as a local process and (happy and failure scenarios) inside the arm64 container built from the example Dockerfile:
 
+- **The runtime container, called through the Runtime contract (2026-10-19).** The image was built for `linux/arm64` from the Dockerfile the AgentCore starter toolkit 0.3.14 generates with `--disable-otel`, unchanged, and started with `docker run -p 8080:8080`, the runtime variables from the table above as `-e` (the same values `agentcore deploy --env` sets) and the model on an OpenAI-compatible endpoint. `GET /ping` answered `Healthy`; `POST /invocations` carried the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header. Three invocations in one session, then one failing invocation (500), per path, against a self-hosted Future AGI: path A 3 traces and 24 spans in one session, the failure 4 `ERROR` spans, the root with the exception type only; path B 3 traces and 21 spans in one session, the failure 4 `ERROR` spans with the exception type only. A scan of every stored column found no `Traceback`, user name, host name, home path or API key (and, for path B's default, no marker). The existing `run_e2e.sh all` passed again the same day. **Not run: a real AgentCore Runtime deployment in AWS (no AWS account).**
 - **Happy:** three invocations with one session id, the first with a `traceparent` and `JOIN_CALLER_TRACE=true`: three traces, one session, the first trace continuing the caller's trace id, an `llm` span with model and token counts and a `tool` span in every trace (path A 24 spans, path B 21 spans).
 - **Failure:** the model endpoint rejects the model id, AgentCore answers 500; the root and three spans under it are `ERROR`, all flushed. A `traceparent` was sent without `JOIN_CALLER_TRACE`: the root had no parent and its own trace id. With each path's default content setting, no `Traceback`, user name, host name, home path or API key in any stored column.
 - **Content off / on:** a unique marker in the prompt and the tool arguments. Path A with `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS`: marker in 0 rows; defaults: marker stored. Path B recipe default: 0 rows; opt-in: stored. User name, host name, home path, `Traceback` and the API key: 0 rows in all of them.

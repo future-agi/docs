@@ -2,8 +2,29 @@
 
 Runnable example for the docs page
 [Trace Amazon Bedrock AgentCore Runtime](https://docs.futureagi.com/docs/integrations/traceai/bedrock-agentcore).
-Alpha: local-validated against a self-hosted Future AGI; no AgentCore Runtime was deployed (AWS
-validation pending).
+Alpha: verified locally against a self-hosted Future AGI. **Not run: a real AgentCore Runtime
+deployment in AWS (no AWS account).**
+
+## Setup pattern (matches common practice)
+
+The same pattern AWS and the observability vendors that document AgentCore use for a non-CloudWatch
+backend (sources on the docs page):
+
+1. `DISABLE_ADOT_OBSERVABILITY=true` in the runtime environment, and no `opentelemetry-instrument`
+   in the container command (`disable_otel=True` / `agentcore configure --disable-otel`).
+2. Standard `OTEL_EXPORTER_OTLP_ENDPOINT` / `_HEADERS` / `_PROTOCOL` passed as runtime environment
+   variables at deploy time (`Runtime.launch(env_vars={...})` or `agentcore deploy --env KEY=VALUE`),
+   never baked into the image. Headers: comma-separated `key=value`, no quotes. Path A uses traceAI's
+   `register()`, which reads `FI_API_KEY` / `FI_SECRET_KEY` / `FI_BASE_URL` / `FI_PROJECT_NAME`.
+3. The provider is set up in code and reads those variables.
+4. The AgentCore session (`X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`, `context.session_id`) becomes
+   `session.id` on the spans (baggage and span attribute).
+5. `force_flush` before the entrypoint returns (the helper does it after every invocation).
+
+Verified (2026-10-19): the same container AgentCore runs (the Dockerfile the starter toolkit generates
+with `--disable-otel`, built for linux/arm64), invoked through the Runtime contract locally:
+`GET /ping`, `POST /invocations` on port 8080 with the session header. Not run: a real AgentCore
+Runtime deployment in AWS (no AWS account).
 
 | File | What it is |
 | --- | --- |
