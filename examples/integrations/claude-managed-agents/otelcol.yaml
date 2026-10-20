@@ -1,0 +1,107 @@
+# OpenTelemetry Collector (contrib) between a Claude Console telemetry destination and Future AGI.
+#
+# Anthropic's destination takes an endpoint URL and request headers. It has no field for resource attributes,
+# and Future AGI drops any batch whose resource has no `project_name`. Anthropic also gzips the first request
+# of every delivery, which the Future AGI HTTP receiver rejects. This collector:
+#   1. accepts OTLP/HTTP (protobuf, gzip or plain) from Anthropic, only with your bearer token,
+#   2. sets the Observe project,
+#   3. maps Anthropic's gen_ai.* / anthropic.* attributes to what Observe reads,
+#   4. keeps prompts, replies, tool arguments, tool results and error text OUT unless you opt in,
+#   5. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0. Span and attribute names are from
+# https://platform.claude.com/docs/en/api/opentelemetry/spans (read 2026-10-20).
+#
+# Environment:
+#   ANTHROPIC_DEST_TOKEN   secret you invent; the destination sends `Authorization: Bearer <token>`
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they never go to Anthropic)
+#   FI_PROJECT_NAME        Observe project every Anthropic span goes to
+#   FI_TRACES_URL          full traces URL, e.g. http://<self-hosted>:4318/v1/traces
+#                          or https://api.futureagi.com/tracer/v1/traces
+#   FI_CAPTURE_CONTENT     optional, default false. `true` lets prompts, replies, tool arguments, tool results
+#                          and error text through. The destination's own content mode must also be Full content.
+
+extensions:
+  bearertokenauth/anthropic:
+    scheme: Bearer
+    token: ${env:ANTHROPIC_DEST_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/anthropic
+        # Anthropic needs HTTPS on port 443 with a public hostname. Put TLS in front of this (a load balancer or
+        # reverse proxy), or set `tls:` here with cert_file and key_file.
+
+processors:
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: insert
+
+  transform/anthropic:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span kinds in Observe, from gen_ai.operation.name.
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "chat"
+          - set(attributes["fi.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "execute_tool"
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["fi.span.kind"] == nil
+          # Sessions view: group by the Managed Agents session id.
+          - set(attributes["session.id"], attributes["anthropic.session.id"]) where attributes["anthropic.session.id"] != nil
+          # Name the agent turn after the agent.
+          - set(name, Concat(["anthropic.session.turn", attributes["gen_ai.agent.name"]], " ")) where name == "anthropic.session.turn" and attributes["gen_ai.agent.name"] != nil
+          # Content ON: fill the Input and Output panes.
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.value"], attributes["gen_ai.tool.call.arguments"]) where attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["anthropic.tool_result.content"]) where attributes["anthropic.tool_result.content"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): every content attribute Anthropic documents, in case a destination
+          # was left on Full content.
+          - delete_key(attributes, "input.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "output.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, "^gen_ai\\.(system_instructions|input\\.messages|output\\.messages|tool\\.call\\.(arguments|result))(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, "^anthropic\\.(tool_result\\.content|session\\.outcome_evaluation\\.explanation)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Error text can echo the request. Keep the fact of the error, not the words.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Future AGI reads at most 16 MiB per request; Anthropic's default content cap is 0.75 MB per span.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/anthropic]
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/anthropic, batch]
+      exporters: [otlp_http/future_agi]

@@ -1,26 +1,28 @@
 # Claude Managed Agents (TH-8267)
 
-Tracing Claude Managed Agents is **not supported yet**. See `DECISION.md` and the docs page
-`src/pages/docs/integrations/claude-managed-agents.mdx`.
+Docs page: `src/pages/docs/integrations/claude-managed-agents.mdx`. The integration is an OpenTelemetry Collector
+(`otelcol.yaml`) between a Claude Console telemetry destination and Future AGI.
 
-Everything here is a **stand-in** spike. No Anthropic account, API key, model call or spend was used, and
-nothing here is a relay or a collector config: nothing listens for Anthropic's servers.
+Everything here is a **stand-in** for Anthropic: no Anthropic account, destination, API key, model call or spend.
+Payloads are built from Anthropic's published span reference. A live run is blocked on an Anthropic Console org admin
+plus an API key with Managed Agents access and billing.
 
 | File | Purpose |
 | --- | --- |
-| `spike/fixture.py` | Builds an OTLP protobuf payload shaped like the Managed Agents API spans in Anthropic's span reference (made-up values). `add_project_name()` is the one change a collector in front of Future AGI would have to make. |
+| `otelcol.yaml` | The recipe the page embeds (a test keeps them identical): bearer auth, gzip accepted, `project_name` stamped, span kinds and session id mapped, content gated off by default. |
+| `spike/fixture.py` | Builds an OTLP protobuf payload shaped like the Managed Agents API spans in Anthropic's span reference (made-up values). |
 | `spike/deliver.py` | Sends a payload the way Anthropic's delivery rules describe: gzip first, uncompressed resend on 400 or 415, `User-Agent: Claude-Platform`, only the destination's headers. |
-| `spike/run_fixture_spike.py` | Spike A: as-is delivery (rejected), with `project_name` (accepted), content mode, failure. |
-| `spike/sessions_stub.py` | Local stand-in for the Sessions API, with a scripted agent that calls one custom tool. |
-| `spike/sdk_app.py` | Spike B: the real `anthropic` SDK with its built-in tracing, exported by the app straight to Future AGI. |
-| `run_e2e.sh` | Runs both spikes against a local Future AGI in a throwaway venv. |
-| `tests/` | `test_fixture_and_delivery.py` (payload shape, delivery rules), `test_sdk_tracing_stub.py` (SDK spans in memory), `test_page_claims.py` (page vs `fixtures/observed.json`). All offline. |
+| `spike/run_collector_spike.py` | Delivers one scenario (metadata, content, error, duplicate, badtoken) to the collector. |
+| `run_collector_e2e.sh` | Starts the collector in Docker, runs all scenarios into a local Future AGI, then verifies (optional `VERIFY=fi_verify.py`). |
+| `tools/scan_local_stack.py` | Scans every stored row of a project for markers (privacy check). |
+| `run_e2e.sh`, `spike/run_fixture_spike.py`, `spike/sdk_app.py`, `spike/sessions_stub.py` | The 2026-10-16 spikes: payload straight into Future AGI (rejected without `project_name`), and the real `anthropic` SDK against a Sessions API stub. |
+| `tests/` | `test_page_claims.py` (page, recipe, fixture agree), `test_fixture_and_delivery.py`, `test_sdk_tracing_stub.py`. All offline. |
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt pyyaml
+python -I tests/test_page_claims.py
 python -I tests/test_fixture_and_delivery.py
 python -I tests/test_sdk_tracing_stub.py
-python3 -I tests/test_page_claims.py
-# spike, needs a local Future AGI collector:
-FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:14338 bash run_e2e.sh
+# collector run, needs Docker and a local Future AGI collector:
+FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:14338 PYTHON=$(which python) bash run_collector_e2e.sh
 ```
