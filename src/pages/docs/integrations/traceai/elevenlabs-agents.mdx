@@ -19,7 +19,7 @@ elevenlabs.conversation               CONVERSATION: Voice-tab call, session.id =
 Each conversation shows up once in Observe, in **Tracing** and in the project's **Voice** call list. Future AGI never sees your ElevenLabs signing secret or API key.
 
 <Warning>
-**Alpha. The backfill path is verified against live ElevenLabs; webhook delivery is not.** On 2026-10-17 a real ElevenLabs Agents conversation was exported with `GET /v1/convai/conversations/{id}?format=opentelemetry`, run through `traceai-elevenlabs-agents backfill` and stored in Future AGI (see [Live vendor verification](#live-vendor-verification-2026-10-17)). The forwarder has **not** yet received a `post_call_transcription_otel` webhook from ElevenLabs: the signature check, retries and the webhook body were tested with a local sender that builds deliveries from the documented payload shape and signs them as documented. The GET export and the webhook carry the same `otlp_traces` object according to the ElevenLabs docs, but the live check only covered the GET.
+**Alpha. Backfill (2026-10-17) and webhook delivery (2026-10-19) are verified against live ElevenLabs; retries, duplicates and a failing call are not.** On 2026-10-19 a real ElevenLabs workspace POSTed signed `post_call_transcription_otel` deliveries to a forwarder running on Cloud Run, which stored them in Future AGI (see [Live webhook verification](#live-webhook-verification-2026-10-19)). On 2026-10-17 a real ElevenLabs Agents conversation was exported with `GET /v1/convai/conversations/{id}?format=opentelemetry`, run through `traceai-elevenlabs-agents backfill` and stored in Future AGI (see [Live vendor verification](#live-vendor-verification-2026-10-17)). ElevenLabs retries, a duplicate delivery and a span with status ERROR have not been seen live; those are covered by a local sender that builds deliveries from the documented payload shape.
 </Warning>
 
 This is not the same as:
@@ -32,7 +32,7 @@ This is not the same as:
 | --- | --- |
 | Tested with | `traceAI-elevenlabs-agents` 0.1.0: end-to-end run on Python 3.12 against a Future AGI collector (with the defaults, and with the `FI_HIDE_*` switches on), unit tests on Python 3.10, 3.12 and 3.13 with `fi-instrumentation-otel` 1.1.0 and 0.1.11. Signature check cross-checked against the `elevenlabs` Python SDK `construct_event` 2.73.0 (latest on 2026-10-15) and 2.70.0 |
 | ElevenLabs surface | Post-call webhook type `post_call_transcription_otel` and `GET /v1/convai/conversations/{id}?format=opentelemetry`, as documented on [OpenTelemetry traces](https://elevenlabs.io/docs/eleven-agents/customization/opentelemetry-traces) (read 2026-10-15) |
-| Live ElevenLabs | `backfill` (the GET export) tested live on 2026-10-17 with `elevenlabs` SDK 2.73.0 creating the conversation. Webhook delivery (HMAC, `post_call_transcription_otel`, ElevenLabs retries) not yet tested live: stand-in only |
+| Live ElevenLabs | `backfill` (the GET export) tested live on 2026-10-17 with `elevenlabs` SDK 2.73.0 creating the conversation. Webhook delivery (HMAC, `post_call_transcription_otel`) tested live on 2026-10-19; ElevenLabs retries and duplicate deliveries not seen live: stand-in only |
 | Requires | Python 3.10 to 3.13. One dependency, `fi-instrumentation-otel`, for `TraceConfig`, the privacy switch every traceAI package shares. No ElevenLabs SDK |
 | Source | [python/frameworks/elevenlabs-agents](https://github.com/future-agi/traceAI/tree/dev/python/frameworks/elevenlabs-agents) in traceAI |
 
@@ -73,7 +73,7 @@ For a self-hosted Future AGI, also set `FI_BASE_URL`. Traces go to `$FI_BASE_URL
 traceai-elevenlabs-agents --host 0.0.0.0 --port 8787
 ```
 
-It listens on `/elevenlabs/webhook` (change it with `--path`) and answers `GET /healthz`. ElevenLabs delivers to an HTTPS URL, so put it behind your ingress or a reverse proxy that terminates TLS, for example `https://hooks.example.com/elevenlabs/webhook`. On SIGTERM it stops accepting new deliveries and lets in-flight ones finish.
+It listens on `/elevenlabs/webhook` (change it with `--path`) and answers `GET /healthz` (some hosts reserve that path: Google Cloud Run answers `/healthz` itself with a 404, so use another path for its health check). ElevenLabs delivers to an HTTPS URL, so put it behind your ingress or a reverse proxy that terminates TLS, for example `https://hooks.example.com/elevenlabs/webhook`. On SIGTERM it stops accepting new deliveries and lets in-flight ones finish.
 
 The forwarder keeps a small SQLite file with one row per conversation it forwarded (`~/.traceai-elevenlabs-agents/forwarded.sqlite3`, or `FI_ELEVENLABS_STATE_PATH`). Keep it on a persistent volume; see [Duplicates](#duplicates).
 
@@ -217,7 +217,28 @@ trace ea5d20b1-67de-1480-4539-f834f26d0630 (7 spans)
 
 **Voice tab.** The calls are listed once each, with duration and turn count. The published voice checker passes V2 to V6 and V8 to V12 and fails V1 (no SDK receipt) and V7 (no talk ratio) for a webhook forwarder, as above.
 
-Still not verified live: the webhook (HMAC header, retry and duplicate behaviour, body size of a long call), a root or tool span with status ERROR, and `time_in_call_secs`. They stay marked as stand-in above.
+Still not verified live: ElevenLabs retries and duplicate deliveries, a root or tool span with status ERROR (ElevenLabs reported OK in every live case), the body of a long call, and `time_in_call_secs`, which no live body carried (the root span length is used).
+
+## Live webhook verification (2026-10-19)
+
+Run as a customer would. The forwarder was installed from the git command above and deployed to Google Cloud Run (HTTPS, always on, keys in Secret Manager), forwarding to Future AGI cloud. A workspace webhook (HMAC) was assigned as the post-call webhook of one throwaway text-only agent, with the Transcript event and the OpenTelemetry transcript format. Three conversations were run with the `elevenlabs` Python SDK 2.73.0, and the agent, webhook and Cloud Run service were deleted afterwards.
+
+| Case | Webhook body | Forwarder | Result in Future AGI |
+| --- | --- | --- | --- |
+| Tool call, clean end, with a user id | 12.3 KB | 200 `forwarded` | 7 spans, `gpt-4o-mini` 432/11 and 456/5 tokens |
+| Tool call, socket dropped without a close frame (`Client disconnected: 1006`) | 12.2 KB | 200 `forwarded` | 7 spans, root status OK |
+| No user message, ended by the 2-minute call limit | 5.5 KB | 200 `forwarded` | 2 spans, 121 s, root status OK |
+
+What the real deliveries showed:
+
+- The body is `{"type": "post_call_transcription_otel", "event_timestamp", "data": {conversation_id, agent_id, branch_id, version_id, environment, otlp_traces}}`. The HMAC (`ElevenLabs-Signature: t=...,v0=...`) verified on every delivery.
+- Attribute names matched the backfill check. The root also carries `elevenlabs.status`, `elevenlabs.termination_reason`, `elevenlabs.session.duration_ms` and `elevenlabs.analysis.*`.
+- **The caller id is not in `data`.** It is the root attribute `elevenlabs.user_id`. The forwarder now writes it as `user.id` (as an input, so `FI_HIDE_INPUTS` removes it).
+- ElevenLabs reported span status OK in all three cases, including the dropped socket and the call that hit the time limit. The reason is in `elevenlabs.termination_reason`, so Future AGI shows these calls as OK.
+- `time_in_call_secs` is not in the body; `call.duration` comes from the root span.
+- Bodies were small (5 to 12 KB for 2-minute calls). A long call was not tested.
+
+Read back from Future AGI cloud with `GET /tracer/trace/<id>/`: `a242bad17b598c708b926176be38b7ea`, `b97670d7e823ea2f0219ad85e9da56a5`, `e48b4246a1ca076c184eb4a825bf2bd8`. The captured bodies were also replayed through a local forwarder into a local Future AGI (`fi_verify` PASS), with the defaults and with `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS` set. With the defaults the message and tool-result text appear. With the switches on, none of the message text, the tool result or the user id appears in any stored column.
 
 ## Troubleshooting
 
