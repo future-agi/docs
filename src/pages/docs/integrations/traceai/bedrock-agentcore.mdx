@@ -1,0 +1,320 @@
+---
+title: "Trace Amazon Bedrock AgentCore Runtime with Future AGI"
+description: "Send the traces of an agent hosted in Amazon Bedrock AgentCore Runtime to Future AGI instead of CloudWatch: one root span per invocation, the AgentCore session as the Future AGI session, a flush before every response. LangChain with traceAI, or Strands over plain OTLP. A recipe, not a package."
+---
+
+## About
+
+[Amazon Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) hosts your agent code in an ARM64 container and calls it over HTTP ([HTTP protocol contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-http-protocol-contract.html): port 8080, `POST /invocations`, `GET /ping`), with the session id in a request header. By default the runtime sets up the AWS Distro for OpenTelemetry (ADOT) and sends traces to CloudWatch. This page turns that off and sends the traces to Future AGI.
+
+AgentCore is a runtime, not a framework: it does not create model, tool or token spans. Those come from the framework inside your container. This page is a recipe for two common set-ups:
+
+- **A. LangChain or LangGraph with traceAI.** `register()` + `LangChainInstrumentor`, exactly as on the [LangChain page](/docs/integrations/traceai/langchain), plus one extra line for AgentCore.
+- **B. Strands Agents with its own OpenTelemetry.** Strands exports OTLP itself. You point it at Future AGI with the standard `OTEL_EXPORTER_OTLP_*` variables. No traceAI package.
+
+Both use one small helper file, [`agentcore_tracing.py`](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/agentcore_tracing.py), that you copy next to your agent. It adds what the runtime does not do once ADOT is off:
+
+```text
+invocation 1  agentcore.invocation  (chain)   session.id = the AgentCore session id
+              └─ order_agent (agent)          spans of your framework (traceAI or Strands)
+                 ├─ ChatOpenAI (llm)          model, tokens
+                 └─ lookup_order (tool)
+              flush -> Future AGI              before AgentCore sends the response
+invocation 2  agentcore.invocation  (chain)   same session.id: grouped in one Future AGI session
+              ...
+```
+
+<Warning>
+Alpha. **Verified locally, not on AWS.** Verified (2026-10-19): the same arm64 container AgentCore runs (the Dockerfile the AgentCore starter toolkit generates with `--disable-otel`, with the real `bedrock-agentcore` SDK app server), invoked through the Runtime contract on a local machine (`POST /invocations` on port 8080 with the session header, `GET /ping`) and sending to a self-hosted Future AGI. **Not run: a real AgentCore Runtime deployment in AWS (no AWS account).** No `agentcore deploy`, no `InvokeAgentRuntime`, no Amazon Bedrock model call: the requests were sent straight to the container with the headers the runtime forwards, and the model was an OpenAI-compatible endpoint. Not verified on AWS: that the managed runtime forwards `traceparent` and the session header to the container exactly as documented, whether it adds a `traceparent` of its own, that the deploy settings below are accepted as written, and span delivery when the runtime freezes or recycles the microVM.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `bedrock-agentcore` **1.24.1** (latest on PyPI, 2026-10-16; still the latest on 2026-10-18) and **1.24.0**. Path A: `fi-instrumentation-otel` 1.1.0, `traceAI-langchain` 0.2.0, `langchain` 1.4.6, `langchain-core` 1.6.12, `langgraph` 1.2.16, `langchain-openai` 1.7.2. Path B: `strands-agents` 1.61.1, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1. Python 3.12 and 3.13 (container: Python 3.12.12, arm64). |
+| AWS docs used (read 2026-10-16) | [Add observability to your AgentCore resources](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html) ("Using other observability platforms": `DISABLE_ADOT_OBSERVABILITY=true` "unsets the AgentCore runtime's default ADOT environment variables"; the `traceparent`, `baggage` and `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` headers), [InvokeAgentRuntime](https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html), [AgentCore CLI configuration](https://github.com/aws/agentcore-cli/blob/main/docs/configuration.md) (`envVars`, `instrumentation`) |
+| Source | [examples/traceai/bedrock-agentcore](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore): the helper, both agents, the Dockerfile, 47 tests and the end-to-end script |
+
+### How this differs from other pages
+
+- **[AWS Bedrock](/docs/integrations/traceai/bedrock).** That page traces calls to Amazon Bedrock with `traceAI-bedrock` (`invoke_model`, `converse`, Bedrock Agents `invoke_agent`, `retrieve_and_generate`). Bedrock Agents is a different managed service. This page is about your own code hosted in AgentCore Runtime. The two combine: if your agent calls Bedrock models through `boto3`, the Bedrock instrumentor's spans land under `agentcore.invocation`.
+- **[LangChain](/docs/integrations/traceai/langchain).** Path A is that integration, unchanged, plus the AgentCore-specific pieces below. Use the LangChain page alone when the agent does not run in AgentCore.
+- **Strands outside AgentCore.** Path B's exporter and content settings work the same in any Python process; `agentcore_tracing.py` is only needed inside AgentCore.
+- **CloudWatch (ADOT).** AgentCore's default. This recipe replaces it; it does not send to both. Running both was not tested.
+
+## Setup pattern (matches common practice)
+
+The set-up below is the one AWS and the observability vendors that document AgentCore use for a non-CloudWatch backend. Nothing here is specific to Future AGI except the endpoint, the keys and the project name.
+
+1. **Turn ADOT off on the runtime.** `DISABLE_ADOT_OBSERVABILITY=true` in the runtime environment, and start the container without the `opentelemetry-instrument` wrapper (`disable_otel=True` or `--disable-otel` with the starter toolkit, `instrumentation.enableOtel: false` with the AgentCore CLI). Otherwise ADOT registers the global tracer provider first and yours is ignored (`Overriding of current TracerProvider is not allowed`).
+2. **Configure the exporter with the standard `OTEL_EXPORTER_OTLP_*` variables, passed as runtime environment variables at deploy time** (`env_vars={...}` or `--env KEY=VALUE`), not baked into the image. The header value is a comma-separated `key=value` list, without quotes. If the deployment sets `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, those win over the general ones; remove them.
+3. **Set the provider up in code**: a `TracerProvider`, or the framework's own such as `StrandsTelemetry`, reading those variables. Path B does exactly this. Path A uses traceAI's `register()`, which reads `FI_*` instead.
+4. **Put the AgentCore session on the spans** as `session.id`. AWS documents it as OpenTelemetry baggage; frameworks also take it as a trace attribute. The helper reads the session header and does both.
+5. **Flush before the entrypoint returns.** A batch exporter sends on a timer, and the runtime can idle the process between invocations, so the spans of the last invocation can otherwise wait for the next one. The helper calls `force_flush` after every invocation.
+6. **Secrets.** The vendors' guides pass keys as plain runtime environment variables at deploy time. Use Secrets Manager or Parameter Store if you do not want them in the runtime configuration (see step 2 of the set-up below).
+
+Sources (read 2026-10-19): AWS, [Add observability to your AgentCore resources](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html) ("Using other observability platforms", "Session ID support"); the AgentCore guides of [Langfuse](https://langfuse.com/integrations/frameworks/amazon-agentcore) and [Arize AX](https://arize.com/docs/ax/integrations/python-agent-frameworks/aws-strands/bedrock-agentcore) (both launch with `env_vars` holding `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` and `DISABLE_ADOT_OBSERVABILITY`), [Braintrust](https://www.braintrust.dev/articles/how-to-trace-strands-agents-on-bedrock-agentcore) (no `opentelemetry-instrument`, `session.id` attribute, `force_flush`) and [Datadog](https://docs.datadoghq.com/llm_observability/instrument/otel_instrumentation.md) (`OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`, headers in the exporter variables).
+
+## Set up
+
+<Steps>
+
+<Step title="Install">
+
+Path A (LangChain with traceAI):
+
+```bash
+pip install "bedrock-agentcore==1.24.1" "fi-instrumentation-otel==1.1.0" "traceAI-langchain==0.2.0" \
+  "langchain==1.4.6" "langchain-openai==1.7.2"
+```
+
+Path B (Strands, plain OTLP):
+
+```bash
+pip install "bedrock-agentcore==1.24.1" "strands-agents[otel,openai]==1.61.1"
+```
+
+Then copy [`agentcore_tracing.py`](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/agentcore_tracing.py) next to your entrypoint. There is no `traceai-agentcore` package.
+</Step>
+
+<Step title="Turn off ADOT and set the environment on the runtime">
+
+Two things stop AgentCore from setting up its own OpenTelemetry: the runtime environment variable `DISABLE_ADOT_OBSERVABILITY=true`, and a container command without the `opentelemetry-instrument` wrapper. With the [AgentCore CLI](https://github.com/aws/agentcore-cli) (`@aws/agentcore`, the tool AWS now recommends) set `instrumentation.enableOtel` to `false` on the runtime in `agentcore.json` and put the variables below in its `envVars`; with the older `bedrock-agentcore-starter-toolkit` (0.3.14 says it is no longer supported) use `agentcore configure --disable-otel` and `agentcore deploy --env KEY=VALUE`. These deploy settings follow the AWS documentation and the toolkit's `--help` and were not deployed for this page. The [example Dockerfile](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/Dockerfile) has the shape the toolkit generates with `--disable-otel` (uv Python 3.12 base image, uid 1000, port 8080): no `aws-opentelemetry-distro`, and `CMD ["python", "-m", "agent_langchain"]`.
+
+Deploy with the starter toolkit, as other AgentCore guides do. The `Runtime.configure` and `Runtime.launch` signatures were checked against toolkit 0.3.14; the calls were not run, because they need an AWS account:
+
+```python
+from bedrock_agentcore_starter_toolkit import Runtime
+
+runtime = Runtime()
+runtime.configure(
+    entrypoint="agent_strands.py",          # or agent_langchain.py
+    agent_name="order_agent",
+    requirements_file="requirements.txt",
+    auto_create_execution_role=True,
+    auto_create_ecr=True,
+    region="us-west-2",
+    disable_otel=True,                       # no opentelemetry-instrument in the container command
+)
+runtime.launch(env_vars={
+    "DISABLE_ADOT_OBSERVABILITY": "true",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "https://api.futureagi.com",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+    "OTEL_EXPORTER_OTLP_HEADERS": f"X-Api-Key={FI_API_KEY},X-Secret-Key={FI_SECRET_KEY}",
+    "OTEL_RESOURCE_ATTRIBUTES": "project_name=order-agent,project_type=observe",
+    "OTEL_SERVICE_NAME": "order-agent",
+    "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental,gen_ai_span_attributes_only,gen_ai_unredacted_attributes=",
+})
+```
+
+The same with the CLI: `agentcore configure -e agent_strands.py --disable-otel`, then `agentcore deploy --env DISABLE_ADOT_OBSERVABILITY=true --env OTEL_EXPORTER_OTLP_ENDPOINT=https://api.futureagi.com ...` (one `--env KEY=VALUE` per variable; `agentcore launch` is the older name of `deploy`). For path A set `FI_API_KEY`, `FI_SECRET_KEY`, `FI_BASE_URL` and `FI_PROJECT_NAME` instead of the `OTEL_*` variables.
+
+Path A:
+
+| Variable | Value |
+| --- | --- |
+| `DISABLE_ADOT_OBSERVABILITY` | `true` |
+| `FI_API_KEY`, `FI_SECRET_KEY` | Your Future AGI keys. Both are required. |
+| `FI_BASE_URL` | Optional. Default `https://api.futureagi.com`. Self-hosted: your own URL. `register()` sends to `{FI_BASE_URL}/tracer/v1/traces`. |
+| `FI_PROJECT_NAME` | The Observe project for this agent. |
+
+Path B:
+
+| Variable | Value |
+| --- | --- |
+| `DISABLE_ADOT_OBSERVABILITY` | `true` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | The Future AGI origin, e.g. `https://api.futureagi.com`. The exporter appends `/v1/traces`; do not add a path. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (not gRPC) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `X-Api-Key=<key>,X-Secret-Key=<secret>` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `project_name=<project>,project_type=observe`. Without `project_name` the batch is dropped. |
+| `OTEL_SERVICE_NAME` | Optional. Default `strands-agents`. Keep it the same across deploys. |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental,gen_ai_span_attributes_only,gen_ai_unredacted_attributes=` (content off, see [Privacy](#privacy)) |
+
+Do not set `OTEL_EXPORTER_OTLP_COMPRESSION=gzip`: Future AGI rejects gzip bodies. The Python exporter does not compress by default.
+
+Keys never go into the image or the source. Runtime environment variables (`envVars` in `agentcore.json`, `--env` on the toolkit) are stored in plain text in the runtime configuration; to keep them out of it, store the keys in AWS Secrets Manager and read them into the environment at startup, before `register()` or `OTLPSpanExporter()` runs. Neither option was exercised on AWS for this page.
+</Step>
+
+<Step title="Path A: LangChain with traceAI">
+
+Condensed; [`agent_langchain.py`](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/agent_langchain.py) in the example is the file that ran.
+
+```python
+# file: agent_langchain.py
+import os
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from traceai_langchain import LangChainInstrumentor
+import agentcore_tracing
+
+provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name=os.environ.get("FI_PROJECT_NAME", "bedrock-agentcore-agent"),
+    set_global_tracer_provider=True,
+    verbose=False,
+)
+agentcore_tracing.keep_future_agi_exporter(provider)   # without this line nothing is exported, see below
+LangChainInstrumentor().instrument(tracer_provider=provider)
+
+@tool
+def lookup_order(order_id: str) -> str:
+    """Return the shipping status of an order id such as A-100."""
+    return f"order {order_id}: shipped"
+
+agent = create_agent(ChatOpenAI(model=os.environ.get("AGENT_MODEL", "gpt-4o-mini")), tools=[lookup_order],
+                     system_prompt="You answer questions about orders.", name="order_agent")
+app = BedrockAgentCoreApp()
+
+@app.entrypoint
+def invoke(payload, context):                            # take `context`: it carries the session id
+    with agentcore_tracing.traced_invocation(context, provider):
+        result = agent.invoke({"messages": [{"role": "user", "content": payload.get("prompt", "")}]})
+        return {"result": result["messages"][-1].content}
+
+if __name__ == "__main__":
+    app.run()
+```
+
+**Why `keep_future_agi_exporter`.** `BedrockAgentCoreApp` registers its own `BaggageSpanProcessor` on the global tracer provider when the app is constructed, and again on the next request whenever the global provider has changed since. The provider that `register()` returns treats its exporter as a replaceable default and removes it on the first `add_span_processor()` call. With `set_global_tracer_provider=True` and without the extra line, the agent works and **no span is ever exported** (seen end to end: two successful invocations, no project created). The line re-adds Future AGI's exporter as a regular processor, so AgentCore's processor is added next to it. If you keep `register()`'s default `set_global_tracer_provider=False`, AgentCore cannot reach the provider, but AgentCore's routing-experiment baggage attributes are then not stamped on your spans.
+
+**It also guards error text.** The exporter it adds is wrapped in `ErrorTextExporter`: error spans never carry a stack trace, and when any `FI_HIDE_*` content variable is on (`FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS`, `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT`) they carry the exception type name only. `traceAI-langchain` 0.2.0 needs this: see [Privacy](#privacy). Keep the line even with `set_global_tracer_provider=False`. If you pass a `TraceConfig` to `LangChainInstrumentor().instrument(config=...)`, pass the same one as `keep_future_agi_exporter(provider, config=...)`.
+</Step>
+
+<Step title="Path B: Strands over plain OTLP">
+
+Condensed; [`agent_strands.py`](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/agent_strands.py) in the example is the file that ran.
+
+```python
+# file: agent_strands.py
+import os
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from strands import Agent, tool
+from strands.models.openai import OpenAIModel
+from strands.telemetry import StrandsTelemetry
+import agentcore_tracing
+
+telemetry = StrandsTelemetry()                           # Strands' provider, set as the global one
+provider = telemetry.tracer_provider
+exporter = agentcore_tracing.ErrorTextExporter(          # error spans: never a stack trace,
+    OTLPSpanExporter(),                                  # type name only while content is off
+    type_only=agentcore_tracing.strands_redaction_enabled(),
+)                                                        # OTLPSpanExporter() reads OTEL_EXPORTER_OTLP_*
+provider.add_span_processor(BatchSpanProcessor(exporter))
+telemetry.setup_baggage_processor(lambda key: key == "session.id")  # session.id on every Strands span
+
+@tool
+def lookup_order(order_id: str) -> str:
+    """Return the shipping status of an order id such as A-100."""
+    return f"order {order_id}: shipped"
+
+app = BedrockAgentCoreApp()
+
+@app.entrypoint
+def invoke(payload, context):
+    with agentcore_tracing.traced_invocation(context, provider):
+        model = OpenAIModel(
+            client_args={"api_key": os.environ["OPENAI_API_KEY"], "base_url": os.environ.get("OPENAI_BASE_URL")},
+            model_id=os.environ.get("AGENT_MODEL", "gpt-4o-mini"),
+        )
+        agent = Agent(name="order_agent", model=model, tools=[lookup_order], callback_handler=None)
+        return {"result": str(agent(payload.get("prompt", "")))}
+
+if __name__ == "__main__":
+    app.run()
+```
+
+Use `OTLPSpanExporter()` plus `BatchSpanProcessor` as above rather than `telemetry.setup_otlp_exporter()` only because of the error-text wrapper; the exporter configuration is the same. Strands' OTLP exporter reads the same `OTEL_EXPORTER_OTLP_*` variables either way.
+</Step>
+
+<Step title="Check it locally">
+
+Run the entrypoint (`python agent_langchain.py` serves `POST /invocations` and `GET /ping` on port 8080) and call it the way the runtime does:
+
+```bash
+curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
+  -H 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: my-session-0001' \
+  -d '{"prompt": "What is the status of order A-100?"}'
+```
+
+Call it twice with the same session id and open the project in Observe: two traces, each rooted at `agentcore.invocation`, grouped under one session. On AWS, the session id is the `runtimeSessionId` you pass to `InvokeAgentRuntime` (or the one the AgentCore CLI generates for `agentcore invoke`).
+</Step>
+
+</Steps>
+
+### Streaming entrypoints
+
+- **`async def` generator** (for example `async for event in agent.stream_async(prompt): yield event`): wrap the loop in `with agentcore_tracing.traced_invocation(context, provider):`. AgentCore runs the whole async generator in one task, so the root span stays current and ends after the last chunk.
+- **Plain `def` generator**: return `agentcore_tracing.traced_stream(context, your_generator(), provider)`. AgentCore iterates a sync generator from a thread pool, one step per call, each in its own copy of the request context, so a `with` block around `yield` loses the parent after the first chunk (the tests show it). `traced_stream` makes the root span current again around every step.
+
+An error in the middle of a stream is turned by AgentCore into a final `error` event with HTTP 200; the root span is still `ERROR`.
+
+## What is captured
+
+| Source | What you get |
+| --- | --- |
+| `agentcore.invocation` (the helper) | One root span per invocation, kind `chain`. `session.id` = the AgentCore session id (`X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`, which the SDK puts on `context.session_id`). On error: status `ERROR` with the exception type name only. No payload, no response. |
+| Path A: traceAI LangChain | Unchanged from the [LangChain page](/docs/integrations/traceai/langchain): agent, chain, `llm` (model, prompt and completion tokens) and `tool` spans, each with `session.id` (the helper sets it in the traceAI context). On error: status `ERROR` with the exception text up to the stack trace (content on) or the exception type name only (an `FI_HIDE_*` content variable on); never a stack trace. |
+| Path B: Strands | `invoke_agent <name>`, `execute_event_loop_cycle`, `chat` (stored as `llm`, with model and tokens) and `execute_tool <name>` (stored as `tool`), each with `session.id` from baggage. Future AGI stores the agent and cycle spans with type `unknown`: its OpenTelemetry GenAI mapping has no type for `invoke_agent`. |
+| Session | All invocations with the same session id are grouped in one Future AGI session. |
+| Caller trace | When the request carries a W3C `traceparent`, the root span **links** to the caller's span and starts its own trace. See the next section to make it a child instead. |
+| Resource | Path A: `project_name`, `project_type` and the traceAI defaults. Path B: `service.name` (`strands-agents` unless you set `OTEL_SERVICE_NAME`), `project_name`, `project_type` from `OTEL_RESOURCE_ATTRIBUTES`. No host name, user name or process information in either. The runtime ARN and region are not added. |
+| Flush | After the root span ends, on success and on error, before AgentCore sends the response: `provider.force_flush(5000)`. It never raises. |
+
+### Joining the caller's trace
+
+`traced_invocation(context, provider, join_caller_trace=True)` (the example agents read `JOIN_CALLER_TRACE=true`) makes the caller's span the parent, so the invocation continues the caller's trace. Turn it on only when the caller exports its own spans **to the same Future AGI project**. Future AGI lists a trace by its span without a parent; if that parent never reaches Future AGI, the invocation's spans are stored but the trace does not appear in the trace list (seen end to end). That is why the default is a link.
+
+## Privacy
+
+**Never exported, in either path:** Future AGI keys, AWS credentials, request headers, host names, user names, local paths and stack traces. A scan of every stored column (input, output, attributes, resource attributes, span events, status message) for a unique marker, the local user name, the host name, the home directory path, `Traceback` and the API key confirmed it; see [How it was tested](#how-it-was-tested).
+
+**Path A (traceAI).** Content follows traceAI's `TraceConfig`, like every traceAI integration: prompts, responses, tool arguments and results are captured by default. Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` (and the other `FI_HIDE_*` variables as needed) on the runtime to hide them; with both set, the marker was absent from every column, also when the model call failed. Error spans follow the same switch: with content on they keep the exception text (cut before the stack trace, at most 500 characters), with any `FI_HIDE_*` content variable on they keep the exception type name only (for example `OpenAIModelNotFoundError`).
+
+<Note>
+`traceAI-langchain` 0.2.0 (the latest release on 2026-10-18) writes LangChain's `run.error`, which is `repr(error)` followed by the formatted traceback with local file paths, into the status of every failing LangChain span, whatever the `FI_HIDE_*` settings, and records an `exception` event with the stack trace. `keep_future_agi_exporter` wraps Future AGI's exporter in `ErrorTextExporter`, which removes both before export, so the recipe stores no stack trace, path or error text with content off. If you build the exporter pipeline yourself, wrap your exporter: `ErrorTextExporter(exporter, type_only=agentcore_tracing.content_hidden())`. A fix in the package itself is proposed in [future-agi/traceAI#214](https://github.com/future-agi/traceAI/pull/214) (not merged or released on 2026-10-18); the wrapper stays harmless after it ships. The `agentcore.invocation` root never carries error text.
+</Note>
+
+**Path B (Strands).** Content is **off by default** in this recipe: the `gen_ai_unredacted_attributes=` token turns on Strands' own redaction, so `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` are stored as `[REDACTED]`. Strands still writes the exception message into the span status and records an exception event with the stack trace; `ErrorTextExporter` reduces both to the exception type name whenever that redaction is on.
+
+To opt in, remove `gen_ai_unredacted_attributes=` and keep `gen_ai_latest_experimental,gen_ai_span_attributes_only`. Content is then stored as span attributes (shown under Attributes on the span, not in the Input and Output panes), and error spans keep Strands' status message (the exception text), still without a stack trace. Keep `gen_ai_span_attributes_only`: without it Strands writes messages as span events, and Future AGI keeps only the event name and time, so the content is silently lost.
+
+## How it was tested
+
+Against a self-hosted Future AGI, each scenario in its own project, with [`run_e2e.sh`](https://github.com/future-agi/docs/tree/main/examples/traceai/bedrock-agentcore/run_e2e.sh), for both paths, with `bedrock-agentcore` 1.24.1 and again with 1.24.0, as a local process and (happy and failure scenarios) inside the arm64 container built from the example Dockerfile:
+
+- **The runtime container, called through the Runtime contract (2026-10-19).** The image was built for `linux/arm64` from the Dockerfile the AgentCore starter toolkit 0.3.14 generates with `--disable-otel`, unchanged, and started with `docker run -p 8080:8080`, the runtime variables from the table above as `-e` (the same values `agentcore deploy --env` sets) and the model on an OpenAI-compatible endpoint. `GET /ping` answered `Healthy`; `POST /invocations` carried the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header. Three invocations in one session, then one failing invocation (500), per path, against a self-hosted Future AGI: path A 3 traces and 24 spans in one session, the failure 4 `ERROR` spans, the root with the exception type only; path B 3 traces and 21 spans in one session, the failure 4 `ERROR` spans with the exception type only. A scan of every stored column found no `Traceback`, user name, host name, home path or API key (and, for path B's default, no marker). The existing `run_e2e.sh all` passed again the same day. **Not run: a real AgentCore Runtime deployment in AWS (no AWS account).**
+- **Happy:** three invocations with one session id, the first with a `traceparent` and `JOIN_CALLER_TRACE=true`: three traces, one session, the first trace continuing the caller's trace id, an `llm` span with model and token counts and a `tool` span in every trace (path A 24 spans, path B 21 spans).
+- **Failure:** the model endpoint rejects the model id, AgentCore answers 500; the root and three spans under it are `ERROR`, all flushed. A `traceparent` was sent without `JOIN_CALLER_TRACE`: the root had no parent and its own trace id. With each path's default content setting, no `Traceback`, user name, host name, home path or API key in any stored column.
+- **Content off / on:** a unique marker in the prompt and the tool arguments. Path A with `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS`: marker in 0 rows; defaults: marker stored. Path B recipe default: 0 rows; opt-in: stored. User name, host name, home path, `Traceback` and the API key: 0 rows in all of them.
+- **Failure with content off:** both paths: every `ERROR` span carries the bare exception type name, and the marker, error text, `Traceback`, user name, host name, home path and API key are in 0 rows. Path A was also run against the OpenAI API itself (unknown model id, a 404 `OpenAIModelNotFoundError`, no tokens billed) with the same result. Before the `ErrorTextExporter` wrapper (2026-10-16 runs), path A stored the traceback of the note above in 3 spans, with the OpenAI-compatible endpoint's 400 and with OpenAI's 404 alike.
+- **Hazard:** the path A agent without `keep_future_agi_exporter`: invocations returned 200, nothing reached Future AGI.
+- **Collector unreachable:** every invocation still returned 200; each took up to the 5-second flush timeout longer.
+
+The 47 unit tests run the real `BedrockAgentCoreApp` in-process and assert: the exporter is lost without `keep_future_agi_exporter` and kept with it (also when the provider is registered after the app); session header to `session.id` on the root, in the traceAI context and in baggage; caller link by default and join on request; request baggage and outer traceAI context attributes kept; no payload on the root; `ERROR` with the type name only; spans exported before the response with a batch timer that would not fire; a failing flush or an unreachable collector never fails the invocation; async, async-generator and sync-generator (`traced_stream`) entrypoints; the real traceAI LangChain instrumentor picking up the session; a failing LangChain chain under the real traceAI instrumentor storing no stack trace, and with `FI_HIDE_*` on (environment or `TraceConfig`) only the exception type; `content_hidden()` following each `FI_HIDE_*` variable; and `ErrorTextExporter` in both modes. One test pins the `traceAI-langchain` 0.2.0 behaviour the wrapper works around.
+
+## Troubleshooting
+
+- **The agent answers but nothing arrives.** Path A with `set_global_tracer_provider=True`: add `agentcore_tracing.keep_future_agi_exporter(provider)` right after `register()`. Otherwise check that the runtime can reach the Future AGI endpoint (VPC egress).
+- **No project, or the batch is rejected.** `project_name` is missing: `FI_PROJECT_NAME` (path A) or `OTEL_RESOURCE_ATTRIBUTES=project_name=...` (path B). Both `X-Api-Key` and `X-Secret-Key` are needed; `FI_*` variables are not read by a plain OTLP exporter.
+- **Path B gets 404 or nothing.** `OTEL_EXPORTER_OTLP_ENDPOINT` must be the origin only (the exporter appends `/v1/traces`), the protocol `http/protobuf`, no gzip.
+- **Duplicate spans, or spans also in CloudWatch.** ADOT is still on: set `DISABLE_ADOT_OBSERVABILITY=true` and remove the `opentelemetry-instrument` wrapper (`enableOtel: false`, or `--disable-otel` with the toolkit).
+- **A trace is missing from the trace list but its spans exist.** The root has a parent that is not in Future AGI. Leave `join_caller_trace` off unless the caller exports to the same project.
+- **No session.** The entrypoint must take `context` (`def invoke(payload, context)`), and the caller must send a session id (`runtimeSessionId`).
+- **Path B content is not in the Input and Output panes.** Expected: with the opt-in it is under the span's attributes. If it is not there either, `gen_ai_span_attributes_only` is missing.
+- **Invocations are slow while Future AGI is down.** The flush waits up to 5 seconds per invocation. Pass `flush_timeout_millis` to `traced_invocation` to change it.
+- **Streaming spans are not children of `agentcore.invocation`.** Use `traced_stream` for a plain generator entrypoint.
+- **Error spans show only the exception type.** Expected while content is off (path A: an `FI_HIDE_*` content variable; path B: Strands redaction). With content on they show the exception text. A stack trace is never exported; read it in the runtime's own logs.
+
+## Limitations
+
+- **Not run on AWS** (see the warning above). Until an AgentCore Runtime run exists, treat header forwarding, the session id, ADOT being fully off, and delivery across microVM freeze and recycle as unverified.
+- AgentCore Memory, Gateway, Identity and built-in tool telemetry are vended by AWS to CloudWatch and are not covered. Sending to CloudWatch and Future AGI at the same time is not covered.
+- The runtime ARN and region are not added to the spans.
+- Strands' agent and cycle spans show type `unknown`; Strands content (opt-in) is shown as attributes, not in the Input and Output panes.
+- Path A relies on `keep_future_agi_exporter` (its `ErrorTextExporter`) to keep LangChain's traceback out of failing spans until a `traceAI-langchain` release fixes it ([#214](https://github.com/future-agi/traceAI/pull/214), unreleased on 2026-10-18). An exporter pipeline that skips the helper must wrap its exporter itself.
+- No Bedrock model call was exercised; with `ChatBedrockConverse` or Strands' `BedrockModel` the model spans come from the same instrumentors, but that was not run here.
