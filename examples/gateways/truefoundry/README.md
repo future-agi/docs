@@ -3,7 +3,13 @@
 Runnable assets behind the page
 [TrueFoundry AI Gateway tracing with Future AGI](../../../src/pages/docs/integrations/gateways/truefoundry.mdx).
 
-No TrueFoundry code runs here. Two stand-ins take its place and are named as such in every file:
+## Live vendor verification (2026-10-20)
+
+Run against a real TrueFoundry SaaS tenant on the free Developer plan, with a model account added through the API (`PUT /api/svc/v1/apply`, `provider-account/openai`) and deleted afterwards. `client_example.py` (success with a tool call, `--stream`, and a rejected model) works unchanged against `https://gateway.truefoundry.ai` with a Personal Access Token and a `provider_account/model_name` id. The gateway's own OTEL export could not be enabled on that plan (HTTP 402, `settings.otelConfig`, PRO). `native/replay_spans.py` therefore re-encodes real spans read from TrueFoundry's Query Spans API (`POST /api/svc/v1/spans/query`) as OTLP and posts them; the collector recipe was run on those. The stand-ins below remain for CI and for anything not proven live (the exporter's wire behaviour, Exclude Request Data, `gen_ai.*` placement).
+
+## Stand-ins
+
+The tests and `run_e2e.sh` still use two stand-ins, named as such in every file:
 
 | Stand-in | What it replaces | Why |
 | --- | --- | --- |
@@ -18,6 +24,7 @@ What is real: `traceai-openai`, the `openai` client, the OpenTelemetry Collector
 | --- | --- |
 | `client_example.py` | The client-tracing recipe: `register()`, `OpenAIInstrumentor`, an OpenAI client on the gateway base URL, an agent with one tool call |
 | `standin_gateway.py` | Stand-in gateway (see above) |
+| `native/replay_spans.py` | REAL gateway spans from the Query Spans API, re-encoded as OTLP (no resource attributes or events in that API) |
 | `native/tfy_batch.py`, `native/post_batch.py` | Synthetic TrueFoundry-shaped batches and a poster (HTTP proto or JSON, gzip, gRPC, five auth modes) |
 | `native/otelcol.yaml` | The OpenTelemetry Collector recipe from the page |
 | `tools/wire_tap.py` | Records what an OTLP/HTTP exporter sent, then forwards it unchanged |

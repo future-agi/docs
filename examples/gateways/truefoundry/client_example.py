@@ -78,6 +78,21 @@ def run_agent(
     return agent(prompt)
 
 
+def run_stream(client: OpenAI, model: str, prompt: str) -> str:
+    """One streamed completion. The LLM span ends when the stream is fully read."""
+    parts = []
+    stream = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            parts.append(chunk.choices[0].delta.content)
+    return "".join(parts)
+
+
 def build(project_name: Optional[str] = None):
     trace_provider = register(
         project_type=ProjectType.OBSERVE,
@@ -95,11 +110,13 @@ def build(project_name: Optional[str] = None):
 
 def main(argv: list) -> int:
     model = os.environ.get("TFY_MODEL", "openai-main/gpt-4o-mini")
+    stream = "--stream" in argv
+    argv = [a for a in argv if a != "--stream"]
     prompt = " ".join(argv[1:]) or "What is the shipping status of order A-1042? Use the tool."
     trace_provider, client, tracer = build()
     code = 0
     try:
-        print(run_agent(client, tracer, model, prompt))
+        print(run_stream(client, model, prompt) if stream else run_agent(client, tracer, model, prompt))
     except Exception as exc:  # the failed gateway call is already recorded as an ERROR span
         print(f"gateway call failed: {type(exc).__name__}", file=sys.stderr)
         code = 1

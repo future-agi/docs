@@ -103,6 +103,10 @@ def build_batch(
         "tfy.request.created_by_subject_teams": [f"team-{marker.lower()}"],
         "tfy.prompt_variables": json.dumps({"ticket": marker}),
         "http.response.status_code": 403 if failure else 200,
+        # Seen on real gateway spans (2026-10-20): the caller as JSON, the token name, the caller's IP.
+        "tfy.request.identity": json.dumps({"subject": {"id": "u1", "type": "user", "slug": subject[5:]}}),
+        "tfy.request.created_by_subject_pat_name": f"pat-{marker.lower()}",
+        "client.address": "203.0.113.7",
     }
     model: Dict[str, object] = {
         "tfy.span_type": "Model",
@@ -192,7 +196,7 @@ def build_batch(
         Span(
             trace_id=tid,
             span_id=root_id,
-            name="ChatCompletion",
+            name=f"ChatCompletion: {ACCOUNT_MODEL}",  # real gateways put the model in the name (seen 2026-10-20)
             kind=Span.SPAN_KIND_SERVER,
             start_time_unix_nano=start,
             end_time_unix_nano=end,
@@ -204,7 +208,7 @@ def build_batch(
             span_id=model_id,
             parent_span_id=root_id,
             name=f"Model: {ACCOUNT_MODEL}",
-            kind=Span.SPAN_KIND_CLIENT,
+            kind=Span.SPAN_KIND_INTERNAL,
             start_time_unix_nano=mid,
             end_time_unix_nano=end - 20_000_000,
             attributes=_kvs(model),

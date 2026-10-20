@@ -36,7 +36,31 @@ def _gateway(request: "httpx.Request") -> "httpx.Response":
     assert request.headers["authorization"] == "Bearer tfy-test-token"
     body = json.loads(request.content)
     if body["model"] == "openai-main/forbidden":
-        return httpx.Response(403, json={"error": {"message": "not authorized or the model does not exist"}})
+        # Body shape captured from the real gateway on 2026-10-20 (the e-mail is a placeholder).
+        return httpx.Response(
+            403,
+            json={
+                "status": "failure",
+                "message": "User dev@example.test is not authorized to access model openai-main/forbidden or model does not exist",
+                "error": {
+                    "message": "User dev@example.test is not authorized to access model openai-main/forbidden or model does not exist",
+                    "type": "AuthorizationError",
+                    "code": "403",
+                },
+                "error_origin_level": "authorization",
+            },
+        )
+    if body.get("stream"):
+        chunks = [
+            {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": PROVIDER_MODEL,
+             "choices": [{"index": 0, "delta": {"role": "assistant", "content": ANSWER_MARK}, "finish_reason": None}]},
+            {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": PROVIDER_MODEL,
+             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": PROVIDER_MODEL, "choices": [],
+             "usage": {"prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16}},
+        ]
+        sse = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse.encode())
     return httpx.Response(
         200,
         json={
@@ -138,5 +162,23 @@ def test_hide_switches_do_not_cover_error_text(traced):
         _ask(client, "openai-main/forbidden")
     (span,) = exporter.get_finished_spans()
     assert "not authorized" in span.status.description
+    # The real gateway puts the caller's e-mail in that text (seen live on 2026-10-20), so it is stored.
+    assert "dev@example.test" in span.status.description
     (event,) = span.events
     assert "exception.stacktrace" in event.attributes
+
+
+def test_stream_span_has_tokens_but_no_model_on_traceai_openai_0_1_10(traced):
+    """Seen against the real gateway on 2026-10-20: a streamed call records usage but no model attribute.
+
+    Fixed in unreleased traceAI PR #249; this test is meant to go red on a build that has it.
+    """
+    from client_example import run_stream
+
+    client, exporter = traced
+    assert run_stream(client, MODEL, PROMPT_MARK) == ANSWER_MARK
+    (span,) = exporter.get_finished_spans()
+    attrs = dict(span.attributes)
+    assert span.status.status_code != StatusCode.ERROR
+    assert attrs["gen_ai.usage.total_tokens"] == 16
+    assert "gen_ai.request.model" not in attrs

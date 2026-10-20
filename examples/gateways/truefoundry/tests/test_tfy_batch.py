@@ -30,7 +30,7 @@ def test_default_batch_matches_what_the_gateway_sends_without_extra_resource_att
     resource, root, model = spans(build_batch(MARK))
     assert resource == {"service.name": "tfy-llm-gateway"}
     assert "project_name" not in resource  # the collector rejects this batch
-    assert root.name == "ChatCompletion" and model.name == f"Model: {ACCOUNT_MODEL}"
+    assert root.name == f"ChatCompletion: {ACCOUNT_MODEL}" and model.name == f"Model: {ACCOUNT_MODEL}"
     assert model.parent_span_id == root.span_id and root.parent_span_id == b""
     assert model.trace_id == root.trace_id
 

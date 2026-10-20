@@ -54,7 +54,8 @@ def test_privacy_processor_covers_content_identity_and_error_text(cfg):
         "tfy.input", "tfy.output", "tfy.input_short_hand",
         "gen_ai.input.messages", "gen_ai.output.messages",
         "tfy.request.metadata", "tfy.prompt_variables", "tfy.error_message",
-        "tfy.request.created_by_subject", "exception.message", "exception.stacktrace",
+        "tfy.request.created_by_subject", "tfy.request.identity",
+        "tfy.request.created_by_subject_pat_name", "client.address", "exception.message", "exception.stacktrace",
     } <= deleted
     assert any(s.startswith("set(status.message") for s in stmts)
 

@@ -73,7 +73,10 @@ class Handler(BaseHTTPRequestHandler):
         model = payload.get("model", "")
         if model not in ALLOWED:
             # Same client message for "forbidden" and "does not exist", as the TrueFoundry docs describe.
-            self._send(403, error_body(403, "You are not authorized to use this model or the model does not exist"))
+            msg = f"User standin@example.test is not authorized to access model {model} or model does not exist"
+            # Body shape captured from the real gateway on 2026-10-20.
+            self._send(403, json.dumps({"status": "failure", "message": msg, "error_origin_level": "authorization",
+                                        "error": {"message": msg, "type": "AuthorizationError", "code": "403"}}).encode())
             return
         if not UPSTREAM:
             self._send(502, error_body(502, "STANDIN_UPSTREAM_BASE_URL is not set"))

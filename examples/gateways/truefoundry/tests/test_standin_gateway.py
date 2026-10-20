@@ -77,5 +77,8 @@ def test_wrong_token_is_401_and_nothing_is_forwarded(gateway):
 def test_unknown_and_forbidden_models_get_the_same_403(gateway):
     a = call(gateway, model="openai-main/does-not-exist")
     b = call(gateway, model="other-account/gpt-6-luna")
-    assert a[0] == b[0] == 403 and a[1] == b[1]
+    # Real shape (2026-10-20): the message names the model, the type is AuthorizationError either way.
+    assert a[0] == b[0] == 403
+    assert a[1].keys() == b[1].keys() if isinstance(a[1], dict) else True
+    assert "AuthorizationError" in str(a[1]) and "AuthorizationError" in str(b[1])
     assert Upstream.seen == []
