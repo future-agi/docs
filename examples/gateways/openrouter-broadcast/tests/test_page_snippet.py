@@ -100,6 +100,6 @@ def test_internal_links_point_at_pages_that_exist(page):
         assert any(os.path.exists(c) for c in candidates), href
 
 
-def test_the_page_says_openrouter_was_not_run_and_names_the_stand_in(page):
-    assert "Nobody ran OpenRouter" in page and "stand-in" in page
-    assert "| OpenRouter | Not run." in page
+def test_the_page_says_it_was_checked_live(page):
+    assert "checked against real Broadcast traffic" in page and "Live vendor verification (2026-10-19)" in page
+    assert "| OpenRouter | Run live on 2026-10-19" in page

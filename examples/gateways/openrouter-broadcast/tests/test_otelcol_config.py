@@ -98,6 +98,7 @@ def test_content_keys_are_removed_by_the_off_rules(cfg):
         "gen_ai.input.messages", "gen_ai.output.messages",                                 # OTel GenAI conventions
         "span.metadata.openrouter_generation.upstream_raw_response_usage",
         "trace.metadata.openrouter_generation.upstream_raw_response_usage",
+        "span.status_message",                                                             # real payload, 2026-10-20: error text as an attribute
     ]
     for key in must_go:
         assert any(r.search(key) for r in regexes), key
@@ -151,3 +152,13 @@ def test_env_variables_the_file_reads_are_the_documented_ones(text):
 def test_batches_stay_small(cfg):
     b = cfg["processors"]["batch"]
     assert b["send_batch_max_size"] <= 512 and b["send_batch_size"] <= b["send_batch_max_size"]
+
+
+def test_openrouter_cost_reaches_the_key_observe_reads(cfg):
+    """Real Broadcast payload (2026-10-20, Cost metadata on): the cost is gen_ai.usage.total_cost."""
+    span = statements(cfg, "span")
+    assert any(
+        s.startswith('set(attributes["gen_ai.cost.total"], attributes["gen_ai.usage.total_cost"])')
+        and 'attributes["gen_ai.usage.total_cost"] != nil' in s
+        for s in span
+    )

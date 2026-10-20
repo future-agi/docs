@@ -11,7 +11,7 @@ OpenRouter does not run here. One stand-in takes its place and is named as such 
 
 What is real: the OpenTelemetry Collector container (`otelcol.yaml`), the Future AGI collector and storage you point it at, and the model calls behind `--live`.
 
-Nothing in `broadcast_fixture.py` was captured from OpenRouter. Where OpenRouter's pages leave something open, the file says `ASSUMED` or `SYNTHETIC`: the span tree, the shape of the prompt and completion strings, how a failure is expressed in OTLP, and the exception event used to exercise the privacy rule. No cost attribute is written, because OpenRouter does not publish its key.
+Live check, 2026-10-19: real OpenRouter Broadcast traffic was captured on Cloud Run and replayed through `otelcol.yaml`; see the page's "Live vendor verification" section. `broadcast_fixture.py` itself was written from OpenRouter's documentation, before that run, and differs from the real payload (no separate root span, `gen_ai.usage.total_cost`, `span.status_message`). Where OpenRouter's pages leave something open, the file says `ASSUMED` or `SYNTHETIC`: the span tree, the shape of the prompt and completion strings, how a failure is expressed in OTLP, and the exception event used to exercise the privacy rule. No cost attribute is written, because OpenRouter does not publish its key.
 
 ## Files
 
@@ -65,4 +65,4 @@ PYTHON=.venv/bin/python VERIFY=/path/to/fi_verify.py ./run_e2e.sh all
 
 ## Not verified
 
-OpenRouter's real Broadcast payload and span tree, Test Connection against the OpenTelemetry Collector destination, how OpenRouter marks a failed request in OTLP, the cost attribute key, TLS in front of the collector, a collector reachable from the internet, and the hosted Future AGI URL (`api.futureagi.com`).
+Provider fallback, tool calls, cancelled generations, Privacy Mode in OpenRouter, `trace_id` and `parent_span_id` linking, TLS in front of a collector you run yourself.
