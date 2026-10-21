@@ -12,7 +12,8 @@ Reads the project row from Postgres and the spans from ClickHouse (the tables th
   - --expect-backend: LibreChat's own backend spans (the chat POST and the SSE stream span)
 
 Exit 0 when every check passes, 1 when one fails, 2 when nothing is stored for the project.
-Containers default to the TH-8103 local stack; override with FI_PG_CONTAINER / FI_CH_CONTAINER.
+Containers default to the self-hosted Docker Compose names (project `futureagi`); override with
+FI_PG_CONTAINER / FI_CH_CONTAINER.
 """
 import argparse
 import json
@@ -21,8 +22,8 @@ import subprocess
 import sys
 import time
 
-PG_CONTAINER = os.environ.get("FI_PG_CONTAINER", "th8103-e2e-postgres-1")
-CH_CONTAINER = os.environ.get("FI_CH_CONTAINER", "th8103-e2e-clickhouse-1")
+PG_CONTAINER = os.environ.get("FI_PG_CONTAINER", "futureagi-postgres-1")
+CH_CONTAINER = os.environ.get("FI_CH_CONTAINER", "futureagi-clickhouse-1")
 COLUMNS = ("trace_id, id, parent_span_id, name, observation_type, status, status_message, model, "
            "prompt_tokens, completion_tokens, total_tokens, toString(trace_session_id) AS session, "
            "toString(end_user_id) AS end_user, attrs_string")

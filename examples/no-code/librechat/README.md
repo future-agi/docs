@@ -24,12 +24,12 @@ Langfuse span shape, keeps content out by default and forwards to Future AGI. No
 
 Needs Docker with Compose (`docker compose` or `docker-compose`), a self-hosted Future AGI in Docker (the
 checks read its Postgres and ClickHouse containers; set `FI_PG_CONTAINER` / `FI_CH_CONTAINER` if yours are not
-named like the TH-8103 test stack), and any OpenAI-compatible model endpoint reachable from a container.
+named `futureagi-postgres-1` / `futureagi-clickhouse-1`, the default self-hosted Docker Compose names), and any OpenAI-compatible model endpoint reachable from a container.
 
 ```bash
 export FI_API_KEY=... FI_SECRET_KEY=...
 export FI_TRACES_URL=http://host.docker.internal:4318/v1/traces    # your Future AGI collector
-export TEST_LLM_BASE_URL=http://host.docker.internal:8317/v1 TEST_LLM_API_KEY=... TEST_LLM_MODEL=gpt-6-luna
+export TEST_LLM_BASE_URL=https://api.openai.com/v1 TEST_LLM_API_KEY=... TEST_LLM_MODEL=gpt-4o-mini
 ./run_e2e.sh
 ```
 

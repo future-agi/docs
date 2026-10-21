@@ -13,7 +13,8 @@ A needle may be written LABEL=VALUE (LABEL is lowercase letters, digits and unde
 shows the label, never the value. Exit status: 0 when no needle is found (with --expect-found: when every
 needle is found), 1 otherwise, 2 when the project has no span rows, 3 when a table could not be read
 (a failed read is never reported as "not found"). Only reads. Prints counts and table names, never row
-contents. Containers default to the TH-8103 local stack; override with FI_PG_CONTAINER / FI_CH_CONTAINER.
+contents. Containers default to the self-hosted Docker Compose names (project `futureagi`); override with
+FI_PG_CONTAINER / FI_CH_CONTAINER.
 """
 import argparse
 import json
@@ -23,8 +24,8 @@ import subprocess
 import sys
 import time
 
-PG_CONTAINER = os.environ.get("FI_PG_CONTAINER", "th8103-e2e-postgres-1")
-CH_CONTAINER = os.environ.get("FI_CH_CONTAINER", "th8103-e2e-clickhouse-1")
+PG_CONTAINER = os.environ.get("FI_PG_CONTAINER", "futureagi-postgres-1")
+CH_CONTAINER = os.environ.get("FI_CH_CONTAINER", "futureagi-clickhouse-1")
 LABELLED = re.compile(r"^([a-z0-9_]+)=(.+)$")
 
 
