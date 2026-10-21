@@ -68,17 +68,57 @@ The ingestion endpoint is an **OTLP/traces** receiver — you don't call it dire
 
 | Aspect | Detail |
 |---|---|
-| Protocol | OTLP over HTTP (protobuf) or gRPC — the [OpenTelemetry](https://opentelemetry.io/docs/) standard, not a proprietary API. |
+| Protocol | OTLP over HTTP (protobuf or JSON) or gRPC: the [OpenTelemetry](https://opentelemetry.io/docs/) standard, not a proprietary API. |
+| Compression | gzip or none, on both transports. See [Compression](#compression). |
+| Project | The `project_name` resource attribute, or the `X-Project-Name` header when the exporter cannot set resource attributes. See [Naming the project](#naming-the-project). |
 | Operation | Export spans (write-only). There is no read/query endpoint; reading happens in the trace explorer. |
 | Auth | `FI_API_KEY` + `FI_SECRET_KEY` from the [keys page](https://app.futureagi.com/dashboard/keys), sent by the SDK on every export. Keys are workspace-scoped. |
 | Success | The exporter batches spans and sends them in the background; a successful export returns no payload. Spans appear in Observe within seconds. |
-| Errors | A `401` means the keys are wrong for this workspace; a `4xx` means a malformed/oversized batch; transient `5xx`/network errors are retried by the batch exporter. |
+| Errors | A `401` means the keys are wrong for this workspace; a `4xx` means a malformed/oversized batch (`400` also covers a missing project name and a corrupt gzip body, `413` an oversized one, `415` an unsupported content type or encoding); transient `5xx`/network errors are retried by the batch exporter. |
 | Limits | Spans are sent by the **batch** span processor on an interval, so a short-lived process must call `trace_provider.force_flush()` before exit or the last batch is lost. Very large payloads (huge prompts/outputs) can be dropped: [cap attribute size](/docs/sdk/tracing/trace-config#cap-attribute-size) or [mask](/docs/sdk/tracing/mask-span-attributes) them at the SDK. Future AGI Cloud accepts OTLP requests up to 16 MiB over HTTP or gRPC. See [Ingestion request limits](#ingestion-request-limits). |
 | Versioning | Pin `fi-instrumentation-otel` and each instrumentor to a tested version so a release can't change span shape under you; the wire format follows the OTLP version the SDK ships. |
 
+### Compression
+
+The collector accepts gzip-compressed requests on both transports, as the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/) requires. Uncompressed requests keep working.
+
+| Transport | How the exporter signals gzip | Other encodings |
+|---|---|---|
+| OTLP/HTTP | `Content-Encoding: gzip`, for protobuf and JSON bodies | `415 Unsupported Media Type`, with `Accept-Encoding: gzip, identity` |
+| OTLP/gRPC | `grpc-encoding: gzip` | `UNIMPLEMENTED` |
+
+A gzip body that is truncated or fails its checksum is rejected with `400`. Turn compression on in an OpenTelemetry SDK with `OTEL_EXPORTER_OTLP_COMPRESSION=gzip`. The OpenTelemetry Collector's `otlp` and `otlphttp` exporters send gzip by default, so `compression: none` is no longer needed in front of Future AGI.
+
+### Naming the project
+
+Every batch must name its Observe project. The collector looks for the name in this order, separately for each resource in the batch:
+
+| Order | Source | Set by |
+|---|---|---|
+| 1 | Resource attribute `project_name` | traceAI's `register()`, or `OTEL_RESOURCE_ATTRIBUTES=project_name=<name>` |
+| 2 | Request header `X-Project-Name` (gRPC metadata key `x-project-name`) | Any exporter that can set headers, for example `OTEL_EXPORTER_OTLP_HEADERS` or a vendor's "custom headers" field |
+| 3 | Neither | The batch is rejected with `400` (gRPC `INVALID_ARGUMENT`), `no project_name` |
+
+The header is for senders that can set headers but not resource attributes, such as hosted gateways and telemetry drains. A resource that sets `project_name` keeps it, even when the header names a different project. A name from the header is handled exactly like the attribute: it is looked up in the workspace of your API key, and an Observe project is created with that name if none exists. The collector stores the name it used in the span's resource attributes.
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://api.futureagi.com/tracer/v1/traces
+OTEL_EXPORTER_OTLP_TRACES_HEADERS="X-Api-Key=<FI_API_KEY>,X-Secret-Key=<FI_SECRET_KEY>,X-Project-Name=checkout-agent"
+OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=gzip
+```
+
+| Header detail | Behaviour |
+|---|---|
+| Whitespace | Trimmed. A blank value counts as no header. |
+| `FI-Project-Name` | Read as the same header. traceAI's Java and C# exporters send it. |
+| Values that disagree (repeated header, or both spellings) | `400`, gRPC `INVALID_ARGUMENT`. Checked only when a resource in the batch needs the header. |
+| Value that is not valid UTF-8 | `400`, gRPC `INVALID_ARGUMENT`. |
+| Spaces or commas in `OTEL_EXPORTER_OTLP_HEADERS` | Percent-encode them, for example `X-Project-Name=checkout%20agent`. The SDK decodes the value before sending it. |
+| Project type | There is no header for it. A project the header names that does not exist yet is created as an Observe project. |
+
 ### Ingestion request limits
 
-Future AGI Cloud enforces the same supported request limit for both OTLP transports:
+Future AGI Cloud enforces the same supported request limit for both OTLP transports. For gzip requests the limit applies to the size after decompression, and the compressed body may not be larger than the limit either:
 
 | Transport | Maximum request size | Error when exceeded |
 |---|---:|---|
