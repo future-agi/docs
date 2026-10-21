@@ -973,6 +973,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:goose
               // coding-agents:grok-build
               // coding-agents:hermes-agent
+              { title: 'Hermes Agent', href: '/docs/integrations/coding-agents/hermes-agent' },
               // coding-agents:kiro-cli
               // coding-agents:kiro-ide
               // coding-agents:oh-my-pi

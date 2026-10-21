@@ -1,0 +1,150 @@
+---
+title: "Hermes Agent session tracing with Future AGI"
+description: "Trace Hermes Agent turns in Future AGI with the traceAI-hermes-agent plugin: one trace per turn with model calls, tokens, tool calls and errors, grouped by Hermes session. Opt-in, and prompt, tool and error text stay off by default."
+---
+
+## About
+
+[Hermes Agent](https://hermes-agent.nousresearch.com/) runs plugins that observe its agent loop through [documented hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks). The Future AGI plugin, `traceAI-hermes-agent`, listens to those hooks and exports every Hermes turn to Future AGI as one trace:
+
+```
+hermes.turn            AGENT   one user message to final answer: session, platform, outcome
+├── chat gpt-6-luna    LLM     one provider attempt: model, provider, tokens, finish reason
+├── search_files       TOOL    one tool call: name, call id, duration, status
+├── read_file          TOOL
+└── chat gpt-6-luna    LLM
+```
+
+Every span carries the Hermes session id as `session.id`, so the turns of one `hermes chat` session (or one gateway conversation) group into one Future AGI session. A subagent's turn sits inside the trace of the turn that started it and carries the subagent's own session id.
+
+The plugin is opt-in: Hermes loads it only after `hermes plugins enable futureagi`. It reads nothing from disk; everything it exports comes from the hook payloads. It only observes: its callbacks never return a directive, and it does not register on `pre_tool_call`, which Hermes treats as a fail-closed policy hook.
+
+This is not the same as:
+
+- **Hermes' Langfuse plugin.** It sends turns to Langfuse's API, which Future AGI does not ingest. Pointing it at Future AGI does not work.
+- **Hermes' NeMo Relay OpenTelemetry export.** Hermes core drives [NeMo Relay](https://hermes-agent.nousresearch.com/docs/user-guide/features/built-in-plugins), whose OpenTelemetry exporter can also send OTLP to Future AGI (a `plugins.toml` endpoint with `header_env` for the two keys and `resource_attributes.project_name`). In our test (Hermes v2026.9.24, nemo-relay 0.8.4, `gen_ai` projection) it sent one trace per session with turn, model and tool spans, but the model spans carried the full prompt and response even with `enable_full_payloads = false`, no `session.id` was set, and its configuration is process-wide, so every profile of a gateway exports to one project. The plugin on this page exists for a content-off default, Future AGI sessions and per-profile keys. Relay's ATOF and ATIF sinks write local files and are not an export path.
+- **Hermes gateway monitoring** (`monitoring.export.otlp`). That is OTLP for gateway health and message delivery, not agent turns.
+- **Model-provider tracing** for whatever model Hermes calls. The spans here come from Hermes' own loop.
+
+| | |
+| --- | --- |
+| Tested with | Hermes Agent v2026.9.24 (0.21.5), Python 3.12, macOS; CLI sessions (`hermes chat`) with an OpenAI-compatible provider |
+| Hermes docs used | [Build a Hermes plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins), [Event hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks), [Built-in plugins](https://hermes-agent.nousresearch.com/docs/user-guide/features/built-in-plugins), read 2026-10-14 |
+| Plugin | [`traceAI-hermes-agent`](https://github.com/future-agi/traceAI/tree/main/python/frameworks/hermes-agent) |
+| Source | [examples/coding-agents/hermes-agent](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hermes-agent) |
+
+## 1. Install the plugin
+
+How you install the plugin depends on who manages the Python environment Hermes runs in.
+
+**Installed with Hermes' installer or Hermes Desktop** (Hermes manages its environment): install the directory plugin. `hermes plugins install` installs its Python dependency, `traceAI-hermes-agent`, into Hermes' own environment, and `hermes plugins enable` retries that install if it failed.
+
+```bash
+hermes plugins install future-agi/traceAI/python/frameworks/hermes-agent/hermes-plugin/futureagi
+hermes plugins enable futureagi
+```
+
+**A source checkout, container image or other environment you manage**: install the package into the Python that runs Hermes. It registers the plugin through Hermes' `hermes_agent.plugins` entry point.
+
+```bash
+/path/to/hermes/python -m pip install traceAI-hermes-agent
+hermes plugins enable futureagi
+```
+
+To try an unreleased change, install from a traceAI checkout instead: `/path/to/hermes/python -m pip install ./traceAI/python/frameworks/hermes-agent`.
+
+`hermes plugins list` shows `futureagi` as enabled. Plugins are per Hermes home: with profiles or a custom `HERMES_HOME`, enable it in each home you want traced.
+
+## 2. Add your Future AGI keys
+
+Put them in the Hermes home's `.env` (`~/.hermes/.env` by default), which Hermes loads at start, or in the environment Hermes runs in:
+
+```bash
+FI_API_KEY=your-futureagi-api-key
+FI_SECRET_KEY=your-futureagi-secret-key
+FI_PROJECT_NAME=hermes-agent
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | none | Required. Without them the plugin logs one warning and does nothing. |
+| `FI_PROJECT_NAME` | `hermes-agent` | Future AGI project. |
+| `FI_BASE_URL` | `https://api.futureagi.com` | For a self-hosted Future AGI. Spans go to `$FI_BASE_URL/tracer/v1/traces`. |
+| `FI_HERMES_CAPTURE_CONTENT` | off | `true` also exports prompt, response, tool and error text. See [Privacy](#privacy). |
+| `FI_HERMES_MAX_CHARS` | `8000` | Per-field cap on captured text. |
+
+In a multi-profile gateway (`gateway.multiplex_profiles`), each profile's turns use that profile's own `.env` values, read through Hermes' profile secret scope. A profile without keys is not traced; it never borrows another profile's keys or project.
+
+Restart Hermes, and its gateway if you run one, so the plugin and the keys are loaded.
+
+## 3. Run a session
+
+```bash
+hermes chat -q "List the files in this folder and read README.md"
+```
+
+Open **Observe** in Future AGI and select the project (`hermes-agent` above). The turn appears as a trace named **hermes.turn**. Spans are batched and flushed when Hermes exits, so a one-shot `hermes chat -q` shows up as soon as it returns; a long-running gateway sends them within a few seconds.
+
+`run_e2e.sh` in the examples folder does all of this in a temporary directory: a fresh Hermes checkout and virtualenv, its own `HERMES_HOME`, the plugin, and one turn. It never reads or changes your `~/.hermes` or a running gateway, and it deletes the keys file it writes when it exits. It requires `git` and `uv`. It installs `traceAI-hermes-agent` from PyPI; to test a traceAI checkout instead, set `PLUGIN_SPEC` to its `python/frameworks/hermes-agent` directory.
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+FI_API_KEY=... FI_SECRET_KEY=... \
+MODEL_BASE_URL=https://your-openai-compatible-endpoint/v1 MODEL_API_KEY=... MODEL_ID=... \
+  fi-docs/examples/coding-agents/hermes-agent/run_e2e.sh
+```
+
+## What is captured
+
+| Hermes hook | Span | Fields |
+| --- | --- | --- |
+| `pre_llm_call` | **hermes.turn** (`AGENT`) start | `session.id`, turn id, task id, platform (`cli`, `telegram`, ...), model, first-turn flag, parent session |
+| `pre_api_request` | **chat &lt;model&gt;** (`LLM`) start | `gen_ai.request.model`, `gen_ai.provider.name`, provider host (`server.address`), API mode, attempt and retry counts, message and tool counts, approximate input tokens |
+| `post_api_request` | **chat &lt;model&gt;** end | `gen_ai.response.model`, finish reason, `gen_ai.usage.input_tokens` (including cached), `output_tokens`, `total_tokens`, cache read and write tokens, reasoning tokens, time to first streamed chunk |
+| `api_request_error` | **chat &lt;model&gt;**, status `ERROR` | Hermes' error category (`overloaded`, `rate_limit`, `timeout`, ...) as `error.type` and status, the error class as `hermes.error_class`, HTTP status, retryable flag |
+| `post_tool_call` | span named after the tool (`TOOL`) | `gen_ai.tool.name`, `gen_ai.tool.call.id`, status, duration (the span is timed by Hermes' `duration_ms`); `ERROR` with Hermes' error type (`tool_error`, `tool_timeout`, ...) when Hermes reports `error`, `blocked`, `timeout` or `cancelled` |
+| `on_session_end` | **hermes.turn** end | completed, failed, interrupted, exit reason category (`text_response`, `max_iterations_reached`, `repeated_outer_errors`, ...); `ERROR` when the turn failed, otherwise `OK` |
+| `subagent_start` | | the child session's turn becomes a child of the parent turn |
+| `on_session_finalize`, process exit | | spans still open are closed (`hermes.unfinished`) and flushed |
+
+Each provider attempt is its own span. A retried request shows the failed attempt and the retry as two spans: the first attempt starts when Hermes started the request, a retry starts when its own attempt starts, so the two do not overlap and each span's duration and time to first chunk are that attempt's.
+
+## What is not available
+
+- **Cost.** Hermes passes token counts to the hooks, not its cost estimate. Future AGI computes cost from the model name only when it has pricing for that model.
+- **One trace per session.** Each top-level turn is its own trace, and the session id groups them. A subagent's turn sits inside its parent's trace and carries the subagent's session id, so one trace can hold two session ids.
+- **Tools that never finish.** Tool spans are built when Hermes reports the result (`post_tool_call`), so a tool still running when Hermes exits has no span. A tool you cancel with Ctrl+C is reported, with status `cancelled`.
+- **Gateway delivery, cron and kanban events.** They are not agent turns and are not traced.
+- **Auxiliary model calls** (titling, compression, vision, approvals). Hermes reports them on separate hooks that this plugin does not use.
+- **Streaming deltas.** The model span covers the whole attempt; time to first chunk is recorded, individual chunks are not.
+- **Gateway sessions were not run in our test.** The hooks are the same in the gateway, so turns from messaging platforms are traced the same way, with the platform name on the turn.
+
+## Privacy
+
+By default the plugin exports metadata only: session, turn and task ids, the platform, the model id and provider name, the provider's host (not the full URL), tool names and call ids, token, message and tool counts, durations, outcomes, and Hermes' error and exit-reason categories. For a self-hosted provider the host can be an internal hostname and the model id a local file name.
+
+- **Not exported by default:** the user message, the assistant's answer, conversation history, the request sent to the model, tool arguments, tool results, and all error text. That includes provider and tool error messages and the exception text Hermes puts into some exit reasons: `repeated_outer_errors(Error during API call #3: ...)` is exported as `repeated_outer_errors`. Error statuses carry Hermes' category, such as `rate_limit` or `tool_error`.
+- **Never read:** Hermes' session transcripts, `config.yaml`, memory, skills or other files under `~/.hermes`.
+
+To include content, add `FI_HERMES_CAPTURE_CONTENT=true` to `.env` and restart Hermes. Then:
+
+- the turn gets the user message as input and the final answer as output;
+- each model call gets the latest messages of the request as input (newest kept when over the cap; the system prompt is reported only by its size, `system_prompt_chars`) and the assistant text or requested tool calls as output;
+- each tool call gets its arguments and result, which can contain local file paths;
+- exit reasons and error statuses carry the full error text, which can contain local paths and provider responses.
+
+Each value is cut at `FI_HERMES_MAX_CHARS` characters.
+
+## Troubleshooting
+
+**No trace appears.**
+1. `hermes plugins list` must show `futureagi` as enabled in the Hermes home you are using (`HERMES_HOME`, profile).
+2. `HERMES_PLUGINS_DEBUG=1 hermes plugins list` shows whether the plugin was discovered and why it was skipped.
+3. Check `$HERMES_HOME/logs/agent.log` and `errors.log` (`~/.hermes/logs/` by default) for `traceAI-hermes-agent`: the plugin logs one warning when `FI_API_KEY` / `FI_SECRET_KEY` are missing, and setup failures.
+4. A gateway loads plugins at start: restart it after enabling the plugin or changing `.env`.
+
+**`ModuleNotFoundError: traceai_hermes_agent`.** The directory plugin was installed with `--no-deps`, or its dependency install failed. Re-run `hermes plugins enable futureagi` to retry it, or install `traceAI-hermes-agent` into Hermes' Python (see [step 1](#1-install-the-plugin)).
+
+**Hermes takes a few seconds to exit.** When Future AGI is unreachable, Hermes' exit and session teardown (`/new`) wait for the last export, then drop those spans: about 3 seconds with current OpenTelemetry releases, at most about 6 with older ones.
+
+**The turn is marked `hermes.interrupted` or `hermes.unfinished`.** You stopped the turn (Ctrl+C reports `interrupted`), or Hermes exited or tore the session down before reporting the end of the turn (`unfinished`). Either way the open spans are closed and sent.
