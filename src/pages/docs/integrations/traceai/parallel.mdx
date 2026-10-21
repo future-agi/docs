@@ -1,0 +1,132 @@
+---
+title: "Parallel Integration with Future AGI for Search and Extract Tracing"
+description: "Trace Parallel Search and Extract calls in Future AGI with the traceAI-parallel instrumentor for the parallel-web client."
+---
+
+## About
+
+`traceAI-parallel` wraps the official [`parallel-web`](https://pypi.org/project/parallel-web/) client so every `search` and `extract` call becomes a span in Future AGI. It covers Parallel **Search** and **Extract** only. Task runs (`task_run`), task groups, FindAll and Monitor are different Parallel products and are not traced by this integration.
+
+The package is Alpha. It is released from [future-agi/traceAI](https://github.com/future-agi/traceAI) (`python/frameworks/parallel`).
+
+## 1. Installation
+
+```bash
+pip install traceAI-parallel
+```
+
+The package accepts `parallel-web>=1.0.1,<2` and Python 3.10 to 3.13.
+
+## 2. Set environment variables
+
+```python
+import os
+
+os.environ["PARALLEL_API_KEY"] = "your-parallel-api-key"
+os.environ["FI_API_KEY"] = "your-futureagi-api-key"
+os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+```
+
+## 3. Register and instrument
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from parallel import Parallel
+from traceai_parallel import ParallelInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="parallel-search",
+)
+ParallelInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = Parallel()  # reads PARALLEL_API_KEY
+result = client.search(search_queries=["open telemetry retrieval"], mode="turbo")
+client.extract(urls=[result.results[0].url])
+```
+
+`search` and `extract` take keyword arguments only: `search_queries` for `search`, `urls` for `extract`. Call `register()` first so the instrumentor has a tracer provider. Under an active span (for example an agent span) the Parallel span is its child; otherwise it is a root trace.
+
+## What is captured
+
+`Parallel` and `AsyncParallel` calls each produce one span, including calls through `with_raw_response`, `with_streaming_response`, `copy()` and `with_options()`. Retries made by `parallel-web` inside one call stay in that one span.
+
+| Call | Span name | Span kind |
+|---|---|---|
+| `search` | `parallel.search` | `RETRIEVER` |
+| `extract` | `parallel.extract` | `TOOL` |
+
+| Attribute | Value |
+|---|---|
+| `parallel.mode` | The `mode` passed to `search`. Absent when not passed. |
+| `gen_ai.retrieval.query`, `input.value` | The search queries, joined with a newline, cut to about 1 KB. |
+| `parallel.query_count`, `parallel.url_count` | Number of queries or URLs passed. |
+| `parallel.result_count`, `parallel.failed_url_count` | Results returned, and requested URLs that could not be extracted (the call still succeeds). |
+| `parallel.search_id`, `parallel.extract_id`, `parallel.session_id` | Ids from the response. |
+| `parallel.usage.names`, `parallel.usage.counts` | Usage SKUs, only when the response has them. Never tokens or cost. |
+| `parallel.urls`, `parallel.objective` | Only with `instrument(capture_urls=True)` or `capture_objective=True`. |
+| `parallel.cancelled` | `true` when an async call was cancelled. |
+
+Response warnings become `parallel.warning` events. A Parallel error (for example HTTP 401 or 500) ends the span with status `ERROR` and the message `InternalServerError: Error code: 500 - ...`; your code still receives the exception unchanged.
+
+Not captured: excerpts, titles, result URLs, page text, model name, token counts and cost (Search and Extract do not return them). The Parallel API key is never recorded. Local file paths and traceback frames are never exported: `exception.stacktrace` holds the exception line only.
+
+## Privacy
+
+traceAI instrumentors follow the standard `TraceConfig`: the search queries are recorded by default. To turn them off, set `FI_HIDE_INPUTS=true` or pass a config:
+
+```python
+from fi_instrumentation import TraceConfig
+
+ParallelInstrumentor().instrument(
+    tracer_provider=trace_provider, config=TraceConfig(hide_inputs=True)
+)
+```
+
+With hidden inputs, `input.value` is `__REDACTED__`, the query, URL and objective attributes are dropped, and every verbatim copy of a query, URL or objective is removed from error and warning text. Counts, mode and ids stay. `FI_HIDE_OUTPUTS=true` drops warning messages. `pii_redaction` and `using_session`, `using_user`, `using_metadata` and `using_tags` also apply.
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| `parallel-web` | 1.3.5 (latest on 2026-10-16), 1.0.1 (oldest accepted) |
+| `traceAI-parallel` | 0.1.0 |
+| Python | 3.12 (end-to-end); 3.10 to 3.13 in the package test matrix |
+
+## Live vendor verification (2026-10-17)
+
+Run against the real Parallel API (`api.parallel.ai`, no base-URL override) with `parallel-web` 1.3.5, `traceAI-parallel` 0.1.0, Python 3.12, exporting to a local Future AGI deployment. Spend was a few cents (smallest calls).
+
+Trace `7f44a946-da8d-4b01-88a1-b206f6c9933e`:
+
+```text
+- [agent] research-agent
+  - [retriever] parallel.search     (mode=turbo, 10 results, search_id)
+  - [tool] parallel.extract         (2 URLs requested, 1 extracted, 1 failed, 1 warning)
+  - [retriever] parallel.search     status=ERROR: AuthenticationError 401 (bad key)
+```
+
+- Real response shapes matched the instrumentation; no code change was needed. `AsyncParallel.search` and `.extract` were also hit live and produced `parallel.search` (retriever) and `parallel.extract` (tool) spans.
+- The failed call has `ERROR` status with one `exception` event holding the exception line only (no frames, no local paths).
+- With `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`, a unique marker query was absent from every stored column and `input` was `__REDACTED__`. With defaults the query appeared as documented. The API key, local paths, usernames, hostnames and emails were absent in both modes.
+
+Not covered live: the Task API, Monitor and FindAll (not instrumented), `with_raw_response` and `with_streaming_response` (covered by the package tests only).
+
+## Troubleshooting
+
+- **No spans appear.** Check `FI_API_KEY` and `FI_SECRET_KEY`, and that `instrument()` runs before the first Parallel call.
+- **Calls through `with_raw_response` are not traced.** `parallel-web` copies the methods the first time that attribute is read. Read it after `instrument()`.
+- **`instrument()` logs an error and wraps nothing.** The installed `parallel-web` is outside `>=1.0.1,<2`.
+- **`ParallelError` when creating `Parallel()`.** The client raises when no API key is set, before any traced call, so no span is recorded.
+
+## Limitations
+
+- Only the Python client. Task runs, task groups, FindAll and Monitor are not traced.
+- Only verbatim copies of the key, query, URLs or objective are removed from error text; escaped or truncated copies are not.
+- With `with_streaming_response`, the span ends when the response headers arrive, not after the body is read.
+
+## Difference from related integrations
+
+- [MCP](/docs/integrations/traceai/mcp) traces Model Context Protocol servers and clients. `traceAI-parallel` traces direct calls to the Parallel API, whether or not an MCP server is involved.
+- Parallel as a tool inside an agent framework (LangChain, OpenAI Agents and others) is traced by that framework's instrumentor as a tool call. `traceAI-parallel` adds the span for the Parallel request itself, nested under it.
