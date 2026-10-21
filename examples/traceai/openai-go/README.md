@@ -24,12 +24,7 @@ export MODEL=gpt-4.1-mini                         # optional
 ./run_e2e.sh
 ```
 
-`TRACEAI_GO_OPENAI_REF` picks the traceAI module version (default `latest`). Until traceAI PR #260 is merged, set it
-to the PR commit and fetch it straight from GitHub:
-
-```bash
-GOPRIVATE=github.com/future-agi/traceAI TRACEAI_GO_OPENAI_REF=7e3a28b8f184 ./run_e2e.sh
-```
+`TRACEAI_GO_OPENAI_REF` picks the traceAI module version (default `latest`). Set the ref to a release version or a commit to pin the module.
 
 Then open the project in Future AGI Observe. Search for the printed `MARK_DEFAULT` value: it is in the inputs and
 outputs of the first run. Search for `MARK_HIDDEN`: it is nowhere, because the third run hides content.
