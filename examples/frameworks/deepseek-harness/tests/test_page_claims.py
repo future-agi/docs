@@ -1,5 +1,5 @@
 """Offline: the claims on the docs page must match the recorded spike fixture. Run: python3 -I tests/test_page_claims.py"""
-import json, pathlib, re, sys, unittest
+import getpass, json, pathlib, re, socket, sys, unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 FIX = json.loads((HERE / "fixtures" / "spike_observed.json").read_text())
@@ -47,7 +47,9 @@ class PageClaims(unittest.TestCase):
             self.assertIn(n, TEXT)
 
     def test_no_secrets_or_local_names(self):
-        for bad in ("nikhilpareek", "/Users/", "Nikhils-MacBook", "X-Secret-Key="):
+        # The user and host names of the machine running the test, so a fixture recorded on it can't leak them.
+        local = {getpass.getuser(), socket.gethostname().split(".")[0]} - {""}
+        for bad in ("/Users/", "/home/", "X-Secret-Key=", *local):
             self.assertNotIn(bad, TEXT)
             self.assertNotIn(bad, json.dumps(FIX))
 
