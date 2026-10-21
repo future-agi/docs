@@ -1,0 +1,230 @@
+---
+title: "Anthropic Go SDK tracing with Future AGI"
+description: "Trace anthropic-sdk-go Messages calls with the traceAI Go middleware: one LLM span per call, streaming included, with model, tokens, tool calls and session. Content is captured by default and turned off with the FI_HIDE_* variables."
+---
+
+## About
+
+[anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) is Anthropic's official Go SDK. The traceAI module `github.com/future-agi/traceAI/go/anthropic` is a client middleware for it. You add it once, with `option.WithMiddleware`, when you create the client, and every `Messages.New` and `Messages.NewStreaming` call made with that client becomes one LLM span in Future AGI:
+
+```
+weather-agent                  AGENT  your code (optional)
+├── anthropic.messages.create  LLM    model, tokens, request and response, tool call
+├── execute_tool get_weather   TOOL   your code (optional)
+└── anthropic.messages.create  LLM    streamed answer: still one span
+```
+
+The module only uses the OpenTelemetry API. You export the spans with the standard OpenTelemetry OTLP/HTTP exporter, which sends them to Future AGI with your keys.
+
+<Warning>
+**Alpha, verified with real Claude models through an Anthropic-compatible proxy.** The module was tested end to end with anthropic-sdk-go v1.82.0 against a Future AGI collector. The SDK talked to a local Anthropic-compatible proxy (CLIProxy) that answered with real Claude model responses (`claude-haiku-4-5-20251001`, and `claude-haiku-5-5` in the [2026-10-19 run](#live-verification-2026-10-19-real-claude-via-an-anthropic-compatible-proxy)) and, in one run, with a non-Anthropic model through its Messages translation. It has not yet been run against `api.anthropic.com` with an Anthropic API key. The middleware does not read or change the base URL or the API key, so only the endpoint differs.
+</Warning>
+
+This page is not the same as:
+
+- **[Anthropic (Python and TypeScript)](/docs/integrations/traceai/anthropic)** and **[Anthropic (Java)](/docs/integrations/traceai/java/anthropic)**. Those instrument the other official SDKs. This module is for Go only and does not change them.
+- **Claude Agent SDK, Claude Code and Claude Managed Agents**. Those are agent products with their own telemetry. This page covers plain Messages API calls from a Go program.
+
+| | |
+| --- | --- |
+| Tested with | anthropic-sdk-go **v1.82.0** (latest on 2026-10-16), Go 1.24.3 and 1.27.2, OpenTelemetry Go v1.33.0 and v1.47.0 |
+| Requires | anthropic-sdk-go v1.82.0 or later (`go get` raises an older version), Go 1.24 or later |
+| Status | Alpha. Not yet run against `api.anthropic.com` (see the warning) |
+| Source | [go/anthropic](https://github.com/future-agi/traceAI/tree/main/go/anthropic) in traceAI |
+
+## 1. Install
+
+```bash
+go get github.com/future-agi/traceAI/go/anthropic@latest
+go get github.com/anthropics/anthropic-sdk-go@latest
+go get go.opentelemetry.io/otel/sdk go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+```
+
+## 2. Set environment variables
+
+```bash
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+```
+
+anthropic-sdk-go reads `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` itself. To send calls to a gateway or an Anthropic-compatible proxy, set `ANTHROPIC_BASE_URL` (for example `export ANTHROPIC_BASE_URL="http://127.0.0.1:8317"`), or pass `option.WithBaseURL(...)` to `anthropic.NewClient`. The Future AGI keys go only to the trace exporter, never on a request to Anthropic.
+
+## 3. Export to Future AGI and add the middleware
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	traceaianthropic "github.com/future-agi/traceAI/go/anthropic"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Future AGI needs both keys as headers and project_name as a resource attribute.
+	exporter, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL("https://api.futureagi.com/tracer/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			"X-Api-Key":    os.Getenv("FI_API_KEY"),
+			"X-Secret-Key": os.Getenv("FI_SECRET_KEY"),
+		}),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewSchemaless(
+			attribute.String("project_name", "my-chatbot"),
+			attribute.String("project_type", "observe"),
+			attribute.String("service.name", "my-chatbot"),
+		)),
+	)
+	// Flush the last batch before the process exits.
+	defer tp.Shutdown(context.Background())
+	otel.SetTracerProvider(tp)
+
+	// Add the middleware once, on the client.
+	client := anthropic.NewClient(option.WithMiddleware(traceaianthropic.Middleware()))
+
+	// Optional: group calls into a session and tag your end user.
+	ctx = traceaianthropic.ContextWithSessionID(ctx, "session-123")
+	ctx = traceaianthropic.ContextWithUserID(ctx, "user-42")
+
+	msg, err := client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeSonnet5_5,
+		MaxTokens: 256,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("What is the capital of France?")),
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(msg.Content[0].Text)
+}
+```
+
+For a self-hosted Future AGI, replace `https://api.futureagi.com` with your instance's base URL. Keep the path `/tracer/v1/traces`.
+
+`defer tp.Shutdown(...)` matters: the batch processor exports in the background, and a short program that exits without shutting the provider down sends nothing. If your program calls `log.Fatal` or `os.Exit`, deferred calls do not run, so return from a function that holds the `defer` first.
+
+## 4. Run a complete example
+
+[`go/anthropic/example`](https://github.com/future-agi/traceAI/tree/main/go/anthropic/example) is a weather agent with one tool. It makes a call that asks for the tool, runs the tool in a TOOL span of its own, and makes a second call (streamed with `-stream`). `-fail` adds one call the API rejects, so you see an error span.
+
+```bash
+git clone https://github.com/future-agi/traceAI.git
+cd traceAI/go/anthropic
+export FI_PROJECT_NAME="my-chatbot"
+go run ./example -stream -fail -session demo-1
+```
+
+The example reads the same environment variables as step 2, plus `FI_PROJECT_NAME` and, for a self-hosted Future AGI, `FI_BASE_URL`. Its default model is `claude-sonnet-5-5`; pass `-model` to use another.
+
+Open the project in **Observe > Tracing**. The run is one trace with the agent span, two LLM spans and the tool span. The rejected call is a separate trace with status ERROR.
+
+## What is captured
+
+Each Messages call is one span named `anthropic.messages.create`, type LLM.
+
+| Attribute | Value |
+| --- | --- |
+| `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id` | from the request and the response |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | token counts from the response, or from a stream's final event |
+| `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens` | prompt-cache counts, when the response has them |
+| `gen_ai.response.finish_reasons` | the stop reason, such as `end_turn` or `tool_use` |
+| `input.value`, `output.value` | the request body and the response message, as JSON. A stream's message is assembled from its events. These fill the span's Input and Output in Observe |
+| `gen_ai.input.messages`, `gen_ai.system_instructions`, `gen_ai.output.messages` | the conversation, including `tool_call` parts (tool name, call id, arguments) and `tool_call_response` parts |
+| `gen_ai.tool.definitions`, `gen_ai.request.parameters` | the tools you offered, and settings such as `max_tokens`, `temperature`, `stream` and `tool_choice` |
+| `session.id`, `user.id` | only when you set them with `ContextWithSessionID` and `ContextWithUserID`. Future AGI groups traces by [session](/docs/observe/features/session) and [user](/docs/observe/features/users) |
+| `error.type`, status ERROR | on an API error (the error type, such as `rate_limit_error`), a stream error event, a stream that ends early or a canceled context |
+
+`gen_ai.usage.input_tokens` counts every input token, cached or not: Anthropic's `input_tokens` plus its cache read and cache write tokens, as the [OpenTelemetry GenAI conventions for Anthropic](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/anthropic.md) define it. The uncached count is `input_tokens` minus the two cache counts. In a test with a 17,102-token cached system prompt, the span recorded 17,115 input tokens with `cache_write.input_tokens` 17,102 on the first call and `cache_read.input_tokens` 17,102 on the second.
+
+A stream is one span: no span is opened per event, and the span ends when the stream ends, fails, is closed or its context is canceled. The model's tool calls are recorded on the LLM span. The middleware does not trace your tool code, because it runs in your program and not in the API call; open a span around it yourself, as the example does.
+
+### The SDK's own span
+
+From v1.81.0, anthropic-sdk-go opens a span for each API call itself, through the tracer provider you register. When that span is recording, the middleware adds the attributes above to it, so a call is still one span. When you turn the SDK's spans off (`option.WithoutOpenTelemetry()` or `ANTHROPIC_OPEN_TELEMETRY=false`), the middleware opens the span itself, with the same name and attributes.
+
+| | SDK span on (default) | SDK span off |
+| --- | --- | --- |
+| Spans per call | 1 (the SDK's, enriched) | 1 per HTTP attempt (a retry is a second span) |
+| Error status message | empty, `error.type` set | the error type |
+| Request URL | recorded by the SDK (`url.full`, `server.address`) | not recorded |
+| Tracer provider | the one registered with `otel.SetTracerProvider`, or the SDK's `option.WithTracerProvider` | the registered one, or `traceaianthropic.WithTracerProvider` |
+
+## Privacy
+
+Content is captured by default, as in every traceAI instrumentor. Turn it off with the same variables traceAI uses in Python and TypeScript ([TraceConfig](/docs/sdk/tracing/trace-config)):
+
+| Variable | Effect |
+| --- | --- |
+| `FI_HIDE_INPUTS=true` | `input.value` becomes `__REDACTED__`. No input messages, system instructions, tool definitions or stop sequences |
+| `FI_HIDE_OUTPUTS=true` | `output.value` becomes `__REDACTED__`. No output messages |
+| `FI_HIDE_INPUT_MESSAGES=true`, `FI_HIDE_OUTPUT_MESSAGES=true` | no `gen_ai.input.messages` and `gen_ai.system_instructions`, or no `gen_ai.output.messages` |
+| `FI_HIDE_INPUT_TEXT=true`, `FI_HIDE_OUTPUT_TEXT=true` | the text of each message part becomes `__REDACTED__` |
+| `FI_HIDE_INPUT_IMAGES=true` | image data and image parts are left out |
+| `FI_BASE64_IMAGE_MAX_LENGTH` | the longest base64 image kept (default 32000) |
+| `FI_HIDE_LLM_INVOCATION_PARAMETERS=true` | no `gen_ai.request.parameters` |
+
+The variables are read when you call `Middleware()`. To set them in code, pass `traceaianthropic.WithTraceConfig(traceaianthropic.TraceConfig{HideInputs: true, HideOutputs: true})`. Model, token counts, finish reason and error type stay in every mode. With `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS` set, a unique marker sent in prompts, tool arguments and answers was absent from every stored column of the test project, while the same marker was present in runs with the default setting.
+
+Never exported, in any mode: the Anthropic API key and other request headers, the Future AGI keys, the `authorization_token` of an MCP server in a request, error message text in the span status, and stack traces.
+
+<Warning>
+The `FI_HIDE_*` variables control what traceAI adds. If you also set `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE=content` (or `option.WithOpenTelemetryTracesContentMode`), anthropic-sdk-go puts request and response content on its own span, and `FI_HIDE_*` does not remove it. Leave that setting unset. The middleware logs a warning when both are set.
+</Warning>
+
+The SDK's own span records the API endpoint (`url.full`, `server.address`). For `api.anthropic.com` that is a public host name. If `ANTHROPIC_BASE_URL` points at an internal gateway, its host name is exported; turn the SDK's span off to avoid that.
+
+## Live verification (2026-10-19, real Claude via an Anthropic-compatible proxy)
+
+These calls went through a local Anthropic-compatible proxy (CLIProxy), not directly to `api.anthropic.com`. The proxy serves the Anthropic Messages API backed by real Claude models, so the model answers are real, but the endpoint is the proxy's, and it has not been run against `api.anthropic.com` with an Anthropic API key. The SDK was pointed at the proxy exactly as in step 2: `ANTHROPIC_BASE_URL` set to the proxy and `ANTHROPIC_API_KEY` set to the proxy's key. The middleware does not read either.
+
+- Setup: anthropic-sdk-go v1.82.0, Go 1.24.3, OpenTelemetry Go v1.33.0, model `claude-haiku-5-5`, local Future AGI collector, `go run ./example -stream -fail`.
+- Tool use: a trace is the agent span, an LLM span that asks for `get_weather`, the TOOL span and an LLM span with the answer. The streamed answer is one span with its token counts (483 input, 26 output).
+- Failure: a call with a model id that does not exist is an LLM span with status ERROR and no content beyond the request.
+- Stored spans: type `llm`, `provider` anthropic, the model, input and output tokens (403/50 for the tool-asking call), and Input and Output filled. `fi_verify` passed.
+- Privacy: with `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`, a unique marker (also sent as an email address and a file path) was absent from every stored column of the project, including resource attributes and span events. With the defaults, the marker was present in the Input and Output columns. The Future AGI keys, the proxy key, host name, user name and home directory were never stored. The SDK's own span still stored the proxy's address (`server.address`, `url.full`), as described under Privacy.
+
+## Limitations
+
+- Not yet run against `api.anthropic.com` with an Anthropic API key (see the warning at the top).
+- Amazon Bedrock and Google Vertex clients use the same middleware but are not tested. A Bedrock streaming response (binary event stream) is passed through without LLM attributes.
+- `count_tokens`, message batches, files and models calls get no LLM attributes.
+- Cost in Observe is computed from `gen_ai.usage.input_tokens`, which includes cached tokens, so prompt-cache discounts are not reflected.
+- The module needs anthropic-sdk-go v1.82.0 or later. Older SDK versions are not supported.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| No traces | The program exited before the exporter flushed. Make sure `tp.Shutdown` runs (it does not after `log.Fatal` or `os.Exit`). Check that both `X-Api-Key` and `X-Secret-Key` are set and that `project_name` is a resource attribute, not a span attribute. |
+| Spans arrive with empty Input and Output | The middleware is not on the client: these are anthropic-sdk-go's own spans. Pass `option.WithMiddleware(traceaianthropic.Middleware())` to `anthropic.NewClient`. |
+| Two spans per call | The SDK's span is created by a tracer provider that is not the OpenTelemetry Go SDK, so the middleware cannot recognize it and opens its own. Use the OpenTelemetry Go SDK provider, or turn the SDK's spans off with `option.WithoutOpenTelemetry()`. |
+| A streamed call never shows up | The span ends when the stream is read to the end or closed. Read the stream to the end, or `defer stream.Close()`. |
+| Content still visible with `FI_HIDE_*` set | Check `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE` (see Privacy), and that the variables are set before `Middleware()` is called. Values must be `true` or `false`. |
+| Exporter errors or traces are dropped | Send uncompressed OTLP/HTTP protobuf: keep `WithCompression(otlptracehttp.NoCompression)` and the full `/tracer/v1/traces` path. |
+
+## Next Steps
+
+- [TraceConfig and the FI_HIDE_* variables](/docs/sdk/tracing/trace-config)
+- [Sessions](/docs/observe/features/session)
+- [Anthropic (Python and TypeScript)](/docs/integrations/traceai/anthropic)
