@@ -25,12 +25,7 @@ export OPENAI_API_KEY=... MODEL=gpt-4.1-mini      # OPENAI_BASE_URL optional
 ```
 
 `TRACEAI_GO_EINO_REF` picks the traceAI module version (default `latest`), `EINO_VERSION` the Eino version (default
-`v0.9.21`) and `EINO_EXT_OPENAI_VERSION` the eino-ext OpenAI model version (default `v0.1.13`). Until traceAI PR
-#265 is merged, set the ref to the PR commit and fetch it straight from GitHub:
-
-```bash
-GOPRIVATE=github.com/future-agi/traceAI TRACEAI_GO_EINO_REF=f5c35b610572 ./run_e2e.sh
-```
+`v0.9.21`) and `EINO_EXT_OPENAI_VERSION` the eino-ext OpenAI model version (default `v0.1.13`). Set the ref to a release version or a commit to pin the module.
 
 Then open the project in Future AGI Observe. Search for the printed `MARK_DEFAULT` value: it is in the inputs of the
 first run. Search for `MARK_HIDDEN`: it is nowhere, because the third run hides content.
