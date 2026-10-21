@@ -1,0 +1,191 @@
+---
+title: "Pi Coding Agent SDK tracing with Future AGI"
+description: "Trace Pi Coding Agent SDK sessions (createAgentSession) in Future AGI with @traceai/pi-coding-agent: one trace per agent run, with turns, model calls, tokens, tool calls, compaction, and errors. Prompt, code, and error text stay off by default."
+---
+
+## About
+
+The [Pi Coding Agent SDK](https://pi.dev/docs/latest/sdk) embeds the Pi coding agent in a Node.js process: `createAgentSession()` returns an `AgentSession` that you prompt from your own code, and `session.subscribe()` streams its run, turn, message, and tool events. The `@traceai/pi-coding-agent` package subscribes to those events and exports them to Future AGI, so every `session.prompt()` shows up as one trace:
+
+```
+invoke_agent pi                one agent run (session.prompt), session.id = Pi session id
+├── pi.turn                    one model response and the tools it called
+│   ├── chat your-model-id     model call: model, provider, tokens, cost, finish reason
+│   └── execute_tool ls        tool call: name, call id, duration, error flag
+├── pi.turn
+│   ├── chat your-model-id
+│   └── execute_tool read
+├── pi.turn
+│   └── chat your-model-id     final answer
+└── pi.compaction              only when Pi compacts the context during the run
+```
+
+This is not the same as:
+
+- **Pi, the command-line app** (`pi`). Interactive Pi sessions are traced with a Pi extension, not with this package. See the Pi page in this section.
+- **Oh My Pi** (`omp`, the omp.sh fork). It has its own hook API and its own page.
+- **Model-provider tracing.** `@traceai/openai` or `@traceai/anthropic` trace provider SDK calls. Pi makes its model calls itself; a provider instrumentor in the same process can add duplicate model spans if it instruments the `openai` or `@anthropic-ai/sdk` client that Pi loads.
+
+<Note>
+**Installed the Pi extension too? Avoid double traces.** If the Pi page's extension (`futureagi-otlp.ts`) is in `~/.pi/agent/extensions/` (or `$PI_CODING_AGENT_DIR/extensions/`) or in the project's `.pi/extensions/`, `createAgentSession()` discovers it with its default resource loader, and an SDK session that calls `session.bindExtensions()` (as `AgentSessionRuntime` apps and MCP setups do) starts it. Each prompt is then traced twice: once by this package and once by the extension, with duplicate model spans and tokens. Use one or the other for a given process, or create SDK sessions with a resource loader that leaves the extension out, as shown in [Troubleshooting](#troubleshooting).
+</Note>
+
+| | |
+| --- | --- |
+| Tested with | `@earendil-works/pi-coding-agent` 1.2.0, Node 26, `@traceai/pi-coding-agent` 0.1.0 |
+| Pi versions | 0.80.5 and later, including 1.x: a run ends when Pi reports it settled (`agent_settled`). 0.75.4 to 0.80.3 have no `agent_settled`: a run ends at the first `agent_end` that does not announce a retry, so a run Pi continues after that point (overflow-compaction recovery, queued messages) is split into two traces, and a compaction after that `agent_end` is its own trace. A run whose automatic retry you cancel during its backoff (`session.abort()` or `abortRetry()`) ends at that cancellation, with the failed call's status. Before 0.75.4, each automatic retry is also its own trace. |
+| Pi docs used | [SDK](https://pi.dev/docs/latest/sdk), [Models](https://pi.dev/docs/latest/models), `AgentSessionEvent` and `DefaultResourceLoaderOptions` in the 1.2.0 type declarations, the 0.80.x changelog, read 2026-10-15 |
+| Requires | Node.js 22.19 or newer (Pi's own requirement) |
+| Source | [`@traceai/pi-coding-agent`](https://github.com/future-agi/traceAI/tree/main/typescript/packages/traceai_pi_coding_agent) in traceAI ([npm](https://www.npmjs.com/package/@traceai/pi-coding-agent)), [examples/coding-agents/pi-sdk](https://github.com/future-agi/docs/tree/main/examples/coding-agents/pi-sdk) |
+
+<Note>
+Pi moved from the `@mariozechner/*` npm scope to `@earendil-works/*` at version 0.74.0. Install `@earendil-works/pi-coding-agent`. The tracing package reads the session object by shape and does not depend on either scope, but every `@mariozechner/*` release predates 0.75.4 (see Pi versions above).
+</Note>
+
+## 1. Install
+
+```bash
+npm install @traceai/pi-coding-agent @traceai/fi-core @earendil-works/pi-coding-agent
+```
+
+## 2. Add your Future AGI keys
+
+```bash .env
+FI_API_KEY=your-futureagi-api-key
+FI_SECRET_KEY=your-futureagi-secret-key
+FI_PROJECT_NAME=my-pi-agent
+```
+
+`@traceai/fi-core` reads these from the process environment and sends the keys as the `X-Api-Key` / `X-Secret-Key` headers. They are never written onto spans. Node does not read `.env` files by itself: export the variables in your shell, or start the app with `node --env-file=.env app.mjs`. For a [self-hosted Future AGI](/docs/self-hosting), also set `FI_BASE_URL` (traces go to `$FI_BASE_URL/tracer/v1/traces`), for example `http://localhost:4318`.
+
+## 3. Trace your sessions
+
+The Pi SDK is ESM-only, so its exports cannot be patched in place. Wrap `createAgentSession` once and create sessions through the wrapper:
+
+```typescript
+import { register, ProjectType } from "@traceai/fi-core";
+import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { PiCodingAgentInstrumentation } from "@traceai/pi-coding-agent";
+
+const tracerProvider = register({ projectType: ProjectType.OBSERVE });
+const instrumentation = new PiCodingAgentInstrumentation({ tracerProvider });
+const createTracedSession = instrumentation.wrapCreateAgentSession(createAgentSession);
+
+const { session } = await createTracedSession({ sessionManager: SessionManager.inMemory() });
+try {
+  await session.prompt("List the files in this folder and read README.md");
+} finally {
+  session.dispose();               // ends any span still open
+  await tracerProvider.shutdown(); // flush before the process exits
+}
+```
+
+If something else creates the session (for example an `AgentSessionRuntime`), trace it directly before you prompt it:
+
+```typescript
+const stop = instrumentation.instrumentSession(session); // stop() ends tracing for that session
+```
+
+A session is traced by one instrumentation at a time: a second `instrumentSession()` call for the same session returns the first `stop` function. After `stop()`, calling it again traces the session again. An `AgentSessionRuntime` creates a new `AgentSession` on new, resume, fork, and import. Call `instrumentSession(runtime.session)` again after each replacement, as Pi's docs require for any subscription.
+
+The model and credentials come from Pi as usual: `~/.pi/agent/models.json` and `auth.json`, or `PI_CODING_AGENT_DIR`. The tracing does not change which endpoint Pi calls.
+
+## 4. Run it
+
+A runnable copy is in [examples/coding-agents/pi-sdk](https://github.com/future-agi/docs/tree/main/examples/coding-agents/pi-sdk). `run_e2e.sh` creates an isolated Pi agent directory and a throwaway project, then runs one prompt that uses the `ls` and `read` tools. The session only gets the `read` and `ls` tools.
+
+First tell Pi which model to use: edit `models.example.json` (it defines a placeholder OpenAI-compatible gateway, `https://llm-gateway.example.com/v1`, with model `your-model-id`) to your endpoint and model id, or point `PI_MODELS_JSON` at your own Pi `models.json`. Then run it with the provider and model names from that file:
+
+```bash
+FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=pi-sdk-e2e \
+PI_PROVIDER=my-gateway PI_MODEL=your-model-id MY_GATEWAY_API_KEY=... \
+examples/coding-agents/pi-sdk/run_e2e.sh
+```
+
+The script prints the answer and the Pi session id, and exits non-zero when the model call failed or was aborted.
+
+Open the project in **Observe**. Each run is one trace; all runs of a session share the same `session.id` and group under **Sessions**.
+
+## What is captured
+
+| Pi SDK event | Future AGI span | Fields |
+| --- | --- | --- |
+| `agent_start` .. `agent_settled` (Pi before 0.80.5: the first `agent_end` that does not announce a retry, or a cancelled retry) | **invoke_agent pi** (`AGENT`) | `session.id`, `gen_ai.conversation.id`; run totals: `pi.agent.attempts` (agent loops in the run: the first, each automatic retry, and each continuation), `pi.agent.retry_count`, turn, model-call and tool-call counts, `pi.agent.usage.*`, `pi.agent.cost.total`; retry events. `pi.session.name` only when you opt in to inputs |
+| `turn_start` .. `turn_end` | **pi.turn** (`CHAIN`) | turn index, stop reason, tool-result count |
+| assistant `message_start` .. `message_end` | **chat &lt;model&gt;** (`LLM`) | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.provider.name`, `pi.api`, `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` / `cache_read_tokens` / `cache_write_tokens`, `gen_ai.cost.total` when Pi priced the call, `gen_ai.response.finish_reasons` (Pi's stop reason, with `toolUse` reported as `tool_calls`) and `pi.stop_reason`, names of the tools it called. Start and end come from the message's own request timestamp and duration |
+| `tool_execution_start` .. `tool_execution_end` | **execute_tool &lt;tool&gt;** (`TOOL`) | `gen_ai.tool.name`, `gen_ai.tool.call.id`, duration, `pi.tool.is_error`. A tool called by another tool (`parentToolCallId`) nests under the calling tool |
+| `compaction_start` .. `compaction_end` | **pi.compaction** (`CHAIN`) | `pi.compaction.reason` (`manual`, `threshold`, `overflow`), tokens before and estimated after, and the summarization call's `gen_ai.usage.*` and cost. Inside a run it is a child of the run; `session.compact()` or the check Pi runs before a prompt makes its own one-span trace in the same session |
+
+Input tokens follow the OpenTelemetry convention and include cached tokens. Pi's own `usage.input` excludes cache reads and writes, so it is kept separately as `pi.usage.uncached_input_tokens`. Run totals use `pi.agent.*` keys, not `gen_ai.usage.*`, so a trace's tokens are not counted twice.
+
+Errors:
+
+- A model call that ends with `stopReason` `error` or `aborted` is `ERROR`, and so is its turn. By default the status message holds only the stop reason, the HTTP status, and the provider's error type or, when there is none, the error's class name, for example `error: HTTP 400 invalid_request_error` or `error: TypeError`, and `error.type` holds that type or class name. The provider's own error text is exported only when you opt in to outputs (see Privacy).
+- A run that ends aborted, or whose last model call failed, is `ERROR` with the same status. When Pi retries a failed call and the retry succeeds, the run is `OK` and the failed call keeps its own `ERROR` span.
+- A tool result with `isError` is `ERROR`, with the status `tool reported an error (result hidden)` unless you opt in to outputs.
+- A failed compaction is `ERROR` with `compaction failed`.
+- Disposing the session mid-run ends the open spans with `pi.incomplete=true`.
+
+## What is not available
+
+- **The model request payload.** Session events do not include the transcript Pi sends on each call, so model spans carry no input messages. The user prompt is on the run span when you opt in to content.
+- **Streaming detail.** No time to first token and no per-delta events; `message_update` deltas are not traced.
+- **Cost for custom models.** Models you add in `models.json` without prices report a cost of 0, and no cost attribute is written.
+- **The compaction model.** `compaction_end` reports the summarization call's tokens but not which model made it, so `pi.compaction` has no model attribute.
+- **The system prompt.** Never exported, even with content on.
+- **Extension-only events.** `before_provider_request`, `before_provider_headers`, and other extension hooks are not part of `session.subscribe()` and are not used.
+
+## Privacy
+
+By default only structure and metadata leave your process: session id, model, provider, token counts and cost, finish reasons, tool names and call ids, durations, counts, compaction reason and token counts, and statuses. An error status carries only the stop reason, HTTP status, and provider error type or error class name.
+
+- **Not exported by default:** the user prompt, tool arguments, tool results (file contents, command output), assistant text, tool-call arguments, the session name, the compaction summary, and error text: the provider's error message, tool error text, and compaction error text. Some gateways echo request content or account details in their error messages, which is why they stay off.
+- **Never exported:** the system prompt. Pi's working directory is never added as an attribute, but with content on, tool arguments, tool results, and error text contain absolute file paths, which usually include your username.
+
+To include content, opt in with either the instrumentation options or environment variables:
+
+```typescript
+new PiCodingAgentInstrumentation({ tracerProvider, traceConfig: { hideInputs: false, hideOutputs: false } });
+```
+
+```bash
+FI_HIDE_INPUTS=false    # prompt (run span input), tool arguments, tool-call arguments, session name
+FI_HIDE_OUTPUTS=false   # answers (model and run span output), tool results, compaction summary, error text (provider errors up to 1,000 characters)
+```
+
+Only `false` (any case, surrounding spaces ignored) turns capture on; any other value keeps content hidden. An explicit `traceConfig` value wins over the environment. Each value is cut at 16,384 characters (`maxContentLength`).
+
+## Troubleshooting
+
+**`register()` throws `FI_PROJECT_NAME is not set`.** Set `FI_PROJECT_NAME` or pass `projectName`. If you keep the variables in a `.env` file, load it (`node --env-file=.env app.mjs`).
+
+**No trace appears.**
+1. Both keys must be set (`FI_API_KEY`, `FI_SECRET_KEY`), and `FI_BASE_URL` must point at your collector when you self-host.
+2. A short script must `await tracerProvider.shutdown()` before it exits, or the last spans are lost.
+3. The session must be traced before `prompt()`: create it through the wrapper, or call `instrumentSession()` first.
+
+**Traces stop after `/new`, `/resume`, or a fork.** An `AgentSessionRuntime` replaced the session object. Call `instrumentSession(runtime.session)` again.
+
+**The run span is not under my request span.** The run is parented to the active span only when your app registered an OpenTelemetry context manager (for example `AsyncLocalStorageContextManager`); otherwise each run starts its own trace.
+
+**Every prompt appears as two traces.** One trace comes from this package (instrumentation scope `@traceai/pi-coding-agent`, root `invoke_agent pi`) and one from the Pi extension (scope `futureagi.pi`, root `pi.session`). The extension is installed in `~/.pi/agent/extensions/`, `$PI_CODING_AGENT_DIR/extensions/`, or the project's `.pi/extensions/`, and your app calls `session.bindExtensions()`. Remove the extension for this process, or give `createAgentSession()` a `DefaultResourceLoader` that leaves it out:
+
+```typescript
+import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
+
+const resourceLoader = new DefaultResourceLoader({
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
+  // Drop only the Future AGI Pi extension; `noExtensions: true` drops every discovered extension.
+  extensionsOverride: (base) => ({
+    ...base,
+    extensions: base.extensions.filter((extension) => !extension.path.endsWith("futureagi-otlp.ts")),
+  }),
+});
+await resourceLoader.reload();
+const { session } = await createTracedSession({ resourceLoader, sessionManager: SessionManager.inMemory() });
+```
+
+**Every model call appears twice.** A provider instrumentor (`@traceai/openai`, `@traceai/anthropic`) in the same process can add a second model span if it instruments the `openai` or `@anthropic-ai/sdk` client that Pi loads. Remove it, or accept both.
+
+**Runs merge or split.** With Pi older than 0.80.5 there is no `agent_settled`, so a run ends at `agent_end`; see Pi versions at the top of the page. Upgrade Pi for exact run boundaries.

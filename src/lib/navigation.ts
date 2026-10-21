@@ -980,6 +980,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:opencode
               // coding-agents:pi
               // coding-agents:pi-sdk
+              { title: 'Pi SDK', href: '/docs/integrations/coding-agents/pi-sdk' },
             ]
           },
           {
