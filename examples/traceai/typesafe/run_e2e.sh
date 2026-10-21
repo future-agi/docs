@@ -29,8 +29,9 @@ cd "$HERE"
 : "${FI_API_KEY:?set FI_API_KEY}" "${FI_SECRET_KEY:?set FI_SECRET_KEY}"
 export FI_BASE_URL="${FI_BASE_URL:-http://localhost:4318}"
 export FI_PROJECT_NAME="${FI_PROJECT_NAME:-typesafe-e2e}"
-# Until traceAI-typesafe is on PyPI, install it from the traceAI pull request commit.
-TRACEAI_TYPESAFE="${TRACEAI_TYPESAFE:-traceAI-typesafe @ git+https://github.com/future-agi/traceAI@e6dd3c0e16e7bd034739fd2537f13a8ec2018b6e#subdirectory=python/frameworks/typesafe}"
+# The released package from PyPI; set TRACEAI_TYPESAFE to another pip requirement (for example a
+# local traceAI checkout) to test an unreleased build.
+TRACEAI_TYPESAFE="${TRACEAI_TYPESAFE:-traceAI-typesafe==0.1.0}"
 
 VENV_DIR="${VENV_DIR:-$HERE/.venv}"
 if [ ! -x "$VENV_DIR/bin/python" ]; then

@@ -39,9 +39,9 @@ export TYPESAFE_API_KEY=...       # goes to the SDK only
 ./run_e2e.sh
 ```
 
-Until `traceAI-typesafe` is on PyPI, `run_e2e.sh` installs it from the traceAI PR commit
-(`TRACEAI_TYPESAFE` overrides the pip requirement, for example a local checkout:
-`TRACEAI_TYPESAFE=/path/to/traceAI/python/frameworks/typesafe`).
+`run_e2e.sh` installs `traceAI-typesafe==0.1.0` from PyPI. `TRACEAI_TYPESAFE` overrides
+that pip requirement, for example with a local checkout:
+`TRACEAI_TYPESAFE=/path/to/traceAI/python/frameworks/typesafe`.
 
 ## What is real and what is a stand-in
 
