@@ -1,10 +1,10 @@
 # Azure API Management / AI Gateway tier tracing for Future AGI (TH-8298)
 
-Runnable assets for `docs/integrations/gateways/azure-apim`. **Nothing here touches Azure.** Read the page first.
+Runnable assets for `docs/integrations/gateways/azure-apim`. **The scripts and tests here never contact Azure.** Variant A's policy was deployed unchanged on a real APIM Consumption instance on 2026-10-19 (see "Live vendor verification" on the page); variant B was not run against Azure. Read the page first.
 
 | File | What it is |
 | --- | --- |
-| `policy/otlp-egress.policy.xml` | Variant A: the APIM policy (`set-backend-service`, `rewrite-uri`, `set-header`). Never deployed. |
+| `policy/otlp-egress.policy.xml` | Variant A: the APIM policy (`set-backend-service`, `rewrite-uri`, `set-header`). Deployed unchanged on a Consumption-tier instance on 2026-10-19. |
 | `apim_standin.py` | **STAND-IN for APIM.** Models that policy locally so the real client and collector can be exercised. |
 | `app.py` | Variant A client: real `traceAI-openai`, no Future AGI keys, exports through the APIM URL. |
 | `otelcol.yaml` | Variant B: OpenTelemetry Collector config between the AI Gateway tier and Future AGI. |
@@ -20,10 +20,11 @@ python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ## What a live run on Azure still has to confirm
 
-Variant A (needs an APIM instance, any tier; Developer is the non-production one, and it is billed):
-- the policy XML deploys and forwards: `set-backend-service` + `rewrite-uri` produce `/tracer/v1/traces`;
-- APIM does not log or rewrite `X-Api-Key`/`X-Secret-Key`, and passes the request body and `Content-Encoding` through unchanged;
-- request-size limits against a large batch, and the hosted `https://api.futureagi.com/tracer/v1/traces` backend.
+Variant A. Confirmed live on 2026-10-19 (Consumption tier, East US, hosted `https://api.futureagi.com/tracer/v1/traces` backend): the policy XML deploys unchanged and forwards (`set-backend-service` + `rewrite-uri` produce `/tracer/v1/traces`); `401` without the subscription key, `404` for other paths, `400` for a batch without `project_name` and for a gzip body, `200` for an empty export. Still open:
+- APIM header and payload logging (left off in the live run): whether turning it on records `X-Api-Key`/`X-Secret-Key` or the request body;
+- request-size limits against a large batch;
+- other tiers (Developer, Basic, Standard, Premium, v2 tiers);
+- a stored-column scan of the hosted project (the live trace was read back through the hosted API only).
 
 Variant B (needs an AI Gateway tier instance: preview, East US 2 or Sweden Central, pricing not announced):
 - the Monitoring destination form: whether it sends a custom header or only an access token, and whether it takes the full traces URL;
