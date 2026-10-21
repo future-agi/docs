@@ -17,7 +17,7 @@ the SDK's span kinds, removes content unless `KEEP_WXO_CONTENT=true`, and forwar
 
 | | |
 | --- | --- |
-| Agentic SDK | `ibm-watsonx-orchestrate-sdk` 2.18.2 (latest) on Python 3.12.10, and 2.18.0 (with `-core`/`-clients` 2.18.0) on Python 3.13.15 |
+| Agentic SDK | `ibm-watsonx-orchestrate-sdk` 2.18.2 (latest on 2026-10-16) on Python 3.12.10, and 2.18.0 (with `-core`/`-clients` 2.18.0) on Python 3.13.15. 2.19.0 (2026-10-20): unit tests only (`pytest tests`), not run end to end |
 | Python packages | `langgraph` 1.2.15, `langchain-openai` 1.7.2, `langchain-core` 1.6.11, `opentelemetry-sdk` 1.45.1, `opentelemetry-exporter-otlp-proto-http` 1.45.1 |
 | Collector | `otel/opentelemetry-collector-contrib:0.162.0` (Docker, 256 MB) |
 | Future AGI | self-hosted (local Docker stack), OTLP/HTTP `/tracer/v1/traces` |
