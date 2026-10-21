@@ -1,0 +1,243 @@
+---
+title: "Azure API Management and AI Gateway tracing with Future AGI"
+description: "Two Azure products, two recipes. Route your app's own traces to Future AGI through an API Management egress API, or send the AI Gateway tier's OpenTelemetry traces through a small collector that names the Observe project."
+---
+
+## About
+
+"Azure gateway" means two different products. Keep them apart.
+
+1. **Variant A, API Management as an egress.** Your app (or any service) creates the spans with an OpenTelemetry instrumentor. An API Management (APIM) API accepts the OTLP/HTTP request and a policy adds the Future AGI keys and forwards it. APIM creates no model span. Use this when you want one governed exit point, and want your services to hold no Future AGI keys.
+2. **Variant B, the AI Gateway tier of API Management (preview).** Microsoft's AI Gateway tier can export its own OpenTelemetry traces. Those spans describe what the gateway did with a request: the request, the policies that ran, the model call. This page sends them to Future AGI through an OpenTelemetry Collector you run.
+
+There is no new package, no Azure-specific receiver, and no metric-to-span adapter. Neither variant traces your Azure OpenAI client calls. For that, use [OpenAI](/docs/integrations/traceai/openai) (the `AzureOpenAI` client was not tested for this page); the two combine, see [how this differs](#how-this-differs-from-client-tracing).
+
+<Warning>
+Alpha. **Variant A was run live on 2026-10-19** on a real API Management instance (Consumption tier) into the hosted Future AGI cloud. **Variant B was not run live**: the AI Gateway tier can be created, but its monitoring destination can only be configured in Microsoft's Entra-signed portal, so the variant B recipe is still verified only with the real OpenTelemetry Collector and a **synthetic trace** shaped from Microsoft's release notes. Every statement about what the AI Gateway tier does, rather than what Microsoft documents, is marked **unverified**. See [What is verified](#what-is-verified).
+</Warning>
+
+## Live vendor verification (2026-10-19)
+
+**Variant A, real API Management (Consumption tier, East US) to `api.futureagi.com`.** The policy XML on this page was deployed unchanged (API suffix `tracer`, one `POST /v1/traces` operation, two secret named values). The example app held no Future AGI keys and sent only `Ocp-Apim-Subscription-Key`; the model calls went to a real Azure OpenAI deployment (`gpt-4.1-nano`).
+
+| Check | Result |
+| --- | --- |
+| Hierarchy | Trace `ab4de4f8-c745-4da3-9c9f-f47738057169` read back from `GET /tracer/trace/<id>/`: `agent` > three `llm` spans and one `tool` span, plus one `llm` span with status ERROR. Model on the spans is the underlying model Azure returns (`gpt-4.1-nano-2025-04-14`). |
+| Policy behaviour | `set-backend-service`, `rewrite-uri` and `set-header` work as written on Consumption. A call without the subscription key gets `401`; another path gets `404`; a batch without `project_name` gets `400` from Future AGI through APIM; a gzip body gets `400`. Empty export request: `200`. |
+| Privacy | With `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` (trace `6e7e995c-fb6e-47b9-8368-6cafeada90bf`, project `th8103-livefill-azapim-hidden`) a unique marker placed in prompt and system text appears 0 times in the stored trace; with defaults (`ab4de4f8`) it appears. Neither the Future AGI keys nor the Azure key appear in either trace. |
+
+Limits of this check: the stored trace was read through the hosted API, not by scanning database columns; APIM header and payload logging were left off; request size limits were not probed.
+
+**Variant B, AI Gateway tier.** A gateway of the `Microsoft.ApiManagement/aigateways` type (preview API `2026-09-01-preview`) was created in East US 2 and activated in under a minute with a plain ARM call. Its models, runtime keys and monitoring destinations have no ARM resource types in that API version, and Microsoft documents them only in the portal at `ai.gateway.azure.com`, which needs an interactive Entra sign-in. Learn's *Govern and secure assets* page still says only the token metric is exported over OTLP in the public preview and that traces are "coming soon"; the release notes this page cites say traces are exported. **That conflict was not resolved**, so no real gateway trace was captured and the attribute names in the variant B section remain unverified.
+
+
+| | |
+| --- | --- |
+| Tested with | `traceAI-openai` 0.1.10, `fi-instrumentation-otel` 1.1.0, `openai` 3.31.0, `opentelemetry-sdk` 1.45.1, Python 3.13. `otel/opentelemetry-collector-contrib` 0.162.0 for variant B. |
+| Azure | Variant A: API Management Consumption tier, live, 2026-10-19. Variant B: not tested live (see above). |
+| Future AGI | Variant A live on hosted `api.futureagi.com`, 2026-10-19. Variant B on a self-hosted stack on localhost, 2026-10-16. |
+| Microsoft sources, read 2026-10-16 | [AI Gateway release notes, 2026-08-28](https://ai.gateway.azure.com/docs/releases/2026-08-28), [2026-09-24](https://ai.gateway.azure.com/docs/releases/2026-09-24), [Observability](https://ai.gateway.azure.com/docs/observability), [Govern and secure assets (Learn)](https://learn.microsoft.com/en-us/azure/api-management/ai-gateway-govern-secure-assets), [AI Gateway tier overview (Learn)](https://learn.microsoft.com/en-us/azure/api-management/ai-gateway-overview), [set-header policy](https://learn.microsoft.com/en-us/azure/api-management/set-header-policy). The variant A pattern follows [Langfuse's APIM egress guide](https://langfuse.com/integrations/gateways/azure-api-management). |
+| Source | [examples/gateways/azure-apim](https://github.com/future-agi/docs/tree/main/examples/gateways/azure-apim) |
+
+## Variant A. API Management as an OTLP egress
+
+### 1. What Future AGI needs
+
+| Field | Value |
+| --- | --- |
+| URL | `https://api.futureagi.com/tracer/v1/traces` (hosted, not exercised here), or `<your collector>/tracer/v1/traces` when self-hosted |
+| Protocol | OTLP/HTTP, protobuf. Not gRPC. Not gzip: the collector refuses a compressed body with `400`. |
+| Headers | `X-Api-Key` and `X-Secret-Key`. `Authorization: Bearer ...` always gets `401`. |
+| Resource attribute | `project_name`, set by the caller. A batch without it is refused with `400`. |
+
+Create the Observe project's keys first. The caller names the project; APIM does not.
+
+### 2. Configure APIM
+
+1. **Named values.** Create two secret named values, `fi-api-key` and `fi-secret-key`. A Key Vault reference is the better home for them.
+2. **API.** Create an API with the **URL suffix `tracer`** and one operation, `POST /v1/traces`. The suffix matters: the Future AGI Python SDK always sends to `/tracer/v1/traces` on the host in `FI_BASE_URL` and drops any other path you put there (checked in `fi-instrumentation-otel` 1.1.0).
+3. **Policy.** Add this to the operation (or the API), and replace the `base-url` with your collector's if you self-host:
+
+```xml
+<policies>
+  <inbound>
+    <base />
+    <set-backend-service base-url="https://api.futureagi.com" />
+    <rewrite-uri template="/tracer/v1/traces" copy-unmatched-params="false" />
+    <set-header name="X-Api-Key" exists-action="override">
+      <value>{{fi-api-key}}</value>
+    </set-header>
+    <set-header name="X-Secret-Key" exists-action="override">
+      <value>{{fi-secret-key}}</value>
+    </set-header>
+    <!-- the caller's APIM subscription key and Authorization header are for APIM, not for Future AGI -->
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+  </inbound>
+  <backend><base /></backend>
+  <outbound><base /></outbound>
+  <on-error><base /></on-error>
+</policies>
+```
+
+The same file is in the example as `policy/otlp-egress.policy.xml`, with a test that parses it. Verified on the Consumption tier on 2026-10-19 (see [Live vendor verification](#live-vendor-verification-2026-10-19)). Other tiers were not tested.
+
+### 3. Point the app at APIM
+
+```python
+import os
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+# FI_BASE_URL=https://<your-apim>.azure-api.net     (host only; no FI_API_KEY or FI_SECRET_KEY on this machine)
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-chatbot",
+    headers={"Ocp-Apim-Subscription-Key": os.environ["APIM_SUBSCRIPTION_KEY"]},  # APIM's key, not Future AGI's
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+```
+
+Any other OpenTelemetry exporter works the same way: send OTLP/HTTP protobuf, **uncompressed** (`OTEL_EXPORTER_OTLP_COMPRESSION=none`), with `project_name` on the resource. If your APIM API requires a subscription key, send it in `Ocp-Apim-Subscription-Key`. Short scripts must flush before exit (`trace_provider.force_flush()`).
+
+### 4. What shows up in Observe
+
+Whatever the caller emitted. A run of the example app (an agent span, a tool call, three model calls and one failing call) looked like this after going through the APIM stand-in:
+
+```
+azure-apim-demo        agent   your own parent span, session id on it
+├── ChatCompletion     llm     model and tokens
+├── ChatCompletion     llm     tool call requested by the model
+├── tool lookup_record tool    your own span
+├── ChatCompletion     llm     final answer
+└── ChatCompletion     llm     failure case: status ERROR
+```
+
+This page does not invent an Azure attribute map for variant A. Model, tokens and prompts are the caller's, or they are absent. Session and user exist only if the caller's spans carry them. If a policy you add strips attributes, they are gone.
+
+### Privacy for variant A
+
+The spans are the caller's, so the caller's privacy settings apply, and the `traceAI-openai` default is to capture content. Turn it off in the app, not in APIM:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+APIM adds a second place text can leak: **its own logging.** If you enable request or response body logging, header logging, or a diagnostic that records request payloads for this API, APIM can store your prompts (and, if you log the outgoing request, the Future AGI keys). Keep payload and header logging off for the OTLP API. Future AGI cannot prevent this.
+
+## Variant B. AI Gateway tier of API Management (preview)
+
+### What Microsoft says now
+
+- **2026-08-28 release notes:** the tier "can now emit logs, distributed traces, and estimated cost metrics through the OpenTelemetry Protocol (OTLP), in addition to the previously supported token metrics", to Application Insights "or another OpenTelemetry-compatible destination". Policies "emit child spans with details such as policy type, outcome, and latency". Attributes "follow OpenTelemetry generative AI and MCP semantic conventions where applicable". Monitoring configured before that release must be disabled and configured again.
+- **2026-09-24 release notes:** token claims from the caller's JWT can be exported to logs, root traces and metrics as `azure.ai_gateway.identity.claims.<claim>` (for example `tid`, `oid`, `appid`, `azp`).
+- **[Observability page](https://ai.gateway.azure.com/docs/observability):** metrics, logs and traces are enabled independently, "each metrics, logs, or traces endpoint independently enables that signal".
+- **[Learn, Govern and secure assets](https://learn.microsoft.com/en-us/azure/api-management/ai-gateway-govern-secure-assets):** for a generic OTLP endpoint you "provide the collector URL and any required access token or headers". The same page still says the token metric is the only metric exported "in public preview" and that traces are "coming soon". That sentence is older than the release notes and the observability page. This page follows the release notes and flags the conflict. Re-check both before you rely on this.
+
+The older version of this recipe said the tier exports no traces. That is no longer what Microsoft says.
+
+### The gap, and the collector that closes it
+
+Future AGI's collector refuses a trace batch whose resource has no `project_name`. Nothing Microsoft publishes says the gateway can add a resource attribute, and a gateway may gzip its requests, which the Future AGI collector also refuses. So run an OpenTelemetry Collector between them. The example's [`otelcol.yaml`](https://github.com/future-agi/docs/blob/main/examples/gateways/azure-apim/otelcol.yaml) does four things:
+
+1. accepts OTLP/HTTP from the gateway (protobuf or JSON, gzip or plain) only with your bearer token;
+2. sets `project_name` (and `project_type: observe`) from `FI_PROJECT_NAME`;
+3. removes content, caller identity claims and raw error text unless you opt in (see [Privacy](#privacy-for-variant-b));
+4. forwards plain protobuf to Future AGI with `X-Api-Key` and `X-Secret-Key`, `compression: none`, and `service.telemetry.metrics.level: none` so the collector exposes no metrics port.
+
+```bash
+docker run -d --name fi-azure-gateway-otelcol -p 4318:4318 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol.yaml:ro" \
+  -e GATEWAY_OTLP_TOKEN="a-secret-you-invent" \
+  -e FI_API_KEY -e FI_SECRET_KEY \
+  -e FI_PROJECT_NAME="azure-ai-gateway" \
+  -e FI_TRACES_URL="https://api.futureagi.com/tracer/v1/traces" \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol.yaml
+```
+
+Then, in the AI Gateway portal's **Monitoring** settings, choose a generic OTLP destination and give it **only the traces endpoint**, `https://<your-collector-host>/v1/traces`, with the bearer token. Azure must reach the collector over **HTTPS**: put a load balancer or reverse proxy with TLS in front of it, or set `tls:` on the receiver. Do not expose it without the token.
+
+**Unverified against Azure, check on your instance:**
+
+- the exact labels of the destination form, and whether it accepts a custom header or only an access token (Learn says "access token or headers"). The receiver here expects `Authorization: Bearer <token>`; adapt the extension if your form sends something else;
+- whether the portal expects the full traces URL or appends `/v1/traces` itself;
+- whether the gateway also sends gzip, and in which encoding (the collector accepts both; this was tested with gzip protobuf);
+- whether you can send to Application Insights and to this collector at the same time.
+
+Logs and cost metrics are separate signals. Future AGI's endpoint takes traces only, so **leave the logs and metrics endpoints unset or pointed elsewhere.** The collector has no logs or metrics pipeline and answers `404` to them. Estimated cost metrics are not traces and are not ingested.
+
+### What shows up in Observe
+
+Tested only with a synthetic trace (see [What is verified](#what-is-verified)): one gateway request span with two policy child spans and a model-call child span.
+
+```
+POST /models/openai/v1/chat/completions   chain   gateway request
+├── policy token-limit                    chain   policy span
+├── policy cost-limit                     chain   policy span (ERROR when blocked)
+└── chat <model alias>                    llm     model, input and output tokens
+```
+
+The collector sets `fi.span.kind`: a client span with a `gen_ai.request.model` becomes `llm`, everything else `chain`. Without that, spans that carry no model show as `unknown`. The model and token counts come from the `gen_ai.*` attributes. Policy outcome, API-key attribution and cost are **kept as span attributes** and do not fill any Observe field; the cost field stays $0.00. **The attribute names other than `gen_ai.*` and `azure.ai_gateway.identity.claims.*` in the synthetic trace are invented**, not Microsoft's. Check the real names on your instance.
+
+### Privacy for variant B
+
+This collector recipe opens a new capture path, so **content is off by default.** With `FI_CAPTURE_CONTENT` unset or `false` the collector removes, before anything leaves your network:
+
+- prompt and completion text in the OpenTelemetry GenAI spellings (`gen_ai.prompt*`, `gen_ai.completion*`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, `gen_ai.tool.call.arguments` and `.result`, `input.value`, `output.value`);
+- every `azure.ai_gateway.identity.claims.*` attribute: tenant, object and app ids, and any custom claim you added, which can be an email or a cost centre;
+- exception messages and stack traces, and the span status message (replaced with `error`, so the failure stays visible and the words do not).
+
+`FI_CAPTURE_CONTENT=true` lets all of that through. The AI Gateway sees every prompt in any case, because it is on the request path.
+
+**Proof (synthetic trace, content-bearing on purpose).** The trace carried a unique marker in a prompt attribute, a completion attribute, the error status text and the exception message and stack trace, plus a caller object id. Every column of every table that holds the project was scanned (ClickHouse and Postgres, including resource attributes, span events and status message):
+
+| Run | Result |
+| --- | --- |
+| Default, content off | 0 occurrences of the marker or the object id in any stored row, and none of the local home path. |
+| `FI_CAPTURE_CONTENT=true` | marker found (4 span rows), object id found (2 span rows). |
+
+This proves the filter against the **attribute names the recipe lists**. Microsoft does not document which attributes the gateway's trace carries, or whether it carries prompt text at all. A gateway that puts content under a name this list does not cover would pass it through. Before you trust the default, send a request with a unique string in the prompt through your own gateway and search the Observe project for it. If you find it, add that attribute name to the `delete_matching_keys` rule.
+
+## How this differs from client tracing
+
+- **[OpenAI](/docs/integrations/traceai/openai)** traces the OpenAI-client calls your code makes, from your process, with prompts, model and tokens. This page ran it against an OpenAI-compatible endpoint; the `AzureOpenAI` client was not tested. It does not see the gateway.
+- **Variant A** is a pipe for those same spans. It changes who holds the Future AGI keys, nothing else.
+- **Variant B** is the gateway's own view: policies, blocks, the gateway's model call. It carries no prompts by default and is not a substitute for client tracing.
+- If you run both client tracing and variant B for the same request you get two traces, one from the app and one from the gateway. Distributed trace context connects them only if the app propagates it to the gateway and the gateway honours it. That was **not tested**.
+
+## What is verified
+
+| | Verified | Not verified |
+| --- | --- | --- |
+| Variant A | Live on Consumption APIM and hosted Future AGI (see above). Earlier local run: real `traceAI-openai` client with no Future AGI keys, through a local stand-in for the APIM policy, into the real Future AGI collector: hierarchy, model, tokens, ERROR span, content on and off. Stand-in answers `401` for a missing subscription key and `404` for other paths; the collector answers `401` for wrong keys, `400` for a missing `project_name` and `400` for gzip; a rejected batch creates no project. | Request size limits, APIM header and payload logging, other tiers, database-column scan of the hosted project. |
+| Variant B | Real OpenTelemetry Collector 0.162.0 and Future AGI collector with a synthetic trace: bearer auth (`401` without it), gzip input, project naming, span typing, content filter on and off, `404` for a logs path. | Everything about the real gateway: destination form, headers, trace shape, attribute names, whether it carries content, compression, propagation. |
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| Variant A: the app works, no trace appears | A failed export never fails your request. Check, in order: the app's `FI_BASE_URL` is the APIM host with no path; the API suffix is `tracer`; the subscription key header; `project_name` is set; the app exports uncompressed; the process flushed before exit. |
+| Variant A: `401` from APIM | The subscription key is missing or wrong. |
+| Variant A: `401` from the collector (seen as a missing trace) | The policy did not set `X-Api-Key` and `X-Secret-Key`, the named values are wrong, or a copied example set `Authorization: Bearer`. |
+| Variant A: `400` | No `project_name` on the resource, or the body is gzip. |
+| Variant A: keys visible in APIM logs | Header or payload logging is on for the OTLP API. Turn it off and rotate the keys. |
+| Variant B: nothing arrives | Check that you reconfigured monitoring after the 2026-08-28 release, that only the traces endpoint is set, that the collector is reachable over HTTPS, and the collector's logs: `docker logs fi-azure-gateway-otelcol`. |
+| Variant B: collector answers `401` | The bearer token differs from `GATEWAY_OTLP_TOKEN`, or the gateway sends it in a different header. |
+| Variant B: collector answers `404` | A logs or metrics endpoint points at it. Leave those unset. |
+| Variant B: spans show `unknown` | The collector's `transform/gateway` block is missing from your config. |
+| Variant B: identity claims missing | Expected with content off. They can hold personal data. Set `FI_CAPTURE_CONTENT=true` to keep them. |
+
+## Run the example
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+cd fi-docs/examples/gateways/azure-apim
+python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest        # offline: stand-in, policy, collector config, synthetic trace builder
+FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:4318 \
+  LLM_BASE_URL=https://... LLM_API_KEY=... LLM_MODEL=... PYTHON=.venv/bin/python ./run_e2e.sh all
+```
+
+`run_e2e.sh` needs Docker (variant B) and a self-hosted Future AGI in Docker for the stored-row scan (`SKIP_SCAN=1` skips it). It never contacts Azure. The README lists what a live run on Azure would still have to confirm.
