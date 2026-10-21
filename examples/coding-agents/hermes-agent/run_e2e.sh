@@ -8,8 +8,8 @@
 # Optional: FI_BASE_URL (default https://api.futureagi.com), FI_PROJECT_NAME
 # (default hermes-agent), HERMES_REF (Hermes Agent git tag, default v2026.9.24),
 # PLUGIN_SPEC (what to pip-install, default traceAI-hermes-agent from PyPI;
-# until that is released, a path to a traceAI checkout's
-# python/frameworks/hermes-agent), CAPTURE_CONTENT=1 for the content opt-in.
+# or a path to a traceAI checkout's python/frameworks/hermes-agent to test an
+# unreleased change), CAPTURE_CONTENT=1 for the content opt-in.
 # Needs git and uv. The keys file is deleted when the script exits.
 #
 # Everything lives in a temporary directory: a Hermes Agent source checkout and
