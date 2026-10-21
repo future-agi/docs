@@ -26,11 +26,7 @@ export PAUSE=60                                   # optional; seconds between ru
 ```
 
 `TRACEAI_GO_GENAI_REF` picks the traceAI module version (default `latest`) and `GENAI_VERSION` the SDK version
-(default `v1.75.0`). Until traceAI PR #262 is merged, set the ref to the PR commit and fetch it straight from GitHub:
-
-```bash
-GOPRIVATE=github.com/future-agi/traceAI TRACEAI_GO_GENAI_REF=fbc139f99d49 ./run_e2e.sh
-```
+(default `v1.75.0`). Set the ref to a release version or a commit to pin the module.
 
 Then open the project in Future AGI Observe. Search for the printed `MARK_DEFAULT` value: it is in the inputs and
 outputs of the first run. Search for `MARK_HIDDEN`: it is nowhere, because the third run hides content.
