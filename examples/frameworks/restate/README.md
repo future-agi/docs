@@ -18,8 +18,8 @@ attempt that ran them.
 
 | | |
 | --- | --- |
-| Restate server | 1.8.0 (latest, 2026-10-14) and 1.7.13, release binaries `restate-server-aarch64-apple-darwin` |
-| `restate-sdk` | 1.0.5 (latest), Python 3.13.15 and 3.10.17 |
+| Restate server | 1.8.0 (latest on 2026-10-15, released 2026-10-14) and 1.7.13, release binaries `restate-server-aarch64-apple-darwin` |
+| `restate-sdk` | 1.0.5 (latest on 2026-10-15), Python 3.13.15 and 3.10.17. 1.1.0 (2026-10-21): unit tests only (`pytest tests`), not run end to end |
 | Python packages | `hypercorn` 0.18.0, `fi-instrumentation-otel` 1.1.0, `traceai-openai` 0.1.10, `openai` 3.31.0, `opentelemetry-sdk` 1.45.1 |
 | Collector | `otel/opentelemetry-collector-contrib:0.162.0` (Docker, 256 MB) |
 | Future AGI | self-hosted (local Docker stack), OTLP/HTTP `/tracer/v1/traces` |
