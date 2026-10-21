@@ -8,7 +8,7 @@ description: "Trace the official Replicate Python client in Future AGI with trac
 <Note>
 Package status: pull request [future-agi/traceAI#219](https://github.com/future-agi/traceAI/pull/219) (base `dev`). Until it is merged and released, `pip install traceAI-replicate` is not available from PyPI; install from that branch.
 
-Tested against a local stand-in for the Replicate HTTP API and verified live on 2026-10-20 against `api.replicate.com` for `run`, `async_run`, `stream` (including a loop that stops at `done`) and HTTP 422 / 429 errors (see Live vendor verification below). `async_stream`, create followed by `wait()`, cancel, deployments, run iterators and image or file outputs are still stand-in only.
+Tested against a local stand-in for the Replicate HTTP API and verified live on 2026-10-20 against `api.replicate.com` for `run`, `async_run`, `stream` (including a loop that stops at `done`), `async_stream` and HTTP 422 / 429 errors (see Live vendor verification below). Create followed by `wait()`, cancel, deployments, run iterators and image or file outputs are still stand-in only.
 </Note>
 
 ## 1. Installation
@@ -53,14 +53,14 @@ print("".join(output))
 
 `replicate.run`, `replicate.async_run`, `replicate.stream` and `replicate.async_stream` looked up after `instrument()`, and every `replicate.Client` method, are traced. A function imported earlier with `from replicate import run` keeps the untraced original.
 
-`instrument()` also accepts `config` (a `fi_instrumentation.TraceConfig`), `max_pending_seconds` (default `600`, see [create, wait and cancel](#create-wait-and-cancel)) and `stream_reload_seconds` (default `2`: the time budget for the read after a stream; `0` turns that read off, see [the read after a stream](#the-read-after-a-stream)).
+`instrument()` also accepts `config` (a `fi_instrumentation.TraceConfig`), `max_pending_seconds` (default `600`, see [create, wait and cancel](#create-wait-and-cancel)) and `stream_reload_seconds` (default `2`, at most `10`: the time budget for the read after a stream; `0` turns that read off, see [the read after a stream](#the-read-after-a-stream)). A call made while OpenTelemetry instrumentation is suppressed in your context is not traced.
 
 ## What is captured
 
 | Call | Span |
 |---|---|
 | `Client.run`, `async_run` (and `replicate.run`) | One `replicate.run` span. The create request and the client's own polling add no span. |
-| `Client.stream`, `async_stream` (and `replicate.stream`) | One `replicate.stream` span for the whole stream, not one per event. The stream is complete at its `done` event: stopping your loop there and closing the stream is a completed stream, not a cancellation. The event stream reports no status or usage, so the prediction is then read once more on a background thread ([the read after a stream](#the-read-after-a-stream)); your loop never waits for it. |
+| `Client.stream`, `async_stream` (and `replicate.stream`) | One `replicate.stream` span for the whole stream, not one per event. The span starts at the first `next()` (the client sends nothing before that), so a stream that is never iterated has no span. The stream is complete at its `done` event: stopping your loop there and closing the stream is a completed stream, not a cancellation. The event stream reports no status or usage, so the prediction is then read once more in the background ([the read after a stream](#the-read-after-a-stream)); your loop never waits for it. |
 | `predictions.create`, `models.predictions.create`, `deployments.predictions.create` (sync and async) | One `replicate.predictions.create` span. |
 | `Prediction.wait`, `cancel`, `predictions.cancel(id)` (sync and async) | Ends the open create span of that prediction, or opens one `replicate.prediction.wait` / `replicate.predictions.cancel` span. |
 | `trainings.*`, `predictions.get` / `list`, file uploads | Not traced. |
@@ -69,20 +69,23 @@ Spans nest under the active span, so an agent or chain span becomes their parent
 
 - provider `replicate` (`gen_ai.provider.name`) and model `owner/name` (`gen_ai.request.model`);
 - span kind `LLM` when the output is text, otherwise `CHAIN` (image or file URLs, errors);
-- prediction id, status (as the client returns it: `starting`, `processing`, `succeeded`, `failed`, `canceled`), version (not the placeholder `hidden` that official models report), deployment, `predict_time`;
+- prediction id, status (as the client returns it: `starting`, `processing`, `succeeded`, `failed`, `canceled`; the read after a stream also knows `aborted`), version (not the placeholder `hidden` that official models report), deployment, `predict_time`;
 - input and output (text, or file URLs as strings; files are never downloaded);
-- token counts when the prediction reports them (`metrics.input_token_count` / `output_token_count`, which Replicate's language models return). No cost is recorded. A stream gets them from the read after `done`; if that read is off, fails or runs out of time, the stream span has none.
+- token counts when the prediction reports them (`metrics.input_token_count` / `output_token_count`, which Replicate's language models return). No cost is recorded. A stream gets them from the read after `done`; if that read is off, fails or runs out of time, the stream span has none, and `replicate.stream.read` says why (`skipped`, `timeout`, `failed` or `unfinished`);
+- for a stream, `replicate.stream.done_reason` when its `done` event gives one (a `done` with reason `canceled` records status `canceled`), and `replicate.stream.truncated=true` when the stream ended without `done`.
 
 ### The read after a stream
 
 Replicate's event stream carries no status, `predict_time` or token counts; the prediction does. So after `done` the package reads the prediction once (`GET /v1/predictions/{id}`) and records them on the stream span.
 
-- **Cost and rate limit.** The read creates no prediction and is not billed, but it is an API request and counts toward your account's rate limit for requests other than creates (3000 per minute on [Replicate's rate-limit page](https://replicate.com/docs/topics/predictions/rate-limits)): one read per stream, two when the API still answers `processing` right after `done`. To turn it off, pass `stream_reload_seconds=0` to `instrument()`; stream spans then have no status, `predict_time` or token counts.
-- **Never in your way.** The read runs on a background thread. Your loop gets every event, `done` included, without waiting for it, and a timeout you put around the stream (for example `asyncio.timeout`) is not affected.
-- **Bounded.** `stream_reload_seconds` (default `2`) is a wall-time budget from the end of the stream. The read is not retried: a 429 or 5xx ends it, and `Retry-After` is not waited on. One second read is made, `poll_interval` later, only when the prediction is not finished yet.
+- **Cost and rate limit.** The read creates no prediction and is not billed, but it is an API request and counts toward your account's rate limit for requests other than creates (3000 per minute on [Replicate's rate-limit page](https://replicate.com/docs/topics/predictions/rate-limits)): one read per stream, two when the API still answers `processing` right after `done`. To turn it off, pass `stream_reload_seconds=0` to `instrument()`. No read is made for a span that is not exported: one your sampler dropped, after the provider is shut down, or when the provider could not be hooked (call `register()` before `instrument()`).
+- **Never in your way.** Completing a stream hands it to a background worker through a queue: your loop gets every event, `done` included, without waiting, doing I/O or starting a thread for the read, and a timeout you put around the stream (for example `asyncio.timeout`) is not affected. The read's own work still runs in your process; with 200 streams finishing at once it added 10 to 35 ms at the median to each loop's end in a local test.
+- **Its own connections.** With the client's default transport, the read uses a small connection pool owned by the package (at most 16 connections), with your client's base URL, headers and proxy settings. It never takes a connection from your client's pool and never creates an HTTP client on your `Client`. If you passed your own `transport=`, the read goes through it, at most 4 at a time, and never through an `httpx` pool of fewer than 8 connections.
+- **Bounded.** `stream_reload_seconds` (default `2`, at most `10`) is a wall-time budget from the end of the stream. The package never retries the read: a 429 or 5xx ends it, and `Retry-After` is not waited on (a transport of yours that retries by itself is used as it is). On the package's own pool the budget is a hard deadline: the request is cancelled and its connection closed when it runs out. At most 64 reads run at once; a stream that completes beyond that ends without one (`replicate.stream.read=skipped`). The body is limited to 2 MiB.
 - **No extra span.** The read runs with OpenTelemetry instrumentation suppressed, so an HTTP client instrumentation adds no span for it.
-- **When the span ends.** When the read returns or the budget runs out, whichever is first, with the stream's end as its end time. A read that fails or runs out of time leaves the span OK with its output, without status and token counts. `force_flush()`, `shutdown()` and process exit wait for a read in flight, at most until its budget runs out.
-- **Limits.** At most 256 reads run at once; a stream that completes beyond that ends without one. Only the prediction's id, status, version, model, metrics and error are kept from the read, never its input, output or logs.
+- **When the span ends.** When the read returns or the budget runs out, whichever is first, with the stream's end as its end time. A read that fails or runs out of time leaves the span OK with its output, without status and token counts.
+- **Flush, shutdown and exit.** `force_flush(timeout_millis)` waits for reads in flight at most half its timeout (default 30 s), then ends their spans with what is known so that flush exports them, and gives the rest of the timeout to the provider's own flush: it never takes longer than you asked. `shutdown()` and process exit wait at most the budget (a script exits about one read later, at most about 2 s by default). `uninstrument()` does not wait.
+- **What is kept.** Only the prediction's id, status, version, model, metrics and error, never its input, output or logs.
 
 ### create, wait and cancel
 
@@ -94,8 +97,8 @@ Replicate's event stream carries no status, `predict_time` or token counts; the 
 - An HTTP error (`ReplicateError`: a wrong token, HTTP 401; an unknown version, HTTP 422; a rate limit, HTTP 429) is an `ERROR` span with the error type and message, and Replicate's error detail as the status message.
 - A failed call has no output, so its span kind is `CHAIN` even for a language model. Count failed calls by status, not by kind.
 - The client does not retry a create answered 429: the span ends `ERROR`, and a retry by your code is a second span. Reads answered 429, 503 or 504 are retried inside the client, within the same span; the package's own read after a stream is never retried.
-- `canceled` is a terminal state, not a failure: the span status is OK with status `canceled`.
-- Closing or dropping a stream before its `done` event is an `ERROR` span with description `cancelled` and `replicate.cancelled=true`. Closing it after `done` is not.
+- `canceled` is a terminal state, not a failure: the span status is OK with status `canceled` (also for a stream whose `done` event says `{"reason": "canceled"}`).
+- Closing or dropping a stream before its `done` event is an `ERROR` span with description `cancelled` and `replicate.cancelled=true`. Closing it after `done` is not, and a stream closed before its first `next()` sent nothing and has no span.
 
 ## Privacy
 
@@ -123,7 +126,7 @@ Replicate still receives your input either way.
 | replicate (latest stable, checked 2026-10-20) | 1.0.7 |
 | replicate (floor) | 1.0.0 |
 | fi-instrumentation-otel | 1.1.0 |
-| Python | 3.12 live; unit suite on 3.10, 3.12 and 3.13 with replicate 1.0.0 and 1.0.7, and on 3.11 with 1.0.7 |
+| Python | 3.12 live; unit suite on 3.10, 3.11, 3.12 and 3.13, each with replicate 1.0.0 and 1.0.7 |
 
 `replicate` 2.x is still a pre-release (2.0.0b4) and is not supported yet.
 
@@ -133,9 +136,9 @@ Replicate still receives your input either way.
 - **`replicate.run` is not traced.** You imported it with `from replicate import run` before `instrument()`. Call `replicate.run` after instrumenting, or instrument first.
 - **A create span ends with status `starting`.** Nothing called `wait()` or `cancel()` on that prediction before the flush; the span is not a completion.
 - **A `replicate.run` span shows `processing` with output.** With `Prefer: wait`, the client returns once the status is no longer `starting`; the server can answer `processing` for a finished prediction.
-- **Held create spans are missing after Ctrl-C.** You called `instrument()` before `register()`; register first so the flush and shutdown hooks land on the real provider.
+- **Held create spans are missing after Ctrl-C, or stream spans have `replicate.stream.read=skipped`.** You called `instrument()` before `register()`; register first so the flush and shutdown hooks land on the real provider.
 - **HTTP 401 on every call.** The token is wrong; the span records the error, the instrumentor does not retry.
-- **A stream span has no status or token counts.** The read after `done` was off (`stream_reload_seconds=0`), was refused (for example HTTP 429; it is not retried), or did not return within `stream_reload_seconds`. Raise the budget, or check your account's rate limit.
+- **A stream span has no status or token counts.** The read after `done` was off (`stream_reload_seconds=0`), or `replicate.stream.read` on the span says why: `failed` (refused, for example HTTP 429; it is not retried), `timeout` (it did not return within `stream_reload_seconds`, or a `force_flush` with a short timeout cut it), `skipped` (64 reads were already running, or the provider could not be hooked) or `unfinished`. Raise the budget, give `force_flush` more time, or check your account's rate limit.
 - **HTTP 429 "Request was throttled" on creates.** Replicate lowers the create rate limit for accounts with little credit (its message says by how much). The client does not retry a create; add credit, slow down, or give the client a transport that retries a create answered 429 (a 429 creates nothing), in which case the span covers the wait and ends with the real answer.
 
 ## Limitations
@@ -144,21 +147,23 @@ Replicate still receives your input either way.
 - Trainings are not traced.
 - `Prediction.stream()` and `Prediction.output_iterator()` on a prediction you created yourself are not wrapped; use `replicate.stream` or `replicate.run`.
 - The `Cancel-After` deadline is not recorded.
-- Live-verified and stored in Future AGI: `run`, `async_run`, `stream` (with the read after `done`, including a loop that stops at `done`), an unknown version (HTTP 422) and a rate limit (HTTP 429). Stand-in only: `async_stream`, create followed by `wait()` (the held create span), cancel, deployments, run iterators, and image and file outputs.
+- A transport you pass to `replicate.Client` is used for the read too; a server that sends bytes slowly can keep such a read (one of at most 4) until your transport's own timeouts end it. The span still ends at the deadline.
+- Live-verified and stored in Future AGI: `run`, `async_run`, `stream` (with the read after `done`, including a loop that stops at `done`), `async_stream` (with the read through the package's own connections), an unknown version (HTTP 422) and a rate limit (HTTP 429). Stand-in only: create followed by `wait()` (the held create span), cancel, deployments, run iterators, image and file outputs, and the read through a transport you passed.
 
 ## Live vendor verification (2026-10-20)
 
-Three sessions against the live `api.replicate.com`, with `replicate` 1.0.7 on Python 3.12 and `meta/meta-llama-3-8b-instruct` (`max_tokens` 24), exported to a local Future AGI stack. Ten predictions were made in total: seven in the first session, two in the second and one in the third; the account's prediction list for that day shows exactly those ten. The second session ran the read after `done` as it was then, on the caller's path; the third ran the current package code, with the read on a background thread.
+Four sessions against the live `api.replicate.com`, with `replicate` 1.0.7 on Python 3.12 and `meta/meta-llama-3-8b-instruct` (`max_tokens` 24), exported to a local Future AGI stack. Eleven predictions were made in total: seven in the first session, two in the second, one in the third and one in the fourth (00:32 UTC on 2026-10-21); the account's prediction list since 2026-10-20 shows exactly those eleven. The second session ran the read after `done` on the caller's path, the third on a background thread per stream, and the fourth ran the current package code, with the read through the package's own connection pool.
 
 Stored in Future AGI and read back, one trace each:
 
 - `replicate.run`, sync (first session): LLM, OK, with prediction id, status `succeeded`, `predict_time` and the token counts Replicate reports (`input_token_count` / `output_token_count`, 33 / 9). The output arrives as a list of text chunks and is recorded as joined text. This row was written before the `hidden` fix and still carries that version.
 - `async_run` (second session): the same `replicate.run` span (LLM, OK, prediction id, `succeeded`, `predict_time`, 34 / 17 tokens), with no version attribute.
 - `replicate.stream` (second session): the events were `output` (5 of them; 3 in the first session) and then `done`, with no status or usage in the stream. The span is LLM, OK, with the prediction id and the joined text, and, from the read after `done`, status `succeeded`, `predict_time` and 34 / 19 tokens; no version attribute. The first session's stream row, from before that read existed, has only the prediction id, the text and the `hidden` version.
-- `replicate.stream`, stopping at `done` (third session, current code): the loop stopped at the `done` event (after 4 `output` events) and closed the stream. The `next()` that returned `done` took 0.19 ms and `close()` 1.3 ms; the read ran in the background and the span ended 73 ms after the loop had exited, with the stream's end as its end time. The stored span is LLM, OK, not `cancelled`, with the joined text and, from the read, status `succeeded`, `predict_time` and 39 / 15 tokens, and no version attribute. It is the only span in its trace: the read added none.
+- `replicate.stream`, stopping at `done` (third session): the loop stopped at the `done` event (after 4 `output` events) and closed the stream. The `next()` that returned `done` took 0.19 ms and `close()` 1.3 ms; the read ran in the background and the span ended 73 ms after the loop had exited, with the stream's end as its end time. The stored span is LLM, OK, not `cancelled`, with the joined text and, from the read, status `succeeded`, `predict_time` and 39 / 15 tokens, and no version attribute. It is the only span in its trace: the read added none.
+- `replicate.async_stream` (fourth session, current code), on a client with its default transport: the `__anext__()` that returned `done` took 0.42 ms, the read went through the package's own connection pool, and the span ended 104 ms after the loop had exited, with the stream's end as its end time. No sync HTTP client was built on the client. The stored span is LLM, OK, with the joined text and, from the read, status `succeeded`, `predict_time` and 39 / 17 tokens; it is the only span in its trace.
 - An unknown version (second session): HTTP 422 "Invalid version or not permitted". The span is `ERROR`, kind `CHAIN` (no output), with the 422 detail as its status message and one `exception` event (type and message, no stack trace). No prediction is created; the requested version id is recorded.
 - A rate limit (first session): HTTP 429 "Request was throttled" on a create. The span is `ERROR` with Replicate's message, which states the account's rate limit and credit threshold; vendor error text is stored as the vendor wrote it.
 
-Not live-verified, stand-in only: `async_stream`, `predictions.create` followed by `wait()` (the held create span), cancel, deployments, run iterators, and image and file outputs. Trainings are not traced (checked with the stand-in).
+Not live-verified, stand-in only: `predictions.create` followed by `wait()` (the held create span), cancel, deployments, run iterators, image and file outputs, and the read through a transport you passed. Trainings are not traced (checked with the stand-in).
 
-The stored rows of that project (spans, traces, rollups, the attribute catalog and the project row: 121 rows after the third session) were scanned: the API token appears 0 times (whole or its last 12 characters), and there is no `r8_`, `Bearer`, `Authorization`, `/Users/` path, login or host name, `Traceback`, `site-packages` or `exception.stacktrace`.
+The stored rows of that project (spans, traces, rollups, the attribute catalog and the project row: 137 rows after the fourth session) were scanned: the API token appears 0 times (whole or its last 12 characters), and there is no `r8_`, `Bearer`, `Authorization`, `/Users/` path, login or host name, `Traceback`, `site-packages` or `exception.stacktrace`.
