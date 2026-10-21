@@ -13,7 +13,7 @@
 # FI_HIDE_INPUTS=false to see it on the run span. Exits non-zero when the model
 # call failed or was aborted.
 # TRACEAI_PI_PACKAGE may point at a local tarball of @traceai/pi-coding-agent
-# (built with `pnpm pack`) until the package is on npm.
+# (built with `pnpm pack`) to test a build that is not on npm.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

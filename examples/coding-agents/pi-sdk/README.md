@@ -9,7 +9,7 @@ Runnable example for [Pi Coding Agent SDK tracing](https://docs.futureagi.com/do
 | `run_e2e.sh` | Isolated end-to-end run with a throwaway project and a privacy marker |
 | `package.json` | Pinned to the tested Pi SDK (1.2.0) |
 
-`@traceai/pi-coding-agent` ships with [traceAI PR #252](https://github.com/future-agi/traceAI/pull/252). Until it is on npm, build its tarball as the [docs page](https://docs.futureagi.com/docs/integrations/coding-agents/pi-sdk) shows (`pnpm pack` in a traceAI checkout of that PR) and pass it to `run_e2e.sh` as `TRACEAI_PI_PACKAGE=/abs/path/traceai-pi-coding-agent-0.1.0.tgz`, or `npm install` it here before the other dependencies.
+`run_e2e.sh` installs `@traceai/pi-coding-agent` from npm. To test a local build instead, pass its `pnpm pack` tarball as `TRACEAI_PI_PACKAGE=/abs/path/traceai-pi-coding-agent-0.1.0.tgz`.
 
 Edit `models.example.json` (gateway `baseUrl` and model `id`) or point `PI_MODELS_JSON` at your own Pi `models.json`, then:
 
