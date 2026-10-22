@@ -88,9 +88,9 @@ OTLP/HTTP accepts gzip-compressed requests, as the [OTLP specification](https://
 | OTLP/gRPC | Not supported: a call with `grpc-encoding: gzip` fails with `UNIMPLEMENTED` | `UNIMPLEMENTED` |
 
 - **Turning gzip on.** In an OpenTelemetry SDK, use the HTTP exporter (`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`) with `OTEL_EXPORTER_OTLP_COMPRESSION=gzip`. In the OpenTelemetry Collector, the `otlphttp` exporter sends gzip by default and needs no `compression` setting. The `otlp` (gRPC) exporter also defaults to gzip, so keep `compression: none` on it.
-- **Encoding must match the body.** A body labelled `Content-Encoding: gzip` must be gzip: a plain body with that label, or a gzip body that is truncated or fails its checksum, is rejected with `400`. `x-gzip` is treated as `gzip`, and only one gzip layer is accepted (`gzip, gzip` is rejected with `415`). Any encoding other than `gzip` or `identity`, such as `deflate`, `br` or `zstd`, is rejected with `415`, even when the body is actually uncompressed.
-- **Busy collector.** Each collector process limits how many decompressed gzip bytes it holds at once. A gzip request reserves up to 16 MiB while streaming, then shrinks its lease to the exact decompressed body size and keeps that lease until the handler returns. The lease covers decompressed bytes only, not memory allocated by decoding them; decode-cost hardening for any body, compressed or not, is tracked separately in TH-8745. Requests wait up to 2 seconds in arrival order for the reservation; if it remains unavailable, the request gets `503 Service Unavailable` with `Retry-After: 1`, and OpenTelemetry exporters retry it. Uncompressed requests do not use this budget.
-- **Request size.** A gzip OTLP/HTTP request gets `413` if its decompressed body exceeds 16 MiB. The compressed wire stream is read as a stream and is not subject to a separate 16 MiB cap. The same 16 MiB body limit applies to uncompressed HTTP bodies.
+- **Encoding must match the body.** A body labelled `Content-Encoding: gzip` must be gzip: a plain body with that label, or a gzip body that is truncated or fails its checksum, is rejected with `400`. `x-gzip` is treated as `gzip`, and only one gzip layer is accepted (`gzip, gzip` is rejected with `415`). Any encoding other than `gzip` or `identity`, such as `deflate`, `br` or `zstd`, is rejected with `415`, even when the body is actually uncompressed. Earlier collector versions ignored `Content-Encoding`, so an uncompressed body sent with one of these labels used to be accepted; make sure the exporter's compression setting matches what it sends.
+- **Request size.** An OTLP/HTTP request gets `413` if its body exceeds 16 MiB as sent. A gzip request also gets `413` if its body exceeds 16 MiB after decompression. As in the OpenTelemetry Collector's `max_request_body_size`, one limit applies to both sizes.
+- **Busy collector.** Each collector process limits how many decompressed gzip bytes it holds at once. Once a gzip request has been received in full and checked against the size limit, it takes a share of that budget equal to its decompressed body size and keeps it until the request has been processed. The share counts the decompressed body only, not the compressed bytes or memory used to decode the request. A request waits up to 2 seconds, in arrival order, for its share; if the budget is still full, it gets `503 Service Unavailable` with `Retry-After: 1`, and OpenTelemetry exporters retry it. Uncompressed requests do not use this budget.
 
 ### Naming the project
 
@@ -129,27 +129,28 @@ The collector reads the header only when a resource in the batch has no `project
 | Value that is not valid UTF-8 | `400`, gRPC `INVALID_ARGUMENT`. |
 | Value longer than 255 characters | `400`, gRPC `INVALID_ARGUMENT`. Project names hold at most 255 characters. |
 | Control characters, such as a tab or newline, inside the value | `400`, gRPC `INVALID_ARGUMENT`. |
-| Invisible Unicode format characters (category `Cf`), such as U+200B or U+202E | `400`, gRPC `INVALID_ARGUMENT`. |
+| Line or paragraph separators (U+2028, U+2029) inside the value | `400`, gRPC `INVALID_ARGUMENT`. |
+| Invisible Unicode characters: format characters (category `Cf`), such as U+200B or U+202E, and other default-ignorable characters, such as the Hangul filler U+3164 or the variation selector U+FE0F | `400`, gRPC `INVALID_ARGUMENT`. |
 | Spaces in `OTEL_EXPORTER_OTLP_HEADERS` | Percent-encode spaces, for example `X-Project-Name=checkout%20agent`. The SDK decodes percent-encoding before sending. |
 | Project type | There is no header for it. A project the header names that does not exist yet is created as an Observe project. |
 
 ### Ingestion request limits
 
-Future AGI Cloud enforces the same supported request limit for both OTLP transports. For gzip OTLP/HTTP, the limit applies to the size after decompression, matching the upstream OpenTelemetry Collector:
+Future AGI Cloud enforces the same supported request limit for both OTLP transports. For gzip OTLP/HTTP, the limit applies to the body as sent and again after decompression:
 
 | Transport | Maximum request size | Error when exceeded |
 |---|---:|---|
 | OTLP/HTTP | 16 MiB | `413 Request Entity Too Large` |
 | OTLP/gRPC | 16 MiB | `RESOURCE_EXHAUSTED` |
 
-An oversized request is rejected as a whole and its spans are not stored. Gzip OTLP/HTTP is capped at 16 MiB after decompression; the compressed wire stream has no separate size cap. An OTLP/HTTP request nested more than 10,000 message levels in protobuf or 10,000 object/array levels in JSON is rejected with `400`. For protobuf attributes, each nested array adds two message levels, so the limit is roughly 5,000 nested arrays. This protects the HTTP decoder from stack exhaustion. Decode amplification from many small elements is a separate pre-existing issue affecting compressed and uncompressed bodies; it is tracked in TH-8745. If you see `413` or `RESOURCE_EXHAUSTED` in your exporter logs, reduce the number of spans sent in each batch. OpenTelemetry's default maximum export batch size is 512 spans. Start with:
+An oversized request is rejected as a whole and its spans are not stored. A request nested more than 10,000 message levels deep in protobuf, or 10,000 object/array levels in JSON, is also rejected: with `400` over OTLP/HTTP, and with `INTERNAL` over OTLP/gRPC. For protobuf attributes, each nested array adds two message levels, so the limit is roughly 5,000 nested arrays. If you see `413` or `RESOURCE_EXHAUSTED` in your exporter logs, reduce the number of spans sent in each batch. OpenTelemetry's default maximum export batch size is 512 spans. Start with:
 
 ```bash
 OTEL_BSP_MAX_EXPORT_BATCH_SIZE=256
 ```
 
 <Note>
-  These limits apply to Future AGI Cloud. For a self-hosted deployment, the configured collector and proxy limits apply. The collector's decompressed-gzip-byte budget is `FI_GZIP_INFLIGHT_MIB` (default 128 MiB, or an eighth of `GOMEMLIMIT` when that is lower, and never below 16 MiB so one full-size body always fits). It covers decompressed bytes only, not decoded heap.
+  These limits apply to Future AGI Cloud. For a self-hosted deployment, the configured collector and proxy limits apply. `FI_GZIP_INFLIGHT_MIB` sets the collector's gzip budget: the decompressed body bytes that gzip requests may hold at once (default 128 MiB, or an eighth of `GOMEMLIMIT` when that is lower, and never below 16 MiB so one full-size body always fits). Each gzip request holds its decompressed size, at most 16 MiB, so with `GOMEMLIMIT=256MiB` (a 32 MiB budget) at most two full-size gzip bodies are processed at a time. The budget counts decompressed body bytes only, not the compressed bytes or memory used to decode requests.
 </Note>
 
 <Warning>
