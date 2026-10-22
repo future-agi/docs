@@ -965,6 +965,7 @@ export const tabNavigation: NavTab[] = [
               // coding-agents:cursor
               { title: 'Cursor', href: '/docs/integrations/coding-agents/cursor' },
               // coding-agents:cursor-sdk
+              { title: 'Cursor SDK', href: '/docs/integrations/coding-agents/cursor-sdk' },
               // coding-agents:devin
               // coding-agents:devin-desktop
               // coding-agents:gemini-cli
