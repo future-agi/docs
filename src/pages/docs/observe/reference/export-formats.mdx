@@ -90,7 +90,7 @@ OTLP/HTTP accepts gzip-compressed requests, as the [OTLP specification](https://
 - **Turning gzip on.** In an OpenTelemetry SDK, use the HTTP exporter (`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`) with `OTEL_EXPORTER_OTLP_COMPRESSION=gzip`. In the OpenTelemetry Collector, the `otlphttp` exporter sends gzip by default and needs no `compression` setting. The `otlp` (gRPC) exporter also defaults to gzip, so keep `compression: none` on it.
 - **Encoding must match the body.** A body labelled `Content-Encoding: gzip` must be gzip: a plain body with that label, or a gzip body that is truncated or fails its checksum, is rejected with `400`. `x-gzip` is treated as `gzip`, and only one gzip layer is accepted (`gzip, gzip` is rejected with `415`). Any encoding other than `gzip` or `identity`, such as `deflate`, `br` or `zstd`, is rejected with `415`, even when the body is actually uncompressed. Earlier collector versions ignored `Content-Encoding`, so an uncompressed body sent with one of these labels used to be accepted; make sure the exporter's compression setting matches what it sends.
 - **Request size.** An OTLP/HTTP request gets `413` if its body exceeds 16 MiB as sent. A gzip request also gets `413` if its body exceeds 16 MiB after decompression. As in the OpenTelemetry Collector's `max_request_body_size`, one limit applies to both sizes.
-- **Busy collector.** A gzip request shares the collector's memory limit with every other request, and its share covers the body as sent plus up to 16 MiB of decompressed body. See [Busy collector](#busy-collector).
+- **Busy collector.** A gzip request shares the collector's memory limit with every other request. See [Busy collector](#busy-collector).
 
 ### Naming the project
 
@@ -142,9 +142,9 @@ Future AGI Cloud enforces the same supported request limit for both OTLP transpo
 | Transport | Maximum request size | Error when exceeded |
 |---|---:|---|
 | OTLP/HTTP | 16 MiB | `413 Request Entity Too Large` |
-| OTLP/gRPC | 16 MiB | `RESOURCE_EXHAUSTED` |
+| OTLP/gRPC | 16 MiB | `INVALID_ARGUMENT` |
 
-An oversized request is rejected as a whole and its spans are not stored. If you see `413` or `RESOURCE_EXHAUSTED` in your exporter logs, reduce the number of spans sent in each batch. OpenTelemetry's default maximum export batch size is 512 spans. Start with:
+An oversized request is rejected as a whole and its spans are not stored. If you see `413` or `INVALID_ARGUMENT` (`RESOURCE_EXHAUSTED` from earlier collector versions) in your exporter logs, reduce the number of spans sent in each batch. OpenTelemetry's default maximum export batch size is 512 spans. Start with:
 
 ```bash
 OTEL_BSP_MAX_EXPORT_BATCH_SIZE=256
@@ -165,19 +165,20 @@ The collector also checks what a request contains before it decodes it. A reques
 | Nesting of an attribute value (arrays and key-value lists inside each other) | 64 levels | `400` | `INVALID_ARGUMENT` |
 | Nesting of an OTLP/JSON body | 512 levels | `400` | not applicable |
 
-Resource attributes are stored with every span of their resource, so keep large values (prompts, outputs, documents) in span attributes rather than resource attributes. Batches from OpenTelemetry SDKs (512 spans by default) and the OpenTelemetry Collector's batch processor (8,192 spans by default) stay within the count limits. A batch that needs more memory than the collector can give one request gets a `413` whose message says so: send smaller batches. In OpenTelemetry Collector pipelines, set `send_batch_max_size` on the batch processor.
+Resource attributes are stored with every span of their resource, so keep large values (prompts, outputs, documents) in span attributes rather than resource attributes. Batches from OpenTelemetry SDKs (512 spans by default) stay within the count limits. The OpenTelemetry Collector's batch processor sends at 8,192 spans by default but sets no upper bound unless `send_batch_max_size` is set, so set it (for example to `8192`) in Collector pipelines. A batch that needs more memory than the collector can give one request gets a `413` whose message says so: send smaller batches.
 
 #### Busy collector
 
-Each collector process limits the memory that all OTLP requests, plain, gzip and gRPC alike, hold at once, from receiving a body until its spans are stored. A request waits up to 2 seconds, in arrival order, for its share. If the collector is still busy, it gets `503 Service Unavailable` with `Retry-After: 1` over OTLP/HTTP and `UNAVAILABLE` over OTLP/gRPC, and OpenTelemetry exporters retry it. Exporters also retry these refusals:
+Each collector process limits the memory that all OTLP requests, plain, gzip and gRPC alike, hold at once, from receiving a body until its spans are stored. A request waits for its share, in arrival order, while the collector frees memory, for up to 10 seconds. If the collector is still busy, it gets `503 Service Unavailable` with `Retry-After: 1` over OTLP/HTTP and `UNAVAILABLE` over OTLP/gRPC, and OpenTelemetry exporters retry it. Exporters also retry these refusals:
 
 | Refusal | OTLP/HTTP | OTLP/gRPC |
 |---|---|---|
 | The collector is busy with other requests | `503`, `Retry-After: 1` | `UNAVAILABLE` |
 | Too many OTLP/gRPC calls in flight on one collector | | `UNAVAILABLE` |
-| The batch names more than 16 projects new to its API key. The first 16 are created, so each retry adds more. | `503`, `Retry-After: 1` | `UNAVAILABLE` |
+| The batch names more than 16 projects new to its API key. Up to 16 are added per request, so each retry adds more. | `503`, `Retry-After: 1` | `UNAVAILABLE` |
+| The body arrived too slowly | `503`, `Retry-After: 1` | `DEADLINE_EXCEEDED` |
 
-A body that has not arrived 30 seconds after the collector started to receive it is rejected with `408` (`DEADLINE_EXCEEDED` over gRPC). OTLP/gRPC calls are authenticated before the collector reads their message; a call without `X-Api-Key` and `X-Secret-Key` metadata is refused with `UNAUTHENTICATED` before it is accepted.
+OTLP/gRPC calls are authenticated before the collector reads their message; a call without `X-Api-Key` and `X-Secret-Key` metadata is refused with `UNAUTHENTICATED` before it is accepted.
 
 <Note>
   These limits apply to Future AGI Cloud. For a self-hosted deployment, the configured collector and proxy limits apply. The collector's settings are:
@@ -186,9 +187,9 @@ A body that has not arrived 30 seconds after the collector started to receive it
   |---|---|---|
   | `FI_INGEST_BUDGET_MIB` | About half of the collector's Go memory limit, less a fixed allowance | Memory, in MiB, that all OTLP requests may hold at once. Without `GOMEMLIMIT`, the collector sets its Go memory limit to 90% of its container's memory limit; with neither, the budget is 256 MiB. A third of the budget is for receiving bodies. |
   | `FI_OTLP_MAX_BODY_MIB` | `16` | Largest OTLP/HTTP body, as sent and after gzip decompression. Lowered at start to a sixth of the budget when that is smaller. |
-  | `FI_GRPC_MAX_RECV_MIB` | The OTLP/HTTP body limit | Largest OTLP/gRPC message, lowered like the body limit. Each gRPC call reserves twice this size while its message arrives, because the collector cannot know the message's size in advance: lower it to let more gRPC uploads arrive at once. |
-  | `FI_OTLP_MAX_CONNECTIONS` | `1024` | Open connections each OTLP listener accepts; further connections wait to be accepted. |
-  | `FI_GZIP_INFLIGHT_MIB` | | Deprecated name of `FI_INGEST_BUDGET_MIB`. |
+  | `FI_GRPC_MAX_RECV_MIB` | The OTLP/HTTP body limit | Largest OTLP/gRPC message (`INVALID_ARGUMENT` above it), lowered like the body limit. |
+  | `FI_OTLP_MAX_CONNECTIONS` | `0` (no cap) | Open connections each OTLP listener accepts. |
+  | `FI_GZIP_INFLIGHT_MIB` | | Earlier versions' budget for gzip requests only. No longer read: set `FI_INGEST_BUDGET_MIB`. |
 
   The Helm chart sets them from `fiCollector.ingestBudgetMiB`, `fiCollector.maxBodyMiB`, `fiCollector.grpcMaxRecvMiB` and `fiCollector.maxConnections`, and derives the budget from `fiCollector.goMemLimit`. The collector logs the limits it uses at startup (`ingest limits`), and its `/healthz` endpoint on the admin port reports the budget in use and the requests refused, by transport, reason and status, under `ingest`. A batch that is refused with `413` for the memory it needs names `FI_INGEST_BUDGET_MIB`: send smaller batches, or raise the collector's memory limit and the budget with it.
 </Note>
