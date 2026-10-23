@@ -73,10 +73,12 @@ The ingestion endpoint is an **OTLP/traces** receiver — you don't call it dire
 | Project | The `project_name` resource attribute, or the `X-Project-Name` header when the exporter cannot set resource attributes. See [Naming the project](#naming-the-project). |
 | Operation | Export spans (write-only). There is no read/query endpoint; reading happens in the trace explorer. |
 | Auth | `FI_API_KEY` + `FI_SECRET_KEY` from the [keys page](https://app.futureagi.com/dashboard/keys), sent by the SDK on every export. Keys are workspace-scoped. |
-| Success | The exporter batches spans and sends them in the background; a successful export returns no payload. Spans appear in Observe within seconds. |
+| Success | HTTP `200` / gRPC `OK` returns an OTLP Export response. It can include `partial_success` with `rejected_spans` and an `error_message`; success does not mean every submitted span was accepted. See [project failures and partial success](#project-failures-and-partial-success). |
 | Errors | A `401` means the keys are wrong for this workspace; a `4xx` means a malformed/oversized batch (`400` also covers a missing project name and a corrupt gzip body, `413` a body or batch over a [limit](#ingestion-request-limits), `415` an unsupported content type or encoding); transient `5xx`/network errors, including a `503` with `Retry-After` when the collector is busy with other requests, are retried by the batch exporter. |
 | Limits | Spans are sent by the **batch** span processor on an interval, so a short-lived process must call `trace_provider.force_flush()` before exit or the last batch is lost. Very large payloads (huge prompts/outputs) can be dropped: [cap attribute size](/docs/sdk/tracing/trace-config#cap-attribute-size) or [mask](/docs/sdk/tracing/mask-span-attributes) them at the SDK. Future AGI Cloud accepts OTLP requests up to 16 MiB over HTTP or gRPC. See [Ingestion request limits](#ingestion-request-limits). |
 | Versioning | Pin `fi-instrumentation-otel` and each instrumentor to a tested version so a release can't change span shape under you; the wire format follows the OTLP version the SDK ships. |
+
+On full success, the OTLP Export response may be empty. Inspect `partial_success.rejected_spans` before treating every submitted span as accepted. Accepted spans normally appear in Observe within seconds, but visibility depends on exporter batching, collector storage progress and load.
 
 ### Compression
 
@@ -117,7 +119,7 @@ OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=gzip
 
 Over gRPC, send the same name as the `x-project-name` metadata key, without compression.
 
-The collector reads the header only when a resource in the batch has no `project_name`. The checks below never reject a batch whose resources all name their project.
+The collector reads the header only when a resource in the batch has no `project_name`. Header-only checks (trimming, repeated headers, commas and conflicting aliases) do not affect resources that name their own project. Resource names are validated before lookup or creation too: the same UTF-8, 255-character, visibility and control-character rules apply. Resource names are kept verbatim, including commas and leading or trailing spaces.
 
 | Header detail | Behaviour |
 |---|---|
@@ -134,6 +136,10 @@ The collector reads the header only when a resource in the batch has no `project
 | Value with no visible character: only combining marks, or symbols that display as blank space, such as U+2800 | `400`, gRPC `INVALID_ARGUMENT`. Inside a name that has visible characters, these are kept. |
 | Spaces in `OTEL_EXPORTER_OTLP_HEADERS` | Percent-encode spaces, for example `X-Project-Name=checkout%20agent`. The SDK decodes percent-encoding before sending. |
 | Project type | There is no header for it. A project the header names that does not exist yet is created as an Observe project. |
+
+#### Project failures and partial success
+
+Temporary project-database or context failures return `503` with `Retry-After: 1` / `UNAVAILABLE`, with no negative cache entry and no spans from that request enqueued. Deterministic project value/check failures may exclude resources; the OTLP response reports their rejected span count as partial success. Those names are retried after a minute; a fully dropped batch emits no ingestion usage.
 
 ### Ingestion request limits
 
@@ -160,23 +166,31 @@ The collector also checks what a request contains before it decodes it. A reques
 | Resources (`ResourceSpans`) | 10,000 | `413` | `INVALID_ARGUMENT` |
 | Attributes, counting each entry of an array value | 1,048,576 | `413` | `INVALID_ARGUMENT` |
 | Resource attributes, keys and values, of one resource | 64 KiB | `413` | `INVALID_ARGUMENT` |
-| Stored size of the batch's spans | 8 times the maximum request size (128 MiB) | `413` | `INVALID_ARGUMENT` |
+| Size of the batch's span rows as written for storage, before compression | 8 times the maximum request size (128 MiB) | `413` | `INVALID_ARGUMENT` |
 | Memory the collector needs to process the batch | what the collector can give one request | `413` | `INVALID_ARGUMENT` |
 | Nesting of an attribute value (arrays and key-value lists inside each other) | 64 levels | `400` | `INVALID_ARGUMENT` |
 | Nesting of an OTLP/JSON body | 512 levels | `400` | not applicable |
 
-Resource attributes are stored with every span of their resource, so keep large values (prompts, outputs, documents) in span attributes rather than resource attributes. Batches from OpenTelemetry SDKs (512 spans by default) stay within the count limits. The OpenTelemetry Collector's batch processor sends at 8,192 spans by default but sets no upper bound unless `send_batch_max_size` is set, so set it (for example to `8192`) in Collector pipelines. A batch that needs more memory than the collector can give one request gets a `413` whose message says so: send smaller batches.
+Resource attributes are stored with every span of their resource, so keep large values (prompts, outputs, documents) in span attributes rather than resource attributes. Batches from OpenTelemetry SDKs (512 spans by default) stay within the count limits. The OpenTelemetry Collector's batch processor sends at 8,192 spans by default but sets no upper bound unless `send_batch_max_size` is set, so set an explicit upper bound. For Standalone, start with both `send_batch_size: 4096` and `send_batch_max_size: 4096`, then reduce them if the batch is refused. A batch that needs more memory than the collector can give one request gets a `413` whose message says so: send smaller batches.
+
+At Standalone's `GOMEMLIMIT=512MiB`, the default ingest budget is 232 MiB, of which about 154.7 MiB is the work pool for decoding and rows. An 8,192-span batch with 50 short string attributes per span can exceed that work pool even below the 16 MiB body limit; not every 8,192-span shape fits. A 4,096-span batch of the same shape fits, but this is not a guarantee for arbitrary attribute sizes or nesting. At the previous 256 MiB Go limit, the work pool was 72 MiB of a 108 MiB budget.
+
+The 512 MiB Go setting is a soft runtime memory target, not a process RSS or container bound. Whole-Standalone ingest load at the documented minimum container memory has not been validated; release sign-off must cover the collector alongside the other services. Leave headroom and size the deployment from its measured workload rather than increasing the budget alone.
 
 #### Busy collector
 
-Each collector process limits the memory that all OTLP requests, plain, gzip and gRPC alike, hold at once, from receiving a body until its spans are stored. A request waits for its share, in arrival order, while the collector frees memory: up to 10 seconds before its body is received, and up to 10 more before it is processed. If the collector is still busy, it gets `503 Service Unavailable` with `Retry-After: 1` over OTLP/HTTP and `UNAVAILABLE` over OTLP/gRPC, and OpenTelemetry exporters retry it. Exporters also retry these refusals:
+Each collector process limits the memory that all OTLP requests, plain, gzip and gRPC alike, hold at once, from receiving a body until its spans are stored. A request waits for its share, in arrival order, while the collector frees memory: up to 10 seconds before its body is received, and up to 10 more before it is processed. A wait ends early if no lease is returned and no drain is storing rows for 2 seconds. Gzip inflation and joining a chunked plain body can require an additional wire-pool wait while the initial lease is held; competing growers are also bounded by the no-progress timeout. If the collector is still busy, it gets `503 Service Unavailable` with `Retry-After: 1` over OTLP/HTTP and `UNAVAILABLE` over OTLP/gRPC, and exporters can retry within their retry policy and deadline. These waits can exceed an SDK's 10-second export budget. The Collector otlp exporter commonly has a 5-second per-attempt timeout; for batches near 8,000 spans that fit the work pool, consider `timeout: 15s`, or use smaller batches. HTTP client timeouts and total retry budgets must also cover upload and processing time. These refusals are transient:
 
 | Refusal | OTLP/HTTP | OTLP/gRPC |
 |---|---|---|
 | The collector is busy with other requests | `503`, `Retry-After: 1` | `UNAVAILABLE` |
 | Too many OTLP/gRPC calls in flight on one collector | | `UNAVAILABLE` |
 | The batch names more than 16 projects new to its API key. Up to 16 are added per request, so each retry adds more. | `503`, `Retry-After: 1` | `UNAVAILABLE` |
-| The body arrived too slowly | `503`, `Retry-After: 1` | `DEADLINE_EXCEEDED` |
+| The body did not arrive within the new 30-second read deadline | `503`, `Retry-After: 1` | `DEADLINE_EXCEEDED` |
+
+HTTP's 30-second body deadline starts when the initial wire lease is granted. gRPC's 30-second message deadline starts before reading the length prefix and includes the wire-pool wait. These deadlines are new relative to collector versions without ingest budgeting; slow uploads may need smaller batches. A client deadline can end an export earlier, and an unread HTTP body does not reliably notify a waiting handler that the client has disconnected.
+
+A usage-quota refusal is separate: HTTP `429` without `Retry-After`, or gRPC `RESOURCE_EXHAUSTED` without `RetryInfo`. Monthly caps and budget pauses have no promised short recovery time. The Go SDK and Collector otlp exporter do not retry that gRPC status without `RetryInfo`; Python and Java exporters may retry it. Resolve the quota condition rather than relying on a one-second retry loop.
 
 OTLP/gRPC calls are authenticated before the collector reads their message; a call without `X-Api-Key` and `X-Secret-Key` metadata is refused with `UNAUTHENTICATED` before it is accepted.
 
