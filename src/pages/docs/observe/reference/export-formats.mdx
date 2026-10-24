@@ -73,10 +73,12 @@ The ingestion endpoint is an **OTLP/traces** receiver — you don't call it dire
 | Project | The `project_name` resource attribute, or the `X-Project-Name` header when the exporter cannot set resource attributes. See [Naming the project](#naming-the-project). |
 | Operation | Export spans (write-only). There is no read/query endpoint; reading happens in the trace explorer. |
 | Auth | `FI_API_KEY` + `FI_SECRET_KEY` from the [keys page](https://app.futureagi.com/dashboard/keys), sent by the SDK on every export. Keys are workspace-scoped. |
-| Success | The exporter batches spans and sends them in the background; a successful export returns no payload. Spans appear in Observe within seconds. |
-| Errors | A `401` means the keys are wrong for this workspace; a `4xx` means a malformed/oversized batch (`400` also covers a missing project name and a corrupt gzip body, `413` an oversized body, `415` an unsupported content type or encoding); transient `5xx`/network errors, including a `503` with `Retry-After` when the collector is busy decompressing other gzip requests, are retried by the batch exporter. |
+| Success | HTTP `200` / gRPC `OK` returns an OTLP Export response. It can include `partial_success` with `rejected_spans` and an `error_message`; success does not mean every submitted span was accepted. See [project failures and partial success](#project-failures-and-partial-success). |
+| Errors | A `401` means the keys are wrong for this workspace; a `4xx` means a malformed/oversized batch (`400` also covers a missing project name and a corrupt gzip body, `413` a body or batch over a [limit](#ingestion-request-limits), `415` an unsupported content type or encoding); transient `5xx`/network errors, including a `503` with `Retry-After` when the collector is busy with other requests, are retried by the batch exporter. |
 | Limits | Spans are sent by the **batch** span processor on an interval, so a short-lived process must call `trace_provider.force_flush()` before exit or the last batch is lost. Very large payloads (huge prompts/outputs) can be dropped: [cap attribute size](/docs/sdk/tracing/trace-config#cap-attribute-size) or [mask](/docs/sdk/tracing/mask-span-attributes) them at the SDK. Future AGI Cloud accepts OTLP requests up to 16 MiB over HTTP or gRPC. See [Ingestion request limits](#ingestion-request-limits). |
 | Versioning | Pin `fi-instrumentation-otel` and each instrumentor to a tested version so a release can't change span shape under you; the wire format follows the OTLP version the SDK ships. |
+
+On full success, the OTLP Export response may be empty. Inspect `partial_success.rejected_spans` before treating every submitted span as accepted. Accepted spans normally appear in Observe within seconds, but visibility depends on exporter batching, collector storage progress and load.
 
 ### Compression
 
@@ -90,7 +92,7 @@ OTLP/HTTP accepts gzip-compressed requests, as the [OTLP specification](https://
 - **Turning gzip on.** In an OpenTelemetry SDK, use the HTTP exporter (`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`) with `OTEL_EXPORTER_OTLP_COMPRESSION=gzip`. In the OpenTelemetry Collector, the `otlphttp` exporter sends gzip by default and needs no `compression` setting. The `otlp` (gRPC) exporter also defaults to gzip, so keep `compression: none` on it.
 - **Encoding must match the body.** A body labelled `Content-Encoding: gzip` must be gzip: a plain body with that label, or a gzip body that is truncated or fails its checksum, is rejected with `400`. `x-gzip` is treated as `gzip`, and only one gzip layer is accepted (`gzip, gzip` is rejected with `415`). Any encoding other than `gzip` or `identity`, such as `deflate`, `br` or `zstd`, is rejected with `415`, even when the body is actually uncompressed. Earlier collector versions ignored `Content-Encoding`, so an uncompressed body sent with one of these labels used to be accepted; make sure the exporter's compression setting matches what it sends.
 - **Request size.** An OTLP/HTTP request gets `413` if its body exceeds 16 MiB as sent. A gzip request also gets `413` if its body exceeds 16 MiB after decompression. As in the OpenTelemetry Collector's `max_request_body_size`, one limit applies to both sizes.
-- **Busy collector.** Each collector process limits how much gzip it decompresses at once. A gzip request takes its share only after it has been received in full, so a slow upload takes none of it from other requests. A request waits up to 2 seconds, in arrival order, for its share; if the collector is still busy, it gets `503 Service Unavailable` with `Retry-After: 1`, and OpenTelemetry exporters retry it. Uncompressed requests do not use this budget.
+- **Busy collector.** A gzip request shares the collector's memory limit with every other request. See [Busy collector](#busy-collector).
 
 ### Naming the project
 
@@ -117,7 +119,9 @@ OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=gzip
 
 Over gRPC, send the same name as the `x-project-name` metadata key, without compression.
 
-The collector reads the header only when a resource in the batch has no `project_name`. The checks below never reject a batch whose resources all name their project.
+The collector reads the header only when a resource in the batch has no `project_name`. Resource names are kept verbatim, including commas, leading/trailing or repeated spaces, and Unicode format/variation characters within visible names. App-created names such as `deploy ✈️`, `team 👩‍💻` and joiner sequences work both for existing-project lookup and auto-creation. They are not subject to the stricter header-only format/variation-character, separator, trimming or list rules below; send these names as resource attributes rather than headers.
+
+Resource names are checked before lookup or creation: invalid UTF-8, more than 255 Unicode characters, Unicode `Cc` control characters, and entirely invisible/blank names are rejected with `400` / `INVALID_ARGUMENT`. Format characters, variation selectors, combining marks, fillers and blank symbols alone do not make a name visible. These are collector ingestion safeguards, not a new app naming policy: the app serializers accept some invisible/control names and trim edge whitespace. This collector change does not migrate or restrict app create/rename behavior. Use the exact stored project name in resource attributes.
 
 | Header detail | Behaviour |
 |---|---|
@@ -135,6 +139,20 @@ The collector reads the header only when a resource in the batch has no `project
 | Spaces in `OTEL_EXPORTER_OTLP_HEADERS` | Percent-encode spaces, for example `X-Project-Name=checkout%20agent`. The SDK decodes percent-encoding before sending. |
 | Project type | There is no header for it. A project the header names that does not exist yet is created as an Observe project. |
 
+#### Project failures and partial success
+
+Temporary project-database or context failures return `503` with `Retry-After: 1` / `UNAVAILABLE`, with no negative cache entry, spans enqueued or usage emitted for that request. The same retryable response applies when the authenticated cache entry expires, is evicted or is replaced before or during project lookup/create, even if its replacement has the same workspace. A stale lookup cannot add mappings to or overwrite the replacement. A retry goes through authentication again using the current key result; a revoked key stays rejected. Project creation may already have succeeded before the interruption, so the retry can resolve that persisted project.
+
+Deterministic project value/check failures may exclude resources; the OTLP response reports their rejected span count as partial success. Those names are retried after a minute; a fully dropped batch emits no ingestion usage.
+
+#### Ingestion usage byte unit
+
+For storage-mode ingestion, `observe_add.amount` is the canonical OTLP protobuf size of **accepted, stamped traces**: after project-header filling, organization/project stamping and permanent resource drops. HTTP protobuf, HTTP JSON, either with gzip, and gRPC use the same accepted semantic protobuf-byte unit. Accepted resource/scope metadata and collector-stamped attributes are included; rejected resources are excluded. This is not wire size, raw JSON text length, compressed request length, ClickHouse JSONEachRow length or compressed table storage size.
+
+This preserves the existing gRPC basis but **intentionally changes successful HTTP byte totals even when every span is accepted**, for both protobuf and JSON, plain or gzip. Previously HTTP used its decompressed-body length, so JSON formatting affected usage and gzip ratio already did not. Under this calculation, full-success HTTP now uses accepted-trace protobuf semantics rather than raw JSON or compressed-body bytes; the same accepted traces have the same amount across the supported transports and encodings.
+
+Event-mode usage still counts accepted distinct traces plus accepted spans. Empty or fully dropped batches emit no ingestion usage. Usage is emitted after enqueue, not after confirmation of a durable database insert; retry/deduplication semantics are unchanged.
+
 ### Ingestion request limits
 
 Future AGI Cloud enforces the same supported request limit for both OTLP transports. For gzip OTLP/HTTP, the limit applies to the body as sent and again after decompression:
@@ -142,16 +160,64 @@ Future AGI Cloud enforces the same supported request limit for both OTLP transpo
 | Transport | Maximum request size | Error when exceeded |
 |---|---:|---|
 | OTLP/HTTP | 16 MiB | `413 Request Entity Too Large` |
-| OTLP/gRPC | 16 MiB | `RESOURCE_EXHAUSTED` |
+| OTLP/gRPC | 16 MiB | `INVALID_ARGUMENT` |
 
-An oversized request is rejected as a whole and its spans are not stored. A request nested more than 10,000 message levels deep in protobuf, or 10,000 object/array levels in JSON, is also rejected: with `400` over OTLP/HTTP, and with `INTERNAL` over OTLP/gRPC. For protobuf attributes, each nested array adds two message levels, so the limit is roughly 5,000 nested arrays. If you see `413` or `RESOURCE_EXHAUSTED` in your exporter logs, reduce the number of spans sent in each batch. OpenTelemetry's default maximum export batch size is 512 spans. Start with:
+An oversized request is rejected as a whole and its spans are not stored. If you see `413` or `INVALID_ARGUMENT` (`RESOURCE_EXHAUSTED` from earlier collector versions) in your exporter logs, reduce the number of spans sent in each batch. OpenTelemetry's default maximum export batch size is 512 spans. Start with:
 
 ```bash
 OTEL_BSP_MAX_EXPORT_BATCH_SIZE=256
 ```
 
+#### What one request may contain
+
+The collector also checks what a request contains before it decodes it. A request over one of these limits is rejected as a whole, its spans are not stored, and exporters do not retry it:
+
+| Limit | Per request | OTLP/HTTP | OTLP/gRPC |
+|---|---:|---|---|
+| Spans | 65,536 | `413` | `INVALID_ARGUMENT` |
+| Resources (`ResourceSpans`) | 10,000 | `413` | `INVALID_ARGUMENT` |
+| Attributes, counting each entry of an array value | 1,048,576 | `413` | `INVALID_ARGUMENT` |
+| Resource attributes, keys and values, of one resource | 64 KiB | `413` | `INVALID_ARGUMENT` |
+| Size of the batch's span rows as written for storage, before compression | 8 times the maximum request size (128 MiB) | `413` | `INVALID_ARGUMENT` |
+| Memory the collector needs to process the batch | what the collector can give one request | `413` | `INVALID_ARGUMENT` |
+| Nesting of an attribute value (arrays and key-value lists inside each other) | 64 levels | `400` | `INVALID_ARGUMENT` |
+| Nesting of an OTLP/JSON body | 512 levels | `400` | not applicable |
+
+Resource attributes are stored with every span of their resource, so keep large values (prompts, outputs, documents) in span attributes rather than resource attributes. Batches from OpenTelemetry SDKs (512 spans by default) stay within the count limits. The OpenTelemetry Collector's batch processor sends at 8,192 spans by default but sets no upper bound unless `send_batch_max_size` is set, so set an explicit upper bound. For Standalone, start with both `send_batch_size: 4096` and `send_batch_max_size: 4096`, then reduce them if the batch is refused. A batch that needs more memory than the collector can give one request gets a `413` whose message says so: send smaller batches.
+
+At Standalone's `GOMEMLIMIT=512MiB`, the default ingest budget is 232 MiB, of which about 154.7 MiB is the work pool for decoding and rows. An 8,192-span batch with 50 short string attributes per span can exceed that work pool even below the 16 MiB body limit; not every 8,192-span shape fits. A 4,096-span batch of the same shape fits, but this is not a guarantee for arbitrary attribute sizes or nesting. At the previous 256 MiB Go limit, the work pool was 72 MiB of a 108 MiB budget.
+
+The 512 MiB Go setting is a soft runtime memory target, not a process RSS or container bound. Whole-Standalone ingest load at the documented minimum container memory has not been validated; release sign-off must cover the collector alongside the other services. Leave headroom and size the deployment from its measured workload rather than increasing the budget alone.
+
+#### Busy collector
+
+Each collector process limits the memory that all OTLP requests, plain, gzip and gRPC alike, hold at once, from receiving a body until its spans are stored. A request waits for its share, in arrival order, while the collector frees memory: up to 10 seconds before its body is received, and up to 10 more before it is processed. A wait ends early if no lease is returned and no drain is storing rows for 2 seconds. Gzip inflation and joining a chunked plain body can require an additional wire-pool wait while the initial lease is held; competing growers are also bounded by the no-progress timeout. If the collector is still busy, it gets `503 Service Unavailable` with `Retry-After: 1` over OTLP/HTTP and `UNAVAILABLE` over OTLP/gRPC, and exporters can retry within their retry policy and deadline. These waits can exceed an SDK's 10-second export budget. The Collector otlp exporter commonly has a 5-second per-attempt timeout; for batches near 8,000 spans that fit the work pool, consider `timeout: 15s`, or use smaller batches. HTTP client timeouts and total retry budgets must also cover upload and processing time. These refusals are transient:
+
+| Refusal | OTLP/HTTP | OTLP/gRPC |
+|---|---|---|
+| The collector is busy with other requests | `503`, `Retry-After: 1` | `UNAVAILABLE` |
+| Too many OTLP/gRPC calls in flight on one collector | | `UNAVAILABLE` |
+| The batch names more than 16 projects new to its API key. Up to 16 are added per request, so each retry adds more. | `503`, `Retry-After: 1` | `UNAVAILABLE` |
+| The body did not arrive within the new 30-second read deadline | `503`, `Retry-After: 1` | `DEADLINE_EXCEEDED` |
+
+HTTP's 30-second body deadline starts when the initial wire lease is granted. gRPC's 30-second message deadline starts before reading the length prefix and includes the wire-pool wait. These deadlines are new relative to collector versions without ingest budgeting; slow uploads may need smaller batches. A client deadline can end an export earlier, and an unread HTTP body does not reliably notify a waiting handler that the client has disconnected.
+
+A usage-quota refusal is separate: HTTP `429` without `Retry-After`, or gRPC `RESOURCE_EXHAUSTED` without `RetryInfo`. Monthly caps and budget pauses have no promised short recovery time. The Go SDK and Collector otlp exporter do not retry that gRPC status without `RetryInfo`; Python and Java exporters may retry it. Resolve the quota condition rather than relying on a one-second retry loop.
+
+OTLP/gRPC calls are authenticated before the collector reads their message; a call without `X-Api-Key` and `X-Secret-Key` metadata is refused with `UNAUTHENTICATED` before it is accepted.
+
 <Note>
-  These limits apply to Future AGI Cloud. For a self-hosted deployment, the configured collector and proxy limits apply. `FI_GZIP_INFLIGHT_MIB` sets the collector's gzip budget: decompressed body bytes for in-flight gzip requests (default 128 MiB, or an eighth of `GOMEMLIMIT` when that is lower, and never below 16 MiB so one full-size body always fits). Each gzip request reserves 16 MiB while the collector counts its decompressed size, then holds exactly that size until the request has been processed. So with `GOMEMLIMIT=256MiB` (a 32 MiB budget), the collector counts at most two gzip requests at a time. The budget counts decompressed body bytes only. Size the collector's memory limit for your largest batches and concurrency as you would for uncompressed requests.
+  These limits apply to Future AGI Cloud. For a self-hosted deployment, the configured collector and proxy limits apply. The collector's settings are:
+
+  | Variable | Default | Effect |
+  |---|---|---|
+  | `FI_INGEST_BUDGET_MIB` | About half of the collector's Go memory limit, less a fixed allowance | Memory, in MiB, that all OTLP requests may hold at once. Without `GOMEMLIMIT`, the collector sets its Go memory limit to 90% of its container's memory limit; with neither, the budget is 256 MiB. A third of the budget is for receiving bodies. |
+  | `FI_OTLP_MAX_BODY_MIB` | `16` | Largest OTLP/HTTP body, as sent and after gzip decompression. Lowered at start to a sixth of the budget when that is smaller. |
+  | `FI_GRPC_MAX_RECV_MIB` | The OTLP/HTTP body limit | Largest OTLP/gRPC message (`INVALID_ARGUMENT` above it), lowered like the body limit. |
+  | `FI_OTLP_MAX_CONNECTIONS` | `0` (no cap) | Open connections each OTLP listener accepts. |
+  | `FI_GZIP_INFLIGHT_MIB` | | Earlier versions' budget for gzip requests only. No longer read: set `FI_INGEST_BUDGET_MIB`. |
+
+  The Helm chart sets them from `fiCollector.ingestBudgetMiB`, `fiCollector.maxBodyMiB`, `fiCollector.grpcMaxRecvMiB` and `fiCollector.maxConnections`, and derives the budget from `fiCollector.goMemLimit`. The collector logs the limits it uses at startup (`ingest limits`), and its `/healthz` endpoint on the admin port reports the budget in use and the requests refused, by transport, reason and status, under `ingest`. A batch that is refused with `413` for the memory it needs names `FI_INGEST_BUDGET_MIB`: send smaller batches, or raise the collector's memory limit and the budget with it.
 </Note>
 
 <Warning>
