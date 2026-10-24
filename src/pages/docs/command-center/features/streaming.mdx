@@ -5,13 +5,13 @@ description: "Stream LLM responses with OpenAI-compatible SSE by setting stream:
 
 ## About
 
-Agent Command Center supports full Server-Sent Events (SSE) streaming, a standard protocol where the server pushes data to the client incrementally as it becomes available, rather than waiting for a complete response. This is identical to the OpenAI streaming format. Set `"stream": true` and receive response chunks in real-time. Works across all providers. Agent Command Center translates each provider's native streaming format to standard OpenAI SSE format.
+Agent Command Center supports full Server-Sent Events (SSE) streaming, a standard protocol where the server pushes data to the client incrementally as it becomes available, rather than waiting for a complete response. This is identical to the OpenAI streaming format. Set `"stream": true` and receive response chunks as the provider sends them. Works across all providers. Agent Command Center translates each provider's native streaming format to standard OpenAI SSE format.
 
 ---
 
 ## When to use
 
-- **Real-time chat interfaces**: Display tokens as they arrive for responsive user experience
+- **Chat interfaces**: Display tokens as they arrive
 - **Long-form generation**: Stream articles, reports, or code without waiting for the full response
 - **Voice and TTS pipelines**: Feed tokens to downstream processors incrementally
 
@@ -47,7 +47,7 @@ In a blocking request, the client sends a request and waits for the entire respo
 
 ![Streaming request flow: client receives tokens incrementally](/screenshot/product/command-center/streaming-flow.gif)
 
-In a streaming request, the client receives tokens as they are generated, enabling real-time display of the response.
+In a streaming request, the client receives tokens as they are generated, so it can display the response as it arrives.
 
 ---
 
@@ -84,13 +84,13 @@ stream = client.chat.completions.create(
 )
 
 for chunk in stream:
-    if chunk.choices[0].delta.content:
+    if chunk.choices and chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
   </Tab>
   <Tab title="TypeScript">
 ```typescript
-import { AgentCC } from '@futureagi/agentcc';
+import { AgentCC } from '@agentcc/client';
 
 const client = new AgentCC({
   apiKey: 'sk-agentcc-your-key',
@@ -106,13 +106,14 @@ const stream = await client.chat.completions.create({
 });
 
 for await (const chunk of stream) {
-  if (chunk.choices[0].delta.content) {
-    process.stdout.write(chunk.choices[0].delta.content);
-  }
+  const content = chunk.choices[0]?.delta?.content;
+  if (content) process.stdout.write(content);
 }
 ```
   </Tab>
 </Tabs>
+
+A chunk with an empty `choices` array comes only when you ask for usage or for the gateway's metadata (see [SSE Format](#sse-format)). These loops check `choices` before reading `choices[0]`, so they work either way.
 
 ---
 
@@ -141,12 +142,13 @@ with client.chat.completions.stream(
     
     # Access full completion after streaming
     completion = stream.get_final_completion()
-    print(f"\nTotal tokens: {completion.usage.total_tokens}")
+    if completion.usage:
+        print(f"\nTotal tokens: {completion.usage.total_tokens}")
 ```
   </Tab>
   <Tab title="TypeScript">
 ```typescript
-import { AgentCC } from '@futureagi/agentcc';
+import { AgentCC } from '@agentcc/client';
 
 const client = new AgentCC({
   apiKey: 'sk-agentcc-your-key',
@@ -160,14 +162,12 @@ const stream = await client.chat.completions.stream({
   ]
 });
 
-for await (const chunk of stream) {
-  if (chunk.choices[0].delta.content) {
-    process.stdout.write(chunk.choices[0].delta.content);
-  }
+for await (const text of stream.textStream()) {
+  process.stdout.write(text);
 }
 
-const completion = stream.finalCompletion();
-console.log(`Total tokens: ${completion.usage.total_tokens}`);
+const completion = stream.getFinalCompletion();
+console.log(`Total tokens: ${completion.usage?.total_tokens}`);
 ```
   </Tab>
 </Tabs>
@@ -183,24 +183,35 @@ data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890
 
 data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}
 
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}}
+
 data: [DONE]
 ```
 
-Each event contains a delta with the next token or function call. The stream ends with a `[DONE]` message.
+Each content event carries a delta with the next token or function call in `choices[0]`. The stream ends with a `[DONE]` message. Where the usage goes depends on the request:
+
+- **Without `stream_options.include_usage` or the `x-agentcc-include-metadata` header**, as above, no chunk has an empty `choices` array. The billed `usage` rides on the last chunk that has choices, the one with `finish_reason`. The gateway holds the finish chunk (with `n` above 1, each choice's) until the provider's stream has ended and the request is metered, then sends it, the usage on the last one. A provider stream that never sends a `finish_reason` gives no usage this way.
+- **With `"stream_options": {"include_usage": true}`**, exactly one chunk with an empty `choices` array comes right before `[DONE]`, carrying the billed `usage`, as OpenAI sends it.
+- **With the header `x-agentcc-include-metadata: 1`** (or `true`), that final chunk comes too, with `agentcc_metadata` (the request's `cost` and `latency_ms`) beside the usage.
+
+The gateway asks the provider for usage on every chat stream and meters the stream on it, whatever you ask for. The provider's own usage is never forwarded, so the usage arrives once. The Agent Command Center SDKs read it from the finish chunk: `get_final_completion().usage` in Python and `getFinalCompletion().usage` in TypeScript.
 
 ---
 
 ## Streaming with Guardrails
 
-Post-processing guardrails accumulate chunks as they stream. If a guardrail triggers in Enforce mode, the stream terminates immediately with an error. In Monitor mode, a warning is logged but streaming continues.
+- **Checks on the request** run before the provider is called, so a request a check blocks (action `block`) gets the 403 `content_blocked` error and no stream starts.
+- **Checks on the response** (an organization's Hallucination Detection and Data Leakage Prevention, or a `config.yaml` rule at the `post` stage unless `guardrails.streaming.enabled` is set) read the answer the gateway assembles from the stream. When one blocks, the stream ends with the guardrail's `content_blocked` error event after the text already sent, then `[DONE]`. A finish chunk the gateway held goes out, with the usage, just before the error event; a request that asked for usage or metadata gets its final chunk after the error event, before `[DONE]`. Text already delivered cannot be recalled.
+- **With `guardrails.streaming.enabled: true`** in a self-hosted gateway's `config.yaml`, the `post` rules in that file are checked while the answer streams. A block during the stream ends it with a `stream_blocked` error event and no `[DONE]`; a block at the final check sends `stream_blocked`, then `[DONE]`. In both cases a finish chunk the gateway held goes out, with the usage, just before the error event; at the final check, a request that asked for usage or metadata gets its final chunk after the error event, before `[DONE]`.
+- A check that triggers with the action `warn` or `log` lets the stream run to the end.
 
-<Note>Pre-processing guardrails run before streaming begins. If they trigger in Enforce mode, the stream never starts.</Note>
+See [Streaming Guardrails](/docs/command-center/features/guardrails#streaming-guardrails) for the `check_interval` and `failure_action` settings.
 
 ---
 
 ## Streaming with Caching
 
-Streaming requests bypass the cache entirely. Each streaming request goes directly to the provider, ensuring real-time responses.
+Streaming requests bypass the cache entirely. Each streaming request goes directly to the provider.
 
 ---
 
@@ -220,10 +231,10 @@ Your application receives identical SSE events regardless of the underlying prov
 
 <CardGroup cols={2}>
   <Card title="Caching" icon="database" href="/docs/command-center/features/caching">
-    Cache responses for faster repeated queries
+    Cache non-streaming responses on a self-hosted gateway
   </Card>
   <Card title="Guardrails" icon="shield" href="/docs/command-center/features/guardrails">
-    Enforce policies during streaming
+    Check requests and streamed answers
   </Card>
   <Card title="Routing" icon="route" href="/docs/command-center/features/routing">
     Route streaming requests across providers
