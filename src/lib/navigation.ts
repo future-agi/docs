@@ -53,8 +53,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Migrate',
             items: [
               { title: 'Migrate from Langfuse', href: '/docs/get-started/migrate/langfuse' },
-              { title: 'Migrate from LangSmith', badge: 'Coming soon' },
-              { title: 'Migrate from Arize', badge: 'Coming soon' },
             ]
           },
           {
@@ -226,8 +224,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Embeddings & reranking', href: '/docs/command-center/api/embeddings' },
                   { title: 'Media endpoints', href: '/docs/command-center/api/media' },
                   { title: 'Assistants API', href: '/docs/command-center/api/assistants' },
-                  { title: 'Files & vector stores', href: '/docs/command-center/api/files' },
-                  { title: 'Async & batch', href: '/docs/command-center/api/async-batch' },
                   { title: 'Request & response headers', href: '/docs/command-center/api/headers' },
                 ]
               },
@@ -255,7 +251,6 @@ export const tabNavigation: NavTab[] = [
                 items: [
                   { title: 'Cost tracking', href: '/docs/command-center/features/cost-tracking' },
                   { title: 'Observability', href: '/docs/command-center/features/observability' },
-                  { title: 'Shadow experiments', href: '/docs/command-center/features/shadow-experiments' },
                   { title: 'Webhooks', href: '/docs/command-center/features/webhooks' },
                   { title: 'Custom Properties', href: '/docs/command-center/features/custom-properties' },
                 ]
@@ -1160,7 +1155,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Custom Datasets for Optimization', href: '/docs/cookbook/import-datasets' },
               { title: 'Comparing Prompt Optimizers', href: '/docs/cookbook/quickstart/compare-optimizers' },
               { title: 'Comparing Optimizers', href: '/docs/cookbook/compare-optimization' },
-              { title: 'Semantic Caching', href: '/docs/cookbook/command-center/semantic-caching' },
             ]
           },
         ]
