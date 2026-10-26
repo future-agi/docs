@@ -10,11 +10,16 @@ KONG_LOG_TAIL="${KONG_LOG_TAIL:-60}"                # Kong log lines printed whe
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVID="${EVID:-$HERE/.evidence}"
 mkdir -p "$EVID"
+# Rendered configs contain keys. Keep their parent directory private on the host.
+chmod 700 "$EVID"
 
 # start_kong <rendered-config>  -- DB-less Kong, tracing on, small footprint
 start_kong() {
   docker rm -f "$KONG_CONTAINER" >/dev/null 2>&1 || true
-  docker run -d --name "$KONG_CONTAINER" --memory 768m \
+  # Grant Kong only the rendered file's group read permission (Linux bind mounts keep host ownership).
+  local config_gid
+  config_gid="$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_gid)' "$1")"
+  docker run -d --name "$KONG_CONTAINER" --memory 768m --group-add "$config_gid" \
     -p "$KONG_PROXY_PORT:8000" -p "127.0.0.1:$KONG_ADMIN_PORT:8001" -p "127.0.0.1:$KONG_STATUS_PORT:8007" \
     -e KONG_DATABASE=off -e KONG_DECLARATIVE_CONFIG=/kong/kong.yml \
     -e KONG_ADMIN_LISTEN=0.0.0.0:8001 -e KONG_STATUS_LISTEN=0.0.0.0:8007 \
@@ -71,7 +76,10 @@ render() {
   # shellcheck disable=SC2016
   envsubst '${UPSTREAM_API_KEY} ${UPSTREAM_MODEL} ${UPSTREAM_CHAT_URL} ${LOG_PAYLOADS} ${FI_TRACES_ENDPOINT} ${FI_API_KEY} ${FI_SECRET_KEY} ${FI_PROJECT_NAME}' \
     < "$HERE/kong.yml" > "$1"
-  chmod 600 "$1"
+  # Kong runs as another UID. The private parent protects the keys on the host;
+  # start_kong adds this file's group to the container so only that mounted file is readable.
+  chmod 700 "$(dirname "$1")"
+  chmod 640 "$1"
 }
 
 # chat <prompt> [traceparent]
