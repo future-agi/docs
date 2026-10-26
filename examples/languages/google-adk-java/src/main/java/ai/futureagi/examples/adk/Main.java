@@ -11,7 +11,8 @@ public final class Main {
 
   public static void main(String[] args) throws Exception {
     String scenario = args.length > 0 ? args[0] : "happy";
-    String marker = args.length > 1 ? args[1] : "What is the weather in Paris?";
+    String marker = args.length > 1 ? args[1] : "adk-example";
+    String question = "What is the weather in Paris? Include this reference in your answer: " + marker;
     String model = System.getenv().getOrDefault("OPENAI_MODEL", "gpt-6-luna");
     FutureAgiTelemetry.Config cfg = FutureAgiTelemetry.Config.fromEnv();
 
@@ -24,7 +25,7 @@ public final class Main {
       } catch (IllegalStateException e) {
         System.out.println("late: register failed as documented: " + e.getMessage());
       }
-      System.out.println("late: reply=" + Scenarios.run(model, "user-late", marker));
+      System.out.println("late: reply=" + Scenarios.run(model, "user-late", question));
       return;
     }
 
@@ -32,7 +33,7 @@ public final class Main {
     try {
       String useModel = scenario.equals("error") ? "model-that-does-not-exist" : model;
       try {
-        System.out.println(scenario + ": reply=" + Scenarios.run(useModel, "user-42", marker)); // 2.
+        System.out.println(scenario + ": reply=" + Scenarios.run(useModel, "user-42", question)); // 2.
       } catch (RuntimeException e) {
         System.out.println(scenario + ": run failed (" + e.getClass().getSimpleName() + ")");
       }
