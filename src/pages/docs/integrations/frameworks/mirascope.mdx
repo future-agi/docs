@@ -1,0 +1,397 @@
+---
+title: "Mirascope tracing with Future AGI"
+description: "Send the OpenTelemetry spans Mirascope 2.x already emits to Future AGI with a tracer provider you build and ops.configure. Covers what is captured, the metadata-only default, the opt-in for content, and what Mirascope does not trace."
+---
+
+## About
+
+This page is for **Mirascope**, the Python LLM toolkit: PyPI package `mirascope`, repository `Mirascope/mirascope`, MIT. It is not about any other product named Mirascope, and it does not use Mirascope Cloud.
+
+Mirascope 2.x emits OpenTelemetry spans on its own. `ops.instrument_llm()` creates a `chat <model>` span for every `llm.Model` call and stream, and `@ops.trace`, `ops.span` and `ops.session` add spans of your own. Mirascope does not take an endpoint, headers or a resource: you build the OpenTelemetry tracer provider and hand it to `ops.configure`. There is no traceAI package for Mirascope and you do not need one.
+
+This is not the [OpenAI instrumentor](/docs/integrations/traceai/openai). That one traces calls made through the OpenAI SDK, and only that SDK. This recipe traces at the level of Mirascope's `llm.Model`, so the same setup covers every provider Mirascope supports. It is also not the Langfuse path: `mirascope.integrations.langfuse.with_langfuse` belongs to Mirascope 1.x and does not exist in 2.5.0 (`import mirascope.integrations` raises `ModuleNotFoundError`). Do not wrap it.
+
+<Warning>
+This page is alpha. It was tested end to end against a self-hosted Future AGI stack with a real model behind an OpenAI-compatible endpoint, using Mirascope's OpenAI provider. It was not tested against the hosted `api.futureagi.com` endpoint or with Mirascope's Anthropic provider. A shorter run with Mirascope's Google provider gave the same span shape.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | Mirascope 2.5.0 (PyPI latest, published 2026-06-24) on Python 3.13.15 and Python 3.10.17. `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1, `openai` 2.54.0. |
+| Model | A real model behind an OpenAI-compatible endpoint, called through Mirascope's OpenAI provider, once on the Chat Completions API (`openai/<model>:completions`, requests to `/v1/chat/completions`) and once on the Responses API (`openai/<model>`, Mirascope's default for models it does not know, requests to `/v1/responses`). Also `google/gemini-3.1-flash-lite` through Mirascope's Google provider: chat, stream, tool loop and a rejected model id. |
+| Source pin | Release tag `v2.5.0` (`000e0666`, 2026-06-24). Commit `4c9394db` on `main` (2026-10-01), 36 commits later, has the same files under `python/mirascope/ops` and `python/examples/ops`. Unreleased `main` has since changed `ops/_internal/traced_functions.py` and `versioned_calls.py`; that code is not covered here. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-16. |
+| Not tested | The hosted `api.futureagi.com`, Mirascope's Anthropic provider, async calls, `@llm.call` functions, structured output, MCP, `ops.version`, and Mirascope Cloud. |
+| Mirascope docs used | [LLM Instrumentation](https://mirascope.com/docs/learn/ops/instrumentation) and [Configuration](https://mirascope.com/docs/ops/configuration), read 2026-10-16, and the 2.5.0 source. |
+| Source | [examples/frameworks/mirascope](https://github.com/future-agi/docs/tree/main/examples/frameworks/mirascope): the helper below, a demo app, tests, and an end-to-end script. |
+
+## 1. Install
+
+```bash
+pip install "mirascope[openai,anthropic,google,ops]==2.5.0" opentelemetry-exporter-otlp-proto-http
+```
+
+Install all three provider extras even if you only call one provider. Mirascope turns its `ops` module on only when the Anthropic and Google GenAI OpenTelemetry instrumentors can import, and those import `anthropic` and `google.genai`. With `mirascope[openai,ops]` alone, `ops.configure` raises:
+
+```text
+ImportError: The 'ops' packages are required to use configure. Install them with: `uv add 'mirascope[ops]'`. Or use `uv add 'mirascope[all]'` to support all optional features.
+```
+
+The message names `mirascope[ops]`, which is the extra you already installed.
+
+`mirascope[ops]` already pulls `opentelemetry-exporter-otlp`, which includes the OTLP/HTTP exporter used below. The explicit `opentelemetry-exporter-otlp-proto-http` line only makes the dependency visible.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_PROJECT_NAME="my-chatbot"           # the Observe project the traces land in
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"  # default: https://api.futureagi.com
+# export FI_CAPTURE_CONTENT=1                 # opt in to prompts, answers and arguments
+```
+
+Set `FI_BASE_URL` to the origin only. The code adds `/tracer/v1/traces`.
+
+## 3. Add the helper file
+
+Mirascope's own `examples/ops/configure_otlp.py` builds a gRPC exporter with no headers and no resource. Future AGI accepts OTLP over HTTP only, needs both auth headers, and files spans by the resource attribute `project_name`, so that example cannot be used with values filled in. Save this as `futureagi_tracing.py`:
+
+```python title="futureagi_tracing.py"
+"""Send Mirascope traces to Future AGI.
+
+Mirascope (``pip install "mirascope[openai,anthropic,google,ops]"``) already emits
+OpenTelemetry spans: ``ops.instrument_llm()`` writes a GenAI ``chat <model>`` span for every
+``llm.Model`` call and stream, and ``@ops.trace`` / ``ops.span`` / ``ops.session`` add spans of
+your own. Mirascope does not take an endpoint, headers or a resource. You build the
+OpenTelemetry tracer provider and hand it to ``ops.configure``. ``build_tracer_provider``
+builds that provider:
+
+* the resource carries ``project_name`` (Future AGI files spans by it) and ``project_type``;
+* the OTLP/HTTP exporter carries ``X-Api-Key`` and ``X-Secret-Key``, sends no gzip, and posts
+  to ``<FI_BASE_URL>/tracer/v1/traces`` (traces only, no logs or metrics). Mirascope's own
+  ``examples/ops/configure_otlp.py`` uses the gRPC exporter with no headers and no resource,
+  which Future AGI cannot accept, so this is not that example with values filled in;
+* by default only metadata leaves the process (see ``METADATA_ATTRIBUTES``). Set
+  ``FI_CAPTURE_CONTENT=1`` (or ``capture_content=True``) to also export prompts, answers, tool
+  schemas, ``@ops.trace`` arguments and results, and the text of an error;
+* a stack trace is never exported, in either mode: it holds local file paths.
+
+Mirascope has no switch for content: ``instrument_llm`` always writes the messages onto the
+span. ``ContentFilterExporter`` is the off switch.
+
+Usage::
+
+    provider = build_tracer_provider()
+    ops.configure(tracer_provider=provider)
+    ops.instrument_llm()
+    ...
+    provider.shutdown()   # flush now; the SDK also flushes at a normal interpreter exit
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Sequence
+
+from opentelemetry.exporter.otlp.proto.http import Compression
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import Event, ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
+from opentelemetry.trace import Status, StatusCode
+
+# Attributes on Mirascope's spans that describe a call without containing what was said or
+# done. Anything not listed here is dropped unless content capture is on, so an attribute
+# added by a later Mirascope release stays private until it is reviewed.
+METADATA_ATTRIBUTES = frozenset(
+    {
+        # the model call (instrument_llm)
+        "gen_ai.operation.name",
+        "gen_ai.provider.name",
+        "gen_ai.request.model",
+        "gen_ai.output.type",
+        "gen_ai.request.temperature",
+        "gen_ai.request.max_tokens",
+        "gen_ai.request.top_p",
+        "gen_ai.request.top_k",
+        "gen_ai.request.frequency_penalty",
+        "gen_ai.request.presence_penalty",
+        "gen_ai.request.seed",
+        "gen_ai.request.choice_count",
+        "gen_ai.response.model",
+        "gen_ai.response.id",
+        "gen_ai.response.finish_reasons",
+        "gen_ai.usage.input_tokens",
+        "gen_ai.usage.output_tokens",
+        "mirascope.response.usage",
+        "mirascope.response.cost",
+        "mirascope.response.model_id",
+        "mirascope.response.provider_id",
+        "error.type",
+        # the app's own tool span (see app.py): the tool's name, not its arguments or result
+        "gen_ai.tool.name",
+        # ops.trace / ops.span / ops.session (names of code, not data)
+        "mirascope.type",
+        "mirascope.fn.qualname",
+        "mirascope.fn.module",
+        "mirascope.fn.is_async",
+        "mirascope.ops.session.id",
+    }
+)
+
+# Never exported, even with content on: it holds absolute local file paths.
+_NEVER_EXPORTED_EVENT_ATTRIBUTES = frozenset({"exception.stacktrace"})
+
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def _filter_event(event: Event, capture_content: bool) -> Event:
+    """Keep an event's name and time. An exception event keeps its type, and with content on
+    its message; its stack trace is always dropped. Any other event keeps its attributes
+    (``ops.span(...).info("...")`` messages, the untracked-parameters dump) only with
+    content on."""
+    attributes = dict(event.attributes or {})
+    if event.name == "exception":
+        keep = {"exception.type", "exception.message"} if capture_content else {"exception.type"}
+        attributes = {key: value for key, value in attributes.items() if key in keep}
+    elif not capture_content:
+        attributes = {}
+    else:
+        attributes = {
+            key: value
+            for key, value in attributes.items()
+            if key not in _NEVER_EXPORTED_EVENT_ATTRIBUTES
+        }
+    return Event(name=event.name, attributes=attributes, timestamp=event.timestamp)
+
+
+def _filter_span(span: ReadableSpan, capture_content: bool) -> ReadableSpan:
+    """A copy of a finished span with the content removed."""
+    attributes = {
+        key: value
+        for key, value in (span.attributes or {}).items()
+        if capture_content or key in METADATA_ATTRIBUTES
+    }
+    events = tuple(_filter_event(event, capture_content) for event in span.events)
+
+    status = span.status
+    description = status.description
+    if status.status_code == StatusCode.ERROR and not capture_content:
+        # The status text is str(exception). Keep the class name instead.
+        description = next(
+            (
+                event.attributes["exception.type"]
+                for event in events
+                if event.attributes and "exception.type" in event.attributes
+            ),
+            None,
+        )
+    return ReadableSpan(
+        name=span.name,
+        context=span.context,
+        parent=span.parent,
+        resource=span.resource,
+        attributes=attributes,
+        events=events,
+        links=span.links,
+        kind=span.kind,
+        status=Status(status.status_code, description),
+        start_time=span.start_time,
+        end_time=span.end_time,
+        instrumentation_scope=span.instrumentation_scope,
+    )
+
+
+class ContentFilterExporter(SpanExporter):
+    """Wrap an exporter so that content, and always stack traces, never leave the process."""
+
+    def __init__(self, inner: SpanExporter, capture_content: bool = False) -> None:
+        self._inner = inner
+        self._capture_content = capture_content
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        return self._inner.export([_filter_span(span, self._capture_content) for span in spans])
+
+    def shutdown(self) -> None:
+        self._inner.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._inner.force_flush(timeout_millis)
+
+
+def build_tracer_provider(
+    project_name: str | None = None,
+    *,
+    capture_content: bool | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    secret_key: str | None = None,
+) -> TracerProvider:
+    """Build a tracer provider that exports Mirascope's spans to Future AGI.
+
+    Pass the result to ``ops.configure(tracer_provider=...)``.
+    """
+    project_name = project_name or os.environ.get("FI_PROJECT_NAME") or "mirascope-app"
+    if capture_content is None:
+        capture_content = os.environ.get("FI_CAPTURE_CONTENT", "").lower() in _TRUE
+    base_url = (base_url or os.environ.get("FI_BASE_URL") or "https://api.futureagi.com").rstrip("/")
+    api_key = api_key or os.environ["FI_API_KEY"]
+    secret_key = secret_key or os.environ["FI_SECRET_KEY"]
+
+    exporter = OTLPSpanExporter(
+        endpoint=f"{base_url}/tracer/v1/traces",
+        headers={"X-Api-Key": api_key, "X-Secret-Key": secret_key},
+        compression=Compression.NoCompression,  # the Future AGI collector refuses gzip
+    )
+
+    provider = TracerProvider(
+        resource=Resource.create({"project_name": project_name, "project_type": "observe"})
+    )
+    provider.add_span_processor(BatchSpanProcessor(ContentFilterExporter(exporter, capture_content)))
+    return provider
+```
+
+What it sets up:
+
+| Piece | Value |
+| --- | --- |
+| Endpoint | `$FI_BASE_URL/tracer/v1/traces`, OTLP over HTTP with protobuf bodies. Not gRPC. |
+| Headers | Both `X-Api-Key` and `X-Secret-Key`. One header is a failed setup. |
+| Compression | None. The Future AGI collector answers a gzip body with HTTP 400. |
+| Resource | `project_name` and `project_type=observe`. A span attribute with that key does not count, and `service.name` is not read as a project name: the collector answers HTTP 400 to a batch without the resource attribute. |
+
+Mirascope has no switch for content, so the file also contains the privacy filter described under [Privacy](#privacy).
+
+## 4. Turn tracing on
+
+```python title="app.py"
+from mirascope import llm, ops
+
+from futureagi_tracing import build_tracer_provider
+
+provider = build_tracer_provider()
+ops.configure(tracer_provider=provider)  # before instrument_llm(), and before anything else sets a global provider
+ops.instrument_llm()                     # a "chat <model>" span for every llm.Model call and stream
+
+
+@llm.tool
+def get_weather(city: str) -> str:
+    """Return the current weather for a city."""
+    # Mirascope emits no span for running a tool. This one is your own; the two
+    # gen_ai.* attributes make Future AGI show it as a tool.
+    with ops.span(
+        "execute_tool get_weather",
+        **{"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "get_weather"},
+    ):
+        return "sunny, 24 C"
+
+
+@ops.trace  # one parent span, so the whole loop is one trace
+def weather_agent(question: str) -> str:
+    model = llm.Model("openai/gpt-4o-mini")
+    response = model.call(question, tools=[get_weather])
+    while response.tool_calls:
+        response = response.resume(response.execute_tools())
+    return response.text()
+
+
+print(weather_agent("What is the weather in Lisbon? Use the get_weather tool."))
+provider.shutdown()  # flush now; the SDK also flushes at a normal interpreter exit
+```
+
+Run it with your model provider's key in the environment (`OPENAI_API_KEY`; `OPENAI_BASE_URL` for an OpenAI-compatible endpoint). The trace appears in your Observe project a few seconds later:
+
+```text
+weather_agent                              your @ops.trace function
+├── chat openai/gpt-4o-mini                model, provider, input and output tokens
+├── execute_tool get_weather               your span, shown as a tool
+└── Response.resume openai/gpt-4o-mini     Mirascope's span for response.resume(...)
+    └── chat openai/gpt-4o-mini
+```
+
+| Span | Future AGI type | What you see |
+| --- | --- | --- |
+| `chat <model>` | llm | Model, provider, input and output tokens, duration, ERROR status when the call fails |
+| `execute_tool <tool>` | tool | Only if you add the `ops.span` shown above |
+| `Response.resume <model>` | unknown | Duration |
+| Your `@ops.trace` function or `ops.span` | unknown | Name and duration |
+
+The model is stored exactly as Mirascope names it: `openai/gpt-4o-mini`, including the provider prefix and any `:completions` or `:responses` suffix.
+
+## What is captured
+
+| Data | Default | `FI_CAPTURE_CONTENT=1` |
+| --- | --- | --- |
+| Span names, timing, parent links, status code | Yes | Yes |
+| Model id, provider, operation name, finish reason, response id | Yes | Yes |
+| Input and output token counts, when the provider reports them | Yes | Yes |
+| Request parameters: temperature, max tokens, top p, top k, penalties, seed, choice count | Yes | Yes |
+| Names of your `@ops.trace` functions, `mirascope.ops.session.id`, tool name on your own tool span | Yes | Yes |
+| Error class (`error.type`, `exception.type`) | Yes | Yes |
+| Prompts, system instructions, answers (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, `mirascope.response.messages`, `mirascope.response.content`) | No | Yes |
+| Tool definitions (`gen_ai.tool.definitions`) | No | Yes |
+| `@ops.trace` arguments and results, `ops.span` attributes and event messages, session attributes | No | Yes |
+| Error text (`error.message`, exception message, span status text) | No | Yes |
+| Stack traces (`exception.stacktrace`) | Never | Never |
+
+The resource carries `project_name`, `project_type`, `service.name` (`unknown_service:python`), the `telemetry.sdk.*` attributes and, with newer OpenTelemetry SDKs, `service.instance.id` (a random UUID). No host name, user name or file path was found in any stored column in our runs.
+
+## Privacy
+
+Mirascope writes prompts, answers, tool schemas, `@ops.trace` arguments and results, and error text onto its spans, and 2.5.0 has no setting to turn that off ([upstream docs](https://mirascope.com/docs/learn/ops/instrumentation) say the same). The filter in `futureagi_tracing.py` is therefore the off switch.
+
+**Default: metadata only.** `ContentFilterExporter` sits between the batch processor and the OTLP exporter. It keeps only the attributes on the `METADATA_ATTRIBUTES` list, so an attribute added by a later Mirascope release stays private until you review it. It empties the payload of events, replaces an error's status text with its class name, and drops the stack trace. It does not change what Mirascope or any other exporter you configure sees.
+
+Names you choose are exported in both modes: span names, `@ops.trace` function names, the `ops.session` id and the tool name on your own tool span. Do not put user text, emails or customer names in them.
+
+**Opt in: `FI_CAPTURE_CONTENT=1`**, or `build_tracer_provider(capture_content=True)`. Every attribute and the text of errors are then exported. The stack trace still is not, because it holds absolute local file paths.
+
+With content on, Future AGI stores the content as span attributes, visible in the span's Attributes panel. The Input and Output panes stay empty; see [Limitations](#limitations).
+
+How this was checked: each run put a unique marker in the prompt and the model's tool argument and result, and the model repeated it. With the default, the marker was in none of the bytes sent and in no stored column of any ClickHouse table or of the Postgres dump. With `FI_CAPTURE_CONTENT=1` it was stored. The same checks run without keys in the example's tests.
+
+## How it behaves
+
+- **Order.** Call `ops.configure(tracer_provider=provider)` before `ops.instrument_llm()` ([Mirascope requires this](https://mirascope.com/docs/learn/ops/instrumentation)). `instrument_llm()` also sets `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` for the whole process if it is not set, which changes the output of any other GenAI instrumentor in the same process.
+- **Flushing.** `BatchSpanProcessor` exports in the background, and the OpenTelemetry SDK flushes it when the interpreter exits normally. A process that ends with `os._exit`, is killed, or runs as a short serverless handler loses the last batch unless you call `provider.shutdown()` or `provider.force_flush()` first, as `app.py` does.
+- **Streaming.** One `chat` span per `Model.stream`, ended when the stream finishes, with the usage the provider reported at the end. There is no span per chunk.
+- **Tools.** Mirascope emits no span for running a tool: `response.execute_tools()` is not traced. The tool call the model asked for is visible only inside `gen_ai.output.messages` (content on). The `ops.span` in step 4 is the app's own.
+- **One trace or several.** Mirascope's calls are root spans unless something encloses them. Without a wrapper, a tool loop is three traces: the first `chat`, the tool run, and `Response.resume` with its `chat`. Wrap the loop in an `@ops.trace` function or an `ops.span` to get one trace.
+- **Sessions.** `ops.session(id=...)` writes `mirascope.ops.session.id` on your own spans only (not on `chat` spans). Future AGI does not group traces as a session from that attribute, because it reads `session.id` or `gen_ai.conversation.id`. Filter on the attribute instead.
+- **Global provider.** `ops.configure` also calls OpenTelemetry's `set_tracer_provider`, which works once per process. If another library (an APM agent, for example) set a global provider first, OpenTelemetry logs `Overriding of current TracerProvider is not allowed`. `chat` spans still reach Future AGI, but your `@ops.trace` and `ops.span` spans go to the other provider.
+- **Cost.** Mirascope 2.5.0 does not calculate cost (its cost function returns `None`), so there is no `mirascope.response.cost`.
+- **Responses API.** Mirascope sends models it does not know to the Responses API. The spans have the same shape on both APIs.
+
+## Limitations
+
+- **Most spans other than `chat` show type "unknown".** Future AGI types a span from `gen_ai.operation.name` (`chat` becomes llm, `execute_tool` becomes tool) or from an explicit span-kind attribute. `Response.resume`, `@ops.trace` and `ops.span` spans carry neither, and this recipe does not add one. The tree, timing and status are correct.
+- **Input and Output panes are empty**, even with `FI_CAPTURE_CONTENT=1`. Content is stored in attributes; Future AGI does not yet promote `gen_ai.input.messages` and `gen_ai.output.messages` into those panes.
+- **Model name includes Mirascope's prefix.** The model column shows `openai/gpt-4o-mini`, not `gpt-4o-mini`. Cost lookups by model name may not match a prefixed name; no cost was computed in our runs.
+- **Token counts are on `chat` spans only.** `Response.resume` repeats the usage inside `mirascope.response.usage`, which Future AGI does not read, so a sum over a trace does not count a call twice.
+- **Duplicate exception events.** A failed call records the `exception` event twice on the same span. Both are kept; the status is a single ERROR.
+- **No Mirascope-level agent span.** Mirascope has no agent or run concept to trace. Use `@ops.trace` as in step 4.
+- **Not tested:** the hosted endpoint, Mirascope's Anthropic provider, async calls, `@llm.call` functions, structured output, MCP and `ops.version`.
+
+## Troubleshooting
+
+- **`ImportError: The 'ops' packages are required to use configure`.** Install `mirascope[openai,anthropic,google,ops]`, not `mirascope[openai,ops]`. See step 1.
+- **No traces in the project.** The exporter logs `Failed to export spans batch code: 400` when the resource has no `project_name` (a span attribute or `service.name` does not count) or the body is gzip-compressed. Check that both `FI_API_KEY` and `FI_SECRET_KEY` are set, and that `FI_BASE_URL` is an origin without a path.
+- **`Failed to export spans batch code: 401`.** One of the two keys is wrong, or one header is missing. Both `X-Api-Key` and `X-Secret-Key` are required.
+- **The last spans never arrive.** The process ended without a normal interpreter exit (`os._exit`, a kill, a serverless freeze). Call `provider.shutdown()` or `provider.force_flush()` before it ends.
+- **``RuntimeError: You must call `configure()` before calling `instrument_llm()`.``** Swap the two lines.
+- **`chat` spans arrive but `@ops.trace` spans do not.** Another library set the global tracer provider first. Call `ops.configure` earlier, or give both pieces the same provider.
+- **`ModuleNotFoundError: No module named 'mirascope.integrations'` or `mirascope.core`.** Those are Mirascope 1.x modules. Mirascope 2.x uses `mirascope.llm` and `mirascope.ops`. Follow this page, not the Langfuse page.
+- **Spans go to Langfuse.** You are on 1.x with `with_langfuse`. That decorator is not this recipe.
+- **A copied `configure_otlp.py` sends nothing.** It builds the gRPC exporter with no headers and no resource. Use the helper in step 3.
+
+## Next Steps
+
+- [Send your first trace](/docs/get-started/send-your-first-trace)
+- [OpenAI instrumentor](/docs/integrations/traceai/openai): trace the OpenAI SDK directly
+- [Integrations overview](/docs/integrations)
