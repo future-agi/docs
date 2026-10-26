@@ -4,15 +4,19 @@ package ai.futureagi.examples.koog.quickstart
 
 import ai.futureagi.examples.koog.FutureAgiTelemetry
 import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.annotations.LLMDescription
 import ai.koog.agents.core.tools.annotations.Tool
 import ai.koog.agents.core.tools.reflect.ToolSet
 import ai.koog.agents.features.opentelemetry.feature.OpenTelemetry
+import ai.koog.prompt.executor.clients.openai.OpenAIChatParams
 import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.clients.openai.base.models.ReasoningEffort
 import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
+import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.utils.io.use
 
@@ -33,8 +37,13 @@ suspend fun main() {
         AIAgent(
             id = "weather-agent", // readable span names; Koog uses a random UUID otherwise
             promptExecutor = MultiLLMPromptExecutor(LLMProvider.OpenAI to openAI),
-            llmModel = OpenAIModels.Chat.GPT5_6Luna,
-            systemPrompt = "You are a weather assistant. Always call getWeather before answering.",
+            agentConfig = AIAgentConfig(
+                model = OpenAIModels.Chat.GPT5_6Luna,
+                prompt = prompt("weather-agent", params = OpenAIChatParams(reasoningEffort = ReasoningEffort.NONE)) {
+                    system("You are a weather assistant. Always call getWeather before answering.")
+                },
+                maxAgentIterations = 10,
+            ),
             toolRegistry = ToolRegistry { tools(WeatherTools()) },
         ) {
             install(OpenTelemetry) { telemetry.configure(this) }
