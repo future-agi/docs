@@ -1,0 +1,255 @@
+---
+title: "Apollo Server 4 tracing with Future AGI"
+description: "Trace an Apollo Server 4 GraphQL server in Observe with the stock OpenTelemetry GraphQL instrumentation: one operation per trace, resolver spans, errors, and no query text or error text by default."
+---
+
+## About
+
+[Apollo Server](https://www.apollographql.com/docs/apollo-server) is a GraphQL server for Node.js. It does not export traces to Future AGI on its own, and there is no Future AGI package for it. This page wires the OpenTelemetry GraphQL instrumentation that already exists to Future AGI's OTLP endpoint. One GraphQL operation becomes one trace:
+
+```text
+POST                                      @opentelemetry/instrumentation-http
+├─ graphql.parse                          skipped when Apollo has the parsed operation cached
+├─ graphql.validate                       skipped when Apollo has validated it before
+└─ query Profile                          the operation (name from the client, "query" when anonymous)
+   └─ graphql.resolve profile             a field resolver, depth 1
+      └─ load-profile                     YOUR span, started inside the resolver
+```
+
+<Warning>
+Apollo Server 4 reached end of life on January 26, 2026 ([Apollo's version policy](https://www.apollographql.com/docs/apollo-server/previous-versions)), and the `@apollo/server@4` releases on npm are marked deprecated. Apollo recommends Apollo Server 5. This page is written for Server 4 because that is what it was tested on end to end. Server 5 loads the same GraphQL instrumentation but needs one more step for the HTTP span, see [Apollo Server 5](#apollo-server-5) for what differs.
+</Warning>
+
+A GraphQL-only trace has no LLM span, and that is correct. If a resolver calls a model, add the traceAI instrumentor for that model library and its spans appear inside the resolver span. Span types for the GraphQL spans show as `unknown` in Observe.
+
+Alpha. Tested on a self-hosted Future AGI. The example is in the docs repository under `examples/frameworks/apollo-graphql`.
+
+### Tested versions
+
+| Piece | Version |
+| --- | --- |
+| `@apollo/server` | 4.13.0 (the last 4.x). Install name `@apollo/server`, not the old `apollo-server`. Needs Node 14.16 or later. |
+| `graphql` | 16.14.2 |
+| `@opentelemetry/instrumentation-graphql` | 0.71.0 |
+| `@opentelemetry/instrumentation-http` | 0.223.0 |
+| `@opentelemetry/sdk-node`, `@opentelemetry/exporter-trace-otlp-http` | 0.223.0 |
+| Node | 26.8.1 |
+| `@apollo/server` 5.5.1 (matrix leg) | GraphQL spans work, HTTP span does not without a loader. See below. |
+
+Pin exact versions in your lockfile. Do not float onto `@apollo/server@5` by accident: `npm install @apollo/server` installs 5.x today.
+
+### How this differs from other pages
+
+This page is for a **monolith** Apollo Server: the process that runs your resolvers. It is not for Apollo Gateway, Apollo Router, Apollo Studio / GraphOS or the Apollo MCP Server. Those are different programs with different span names and different rules, and none of them is tested here. Do **not** copy this setup onto a gateway: Apollo's own OpenTelemetry guide says a gateway must not install `@opentelemetry/instrumentation-graphql`.  For LLM calls inside a resolver, use the traceAI page for your model library.
+
+## Set up
+
+```bash
+npm install @apollo/server@4.13.0 graphql@16.14.2 \
+  @opentelemetry/api@1.9.0 @opentelemetry/sdk-node@0.223.0 @opentelemetry/exporter-trace-otlp-http@0.223.0 \
+  @opentelemetry/resources@2.12.0 @opentelemetry/instrumentation-graphql@0.71.0 @opentelemetry/instrumentation-http@0.223.0
+```
+
+Use these tested versions together. An unpinned install can select `@opentelemetry/sdk-node` 0.300.0, which no longer exports the `tracing` namespace used below: the server fails at startup with `does not provide an export named 'tracing'`. The companion example pins the same compatible versions.
+
+Set the environment (self-hosted: `FI_BASE_URL=http://localhost:14338`):
+
+```bash
+export FI_BASE_URL=https://api.futureagi.com
+export FI_API_KEY=...
+export FI_SECRET_KEY=...
+export FI_PROJECT_NAME=my-graphql-api
+```
+
+`instrumentation.mjs`:
+
+```javascript
+import { NodeSDK, tracing } from "@opentelemetry/sdk-node";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { SpanStatusCode } from "@opentelemetry/api";
+import { GraphQLInstrumentation } from "@opentelemetry/instrumentation-graphql";
+import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
+import { FiSanitizingExporter } from "./fi-exporter.mjs"; // below
+
+const baseUrl = (process.env.FI_BASE_URL ?? "https://api.futureagi.com").replace(/\/+$/, "");
+const projectName = process.env.FI_PROJECT_NAME ?? "apollo-server-4";
+
+const processor = new tracing.BatchSpanProcessor(
+  new FiSanitizingExporter(
+    new OTLPTraceExporter({
+      url: `${baseUrl}/tracer/v1/traces`, // HTTP, not gRPC
+      headers: { "X-Api-Key": process.env.FI_API_KEY ?? "", "X-Secret-Key": process.env.FI_SECRET_KEY ?? "" },
+      compression: "none",
+    }),
+    { captureContent: process.env.FI_APOLLO_CAPTURE_CONTENT === "true" },
+  ),
+);
+
+export const sdk = new NodeSDK({
+  resourceDetectors: [], // no hostname, OS user or command line on the resource
+  resource: resourceFromAttributes({
+    project_name: projectName, // a RESOURCE attribute
+    project_type: "observe",
+    "service.name": projectName,
+  }),
+  spanProcessors: [processor],
+  metricReaders: [],        // traces only
+  logRecordProcessors: [],  // traces only
+  instrumentations: [
+    new HttpInstrumentation(),
+    new GraphQLInstrumentation({
+      depth: 1,
+      allowValues: false,
+      responseHook: (span, result) => {
+        if (result?.errors?.length) span.setStatus({ code: SpanStatusCode.ERROR });
+      },
+    }),
+  ],
+});
+sdk.start();
+
+export const flushTelemetry = () => processor.forceFlush().catch(reportExportError);
+export const shutdownTelemetry = () => sdk.shutdown().catch(reportExportError);
+function reportExportError(error) {
+  console.error(`telemetry export failed: ${error?.name ?? "Error"}${error?.code ? ` (${error.code})` : ""}`);
+}
+```
+
+`server.mjs`. **The order of the first two imports is the setup.**
+
+```javascript
+import { shutdownTelemetry } from "./instrumentation.mjs"; // 1. tracing first
+import { createServer } from "./app.mjs";                  // 2. app.mjs imports @apollo/server
+import { startStandaloneServer } from "@apollo/server/standalone";
+
+const server = createServer(); // new ApolloServer({ typeDefs, resolvers, stopOnTerminationSignals: false })
+const { url } = await startStandaloneServer(server, { listen: { port: 4000 } });
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, async () => {
+    await server.stop();
+    await shutdownTelemetry(); // flushes the last batch
+    process.exit(0);
+  });
+}
+```
+
+`fi-exporter.mjs` is in the example directory (about 60 lines). It is what keeps query text and error text out of the export, see [Privacy](#privacy).
+
+### What each setting is for
+
+| Setting | Why |
+| --- | --- |
+| Instrumentation imported before `@apollo/server` | The instrumentations patch `graphql` and `http` when those load. Apollo loaded first leaves `graphql` unpatched: the server answers, and Observe gets **no GraphQL spans at all** (tested). A comment does not fix this, the import order does. |
+| `X-Api-Key` and `X-Secret-Key` | Both are required. Apollo sets neither, the exporter does. |
+| `project_name` on the **resource** | A span attribute with that name does not count. Without the resource attribute the batch is dropped. `project_type=observe` too. |
+| `compression: "none"` | The Future AGI endpoint rejects gzip bodies. This exporter sends none by default, the line keeps it that way. |
+| `resourceDetectors: []` | The NodeSDK default adds `host.name`, `process.owner` (the OS user name) and `process.command_args` (local file paths) to every batch. |
+| `metricReaders: []`, `logRecordProcessors: []` | NodeSDK starts OTLP metric and log exporters unless told not to. The Future AGI endpoint takes traces only, and the defaults stall shutdown by several seconds. |
+| `stopOnTerminationSignals: false` | Apollo's built-in SIGINT/SIGTERM handler stops the server and then re-raises the signal, which ends the process before your handler can flush. Tested: with the default, the last batch is lost. |
+| `depth: 1` | Bounds the field spans, see below. |
+| `allowValues: false` | The instrumentation masks literal values in the query text. Variable **values** are never recorded by this version either way. |
+| `responseHook` | Marks the operation span ERROR when the result carries GraphQL errors, see [Errors](#errors). |
+
+## Field spans: `depth`, not `ignoreTrivialResolveSpans`
+
+A query over 20 scalar fields with default resolvers, measured on Server 4.13.0 with `@opentelemetry/instrumentation-graphql` 0.71.0:
+
+| Option | `graphql.resolve` spans |
+| --- | --- |
+| none | 21 (the parent field plus 20 scalars) |
+| `ignoreTrivialResolveSpans: true` | 21. **Drops nothing on Server 4.** |
+| `depth: 1` | 1 |
+
+The option is documented, and a 2023 community report said it does not work on Apollo Server 4. It does not, here. The recipe bounds the volume with `depth` instead. With `depth: 1` only top-level fields get a span, and a nested field that throws has no span of its own: the error shows on the operation span. Raise `depth` if you want nested resolver timings, and expect a span per field per list item. The example has a test that fails if an upgrade changes the `ignoreTrivialResolveSpans` result.
+
+## Resolver context
+
+Inside a resolver, `trace.getActiveSpan()` returns the `graphql.resolve` span, and a span you start there is its child in the same trace. You do not pass a span through the GraphQL context.
+
+```javascript
+import { trace } from "@opentelemetry/api";
+const tracer = trace.getTracer("my-app");
+
+const resolvers = {
+  Query: {
+    profile: (_parent, { id }) =>
+      tracer.startActiveSpan("load-profile", async (span) => {
+        try { return await db.profile(id); } finally { span.end(); }
+      }),
+  },
+};
+```
+
+Tested: the child's parent is the resolve span and the trace id is the same. With `depth: 1` this holds for top-level resolvers. For a nested resolver below the depth cap there is no resolve span, so the active span there is the nearest one above it.
+
+## What you see in Observe
+
+- One trace per HTTP request: `POST` (method and status code), `graphql.parse` and `graphql.validate` (absent when Apollo's cache already has the operation), the operation span named `query <OperationName>` (`query` when the client sent no name), and the field span.
+- Operation name, type, field name, path and type as attributes. Operation span names come from the instrumentation, not from a `graphql.execute` span as older Apollo pages show.
+- One extra trace at startup holding a single `graphql.parseSchema` span.
+- Your own spans from the resolver, exactly as you made them.
+
+### Errors
+
+The instrumentation marks the **resolve span** ERROR when a resolver throws, but it leaves the **operation span** UNSET (measured). A GraphQL server also answers HTTP 200 with an `errors` array, so the `POST` span is not ERROR either. The `responseHook` above sets the operation span to ERROR whenever the result has errors, including partial results (`data` plus `errors`): tested with a throwing query and a partial one. The ERROR status carries no message.
+
+## Privacy
+
+Default: structure only. In the export for this recipe, with the defaults:
+
+| Not exported | Exported |
+| --- | --- |
+| Variable values (never recorded by the instrumentation) | Operation name and type |
+| Inline literals in the query text | Field name, path, return type, parent type |
+| The query text (`graphql.source`) | `http.request.method`, `http.response.status_code` |
+| The error message, the stack trace, the span status message | `exception.type` on a failing resolve span |
+| URL, host name, user agent, peer address | Span names, timing, status code |
+| Host name, OS user, command line, process id on the resource | `project_name`, `project_type`, `service.name` |
+
+`fi-exporter.mjs` does this by allowlist on the spans of the two instrumentations. Spans you create yourself are not touched: what you put on them is your decision.
+
+Opt in with `FI_APOLLO_CAPTURE_CONTENT=true`. That keeps the query text (literals stay masked by `allowValues: false`) and the **error message**. The stack trace and variable values stay out. An error message can contain whatever your resolver put in it, including paths and user data, so turn this on only for debugging.
+
+Proof, self-hosted Future AGI, run with unique markers in a variable value, an inline literal and an error message (`run_e2e.sh privacy` and `run_e2e.sh optin`; the output is in the pull request):
+
+- Default: none of the three markers, the file path inside the error message, the home directory, the user name or the host name is found in any stored column of the project (`spans`, `traces` and the rollup tables, including span attributes, resource attributes, events and status message).
+- Opt-in: the error-message marker is found. The variable marker, the literal marker and `stacktrace` are still absent.
+
+## Flush and shutdown
+
+The batch processor exports every 5 seconds. The example flushes in tests with `forceFlush()` instead of waiting, and on SIGINT/SIGTERM it stops the server and calls `sdk.shutdown()` so the last batch leaves the process. If the Future AGI endpoint is unreachable or answers 401, `flush` and `shutdown` reject. The example catches that and logs the error class so telemetry never takes the server down: tested with an endpoint that refuses connections, the server exits with code 0.
+
+One server, one key pair, one project. Do not pick the project from a request header. Sampling is the customer's decision: the default sampler keeps every trace, and a ratio below 1 drops traces on purpose.
+
+## Apollo Server 5
+
+`@apollo/server@5.5.1` is the supported release. On the same example, 19 of the 20 fixture tests pass. The one that fails is the HTTP span: with Server 5 the `POST` span is missing, so `graphql.parse` and `graphql.validate` become separate one-span traces, and the operation and field spans form their own trace. Everything else behaves as above: the operation and field spans, resolver context, ERROR status, privacy and SIGTERM shutdown. The cause was not established. Server 5 is published as ES modules, and OpenTelemetry's `http` instrumentation is known to need its ESM loader hook (`node --import` with `register` from `@opentelemetry/instrumentation`) for ES modules, but that hook was not tried, so it is not part of this recipe and no fix is claimed.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| No traces in the project | `project_name` is missing from the resource, or only one of the two keys is set. A span attribute is not a substitute. Check the exporter URL ends in `/tracer/v1/traces` and that the body is not gzip. |
+| Traces have a `POST` span but no GraphQL spans | `@apollo/server` was imported before `./instrumentation.mjs`. Put the tracing import first. |
+| Last requests missing after a restart | Apollo's default signal handler ended the process. Set `stopOnTerminationSignals: false` and shut down the SDK yourself. |
+| Shutdown takes several seconds | A default OTLP metric or log exporter is running. Set `metricReaders: []` and `logRecordProcessors: []`. |
+| Too many spans | `depth` is unset. `ignoreTrivialResolveSpans` does not help on Server 4. |
+| The operation span is not red when a query fails | Add the `responseHook`. The stock instrumentation only marks the field span. |
+| Query text or an error message shows up in Observe | `FI_APOLLO_CAPTURE_CONTENT` is `true`, or you do not use `fi-exporter.mjs`. |
+| Two traces for one request | The `POST` span is missing: Apollo Server 5 (see above), or `http` was loaded before `./instrumentation.mjs`. |
+
+## Not covered
+
+- Apollo Gateway, Apollo Router, Apollo Studio / GraphOS, the Apollo MCP Server and federation: not tested. Do not install the GraphQL instrumentation on a gateway.
+- A custom Apollo plugin. None is needed: the resolver context works with the stock instrumentation.
+- Apollo Server 5 HTTP spans, and Express, Fastify or other framework integrations: not tested. The example uses `startStandaloneServer`.
+- Span kinds in Observe: GraphQL spans appear as `unknown`.
+- Sampling, tail sampling and OpenTelemetry Collector setups.
+
+## Sources
+
+- Apollo Server previous versions and end of life: https://www.apollographql.com/docs/apollo-server/previous-versions (read 2026-10-16)
+- Apollo OpenTelemetry guide (Federation v1 page; it still says `apollo-server`): https://www.apollographql.com/docs/federation/v1/opentelemetry
+- `@apollo/server` on npm: https://www.npmjs.com/package/@apollo/server
