@@ -1,0 +1,313 @@
+---
+title: "LobeHub (LobeChat) tracing with Future AGI"
+description: "Send LobeHub's server-side agent runs (model, token usage, tool calls, conversation) to an Observe project with five environment variables and one OpenTelemetry Collector. No plugin, no fork. Covers what is captured, the privacy default, the opt-in and the limits."
+---
+
+## About
+
+This page is for **LobeHub**, the self-hosted chat and agent app formerly called LobeChat (repository `lobehub/lobehub`). You set five environment variables on the LobeHub server and add one OpenTelemetry Collector container. You do not install a plugin, you do not fork LobeHub and you do not build a custom image.
+
+LobeHub's server already has OpenTelemetry built in. With `ENABLE_TELEMETRY=1` it exports the spans of its **agent runtime**: one `invoke_agent` span per agent step, a `chat <model>` span per model call (model, provider, input and output tokens), an `execute_tool <tool>` span per tool call, a `context_engineering` span, and the setup steps of each run. Those spans carry the LobeHub conversation (topic) id. They do **not** carry the prompt, the reply, or tool arguments and results: LobeHub does not put them on the spans (checked in v2.2.18, v2.2.19 and `canary` on 2026-10-17).
+
+Only runs that execute on the server are traced. That is LobeHub's **Agent Gateway** mode, which LobeHub's own Docker Compose deployment turns on (`ENABLE_AGENT_GATEWAY=1`) and which the web app uses for every chat while the **Agent Gateway** switch in the chat input menu is on. Agent runs started with `POST /api/agent` (`AGENT_EXEC_API_KEY`) also run on the server. A chat with Agent Gateway switched off runs in the browser and calls `/webapi/chat/<provider>`; it produces no agent spans (tested).
+
+The same export also carries every HTTP request, page render, database query and socket connection of the server (159 spans for one chat turn with one tool call, against 32 agent runtime spans), and LobeHub always exports metrics as well. The collector keeps the agent runs, drops the rest, sets the Observe project, maps the span types and the session, keeps error text out by default and forwards uncompressed OTLP to Future AGI. It stores no Future AGI keys: LobeHub sends them and the collector passes them on. For background on how Future AGI ingests OpenTelemetry see [What is OpenTelemetry?](/docs/tracing/concepts/otel), and for keys and projects see [Setup Observability](/docs/quickstart/setup-observability).
+
+<Warning>
+Alpha. Tested end to end with LobeHub v2.2.19 and v2.2.18 in Docker (Gateway Mode, the layout of LobeHub's Docker Compose deployment) against a self-hosted Future AGI stack on localhost, and once against hosted `api.futureagi.com` (export accepted). Not tested with LobeHub Cloud, Vercel deployments, bots (Discord, Telegram, Slack), group chats, sub-agents, human approval of tool calls, several LobeHub replicas or Kubernetes.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | LobeHub **v2.2.19** (latest release, 2026-10-07, tag `234e0fc`), image `lobehub/lobehub:2.2.19`, and **v2.2.18** (2026-09-20, tag `14dfc07`, the version this integration was specified against), image `lobehub/lobehub:2.2.18`. The telemetry code (`src/instrumentation.ts`, `packages/observability-otel`) is the same in both and in `canary` on 2026-10-17. |
+| Collector | `otel/opentelemetry-collector-contrib` **0.162.0** |
+| Future AGI | Self-hosted stack on localhost, 2026-10-17. Hosted `api.futureagi.com`: the collector's output for a recorded LobeHub v2.2.19 export (94 spans) was accepted, HTTP 200 with nothing rejected, 2026-10-17; stored data was checked on the self-hosted stack only. |
+| In the test | LobeHub's Agent Gateway (`ghcr.io/lobehub/lobehub-gateway:0.3.2`), the OpenAI provider pointed at an OpenAI-compatible endpoint, and one remote MCP server (Streamable HTTP) added as a custom MCP skill |
+
+## 1. Add the collector
+
+Copy the collector config below next to LobeHub's `docker-compose.yml` as `futureagi-otelcol.yaml`, and add the service with a `docker-compose.override.yml` (Docker Compose reads that file next to `docker-compose.yml`). The override was checked against the `docker-compose.yml` of LobeHub's Docker Compose deployment (`docker-compose/deploy`) at v2.2.19, which already has the `lobe-network` network. Set `FI_PROJECT_NAME` to the Observe project you want; a self-hosted Future AGI creates it on the first export if it does not exist (tested). For a self-hosted Future AGI set `FI_TRACES_URL` to your collector, for example `http://<host>:4318/v1/traces`.
+
+```yaml
+# Add the Future AGI collector to LobeHub's Docker Compose stack (docker-compose/deploy).
+# Copy next to LobeHub's docker-compose.yml as docker-compose.override.yml (or merge into yours),
+# and copy otelcol/otelcol.yaml next to it as futureagi-otelcol.yaml.
+services:
+  lobe:
+    depends_on:
+      futureagi-otelcol:
+        condition: service_started
+
+  futureagi-otelcol:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    container_name: lobe-futureagi-otelcol
+    command: ['--config=/etc/otelcol/config.yaml']
+    restart: always
+    volumes:
+      - './futureagi-otelcol.yaml:/etc/otelcol/config.yaml:ro'
+    environment:
+      # Hosted Future AGI. Self-hosted: http://<your collector host>:4318/v1/traces
+      - 'FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces'
+      - 'FI_PROJECT_NAME=lobehub'
+      # true also sends raw error messages and agent descriptions
+      - 'FI_CAPTURE_CONTENT=false'
+    networks:
+      - lobe-network
+    # No `ports:`. LobeHub reaches it on the Compose network; do not publish 4318.
+```
+
+The collector config. Each part is commented; the next sections explain what it keeps and drops.
+
+```yaml
+# OpenTelemetry Collector (contrib) between LobeHub (LobeChat) and Future AGI.
+#
+# LobeHub's server exports OpenTelemetry when ENABLE_TELEMETRY=1. Its agent runtime spans
+# (invoke_agent, chat, execute_tool, context_engineering, execAgent setup steps) carry the model,
+# token usage, tool names and the conversation id. The same export also carries every HTTP request,
+# database call, socket connect and page render of the server, and LobeHub always sends metrics too.
+# This collector:
+#   1. keeps the agent runtime spans and the request span that started the run, drops the rest,
+#   2. makes that request span the root of the trace (its own parent was an HTTP span),
+#   3. sets the Observe project and the span kinds, and maps the conversation id to session.id,
+#   4. keeps error text and agent descriptions OUT unless you opt in (FI_CAPTURE_CONTENT=true),
+#   5. drops host, OS, process and client details,
+#   6. accepts LobeHub's metrics and discards them (Future AGI ingests traces only),
+#   7. forwards uncompressed OTLP to Future AGI with LobeHub's own credentials.
+# It stores no Future AGI keys: LobeHub sends them in OTEL_EXPORTER_OTLP_TRACES_HEADERS
+# (X-Api-Key / X-Secret-Key) and the collector passes them on.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0 and LobeHub v2.2.19 and v2.2.18.
+#
+# Environment:
+#   FI_TRACES_URL       Future AGI traces URL, for example https://api.futureagi.com/tracer/v1/traces
+#                       or http://<self-hosted collector>:4318/v1/traces
+#   FI_PROJECT_NAME     Observe project every LobeHub trace goes to
+#   FI_CAPTURE_CONTENT  optional, default false. `true` lets raw error messages and stack traces,
+#                       agent descriptions, and any message or tool content a future LobeHub release
+#                       adds through to Future AGI.
+
+extensions:
+  # Pass LobeHub's Future AGI credentials through to Future AGI.
+  headers_setter/future_agi:
+    headers:
+      - action: upsert
+        key: X-Api-Key
+        from_context: x-api-key
+      - action: upsert
+        key: X-Secret-Key
+        from_context: x-secret-key
+
+receivers:
+  # Keep the port on a private network (the LobeHub Docker network); do not publish it.
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        include_metadata: true
+
+processors:
+  # Volume and privacy: keep only the agent runtime spans and the span that started the run.
+  #   - @lobechat/agent-runtime: every span of LobeHub's agent runtime.
+  #   - tRPC MUTATION aiAgent.exec*/startExecution/processHumanIntervention/resolve*/resume*/scheduleAgentRun:
+  #     a chat turn from the web app (Gateway Mode) or a run resumed after an approval.
+  #   - executing api route (app) /api/agent/[[...route]]: POST /api/agent (AGENT_EXEC_API_KEY) and the
+  #     other /api/agent/* routes (bots, tool results, step callbacks).
+  # Everything else (HTTP server and client spans, Next.js render spans, auth, database, sockets, page
+  # loads and polling) is dropped. Those spans are either roots of their own traces or leaves below the
+  # spans kept here, so dropping them does not orphan a kept span.
+  filter/keep_agent_runs:
+    error_mode: ignore
+    traces:
+      span:
+        - >-
+          instrumentation_scope.name != "@lobechat/agent-runtime"
+          and not (instrumentation_scope.name == "trpc-server" and IsMatch(span.name, "^tRPC MUTATION aiAgent\\.(exec|startExecution|processHumanIntervention|resolve|resume|scheduleAgentRun)"))
+          and not (instrumentation_scope.name == "next.js" and span.name == "executing api route (app) /api/agent/[[...route]]")
+
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: upsert
+      # Host, OS, process and container details (host name, OS user, command line, file paths).
+      # OTEL_NODE_RESOURCE_DETECTORS=env on LobeHub already leaves them out; this is the safety net.
+      - pattern: ^(host|os|process|container)\..*
+        action: delete
+
+  transform/lobehub:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # The request span that started the run becomes the root (its HTTP parent was dropped).
+          - set(span.parent_span_id, SpanID(0x0000000000000000)) where instrumentation_scope.name != "@lobechat/agent-runtime"
+          # Span types in Observe.
+          - set(span.attributes["fi.span.kind"], "CHAIN") where span.attributes["gen_ai.operation.name"] == nil
+          - set(span.attributes["gen_ai.span.kind"], "AGENT") where span.attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(span.attributes["fi.span.kind"], "AGENT") where span.attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(span.attributes["tool.name"], span.attributes["gen_ai.tool.name"]) where span.attributes["gen_ai.tool.name"] != nil
+          # invoke_agent spans repeat the run's running token totals. Keep them under lobehub.* so Observe
+          # counts tokens once, on the chat (LLM) spans.
+          - set(span.attributes["lobehub.agent.usage.input_tokens"], span.attributes["gen_ai.usage.input_tokens"]) where span.attributes["gen_ai.operation.name"] == "invoke_agent" and span.attributes["gen_ai.usage.input_tokens"] != nil
+          - set(span.attributes["lobehub.agent.usage.output_tokens"], span.attributes["gen_ai.usage.output_tokens"]) where span.attributes["gen_ai.operation.name"] == "invoke_agent" and span.attributes["gen_ai.usage.output_tokens"] != nil
+          - delete_matching_keys(span.attributes, "^gen_ai\\.usage\\..*") where span.attributes["gen_ai.operation.name"] == "invoke_agent"
+          # A run that LobeHub ended with completion_reason=error is an error in Observe too (LobeHub marks
+          # only the failing chat or tool span itself).
+          - set(span.status.code, STATUS_CODE_ERROR) where span.attributes["lobehub.agent.completion_reason"] == "error"
+          # LobeHub's conversation (topic) id groups the turns of one conversation as an Observe session.
+          - set(span.attributes["session.id"], span.attributes["gen_ai.conversation.id"]) where span.attributes["gen_ai.conversation.id"] != nil
+          # Request details on the kept request span: client address, user agent, host names, URLs.
+          - delete_matching_keys(span.attributes, "^(http\\.(url|host|user_agent|client_ip|target)|url\\..*|client\\..*|server\\..*|net\\..*|network\\..*|user_agent\\..*)$")
+          # Content ON (FI_CAPTURE_CONTENT=true): show tool arguments and results in the Input and Output
+          # panes if a LobeHub release sends them (v2.2.19 does not).
+          - set(span.attributes["input.value"], span.attributes["gen_ai.tool.call.arguments"]) where span.attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(span.attributes["output.value"], span.attributes["gen_ai.tool.call.result"]) where span.attributes["gen_ai.tool.call.result"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): error text, the agent description written by the user, and the
+          # GenAI content attributes (messages, instructions, tool arguments and results).
+          - set(span.status.message, "error") where span.status.code == STATUS_CODE_ERROR and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(span.attributes, "gen_ai.agent.description") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(span.attributes, "^gen_ai\\.(input\\.messages|output\\.messages|system_instructions|prompt.*|completion.*|tool\\.call\\.(arguments|result))$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(spanevent.attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(spanevent.attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Keep LobeHub's credentials with its spans (headers_setter reads them from this metadata).
+  batch:
+    send_batch_size: 256
+    timeout: 2s
+    metadata_keys: [x-api-key, x-secret-key]
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    auth:
+      authenticator: headers_setter/future_agi
+  # LobeHub always exports metrics (every second unless OTEL_METRICS_EXPORTER_INTERVAL is set).
+  # Future AGI ingests traces only, so they end here. Point LobeHub's
+  # OTEL_EXPORTER_OTLP_METRICS_ENDPOINT at your own metrics backend instead if you want them.
+  nop:
+
+service:
+  extensions: [headers_setter/future_agi]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/keep_agent_runs, resource/future_agi, transform/lobehub, batch]
+      exporters: [otlp_http/future_agi]
+    metrics:
+      receivers: [otlp]
+      exporters: [nop]
+```
+
+## 2. Point LobeHub at it
+
+Add this block to the `.env` next to LobeHub's `docker-compose.yml` (the `lobe` service reads it) and restart LobeHub (`docker compose up -d`). Put your Future AGI API key and secret key in `OTEL_EXPORTER_OTLP_TRACES_HEADERS`.
+
+```bash
+# Add to the .env next to LobeHub's docker-compose.yml (the lobe service reads it), then
+# `docker compose up -d`. Replace the two keys with your Future AGI API key and secret key.
+ENABLE_TELEMETRY=1
+OTEL_EXPORTER_OTLP_ENDPOINT=http://futureagi-otelcol:4318
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=X-Api-Key=YOUR_FI_API_KEY,X-Secret-Key=YOUR_FI_SECRET_KEY
+OTEL_NODE_RESOURCE_DETECTORS=env
+OTEL_METRICS_EXPORTER_INTERVAL=60000
+```
+
+- `ENABLE_TELEMETRY=1` turns on LobeHub's OpenTelemetry SDK (read in `src/instrumentation.ts`, production builds such as the Docker image; a development server also needs `ENABLE_TELEMETRY_IN_DEV=1`).
+- `OTEL_EXPORTER_OTLP_ENDPOINT` sends both traces (`/v1/traces`) and LobeHub's metrics (`/v1/metrics`) to the collector. The collector discards the metrics, because Future AGI takes traces only. To keep the metrics, set `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to your own metrics backend.
+- `OTEL_EXPORTER_OTLP_TRACES_HEADERS` carries the keys on trace requests only, so they never go to a metrics backend.
+- `OTEL_NODE_RESOURCE_DETECTORS=env` stops the Node SDK from adding the host name, the OS user, the process command line and file paths to every span (it adds them by default; seen in the test). The collector removes them too, as a safety net.
+- `OTEL_METRICS_EXPORTER_INTERVAL` is LobeHub's own setting, in milliseconds. LobeHub exports metrics every second by default. `OTEL_METRICS_EXPORTER=none` has no effect: LobeHub creates the metrics exporter itself.
+
+## 3. Run an agent and open Observe
+
+Send a message in the LobeHub web app with **Agent Gateway** on (the default with LobeHub's Docker Compose deployment; the chat shows "Task is running in the server"), ideally one that uses a tool. Or start a run with `POST /api/agent`. Spans are batched for about five seconds by LobeHub and two seconds by the collector, then they appear in the Observe project.
+
+## What is captured
+
+One agent run is one trace. Its root is the request that started the run: `tRPC MUTATION aiAgent.execAgent` for a chat from the web app, `executing api route (app) /api/agent/[[...route]]` for `POST /api/agent`.
+
+| Span | Type in Observe | What it carries |
+| --- | --- | --- |
+| `tRPC MUTATION aiAgent.execAgent` or `executing api route (app) /api/agent/[[...route]]` (root) | chain | The request that started the run. |
+| `execAgent agent_config`, `execAgent turn_setup`, `execAgent operation_init` (with `execAgent tool_discovery` and one span per tool source), `execAgent start_operation`, and their children | chain | LobeHub's setup of the run: loading the agent, the topic and the messages, discovering tools, starting the operation. Timing only. v2.2.18 has only the `tool_discovery <source>` spans, directly under the root. |
+| `invoke_agent <agent name>` | agent | One per agent step. Agent id and name, model, provider, conversation id, step index, and on the last step the completion reason. Later steps are nested under the step before. |
+| `context_engineering` | chain | Context built for the model call: message count, token estimate, tool count, whether knowledge, memory or images were added. Counts only. |
+| `chat <model>` | llm | Model (`gen_ai.request.model`), provider, input and output tokens, cache-read and reasoning tokens when the provider reports them, time to first chunk, streaming flag. |
+| `execute_tool <source>/<tool>` | tool | Tool name (for an MCP tool `<skill>/<tool>`), tool call id, tool source, success flag, attempts. |
+
+| Field | Captured |
+| --- | --- |
+| Model and provider | Yes, on `chat` and `invoke_agent` spans |
+| Token usage | Yes, on `chat` spans. `invoke_agent` spans carry LobeHub's running totals for the run; the collector moves them to `lobehub.agent.usage.*` so Observe counts each token once. |
+| Tools | Yes, an `execute_tool` span with the tool name. No arguments or results (LobeHub does not send them). |
+| Prompt and reply | No. LobeHub does not send them, with or without the opt-in. |
+| Session | Yes: the collector copies LobeHub's conversation id (`gen_ai.conversation.id`, the topic id) to `session.id`, so each LobeHub topic is one Observe session. The root and setup spans carry no conversation id. |
+| User | No. LobeHub does not put the user on the spans. |
+| Errors | A failed model call is `ERROR` on the `chat` span, and the collector marks the step that ended the run with `completion_reason=error` as `ERROR` too. |
+
+**Errors.** With content off the status message is the fixed word `error` and the exception message is removed from the span events; with content on the status message is LobeHub's own text (for example `1 skill discovery requests failed`; for a failed model call LobeHub v2.2.19 writes `[object Object]`). Future AGI stores span events by name and time, so exception messages and stack traces are not stored in either mode. A tool that returns an error to the model is **not** an error: LobeHub reports the call as successful and the model answers the user (tested with an MCP tool that always fails). In LobeHub's Docker Compose deployment `tool_discovery lobehub_skills` is `ERROR` in every run (`1 skill discovery requests failed`): LobeHub could not list LobeHub Market skills for the user. That is LobeHub's own status, not a tracing problem.
+
+## Privacy
+
+- **Default: no content.** LobeHub itself never sends the prompt, the reply, or tool arguments and results. With `FI_CAPTURE_CONTENT=false` (the default) the collector also removes the two kinds of text LobeHub does send: error messages (status message and exception events) and the agent description (`gen_ai.agent.description`, written by the user). It also removes the GenAI content attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`) in case a later LobeHub release adds them. Ids, model, token counts, tool names, durations and status remain. This was checked by putting a unique marker in the prompts, the order id the tool received and the agent description, and scanning every stored column of every row of the project (span attributes, resource attributes, span events, status message, input, output, sessions, traces): the marker, the tool result, the tool's error text, the provider's error text, LobeHub's own error text, the test user's email, the LobeHub container's host name, the machine's host name and user name, a local file path, the server's command line and the Future AGI keys were not found.
+- **Opt in** with `FI_CAPTURE_CONTENT=true` on the collector and restart it. LobeHub's error messages and the agent description are then kept (tested: both found in the stored spans), and if a later LobeHub release sends tool arguments and results, the collector shows them in the Input and Output panes of the tool span. Prompts and replies still do not appear, because LobeHub does not send them.
+- **Always removed**, whatever the setting: the host, OS, process and container resource attributes, and URL, host, client address and user agent attributes on the kept spans. The HTTP, database and socket spans that carry most of these are dropped before export.
+- **Credentials.** The collector config holds no keys. LobeHub sends the keys as `X-Api-Key` and `X-Secret-Key` request headers to the collector, and the collector forwards them to Future AGI. Keep port 4318 on the private Compose network.
+
+## Volume and filtering
+
+The collector keeps a span when it comes from LobeHub's agent runtime (instrumentation scope `@lobechat/agent-runtime`), or when it is the request that started or resumed a run (`tRPC MUTATION aiAgent.exec*`, `startExecution`, `processHumanIntervention`, `resolve*`, `resume*`, `scheduleAgentRun`, or the `/api/agent` route). It drops everything else: HTTP server and client spans, Next.js render spans, auth, database and socket spans, page loads and polling. In the test one chat turn with a tool call went from 159 exported spans to 33 stored spans, and page loads and polling stored nothing.
+
+The dropped spans are either the roots of their own traces or children of the kept spans, so no kept span loses its parent. The request span that started the run had an HTTP span as parent; the collector clears that parent so the request span is the root of the trace.
+
+Two kinds of small extra traces remain: one `executing api route (app) /api/agent/[[...route]]` span each time LobeHub starts (its internal gateway start call), and a single span for an `aiAgent` request in the list above that did not run an agent step.
+
+## Without a collector
+
+LobeHub can export straight to Future AGI (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://api.futureagi.com/tracer/v1/traces`, the keys in `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, and `OTEL_RESOURCE_ATTRIBUTES=project_name=<project>,project_type=observe`), but this is not recommended and was not tested end to end: every HTTP request, page render and database query of the server is sent with its URLs, host names, client addresses and user agents; error text and agent descriptions cannot be removed; `invoke_agent` spans carry a model and no span type, so Observe would show them as LLM spans and count the run's tokens again; there is no session; and LobeHub's metrics exporter needs a separate destination, because Future AGI takes traces only.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| No traces at all | `ENABLE_TELEMETRY` is not set on the `lobe` service, or LobeHub was not restarted. |
+| Page loads show up, agent runs do not | Not possible with this collector (it drops page loads). If agent runs are missing, the chat ran with Agent Gateway off: switch it on in the chat input menu. LobeHub's Docker Compose deployment needs `ENABLE_AGENT_GATEWAY=1`, `AGENT_GATEWAY_URL`, the `gateway` service and `JWKS_KEY`; LobeHub logs `Gateway Mode is not configured` when they are missing. |
+| `401` in the collector log | Wrong Future AGI keys in `OTEL_EXPORTER_OTLP_TRACES_HEADERS`. Bearer tokens are not accepted. |
+| Every trace contains an `ERROR` span `tool_discovery lobehub_skills` | Expected in a self-hosted deployment: LobeHub could not list LobeHub Market skills. The run is not affected. |
+| `ERROR` with the message `error` | A failed model call with content off. Turn content on to see LobeHub's message. |
+| The trace list shows a short latency for a long run | Expected: the root is the request that started the run, and LobeHub continues the run after that request returns. Open the trace; the `invoke_agent` spans hold the run's steps. |
+| Traces stop when the collector is down | Expected. Agent runs keep working (tested); spans in flight are lost. |
+
+## Limitations
+
+- **No prompts or replies**, and no tool arguments or results: LobeHub does not put them on its spans, so the opt-in cannot add them.
+- **Only server-side runs.** Chats with Agent Gateway off, and LobeHub's helper model calls such as topic titles (`aiChat.*`), produce no agent spans.
+- **No user.** LobeHub does not put the user on its spans.
+- **Trace-level fields come from the root request.** Status, latency and token count in the trace list are those of the request that started the run. A failed run shows `ERROR` on its `chat` and `invoke_agent` spans, not on the root.
+- **One project per collector.** Every LobeHub user's runs go to the project in `FI_PROJECT_NAME`.
+- **New entry points.** A run resumed by a request this collector does not keep (for example a future LobeHub route) keeps a parent id that was dropped; add that request span to `filter/keep_agent_runs`.
+- Successful spans have status `UNSET`, not `OK`: LobeHub does not set it.
+- Not tested: LobeHub Cloud, Vercel, bots, group chats, sub-agents, human approval of tool calls, knowledge base and web search tools, several replicas, Kubernetes, LobeHub's desktop app.
+
+## How this differs from related integrations
+
+- **Langfuse in LobeHub** (`ENABLE_LANGFUSE`): LobeHub's legacy Langfuse integration is a separate code path (Langfuse's own LobeChat page now describes it as deprecated in favour of this OpenTelemetry export). This recipe does not use or need `ENABLE_LANGFUSE`.
+- **LobeHub's Grafana stack** (`docker-compose/production/grafana`): uses the same export, sent to Tempo and Prometheus. To send to both, add a second exporter to the collector (not tested).
+- **LibreChat** and **Open WebUI**: other self-hosted chat apps with their own recipes. LobeHub needs neither a Langfuse exporter mapping nor a filter function, because its own export already has model, token and tool data.
+- **traceAI instrumentors** (for example [OpenAI](/docs/integrations/traceai/openai)) patch a client inside your own code. LobeHub makes the model calls itself, so there is nothing to patch.
+
+## Run the test yourself
+
+The files on this page, a test LobeHub stack, an agent-run driver, a test MCP server and the privacy scan are in [`examples/no-code/lobechat`](https://github.com/future-agi/docs/tree/main/examples/no-code/lobechat) in the docs repository. `run_e2e.sh` starts LobeHub (with its Agent Gateway, Postgres and Redis) and the collector with Docker Compose, runs a tool call, a failing tool and a failing model call through `POST /api/agent`, checks the stored spans, scans every stored column with content off, repeats with content on, and stops the collector to show runs keep working.
