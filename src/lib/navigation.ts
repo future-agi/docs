@@ -919,6 +919,7 @@ export const tabNavigation: NavTab[] = [
             title: 'LLM Providers',
             items: [
               { title: 'OpenAI', href: '/docs/integrations/traceai/openai' },
+              { title: 'OpenAI Assistants (unsupported)', href: '/docs/integrations/traceai/openai_assistants' },
               { title: 'Anthropic', href: '/docs/integrations/traceai/anthropic' },
               { title: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock' },
               { title: 'Vertex AI', href: '/docs/integrations/traceai/vertexai' },
@@ -929,6 +930,28 @@ export const tabNavigation: NavTab[] = [
               { title: 'Together AI', href: '/docs/integrations/traceai/togetherai' },
               { title: 'Ollama', href: '/docs/integrations/traceai/ollama' },
               { title: 'Portkey', href: '/docs/integrations/traceai/portkey' },
+              { title: 'BytePlus ModelArk', href: '/docs/integrations/providers/byteplus' },
+              { title: 'CometAPI', href: '/docs/integrations/providers/cometapi' },
+              { title: 'Novita AI', href: '/docs/integrations/providers/novita-ai' },
+              { title: 'Z.ai', href: '/docs/integrations/providers/z-ai' },
+              { title: 'Replicate', href: '/docs/integrations/traceai/replicate' },
+              { title: 'TypeSafe (Jev)', href: '/docs/integrations/traceai/typesafe' },
+              { title: 'Voyage AI', href: '/docs/integrations/traceai/voyage' },
+            ]
+          },
+          {
+            title: 'Gateways',
+            items: [
+              { title: 'Azure API Management and AI Gateway', href: '/docs/integrations/gateways/azure-apim' },
+              { title: 'Cloudflare AI Gateway', href: '/docs/integrations/gateways/cloudflare-ai-gateway' },
+              { title: 'Envoy AI Gateway', href: '/docs/integrations/gateways/envoy-ai-gateway' },
+              { title: 'Gravitee', href: '/docs/integrations/gateways/gravitee' },
+              { title: 'Helicone', href: '/docs/integrations/gateways/helicone' },
+              { title: 'Kong AI Gateway', href: '/docs/integrations/gateways/kong-ai-gateway' },
+              { title: 'LiteLLM Proxy', href: '/docs/integrations/gateways/litellm-proxy' },
+              { title: 'OpenRouter Broadcast', href: '/docs/integrations/gateways/openrouter-broadcast' },
+              { title: 'TrueFoundry', href: '/docs/integrations/gateways/truefoundry' },
+              { title: 'Vercel AI Gateway', href: '/docs/integrations/gateways/vercel-ai-gateway' },
             ]
           },
           {
@@ -936,11 +959,14 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'LangChain', href: '/docs/integrations/traceai/langchain' },
               { title: 'LangGraph', href: '/docs/integrations/traceai/langgraph' },
+              { title: 'LangChain Deep Agents', href: '/docs/integrations/traceai/langchain-deep-agents' },
               { title: 'LlamaIndex', href: '/docs/integrations/traceai/llamaindex' },
               { title: 'LlamaIndex Workflows', href: '/docs/integrations/traceai/llamaindex-workflows' },
               { title: 'LiteLLM', href: '/docs/integrations/traceai/litellm' },
               { title: 'CrewAI', href: '/docs/integrations/traceai/crewai' },
               { title: 'AutoGen', href: '/docs/integrations/traceai/autogen' },
+              { title: 'AG2', href: '/docs/integrations/traceai/ag2' },
+              { title: 'AG2 Classic (autogen 0.14.x)', href: '/docs/integrations/traceai/ag2-classic' },
               { title: 'Haystack', href: '/docs/integrations/traceai/haystack' },
               { title: 'DSPy', href: '/docs/integrations/traceai/dspy' },
               { title: 'OpenAI Agents', href: '/docs/integrations/traceai/openai_agents' },
@@ -951,6 +977,46 @@ export const tabNavigation: NavTab[] = [
               { title: 'MCP', href: '/docs/integrations/traceai/mcp' },
               { title: 'Mastra', href: '/docs/integrations/traceai/mastra' },
               { title: 'Vercel AI SDK', href: '/docs/integrations/traceai/vercel' },
+              { title: 'AgentScope', href: '/docs/integrations/frameworks/agentscope' },
+              { title: 'Apollo GraphQL (Server 4)', href: '/docs/integrations/frameworks/apollo-graphql' },
+              { title: 'Claude Agent SDK (TypeScript)', href: '/docs/integrations/traceai/claude-agent-sdk-typescript' },
+              { title: 'Cloudflare Agents', href: '/docs/integrations/frameworks/cloudflare-agents' },
+              { title: 'Cloudflare AI Chat', href: '/docs/integrations/frameworks/cloudflare-ai-chat' },
+              { title: 'Cloudflare Think', href: '/docs/integrations/frameworks/cloudflare-think' },
+              { title: 'Embabel', href: '/docs/integrations/frameworks/embabel' },
+              { title: 'Eve (Vercel)', href: '/docs/integrations/frameworks/eve' },
+              { title: 'Firebase Genkit', href: '/docs/integrations/traceai/genkit' },
+              { title: 'Flue', href: '/docs/integrations/frameworks/flue' },
+              { title: 'Gradio', href: '/docs/integrations/traceai/gradio' },
+              { title: 'Graphite', href: '/docs/integrations/frameworks/graphite' },
+              { title: 'IBM watsonx Orchestrate ADK', href: '/docs/integrations/frameworks/watsonx-orchestrate-adk' },
+              { title: 'Koog', href: '/docs/integrations/frameworks/koog' },
+              { title: 'mcp-use', href: '/docs/integrations/traceai/mcp-use' },
+              { title: 'Microsoft Agent Framework', href: '/docs/integrations/traceai/microsoft-agent-framework' },
+              { title: 'Mirascope', href: '/docs/integrations/frameworks/mirascope' },
+              { title: 'NVIDIA NeMo Agent Toolkit', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit' },
+              { title: 'Open Agent Spec', href: '/docs/integrations/frameworks/open-agent-spec' },
+              { title: 'OpenRouter Agent', href: '/docs/integrations/frameworks/openrouter-agent' },
+              { title: 'Restate', href: '/docs/integrations/frameworks/restate' },
+              { title: 'Ruby LLM', href: '/docs/integrations/frameworks/ruby-llm' },
+              { title: 'Semantic Kernel (Python)', href: '/docs/integrations/traceai/semantic-kernel' },
+              { title: 'Swiftide', href: '/docs/integrations/frameworks/swiftide' },
+              { title: 'TanStack AI', href: '/docs/integrations/frameworks/tanstack-ai' },
+              { title: 'Temporal', href: '/docs/integrations/frameworks/temporal' },
+              { title: 'VoltAgent', href: '/docs/integrations/traceai/voltagent' },
+              { title: 'AI SDK C++ (not supported)', href: '/docs/integrations/frameworks/ai-sdk-cpp' },
+            ]
+          },
+          {
+            title: 'Search, Retrieval & Memory',
+            items: [
+              { title: 'Cognee', href: '/docs/integrations/traceai/cognee' },
+              { title: 'EverOS', href: '/docs/integrations/traceai/everos' },
+              { title: 'Exa', href: '/docs/integrations/traceai/exa' },
+              { title: 'Firecrawl', href: '/docs/integrations/traceai/firecrawl' },
+              { title: 'Google Discovery Engine', href: '/docs/integrations/traceai/google-discovery-engine' },
+              { title: 'Parallel', href: '/docs/integrations/traceai/parallel' },
+              { title: 'Tavily', href: '/docs/integrations/traceai/tavily' },
             ]
           },
           {
@@ -958,6 +1024,9 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'LiveKit', href: '/docs/integrations/traceai/livekit' },
               { title: 'Pipecat', href: '/docs/integrations/traceai/pipecat' },
+              { title: 'ElevenLabs Agents', href: '/docs/integrations/traceai/elevenlabs-agents' },
+              { title: 'Gemini Live', href: '/docs/integrations/traceai/google_genai_live' },
+              { title: 'OpenAI Realtime', href: '/docs/integrations/traceai/openai_realtime' },
             ]
           },
           {
@@ -973,18 +1042,53 @@ export const tabNavigation: NavTab[] = [
               { title: 'LLM Providers', href: '/docs/integrations/traceai/java/llm-providers' },
               { title: 'Vector Databases', href: '/docs/integrations/traceai/java/vector-databases' },
               { title: 'Frameworks', href: '/docs/integrations/traceai/java/frameworks' },
+              { title: 'Arconia', href: '/docs/integrations/traceai/java/arconia' },
+              { title: 'Google ADK', href: '/docs/integrations/traceai/java/google-adk' },
+              { title: 'Quarkus LangChain4j', href: '/docs/integrations/traceai/java/quarkus-langchain4j' },
+            ]
+          },
+          {
+            title: 'Go',
+            items: [
+              { title: 'OpenAI', href: '/docs/integrations/traceai/go/openai' },
+              { title: 'Anthropic', href: '/docs/integrations/traceai/go/anthropic' },
+              { title: 'Gemini', href: '/docs/integrations/traceai/go/gemini' },
+              { title: 'A2A', href: '/docs/integrations/traceai/go/a2a' },
+              { title: 'CloudWeGo Eino', href: '/docs/integrations/traceai/go/eino' },
+            ]
+          },
+          {
+            title: 'Runtimes',
+            items: [
+              { title: 'Amazon Bedrock AgentCore', href: '/docs/integrations/traceai/bedrock-agentcore' },
+              { title: 'AWS Lambda', href: '/docs/integrations/runtimes/aws-lambda' },
+              { title: 'Cloudflare Workers AI', href: '/docs/integrations/runtimes/cloudflare-workers-ai' },
             ]
           },
           {
             title: 'Other',
             items: [
+              { title: 'Dify', href: '/docs/integrations/no-code/dify' },
+              { title: 'Flowise', href: '/docs/integrations/no-code/flowise' },
+              { title: 'Langflow', href: '/docs/integrations/no-code/langflow' },
+              { title: 'LibreChat', href: '/docs/integrations/no-code/librechat' },
+              { title: 'LobeHub (LobeChat)', href: '/docs/integrations/no-code/lobechat' },
               { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
+              { title: 'Open WebUI', href: '/docs/integrations/no-code/open-webui' },
+              { title: 'RAGFlow', href: '/docs/integrations/no-code/ragflow' },
+              { title: 'Langdock (not supported)', href: '/docs/integrations/no-code/langdock' },
             ]
           },
           {
             title: 'Import Traces',
             items: [
               { title: 'Langfuse', href: '/docs/integrations/import/langfuse' },
+              { title: 'LangSmith', href: '/docs/integrations/langsmith' },
+              { title: 'MLflow', href: '/docs/integrations/mlflow' },
+              { title: 'OpenInference', href: '/docs/integrations/import/openinference' },
+              { title: 'OpenLIT', href: '/docs/integrations/traceai/openlit' },
+              { title: 'OpenLLMetry (Traceloop SDK)', href: '/docs/integrations/otel/openllmetry' },
+              { title: 'OTel GenAI conformance', href: '/docs/integrations/traceai/otel-genai-conformance' },
             ]
           },
           {
@@ -996,6 +1100,14 @@ export const tabNavigation: NavTab[] = [
               { title: 'PagerDuty', href: '/docs/integrations/export/pagerduty' },
               { title: 'Cloud Storage', href: '/docs/integrations/export/cloud-storage' },
               { title: 'Message Queues', href: '/docs/integrations/export/message-queues' },
+            ]
+          },
+          {
+            title: 'Not supported yet',
+            items: [
+              { title: 'Claude Managed Agents', href: '/docs/integrations/claude-managed-agents' },
+              { title: 'DeepSeek Harness', href: '/docs/integrations/deepseek-harness' },
+              { title: 'Inferable', href: '/docs/integrations/inferable' },
             ]
           },
         ]
