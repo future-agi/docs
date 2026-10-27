@@ -636,6 +636,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Display options', href: '/docs/observe/guides/explore-dashboard/display-options' },
                 ]
               },
+              { title: 'Buffer bursty trace traffic', href: '/docs/observe/guides/buffer-bursty-traces' },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
