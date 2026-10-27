@@ -1,0 +1,249 @@
+---
+title: "Buffer bursty trace traffic"
+description: "Configure a persistent OpenTelemetry Collector queue, size its disk and retry budget, and monitor backpressure for high-volume trace senders."
+---
+
+## About
+
+Put an OpenTelemetry Collector with a disk-backed sending queue between a bursty application and Future AGI. The application exports to a nearby durable queue, while the Collector retries transient backend failures independently of the application's export deadline.
+
+Use this topology when a finite burst can outlast the SDK's retry window, or when you need queued exports to survive an upstream Collector process restart. It does not increase Future AGI's request limits or sustained ingest capacity. Keep the [default SDK batch-size guidance](/docs/observe/reference/export-formats#ingestion-request-limits) unchanged; buffering is an additional deployment option, not a reason to enlarge batches.
+
+```text
+Application SDK -> local OpenTelemetry Collector -> Future AGI collector
+                  persistent sending_queue         bounded ingest memory
+```
+
+<Warning>
+  An SDK success response from the local Collector means that hop accepted the export, not that Future AGI has stored it. A permanent backend refusal, exhausted disk, lost volume, or SDK deadline can still lose data. Monitor every hop and verify storage separately when delivery matters.
+</Warning>
+
+<Warning>
+  Storage exhaustion is a known unsafe boundary in the pinned `0.163.2` release. A forced file-storage growth-limit test returned clear `503` refusals for new exports, but 640 previously acknowledged spans were still missing after restoring headroom and restarting. Logical queue-capacity overflow and ordinary process restart passed separately. Prevent database/filesystem exhaustion; do not treat this version as a zero-loss solution across physical storage failures. This recipe is not cleared for that stronger durability requirement.
+</Warning>
+
+## Configure a persistent queue
+
+This recipe pins `otelcol-contrib` to `0.163.2` and the published image digest below. Run it on Linux with Docker and a persistent local directory. One instance uses one Future AGI workspace's keys. Do not expose its unauthenticated loopback receivers to other hosts or use it to mix credentials from different workspaces.
+
+Download the [complete OTLP/HTTP configuration](/examples/observe/collector-queue-http.yaml) as `otelcol.yaml`. Its queue settings are:
+
+```yaml
+extensions:
+  file_storage/queue:
+    directory: /var/lib/otelcol/queue
+    create_directory: true
+    fsync: true
+    timeout: 10s
+    max_size: 8589934592
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:14318
+        max_request_body_size: 16777216
+      grpc:
+        endpoint: 127.0.0.1:14317
+        max_recv_msg_size_mib: 16
+exporters:
+  otlphttp/futureagi:
+    traces_endpoint: ${env:FI_OTLP_HTTP_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+      X-Project-Name: ${env:FI_PROJECT_NAME}
+    sending_queue:
+      enabled: true
+      sizer: bytes
+      queue_size: 2147483648
+      num_consumers: 2
+      storage: file_storage/queue
+      block_on_overflow: false
+      wait_for_result: false
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 0s
+service:
+  extensions: [file_storage/queue]
+  telemetry:
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 18888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlphttp/futureagi]
+```
+
+There is deliberately no asynchronous `batch` processor before the queue: the receiver must not acknowledge data that is still waiting in that processor's memory. Queue-side batching is also omitted, so the Collector preserves each incoming export's batch size. `file_storage` with `fsync: true` persists each accepted enqueue before returning; disk latency must fit the application's existing export timeout.
+
+Set the backend credentials in the environment using your secret manager. Do not put real keys in the configuration file or command history. The application-to-local-Collector hop does not need Future AGI keys; only the upstream Collector's exporter does.
+
+```bash
+# Supply FI_API_KEY and FI_SECRET_KEY through your secret manager first.
+export FI_PROJECT_NAME=checkout-agent
+export FI_OTLP_HTTP_ENDPOINT=https://api.futureagi.com/tracer/v1/traces
+
+mkdir -p otelcol-queue
+chmod 700 otelcol-queue
+
+IMAGE=otel/opentelemetry-collector-contrib:0.163.2@sha256:7f22d2a6748110ffb6a59bc0df448bccbf501cdb667d610ede4c61d3863d5849
+
+docker run --rm --network host --user "$(id -u):$(id -g)" \
+  -e FI_API_KEY -e FI_SECRET_KEY -e FI_PROJECT_NAME -e FI_OTLP_HTTP_ENDPOINT \
+  -v "$PWD/otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+  -v "$PWD/otelcol-queue:/var/lib/otelcol/queue" \
+  "$IMAGE" validate --config=/etc/otelcol-contrib/config.yaml
+
+docker run -d --name futureagi-buffer --restart unless-stopped \
+  --network host --user "$(id -u):$(id -g)" \
+  -e FI_API_KEY -e FI_SECRET_KEY -e FI_PROJECT_NAME -e FI_OTLP_HTTP_ENDPOINT \
+  -v "$PWD/otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+  -v "$PWD/otelcol-queue:/var/lib/otelcol/queue" \
+  "$IMAGE"
+```
+
+The mounted queue directory must survive container replacement. In Kubernetes, use a persistent volume, not `emptyDir`, and arrange exclusive ownership of each queue directory. Retain the same exporter component ID and storage directory across restarts. Never run two Collector processes against one queue database.
+
+For self-hosted Future AGI, replace `FI_OTLP_HTTP_ENDPOINT` with your collector's full trace endpoint. The loopback addresses above refer to the Linux host, not another container. If the application runs in a different container or host, configure a private authenticated/TLS receiver and restricted networking rather than publishing these unauthenticated listeners.
+
+### Use OTLP/gRPC to Future AGI
+
+Use the [complete gRPC configuration](/examples/observe/collector-queue-grpc.yaml) instead. It has the same receiver, storage, retry and byte-queue settings, but uses `otlp/futureagi` as the pipeline's sole exporter. Do not configure both exporters in one pipeline: that sends each export twice.
+
+```bash
+export FI_PROJECT_NAME=checkout-agent
+export FI_OTLP_GRPC_ENDPOINT=api.futureagi.com:443
+export FI_OTLP_GRPC_INSECURE=false
+```
+
+Pass `-e FI_OTLP_GRPC_ENDPOINT -e FI_OTLP_GRPC_INSECURE` to the same Docker commands in place of `-e FI_OTLP_HTTP_ENDPOINT`. The exporter uses `compression: none`, because Future AGI's gRPC receiver does not accept gzip. Leave TLS enabled for Cloud. `FI_OTLP_GRPC_INSECURE=true` is only for a trusted local plaintext test endpoint.
+
+### Point the application at the local receiver
+
+For an OpenTelemetry SDK whose exporter reads standard environment variables, choose one transport:
+
+```bash
+# OTLP/HTTP from the application to the local Collector.
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14318/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=gzip
+```
+
+Or use gRPC:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14317
+export OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=none
+```
+
+Clear application exporter headers containing Future AGI credentials on this local-only hop. Explicit exporter constructor arguments take precedence over these environment variables: change those endpoints directly if your application sets them. For traceAI's endpoint options, see [Set up tracing](/docs/sdk/tracing/set-up-tracing).
+
+The exporter header supplies `FI_PROJECT_NAME` when an incoming resource has no `project_name`. A valid resource `project_name` still takes precedence. Use separate configured instances or resource attributes for multiple projects; this recipe does not forward arbitrary incoming authentication headers.
+
+## Size the queue from bytes, not just span count
+
+With `sizer: bytes`, `queue_size` is serialized queue bytes, not a number of requests or spans. Compression on the outgoing HTTP connection does not reduce this capacity requirement. Measure representative LLM, tool and heavy-attribute exports; prompts and outputs make bytes per span vary substantially.
+
+For a finite burst, a conservative starting point assumes the backend drains nothing during the burst:
+
+```text
+burst_bytes = sum(serialized_bytes_per_export)
+queue_size >= safety_factor * burst_bytes
+
+For measured arrival and drain rates:
+backlog_bytes = maximum accumulated (arrival_bytes - drained_bytes)
+queue_size >= safety_factor * (backlog_bytes + arrival_bytes_per_second * outage_seconds)
+```
+
+Use at least `1.5` as an initial safety factor, then validate the actual workload, metadata overhead, disk throughput and exporter deadlines. For mixed shapes, sum each shape's span rate multiplied by its measured bytes per span and burst duration. A queue cannot absorb sustained arrival rates above the backend's drain rate indefinitely.
+
+| Setting | This recipe | What it bounds |
+|---|---:|---|
+| `sending_queue.queue_size` | 2 GiB per exporter | Queued serialized bytes, not process RSS |
+| `sending_queue.num_consumers` | 2 | Concurrent exports from this exporter to Future AGI |
+| `file_storage.max_size` | 8 GiB per queue database | Database growth, not the whole filesystem |
+| Exporter `timeout` | 10 seconds | Each attempt to send to Future AGI, not application exports |
+| `retry_on_failure.max_elapsed_time` | `0s` | No elapsed-time limit for retryable failures |
+| `file_storage.timeout` | 10 seconds | Storage file-lock acquisition, not the exporter retry horizon |
+
+Provision disk above the queue limit. Database pages, metadata, free pages awaiting reuse, and optional compaction consume additional space. Start with at least 16 GiB available for one 2 GiB queue and reserve more for other exporters, logs and compaction. `max_size` is a per-database guard, not a filesystem quota. Alert before either limit is reached.
+
+Size upstream memory separately from Future AGI's collector. Persistent queues use a memory-mapped database, and active requests, file pages, decoding and serialization still consume memory. A 2 GiB disk queue is not a 2 GiB process-memory bound; do not give the upstream Collector the backend's 512 MiB cap by assumption.
+
+## Monitor backpressure and delivery
+
+Scrape `http://127.0.0.1:18888/metrics` locally. In `0.163.2`, monitor these series by exporter:
+
+| Signal | Action |
+|---|---|
+| `otelcol_exporter_queue_size` / `otelcol_exporter_queue_capacity` | Alert on a sustained rising ratio and estimate time until full from byte growth per second. |
+| `otelcol_exporter_enqueue_failed_spans` | Page on nonzero increases: those spans were not safely enqueued and did not enter exporter retries. |
+| `otelcol_receiver_refused_spans` | Check SDK error logs and retry deadlines; a receiver refusal is not a backend storage acknowledgement. |
+| `otelcol_exporter_send_failed_spans` and exporter logs | Distinguish transient retries from terminal/permanent failures. Investigate any final dropped export. |
+| `otelcol_exporter_sent_spans` | Track successful backend exports alongside queue drain. This counter alone is not an ID-level storage audit. |
+| Filesystem free bytes, database allocation and process/cgroup memory | Reserve space for database growth and prevent host or upstream OOM. |
+
+Also watch Future AGI's ingest refusals and work-pool pressure through the self-hosted collector's private admin `/healthz` endpoint. More consumers are not automatically faster: they can increase backend contention and retry traffic. Keep two until a measured sustained-throughput test justifies another value.
+
+## Failure and restart limits
+
+| Condition | Expected behavior |
+|---|---|
+| Temporary backend `503` / `UNAVAILABLE` | Retry the persisted export with backoff until it succeeds, while queue capacity remains available. |
+| Collector process restart | Reopen the same queue files and replay queued or in-flight exports. An interrupted acknowledgement can cause duplicates; this is not exactly-once delivery. |
+| Logical queue capacity reached, with healthy storage | Refuse the incoming enqueue and increment enqueue/receiver failure metrics. With `block_on_overflow: false`, do not wait indefinitely for space. The SDK must retry within its own deadline. |
+| File-storage growth limit, filesystem full or I/O error | New enqueues can be clearly refused, but previously acknowledged data may also be lost in this pinned version. Treat this as a durability incident, not ordinary backpressure; restoring space alone is not proof of recovery. |
+| Permanent backend refusal, invalid keys, quota condition or oversized shape | Persistence does not make a permanent failure retryable. Correct the credentials, quota or payload and investigate dropped exports. |
+| Volume deleted, lost, corrupt or unavailable | Process-restart persistence does not protect against loss of the underlying storage. Do not silently replace a corrupt queue and claim delivery. |
+
+Logical queue-capacity overflow returned HTTP `503` or gRPC `UNAVAILABLE` in the tests below, rather than acknowledging the rejected export. Check receiver status and enqueue-failure metrics. This does not make physical storage-full safe: an empty queue metric after a storage error is not proof that acknowledged data survived. No finite queue guarantees zero loss once the SDK exhausts retries against a full or unavailable local Collector.
+
+Before upgrading the pinned Collector, repeat an ID-level finite-burst readback, kill/restart it with a nonempty queue, and force both logical queue-full and storage-full failures. Verify that every acknowledged fitting ID reaches storage after recovery, rejected IDs are reported clearly, and the backend stays within its configured memory boundary. Do not infer delivery from `force_flush()` or an empty queue alone.
+
+<Warning>
+  Queue files contain trace payloads, including prompts and outputs. Apply SDK redaction before enqueueing, restrict volume access, use encryption at rest, and apply your retention and deletion policy to queued data as well as stored traces. Do not persist reusable application API credentials as receiver metadata.
+</Warning>
+
+## Validation scope
+
+The 2026-10-27 isolated self-hosted run used collector commit `6834db5dfaf2fa9925f60446ea844ba114b15699` and the unchanged Python OpenTelemetry `1.45.1` senders. The application's batch sizes, concurrency and exporter timeouts stayed the same; only the local destination and credential ownership changed. The multi-project burst harness used two byte-queue exporters and preserved project headers. The downloadable single-workspace configurations were exercised separately in restart and queue-full controls.
+
+| Measurement | Result |
+|---|---|
+| Finite burst | 657,288 distinct IDs acknowledged by the upstream hop |
+| Fitting spans read back from canonical storage | 591,752 of 591,752; zero fitting IDs missing |
+| Deliberately oversized shape controls | 65,536 permanently refused by Future AGI; zero stored |
+| Producer duration and mean arrival rate | 155.83 seconds; 4,218 spans/second |
+| Representative serialized payload estimate | 1.31 GB for the burst, about 8.43 MB/second; shape-weighted measurements, not an exact all-request byte capture |
+| Largest sampled combined queued backlog | 1,173,104,481 bytes; HTTP peak 1,045,396,022 bytes, gRPC peak 127,708,459 bytes |
+| Peak allocated queue disk | 1,395,503,104 bytes |
+| Full canonical and property-catalog drain | 1,276.96 seconds from start; 1,121.13 seconds after producers finished |
+| Future AGI collector memory | Collector-only hard cap 536,870,912 bytes, swap disabled; lifetime cgroup peak 362,418,176 bytes, no OOM or restart |
+| Upstream Collector memory | Separate, uncapped process; lifetime cgroup peak 2,996,670,464 bytes, process RSS high-water 2,598,506,496 bytes |
+| Kill during normal drain | 32,768 acknowledged IDs; 5,120 already stored and a nonempty queue at `SIGKILL`; all 32,768 stored after reopening the same volume |
+| Logical queue full, HTTP and gRPC | Each accepted 1,152 IDs and refused 1,920; all acknowledged IDs stored after backend recovery, no refused IDs stored |
+| Forced 2 MiB file-storage growth limit | 896 IDs acknowledged, 2,176 refused with HTTP `503`; only 256 acknowledged IDs stored after headroom restoration, 640 missing. This control failed. |
+
+The byte-profile estimate with a `1.5` safety factor needs about 1.97 GB, below the configured 2 GiB per exporter. That is a measured finite-workload example, not a universal span-rate guarantee or outage allowance. Provision the upstream separately; for this profile, start with at least 6 GiB memory headroom and remeasure rather than applying the backend's 512 MiB cap to it.
+
+The initial metrics observer timed out and was resumed without rerunning producers or restarting either process. The largest memory sampling gap was 323.13 seconds; same-process kernel lifetime peaks and zero OOM/max events cover that gap. The backend application, PostgreSQL and ClickHouse were outside the collector-only memory cap. These are synthetic self-hosted results, not a Cloud throughput/SLA or whole-application memory claim.
+
+The burst, normal restart and logical-capacity results do not waive the failed physical-storage-exhaustion control. Require a separately qualified upstream fix before relying on zero loss across that failure.
+
+## Next Steps
+
+- [Export and endpoints](/docs/observe/reference/export-formats): request limits, project routing and transient versus permanent refusals.
+- [Set up tracing](/docs/sdk/tracing/set-up-tracing): configure application exporters and flush short-lived processes.
+- [Mask span attributes](/docs/sdk/tracing/mask-span-attributes): remove sensitive trace content before it reaches a queue.
+- [OpenTelemetry persistent queues](https://github.com/open-telemetry/opentelemetry-collector/blob/v0.163.0/exporter/exporterhelper/README.md#persistent-queue): upstream delivery semantics and queue settings.
