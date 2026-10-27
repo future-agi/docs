@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { integrations, integrationCategories, integrationNavigation, integrationAliases, integrationAids, integrationSearchText, validateIntegrations } from '../src/lib/integrations.mjs';
+import { integrations, integrationCategories, integrationNavigation, integrationAliases, integrationAids, integrationSearchText, integrationDirectoryMarkdown, validateIntegrations } from '../src/lib/integrations.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 function walk(dir) { return fs.readdirSync(dir, {withFileTypes:true}).flatMap(f => f.isDirectory() ? walk(path.join(dir,f.name)) : [path.join(dir,f.name)]); }
@@ -46,6 +46,17 @@ test('all logo references have provenance, existing files, matching hashes and p
   assert.equal(result.status,0,result.stdout+result.stderr);
   const manifest = JSON.parse(read('public/images/integrations/manifest.json'));
   for (const i of integrations) assert.ok(manifest.assets[i.logo],`Missing logo record: ${i.logo}`);
+});
+test('machine-readable overview serializes every catalog entry and setup aid', () => {
+  const text = integrationDirectoryMarkdown();
+  for (const entry of integrations) {
+    assert.ok(text.includes(`[${entry.name}](${entry.href})`), entry.id);
+    assert.ok(text.includes(entry.summary), entry.id);
+    assert.ok(text.includes(entry.method), entry.id);
+  }
+  for (const aid of integrationAids) assert.ok(text.includes(`[${aid.name}](${aid.href})`));
+  assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
+  assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {

@@ -58,7 +58,7 @@ export const integrations = [
   { id: 'agentscope', name: 'AgentScope', href: '/docs/integrations/frameworks/agentscope', category: 'frameworks', summary: 'Export native agent, model and tool spans.', method: 'OpenTelemetry', logo: 'agentscope' },
   { id: 'apollo-graphql', name: 'Apollo Server', href: '/docs/integrations/frameworks/apollo-graphql', category: 'frameworks', summary: 'Trace GraphQL operations and resolvers in Server 4.', method: 'OpenTelemetry', logo: 'apollo', aliases: ['Apollo GraphQL'] },
   { id: 'embabel', name: 'Embabel', href: '/docs/integrations/frameworks/embabel', category: 'frameworks', summary: 'Export JVM agent spans with the observability starter.', method: 'OpenTelemetry', logo: 'embabel', aliases: ['Spring Boot', 'Java', 'Kotlin'] },
-  { id: 'eve', name: 'eve', href: '/docs/integrations/frameworks/eve', category: 'frameworks', summary: 'Send agent-turn spans from Vercel’s eve framework.', method: 'OpenTelemetry', logo: 'eve', aliases: ['Vercel eve'] },
+  { id: 'eve', name: 'Eve', href: '/docs/integrations/frameworks/eve', category: 'frameworks', summary: 'Send agent-turn spans from Vercel’s Eve framework.', method: 'OpenTelemetry', logo: 'eve', aliases: ['Vercel eve'] },
   { id: 'flue', name: 'Flue', href: '/docs/integrations/frameworks/flue', category: 'frameworks', summary: 'Connect durable Node.js agents with Flue’s adapter.', method: 'OpenTelemetry', logo: 'flue', aliases: ['Astro'] },
   { id: 'graphite', name: 'Graphite (grafi)', href: '/docs/integrations/frameworks/graphite', category: 'frameworks', summary: 'Export Python agent spans through ExecutionServices.', method: 'OpenTelemetry', logo: 'graphite', aliases: ['grafi', 'Binome'] },
   { id: 'koog', name: 'Koog', href: '/docs/integrations/frameworks/koog', category: 'frameworks', summary: 'Export Kotlin JVM agent spans with Koog’s OTel feature.', method: 'OpenTelemetry', logo: 'koog', aliases: ['Kotlin', 'JVM'] },
@@ -150,6 +150,23 @@ export function integrationSearchText(entry) {
 /** @param {IntegrationCategory} category */
 export function integrationsInCategory(category) {
   return integrations.filter(entry => entry.category === category).sort((a, b) => a.name.localeCompare(b.name, 'en'));
+}
+
+// Machine-readable exports use the same catalog, not a second list in MDX.
+export function integrationDirectoryMarkdown() {
+  return [
+    ...integrationCategories.flatMap(category => [
+      `### ${category.name}`,
+      '',
+      category.description,
+      '',
+      ...integrationsInCategory(category.id).map(entry => `- [${entry.name}](${entry.href}) — ${entry.summary} Connection: ${entry.method}.`),
+      '',
+    ]),
+    '### Getting started',
+    '',
+    ...integrationAids.map(aid => `- [${aid.name}](${aid.href})`),
+  ].join('\n');
 }
 
 // The navigation tree is generated from the same entries as the directory.
