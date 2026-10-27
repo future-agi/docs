@@ -24,7 +24,9 @@ Langfuse span shape, keeps content out by default and forwards to Future AGI. No
 
 Needs Docker with Compose (`docker compose` or `docker-compose`), a self-hosted Future AGI in Docker (the
 checks read its Postgres and ClickHouse containers; set `FI_PG_CONTAINER` / `FI_CH_CONTAINER` if yours are not
-named `futureagi-postgres-1` / `futureagi-clickhouse-1`, the default self-hosted Docker Compose names), and any OpenAI-compatible model endpoint reachable from a container.
+named `futureagi-postgres-1` / `futureagi-clickhouse-1`, the default self-hosted Docker Compose names), and an OpenAI-compatible model endpoint reachable from a container that supports streamed usage (`stream_options.include_usage`). The real OpenAI API supports it.
+
+The test custom endpoint explicitly sets `addParams.streamUsage: true`. LibreChat v0.8.8 otherwise disables streamed usage for custom endpoints: real OpenAI replies still work, but its Langfuse export has `usage_details={}` and Observe cannot show token counts. This setting requests provider-reported usage; it does not estimate or invent tokens. Keep the default content-off collector configuration unchanged.
 
 ```bash
 export FI_API_KEY=... FI_SECRET_KEY=...

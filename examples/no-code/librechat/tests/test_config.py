@@ -105,3 +105,18 @@ def test_page_collector_block_is_the_shipped_file():
 
 def test_page_compose_block_is_the_shipped_file():
     assert (HERE / "docker-compose.override.yml.example").read_text().strip() in _page_blocks()
+
+
+def test_custom_endpoint_requests_provider_reported_streamed_usage():
+    config = yaml.safe_load((HERE / "librechat.yaml").read_text())
+    endpoint = config["endpoints"]["custom"][0]
+    assert endpoint["addParams"]["streamUsage"] is True
+    assert endpoint["baseURL"] == "${TEST_LLM_BASE_URL}"
+    assert endpoint["apiKey"] == "${TEST_LLM_API_KEY}"
+
+
+def test_page_documents_the_streamed_usage_requirement():
+    page = PAGE.read_text()
+    assert "addParams:\n  streamUsage: true" in page
+    assert "stream_options.include_usage" in page
+    assert "missing usage is unknown, not zero usage" in page
