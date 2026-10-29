@@ -40,7 +40,7 @@ def test_switches_named_on_the_page_exist():
 
 def test_page_states_versions_privacy_and_limits():
     for needle in ("1.8.0", "1.7.13", "restate-sdk", "1.0.5", "0.162.0", "## Privacy", "## Troubleshooting",
-                   "## Not covered", "untested", "KEEP_RESTATE_DETAILS=true"):
+                   "## Not covered", "outside this guide’s coverage", "KEEP_RESTATE_DETAILS=true"):
         assert needle in TEXT, needle
 
 

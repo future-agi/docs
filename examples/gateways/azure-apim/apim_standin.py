@@ -3,7 +3,7 @@
 
 THIS IS NOT AZURE. It models, in ~100 lines, what policy/otlp-egress.policy.xml tells APIM to do, so the
 real OpenTelemetry client and the real Future AGI collector can be exercised without an Azure subscription.
-How APIM itself behaves (header handling, body limits, content-encoding, logging) was NOT verified here.
+How APIM itself behaves (header handling, body limits, content-encoding, logging) is outside what this stand-in reproduces.
 
 What it does, mirroring the policy:
   * serves one operation, POST /tracer/v1/traces (API URL suffix `tracer`, operation `/v1/traces`);

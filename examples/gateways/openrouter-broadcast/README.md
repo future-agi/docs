@@ -63,6 +63,6 @@ PYTHON=.venv/bin/python VERIFY=/path/to/fi_verify.py ./run_e2e.sh all
 | `direct` | Test Connection with right keys, wrong keys, Bearer and no headers; a generation with and without `project_name`; gzip; the `/tracer/v1/traces` path; the same body twice; an oversized body; a second workspace's key |
 | `collector` | Test Connection with no token, a wrong token and the right token; two real model calls; a failed request with a synthetic exception event; OpenRouter Privacy Mode; both token spellings and no usage; gzip; a nested trace; then the content-on opt-in, an oversized generation, and wrong Future AGI keys behind a collector whose Test Connection still passes; secrets searched for in every log |
 
-## Not verified
+## Not covered
 
 Provider fallback, tool calls, cancelled generations, Privacy Mode in OpenRouter, `trace_id` and `parent_span_id` linking, TLS in front of a collector you run yourself.

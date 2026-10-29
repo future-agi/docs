@@ -10,7 +10,7 @@ usage, a tool call, a wrong-key 401). The local stand-in in `standin/` is still 
 See "Live vendor verification" and "What is real and what is a stand-in" below.
 
 Scope: `POST /v1/chat/completions` only. Models that CometAPI says need the Responses API, and image,
-video and audio routes, are not covered and not tested.
+video and audio routes, are not covered.
 
 ## Contents
 
