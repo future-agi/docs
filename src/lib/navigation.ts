@@ -930,6 +930,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
+              { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
             ]
           },
           {
