@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'open-webui', name: 'Open WebUI', href: '/docs/integrations/no-code/open-webui', category: 'apps', summary: 'Trace self-hosted chat turns through the version-scoped filter Function.', method: 'Filter Function', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
