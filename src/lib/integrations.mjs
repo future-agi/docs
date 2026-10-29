@@ -26,7 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
-  { id: 'open-webui', name: 'Open WebUI', href: '/docs/integrations/no-code/open-webui', category: 'apps', summary: 'Trace self-hosted chat turns through the version-scoped filter Function.', method: 'Filter Function', logo: 'generic-framework' },
+  { id: 'google-antigravity', name: 'Antigravity CLI', href: '/docs/integrations/coding-agents/google-antigravity', category: 'coding', summary: 'Trace version-scoped macOS CLI conversations with lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
@@ -110,6 +110,7 @@ export const integrations = [
 
   { id: 'n8n', name: 'n8n', href: '/docs/integrations/traceai/n8n', category: 'apps', summary: 'Use Future AGI prompts in visual n8n workflows.', method: 'Prompt API', logo: 'n8n' },
   { id: 'librechat', name: 'LibreChat', href: '/docs/integrations/no-code/librechat', category: 'apps', summary: 'Forward agent runs and backend spans from LibreChat.', method: 'OTel collector', logo: 'librechat' },
+  { id: 'open-webui', name: 'Open WebUI', href: '/docs/integrations/no-code/open-webui', category: 'apps', summary: 'Trace self-hosted chat turns through the version-scoped filter Function.', method: 'Filter Function', logo: 'generic-framework' },
   { id: 'lobechat', name: 'LobeHub', href: '/docs/integrations/no-code/lobechat', category: 'apps', summary: 'Export server-side agent runs from self-hosted LobeHub.', method: 'OTel collector', logo: 'lobehub', aliases: ['LobeChat'] },
 
   { id: 'langfuse-import', name: 'Langfuse import', href: '/docs/integrations/import/langfuse', category: 'import', summary: 'Import existing traces and scores from your account.', method: 'Trace import', logo: 'langfuse' },
@@ -123,6 +124,8 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
+  { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
