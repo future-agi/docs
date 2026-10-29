@@ -26,7 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
-  { id: 'cloudflare-ai-gateway', name: 'Cloudflare AI Gateway', href: '/docs/integrations/gateways/cloudflare-ai-gateway', category: 'gateways', summary: 'Map gateway exports through a privacy-filtering collector.', method: 'Gateway OTLP', logo: 'generic-cloud' },
+  { id: 'google-antigravity', name: 'Antigravity CLI', href: '/docs/integrations/coding-agents/google-antigravity', category: 'coding', summary: 'Trace version-scoped macOS CLI conversations with lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
@@ -87,6 +87,7 @@ export const integrations = [
 
   { id: 'portkey', name: 'Portkey', href: '/docs/integrations/traceai/portkey', category: 'gateways', summary: 'Instrument Portkey client calls in your application.', method: 'traceAI SDK', logo: 'portkey' },
   { id: 'envoy-ai-gateway', name: 'Envoy AI Gateway', href: '/docs/integrations/gateways/envoy-ai-gateway', category: 'gateways', summary: 'Export the gateway’s OpenAI-endpoint spans over OTLP.', method: 'Gateway OTLP', logo: 'envoy' },
+  { id: 'cloudflare-ai-gateway', name: 'Cloudflare AI Gateway', href: '/docs/integrations/gateways/cloudflare-ai-gateway', category: 'gateways', summary: 'Map gateway exports through a privacy-filtering collector.', method: 'Gateway OTLP', logo: 'generic-cloud' },
   { id: 'gravitee', name: 'Gravitee APIM', href: '/docs/integrations/gateways/gravitee', category: 'gateways', summary: 'Forward APIM request spans, not AI Gateway traces.', method: 'OTel collector', logo: 'gravitee', aliases: ['Gravitee Gateway'] },
   { id: 'kong-ai-gateway', name: 'Kong AI Gateway', href: '/docs/integrations/gateways/kong-ai-gateway', category: 'gateways', summary: 'Export GenAI spans with Kong’s OpenTelemetry plugin.', method: 'Gateway OTLP', logo: 'kong' },
   { id: 'litellm-proxy', name: 'LiteLLM Proxy', href: '/docs/integrations/gateways/litellm-proxy', category: 'gateways', summary: 'Export request spans from the proxy server’s callback.', method: 'Gateway OTLP', logo: 'litellm', aliases: ['server'] },
@@ -123,6 +124,8 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
+  { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
