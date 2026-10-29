@@ -117,6 +117,7 @@ export const integrations = [
 
   { id: 'n8n', name: 'n8n', href: '/docs/integrations/traceai/n8n', category: 'apps', summary: 'Use Future AGI prompts in visual n8n workflows.', method: 'Prompt API', logo: 'n8n' },
   { id: 'librechat', name: 'LibreChat', href: '/docs/integrations/no-code/librechat', category: 'apps', summary: 'Forward agent runs and backend spans from LibreChat.', method: 'OTel collector', logo: 'librechat' },
+  { id: 'open-webui', name: 'Open WebUI', href: '/docs/integrations/no-code/open-webui', category: 'apps', summary: 'Trace self-hosted chat turns through the version-scoped filter Function.', method: 'Filter Function', logo: 'generic-framework' },
   { id: 'lobechat', name: 'LobeHub', href: '/docs/integrations/no-code/lobechat', category: 'apps', summary: 'Export server-side agent runs from self-hosted LobeHub.', method: 'OTel collector', logo: 'lobehub', aliases: ['LobeChat'] },
 
   { id: 'langfuse-import', name: 'Langfuse import', href: '/docs/integrations/import/langfuse', category: 'import', summary: 'Import existing traces and scores from your account.', method: 'Trace import', logo: 'langfuse' },
