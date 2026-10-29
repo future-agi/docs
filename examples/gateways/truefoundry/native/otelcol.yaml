@@ -1,0 +1,92 @@
+# OpenTelemetry Collector (contrib) between a TrueFoundry AI Gateway and Future AGI.
+#
+# Point the gateway's OTEL Config at this collector (HTTP, proto, http://<this host>:4318/v1/traces).
+# The collector then
+#   1. names the Observe project, so the gateway does not have to,
+#   2. removes prompt, response, identity and error text before anything leaves your network,
+#   3. forwards plain (uncompressed) OTLP with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+#
+# Required environment:
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys
+#   FI_PROJECT_NAME             Observe project the gateway traces go to
+#   FI_TRACES_URL               full traces URL, for example https://api.futureagi.com/tracer/v1/traces
+#                               or http://<self-hosted collector>:4318/v1/traces
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # `insert` keeps a project_name the gateway already set (OTEL Config, Additional
+  # Resource Attributes) and fills it in when the gateway sent none.
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: insert
+      - key: project_type
+        value: observe
+        action: insert
+
+  # Content and identity attributes the gateway can export. Exclude Request Data removes
+  # only tfy.input, tfy.output and tfy.input_short_hand; this also covers the gen_ai message
+  # attributes, request metadata, prompt variables, the caller's identity and error text.
+  # Real gateway spans carry the caller as tfy.request.identity (JSON with the e-mail), the token name
+  # and the caller IP (client.address). Delete those lines if you want the caller on the span.
+  transform/privacy:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "tfy.input")
+          - delete_key(attributes, "tfy.output")
+          - delete_key(attributes, "tfy.input_short_hand")
+          - delete_key(attributes, "gen_ai.input.messages")
+          - delete_key(attributes, "gen_ai.output.messages")
+          - delete_key(attributes, "tfy.request.metadata")
+          - delete_key(attributes, "tfy.prompt_variables")
+          - delete_key(attributes, "tfy.error_message")
+          - delete_key(attributes, "tfy.request.created_by_subject")
+          - delete_key(attributes, "tfy.request.created_by_subject_teams")
+          - delete_key(attributes, "tfy.request.created_by_subject_pat_name")
+          - delete_key(attributes, "tfy.request.identity")
+          - delete_key(attributes, "client.address")
+          - set(status.message, "error") where status.message != ""
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+
+  # Keeps each export request small. The Future AGI collector reads up to 16 MiB per request in
+  # the version tested, and a gateway that sends full prompts can exceed that without batching.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; this collector only carries traces
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/privacy, batch]
+      exporters: [otlp_http/future_agi]
