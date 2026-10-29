@@ -218,6 +218,7 @@ export const tabNavigation: NavTab[] = [
                 items: [
                   { title: 'Supported providers', href: '/docs/command-center/features/providers' },
                   { title: 'Self-hosted models', href: '/docs/command-center/features/self-hosted-models' },
+                  { title: 'Decision models', href: '/docs/command-center/features/decision-models' },
                 ]
               },
               {
@@ -640,6 +641,8 @@ export const tabNavigation: NavTab[] = [
               },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
+              { title: 'Instant eval', href: '/docs/observe/features/instant-eval' },
+              { title: 'Insights', href: '/docs/observe/features/insights' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
             ]
           },
