@@ -58,3 +58,11 @@ def test_the_page_names_both_region_urls_and_the_coding_plan_warning():
     assert "/api/coding" in text and "Coding Plan is not this page" in text
     assert chr(0x2014) not in text, "the docs style guide forbids em dashes"
     assert "ARK_API_KEY=\"YOUR_BYTEPLUS_ARK_API_KEY\"" in text  # placeholders only, no key in the page
+
+
+def test_qualification_and_release_scope_are_explicit():
+    text = PAGE.read_text()
+    assert "ModelArk vendor qualification is pending" in text
+    assert "None is a BytePlus service receipt" in text
+    assert "merged to `dev` on 2026-10-28" in text
+    assert not re.search(r"not tested|untested|unverified", text, re.I)
