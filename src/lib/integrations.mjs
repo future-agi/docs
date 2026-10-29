@@ -26,7 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
-  {"id": "aws-lambda-local", "name": "Lambda local lifecycle", "href": "/docs/integrations/runtimes/aws-lambda", "category": "frameworks", "summary": "Exercise handler reuse and bounded flush attempts locally.", "method": "Local OTLP example", "logo": "generic-framework"},
+  { id: 'google-antigravity', name: 'Antigravity CLI', href: '/docs/integrations/coding-agents/google-antigravity', category: 'coding', summary: 'Trace version-scoped macOS CLI conversations with lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
@@ -42,6 +42,7 @@ export const integrations = [
   { id: 'openai', name: 'OpenAI', href: '/docs/integrations/traceai/openai', category: 'providers', summary: 'Instrument OpenAI client calls in your application.', method: 'traceAI SDK', logo: 'openai' },
   { id: 'anthropic', name: 'Anthropic', href: '/docs/integrations/traceai/anthropic', category: 'providers', summary: 'Capture Claude calls, token usage and latency.', method: 'traceAI SDK', logo: 'anthropic', aliases: ['Claude'] },
   { id: 'bedrock', name: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock', category: 'providers', summary: 'Trace model calls through Amazon Bedrock.', method: 'traceAI SDK', logo: 'bedrock', aliases: ['Amazon'] },
+  {"id": "aws-lambda-local", "name": "Lambda local lifecycle", "href": "/docs/integrations/runtimes/aws-lambda", "category": "frameworks", "summary": "Exercise handler reuse and bounded flush attempts locally.", "method": "Local OTLP example", "logo": "generic-framework"},
   { id: 'vertexai', name: 'Vertex AI', href: '/docs/integrations/traceai/vertexai', category: 'providers', summary: 'Instrument Gemini calls through Google Cloud.', method: 'traceAI SDK', logo: 'vertexai', aliases: ['Google', 'Gemini'] },
   { id: 'google-genai', name: 'Google GenAI', href: '/docs/integrations/traceai/google_genai', category: 'providers', summary: 'Trace Gemini requests with the Google GenAI SDK.', method: 'traceAI SDK', logo: 'google', aliases: ['Gemini'] },
   { id: 'groq', name: 'Groq', href: '/docs/integrations/traceai/groq', category: 'providers', summary: 'Capture model calls made with the Groq SDK.', method: 'traceAI SDK', logo: 'groq' },
@@ -123,6 +124,8 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
+  { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
