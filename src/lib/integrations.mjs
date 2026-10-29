@@ -27,6 +27,7 @@ export const integrationCategories = [
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
+  { id: 'claude-managed-agents', name: 'Claude Managed Agents prototype', href: '/docs/integrations/claude-managed-agents', category: 'frameworks', summary: 'Explore a collector mapping for documented Managed Agents spans.', method: 'OTel collector', logo: 'anthropic' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
   { id: 'claude-code', name: 'Claude Code', href: '/docs/integrations/coding-agents/claude-code', category: 'coding', summary: 'Forward native CLI telemetry through a privacy-filtering collector.', method: 'Native OTLP', logo: 'generic-framework' },

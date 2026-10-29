@@ -1,0 +1,262 @@
+---
+title: "Claude Managed Agents"
+description: "Collector prototype for documented Claude Managed Agents spans. Synthetic delivery checks are recorded separately from pending live-session acceptance."
+---
+
+## About
+
+Claude Managed Agents is Anthropic's hosted agent service: Anthropic runs the agent loop and a sandbox for each session, and your code creates sessions and exchanges events with them through the Sessions API (beta header `managed-agents-2026-04-01`). Since 2026-10-14 the Claude Platform can push OpenTelemetry traces of those sessions to an endpoint you choose, called a telemetry destination. This page points a destination at a small OpenTelemetry Collector that you run, which hands the spans to Future AGI.
+
+You need the collector because of two differences between what Anthropic sends and what Future AGI accepts:
+
+| Anthropic | Future AGI | What the collector does |
+| --- | --- | --- |
+| The first request of every delivery is gzip-compressed. | The OTLP/HTTP receiver rejects gzip bodies with HTTP 400. | Accepts gzip, forwards plain OTLP. |
+| A destination sets request headers only. Spans carry `service.name` = `claude-platform` and no project. | Every batch needs a `project_name` resource attribute. | Stamps `project_name` and the two Future AGI key headers. |
+
+<Warning>
+**Live destination/session qualification is pending; this remains a draft collector prototype.** Everything in the recorded delivery evidence uses a stand-in for Anthropic: payloads built from Anthropic's published span reference and delivered the way Anthropic's docs describe, into a collector and a self-hosted Future AGI. No Anthropic Console destination and no real Managed Agents session was involved, so Anthropic's real payload can differ. Anthropic's export is itself in beta and its span names and attributes can change.
+</Warning>
+
+This page is not about related products that run the agent loop in your own process: the Claude Messages API in your own code ([Anthropic](/docs/integrations/traceai/anthropic)), the Claude Agent SDK (`traceai-claude-agent-sdk` in the [instrumentor list](/docs/sdk/tracing/instrumentors)), and Claude Code (the Claude Code coding-agent page).
+
+## Before you start
+
+- A Future AGI account with an API key and secret key, and a Future AGI endpoint your collector can reach.
+- An Anthropic Console organization where you have the **admin** role, which is needed to add destinations. Developers can only view them.
+- A host with a public DNS name and HTTPS on port 443 for the collector. Anthropic accepts only an HTTPS URL on port 443 with a hostname, not an IP address, and disables a destination whose hostname resolves to a non-public address or that answers with a redirect. Put TLS in front of the collector with a load balancer or reverse proxy, or set `tls:` on the receiver.
+- Docker, or another way to run the OpenTelemetry Collector contrib distribution. This page was tested with `otel/opentelemetry-collector-contrib` 0.162.0.
+
+## 1. Run the collector
+
+Save this as `otelcol.yaml`. It takes five values from the environment.
+
+```yaml
+# OpenTelemetry Collector (contrib) between a Claude Console telemetry destination and Future AGI.
+#
+# Anthropic's destination takes an endpoint URL and request headers. It has no field for resource attributes,
+# and Future AGI drops any batch whose resource has no `project_name`. Anthropic also gzips the first request
+# of every delivery, which the Future AGI HTTP receiver rejects. This collector:
+#   1. accepts OTLP/HTTP (protobuf, gzip or plain) from Anthropic, only with your bearer token,
+#   2. sets the Observe project,
+#   3. maps Anthropic's gen_ai.* / anthropic.* attributes to what Observe reads,
+#   4. keeps prompts, replies, tool arguments, tool results and error text OUT unless you opt in,
+#   5. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0. Span and attribute names are from
+# https://platform.claude.com/docs/en/api/opentelemetry/spans (read 2026-10-20).
+#
+# Environment:
+#   ANTHROPIC_DEST_TOKEN   secret you invent; the destination sends `Authorization: Bearer <token>`
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they never go to Anthropic)
+#   FI_PROJECT_NAME        Observe project every Anthropic span goes to
+#   FI_TRACES_URL          full traces URL, e.g. http://<self-hosted>:4318/v1/traces
+#                          or https://api.futureagi.com/tracer/v1/traces
+#   FI_CAPTURE_CONTENT     optional, default false. `true` lets prompts, replies, tool arguments, tool results
+#                          and error text through. The destination's own content mode must also be Full content.
+
+extensions:
+  bearertokenauth/anthropic:
+    scheme: Bearer
+    token: ${env:ANTHROPIC_DEST_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/anthropic
+        # Anthropic needs HTTPS on port 443 with a public hostname. Put TLS in front of this (a load balancer or
+        # reverse proxy), or set `tls:` here with cert_file and key_file.
+
+processors:
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: insert
+
+  transform/anthropic:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span kinds in Observe, from gen_ai.operation.name.
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "chat"
+          - set(attributes["fi.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "execute_tool"
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["fi.span.kind"] == nil
+          # Sessions view: group by the Managed Agents session id.
+          - set(attributes["session.id"], attributes["anthropic.session.id"]) where attributes["anthropic.session.id"] != nil
+          # Name the agent turn after the agent.
+          - set(name, Concat(["anthropic.session.turn", attributes["gen_ai.agent.name"]], " ")) where name == "anthropic.session.turn" and attributes["gen_ai.agent.name"] != nil
+          # Content ON: fill the Input and Output panes.
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.value"], attributes["gen_ai.tool.call.arguments"]) where attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["anthropic.tool_result.content"]) where attributes["anthropic.tool_result.content"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): every content attribute Anthropic documents, in case a destination
+          # was left on Full content.
+          - delete_key(attributes, "input.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "output.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, "^gen_ai\\.(system_instructions|input\\.messages|output\\.messages|tool\\.call\\.(arguments|result))(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, "^anthropic\\.(tool_result\\.content|session\\.outcome_evaluation\\.explanation)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Error text can echo the request. Keep the fact of the error, not the words.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Future AGI reads at most 16 MiB per request; Anthropic's default content cap is 0.75 MB per span.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/anthropic]
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/anthropic, batch]
+      exporters: [otlp_http/future_agi]
+```
+
+```bash
+docker run -d --name cma-otelcol --memory 512m -p 4318:4318 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol/config.yaml:ro" \
+  -e ANTHROPIC_DEST_TOKEN -e FI_API_KEY -e FI_SECRET_KEY \
+  -e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}" \
+  -e FI_PROJECT_NAME=claude-managed-agents \
+  -e FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol/config.yaml
+```
+
+`ANTHROPIC_DEST_TOKEN` is a secret you invent (for example `openssl rand -hex 16`). Anyone who finds the endpoint could otherwise write into your project, so the receiver only accepts `Authorization: Bearer <that token>`. For a self-hosted Future AGI use `FI_TRACES_URL=http://<your collector>:<HTTP port>/v1/traces`; the hosted URL above is the one the SDK uses and was not tried with this recipe. `service.telemetry.metrics.level: none` turns off the collector's own metrics endpoint, and `compression: none` keeps the export plain.
+
+Changing `FI_CAPTURE_CONTENT` requires recreating the container: export the new value, run `docker rm -f cma-otelcol`, then rerun the command above. `docker restart` retains its original environment. Keep the default `false` unless your privacy policy permits content export.
+
+## 2. Add the destination in Anthropic
+
+Adding a destination sends the selected workspaces' activity to your collector and Future AGI, under their access and retention policies. An authorized organization admin must choose and approve the destination and workspace scope before enabling it.
+
+### In the Claude Console
+
+1. Open your organization's [OpenTelemetry settings page](https://platform.claude.com/settings/telemetry-destinations) and click **Add destination**.
+2. Set **Provider** to **Custom**.
+3. **OTLP endpoint URL**: the base URL of the collector, for example `https://otel.example.com`. Do not add `/v1/traces`, because Anthropic adds it.
+4. **Request headers**: `authorization` with the value `Bearer <your ANTHROPIC_DEST_TOKEN>`. Anthropic does not show header values again after you save.
+5. **Content mode**: **Metadata only** (the default and the one to start with), or **Full content**. See [Content modes](#content-modes).
+6. **Workspaces**: the workspaces whose spans the destination receives.
+7. Click **Add destination**, then **Test** in the destination's **More actions** menu.
+
+### With the Admin API
+
+The same destination, created with the beta header `telemetry-destinations-2026-08-11` and an admin key:
+
+```bash
+curl --fail-with-body -sS "https://api.anthropic.com/v1/organizations/telemetry_destinations" \
+  -H "x-api-key: $ANTHROPIC_ADMIN_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: telemetry-destinations-2026-08-11" \
+  -H "content-type: application/json" \
+  -d '{
+    "endpoint_url": "https://otel.example.com",
+    "headers": {"authorization": "Bearer YOUR_ANTHROPIC_DEST_TOKEN"},
+    "traces": {"content_mode": "metadata_only"},
+    "workspaces": {"type": "all"}
+  }'
+```
+
+Anthropic documents the same call for its CLI and SDKs (`client.beta.organization.telemetry_destinations.create(...)`). The settings come from Anthropic's [API tracing guide](https://platform.claude.com/docs/en/manage-claude/opentelemetry/api); check it for the current field names while the feature is in beta.
+
+## What shows up in Observe
+
+Run a session, then open the project in Observe. Spans can take up to a minute to arrive. From the stand-in run (see [What we tested](#what-we-tested)):
+
+```text
+anthropic.sessions.events.send     chain
+  anthropic.session.turn <agent>   agent
+    anthropic.model_request        llm     1,834 input / 41 output tokens
+    anthropic.tool_use bash        tool
+    anthropic.model_request        llm     1,907 input / 18 output tokens
+```
+
+| Anthropic | Observe |
+| --- | --- |
+| `gen_ai.operation.name` = `invoke_agent` (the agent turn) | Agent span, named `anthropic.session.turn <agent name>` |
+| `chat` (`anthropic.model_request`) | LLM span, with `gen_ai.request.model` and `gen_ai.usage.input_tokens` and `output_tokens` |
+| `execute_tool` (`anthropic.tool_use <tool>`) | Tool span |
+| Session request spans (`anthropic.sessions.*`) and anything else | Chain span |
+| `anthropic.session.id` | Copied to `session.id`, so each Managed Agents session is one Observe session |
+| `error.type`, error status | Span status `ERROR` |
+| `gen_ai.input.messages`, `gen_ai.output.messages` (turn), `gen_ai.tool.call.arguments`, `anthropic.tool_result.content` (tool) | Input and Output panes, only when you turn content on |
+
+Cost is not filled in. Observe prices a span from its model name, and it showed $0.00 for `claude-opus-5-5` in the stand-in run. Cache token counts (`gen_ai.usage.cache_read.input_tokens`) stay as raw attributes.
+
+## Content modes
+
+Anthropic's **Metadata only** mode, the default, exports identifiers, timing, status, token counts, and agent and tool names. **Full content** adds prompts, replies, tool arguments and tool results. Pick the mode in the destination. The collector adds a second gate: with `FI_CAPTURE_CONTENT` unset or `false` (the default) it deletes every content attribute from Anthropic's span reference and replaces error text with `error`, even if the destination was left on Full content. To see content in Observe, set the destination to **Full content** and start the collector with `-e FI_CAPTURE_CONTENT=true`.
+
+Identifiers are exported in both modes: organization, workspace, session, agent and request IDs. Prompts and tool payloads can hold personal data, so start with Metadata only. Anthropic caps content at 0.75 MB per span by default and marks a shortened span with `anthropic.content.truncated`. If your organization has a HIPAA, FERPA or K-12 data-handling restriction with Anthropic, destinations export metadata only whatever their content mode.
+
+## Link to your own traces
+
+If your application calls the Sessions API inside its own OpenTelemetry span, send the W3C `traceparent` header with each request. Anthropic reads it and nests its spans under yours, so a session appears inside your own trace. The Claude SDKs do this for you when tracing is set up; with plain HTTP, copy the active span's context into the headers with your propagator, as in Anthropic's [example](https://platform.claude.com/docs/en/manage-claude/opentelemetry/api#4-connect-api-spans-to-your-own-traces). If the sampled flag in the header is off, Anthropic does not emit the request's spans. Your own spans reach Future AGI through your own exporter, as for any [traceAI](/docs/sdk/tracing/instrumentors) application, with the same project name.
+
+## Limits
+
+- **Beta.** Anthropic's OpenTelemetry export is in beta, and span names and attributes can change.
+- **At-least-once delivery.** A destination can receive the same span more than once, and a span can be lost before delivery. Future AGI stores spans by trace and span id: in the stand-in run, the same batch delivered twice produced one trace with five spans.
+- **No zero data retention.** Managed Agents is not eligible for zero data retention, and OpenTelemetry export does not change that.
+- **Admin only.** Only an organization admin can add or change a destination. Anthropic allows 10 destinations per organization and 20 request headers per destination.
+- **Delivery rules.** Each delivery must finish its TLS handshake and send response headers within 5 seconds, and times out after 10 seconds in total. A destination is disabled after a redirect, a non-public hostname, or 24 hours of failed deliveries.
+- **Outside the qualified scope.** Multi-agent threads, outcome evaluations, compaction and MCP tools; spans from the Claude SDKs in your own process; and real-session delivery. The fixture checks below do not establish those paths.
+
+## What we tested
+
+**Everything below is a stand-in.** The payloads were built from Anthropic's [span reference](https://platform.claude.com/docs/en/api/opentelemetry/spans) (read 2026-10-20) with made-up ids, model and token counts, and delivered the way Anthropic's [delivery rules](https://platform.claude.com/docs/en/manage-claude/opentelemetry/api) describe: protobuf, `User-Agent: Claude-Platform`, the destination's headers only, first request gzipped. The collector (`otel/opentelemetry-collector-contrib` 0.162.0 running the recipe above) and the Future AGI it forwarded to (self-hosted, in Docker) were real.
+
+| Run | Result |
+| --- | --- |
+| Wrong token | HTTP 401 from the collector, nothing stored |
+| Metadata-only session (send, turn, two model requests, one tool) | HTTP 200 on the gzipped first request, so no uncompressed resend was needed. Stored as the tree above, with tokens and the session id |
+| Same batch delivered twice | HTTP 200 both times, one trace with five spans stored |
+| A turn whose model request failed with `rate_limit_error` | Turn and model request shown as `ERROR`, status text replaced by `error` |
+| Full-content payload sent to a collector with content off | Stored, with no content: the marker in the prompts, tool arguments and tool results was absent from every column of every table that holds the project's rows |
+| Full-content payload sent to a collector with `FI_CAPTURE_CONTENT=true` | Input and Output panes filled on the turn and the tool; the marker was found in the stored span rows |
+| Metadata-only run, scan for the local user name, host name, home directory and a stack trace | None found |
+
+Without the collector, the same payload delivered straight to Future AGI is rejected with HTTP 400 `ResourceSpan(s) have no project_name`, and a gzip body is rejected with 400 as well (Anthropic then resends it uncompressed, which works only once a project name is present).
+
+**Acceptance still required:** a real Managed Agents session through a real Console destination and Anthropic's delivery service, with gzip handling, project/session mapping and privacy checked against the received payload. Synthetic results cannot satisfy this gate. A live run needs an Anthropic Console organization admin and an API key with Managed Agents access and billing.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| The destination's **Test** or delivery shows Failing with HTTP 401 | The `authorization` header value does not match `ANTHROPIC_DEST_TOKEN`, or it lacks the `Bearer ` prefix. |
+| Failing with HTTP 400 from the collector | The request was not OTLP protobuf, or Future AGI rejected the batch. Look at the collector's log for the Future AGI status. A 401 from Future AGI means the key or secret is wrong. |
+| Destination is **Disabled** | The hostname resolves to a non-public address, the endpoint answered with a redirect, or every delivery failed for 24 hours. Fix it, then enable it again. |
+| No spans for a workspace | The destination must cover that workspace. Spans can take up to a minute to arrive. |
+| Spans arrive but Input and Output are empty | Content is off by design. Use **Full content** in the destination and `FI_CAPTURE_CONTENT=true` on the collector. |
+| Tokens and model appear, cost is $0.00 | Observe has no price for the model name. Cost is not computed from Anthropic's token counts. |
