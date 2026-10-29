@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.16)
+project(ai_sdk_cpp_wire_probe CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# AI_SDK_SRC: a checkout of ClickHouse/ai-sdk-cpp (run_wire_probe.sh passes the pinned commit).
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(${AI_SDK_SRC} ${CMAKE_BINARY_DIR}/ai-sdk-cpp)
+add_executable(probe probe.cpp)
+target_link_libraries(probe PRIVATE ai::openai ai::langfuse)

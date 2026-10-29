@@ -1,0 +1,110 @@
+# OpenTelemetry Collector (contrib) between the watsonx Orchestrate Agentic SDK and Future AGI.
+#
+# Point the SDK's WXO_OTLP_ENDPOINT at this collector (http://<host>:4318/v1/traces). It then
+#   1. names the Observe project (resource attribute project_name), which the SDK never sets,
+#   2. maps the SDK's span.kind (llm, tool, agent, root, general) to Future AGI span kinds,
+#   3. removes host and process details and stack traces, always,
+#   4. removes prompts, outputs, tool arguments and results, error text and user ids,
+#      unless KEEP_WXO_CONTENT=true,
+#   5. forwards plain (uncompressed) OTLP/HTTP with X-Api-Key and X-Secret-Key.
+# The Future AGI keys live only here. Headers that reach this collector (for example a
+# watsonx Orchestrate bearer token from a Client-mode tracer) are never forwarded.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+#
+# Environment:
+#   FI_TRACES_URL     where to forward, e.g. https://api.futureagi.com/tracer/v1/traces
+#   FI_API_KEY        Future AGI API key
+#   FI_SECRET_KEY     Future AGI secret key
+#   FI_PROJECT_NAME   Observe project for spans that arrive without project_name
+#   KEEP_WXO_CONTENT  "true" keeps prompts, outputs, tool data, error text and user ids (default: removed)
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318   # traces arrive on /v1/traces
+
+processors:
+  # `insert` keeps a project_name the app already set with TracerConfig(resource_attributes=...).
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: insert
+      - key: project_type
+        value: observe
+        action: insert
+
+  # The SDK writes its own span.kind attribute and llm.provider; Future AGI reads fi.span.kind
+  # and gen_ai.provider.name. conversation.id becomes the Observe session. The SDK puts
+  # user.id="Unknown User" on every span when no user is known; that placeholder is dropped.
+  transform/map:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["fi.span.kind"], "LLM") where attributes["span.kind"] == "llm" and attributes["fi.span.kind"] == nil
+          - set(attributes["fi.span.kind"], "TOOL") where attributes["span.kind"] == "tool" and attributes["fi.span.kind"] == nil
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["span.kind"] == "agent" and attributes["fi.span.kind"] == nil
+          - set(attributes["fi.span.kind"], "CHAIN") where (attributes["span.kind"] == "root" or attributes["span.kind"] == "general") and attributes["fi.span.kind"] == nil
+          - set(attributes["gen_ai.provider.name"], attributes["llm.provider"]) where attributes["llm.provider"] != nil and attributes["gen_ai.provider.name"] == nil
+          - set(attributes["session.id"], attributes["conversation.id"]) where attributes["conversation.id"] != nil and attributes["session.id"] == nil
+          - delete_key(attributes, "user.id") where attributes["user.id"] == "Unknown User"
+
+  # Always removed. Stack traces carry local paths and user names; host and process
+  # attributes appear when the app enables OpenTelemetry resource detectors.
+  transform/always:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - delete_matching_keys(attributes, "^(host|process)\\.")
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.stacktrace")
+
+  # Removed unless KEEP_WXO_CONTENT=true. The SDK records arguments and return values when a
+  # decorator has capture_input/capture_output=True (IBM's examples set both), and error text
+  # from the exception message.
+  transform/content:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        conditions:
+          - '"${env:KEEP_WXO_CONTENT:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "input.value")
+          - delete_key(attributes, "output.value")
+          - delete_key(attributes, "tool.input")
+          - delete_key(attributes, "tool.output")
+          - delete_key(attributes, "agent.input")
+          - delete_key(attributes, "agent.output")
+          - delete_key(attributes, "user.id")
+          - set(status.message, "error") where status.message != ""
+      - context: spanevent
+        conditions:
+          - '"${env:KEEP_WXO_CONTENT:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "exception.message")
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; this collector only carries traces
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/map, transform/always, transform/content]
+      exporters: [otlp_http/future_agi]
