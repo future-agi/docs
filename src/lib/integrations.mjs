@@ -113,4 +113,80 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
+  { name: 'Hook-to-OTLP emitter', href: '/docs/integrations/coding-agents/hook-to-otlp', category: 'coding' },
+  { name: 'OpenAI Assistants retirement', href: '/docs/integrations/traceai/openai_assistants', category: 'providers' },
+  { name: 'traceAI setup', href: '/docs/integrations/traceai' },
+  { name: 'Java SDK setup', href: '/docs/integrations/traceai/java', category: 'java' },
+];
+
+// Earlier published copies remain reachable; prefer their current traceAI guide
+// in discovery rather than displaying the same integration twice.
+export const integrationAliases = {
+  '/docs/integrations/google-adk': '/docs/integrations/traceai/google_adk',
+  '/docs/integrations/google-genai': '/docs/integrations/traceai/google_genai',
+  '/docs/integrations/openai-agents': '/docs/integrations/traceai/openai_agents',
+  '/docs/integrations/smol-agents': '/docs/integrations/traceai/smol_agents',
+};
+
+/** @param {ReadonlyArray<Integration>} entries */
+export function validateIntegrations(entries = integrations) {
+  const categories = new Set(integrationCategories.map(c => c.id));
+  const ids = new Set();
+  const routes = new Map();
+  for (const entry of entries) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.id) || ids.has(entry.id)) throw new Error(`Invalid or duplicate integration ID: ${entry.id}`);
+    ids.add(entry.id);
+    if (!categories.has(entry.category)) throw new Error(`Unknown category: ${entry.category}`);
+    if (!/^\/docs\/[a-z0-9_/-]+$/.test(entry.href)) throw new Error(`Invalid integration route: ${entry.href}`);
+    if (![entry.name, entry.summary, entry.method, entry.logo].every(value => typeof value === 'string' && value.trim())) throw new Error(`Incomplete integration: ${entry.id}`);
+    if (/\b(?:not tested|alpha)\b/i.test([entry.name, entry.summary, entry.method].join(' '))) throw new Error(`Internal status in catalog: ${entry.id}`);
+    if (routes.has(entry.href) && !(entry.sharedGuide && routes.get(entry.href).sharedGuide)) throw new Error(`Duplicate integration route: ${entry.href}`);
+    routes.set(entry.href, entry);
+  }
+  return true;
+}
+validateIntegrations();
+
+/** @param {Integration} entry */
+export function integrationSearchText(entry) {
+  const category = integrationCategories.find(c => c.id === entry.category);
+  return [entry.name, entry.summary, entry.method, category?.name, ...(entry.aliases || [])].join(' ').toLocaleLowerCase('en');
+}
+
+/** @param {IntegrationCategory} category */
+export function integrationsInCategory(category) {
+  return integrations.filter(entry => entry.category === category).sort((a, b) => a.name.localeCompare(b.name, 'en'));
+}
+
+// Machine-readable exports use the same catalog, not a second list in MDX.
+export function integrationDirectoryMarkdown() {
+  return [
+    ...integrationCategories.flatMap(category => [
+      `### ${category.name}`,
+      '',
+      category.description,
+      '',
+      ...integrationsInCategory(category.id).map(entry => `- [${entry.name}](${entry.href}) — ${entry.summary} Connection: ${entry.method}.`),
+      '',
+    ]),
+    '### Getting started',
+    '',
+    ...integrationAids.map(aid => `- [${aid.name}](${aid.href})`),
+  ].join('\n');
+}
+
+// The navigation tree is generated from the same entries as the directory.
+export const integrationNavigation = [
+  { title: 'All integrations', href: '/docs/integrations' },
+  ...integrationAids.filter(a => !a.category).map(a => ({ title: a.name, href: a.href })),
+  ...integrationCategories.map(category => ({
+    title: category.name,
+    collapsible: true,
+    items: [
+      ...integrationAids.filter(a => a.category === category.id).map(a => ({ title: a.name, href: a.href })),
+      ...integrationsInCategory(category.id).map(i => ({ title: i.name, href: i.href })),
+    ],
+  })),
+];
