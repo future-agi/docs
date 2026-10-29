@@ -27,7 +27,10 @@ export const integrationCategories = [
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
   { id: 'quarkus-langchain4j', name: 'Quarkus LangChain4j', href: '/docs/integrations/traceai/java/quarkus-langchain4j', category: 'java', summary: 'Export synchronous JVM AI-service spans to a self-hosted collector.', method: 'Native OTLP', logo: 'generic-framework' },
+  { id: 'truefoundry', name: 'TrueFoundry', href: '/docs/integrations/gateways/truefoundry', category: 'gateways', summary: 'Trace Python client calls, not native gateway exports.', method: 'OpenAI client', logo: 'generic-framework' },
+  { id: 'google-antigravity', name: 'Antigravity CLI', href: '/docs/integrations/coding-agents/google-antigravity', category: 'coding', summary: 'Trace version-scoped macOS CLI conversations with lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
+  { id: 'everos', name: 'EverOS', href: '/docs/integrations/traceai/everos', category: 'frameworks', summary: 'Export version-scoped memory-server spans to self-hosted Future AGI.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
   { id: 'claude-code', name: 'Claude Code', href: '/docs/integrations/coding-agents/claude-code', category: 'coding', summary: 'Forward native CLI telemetry through a privacy-filtering collector.', method: 'Native OTLP', logo: 'generic-framework' },
@@ -35,13 +38,16 @@ export const integrations = [
   { id: 'openclaw', name: 'OpenClaw', href: '/docs/integrations/coding-agents/openclaw', category: 'coding', summary: 'Export supported CLI and Gateway agent-turn traces.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'opencode', name: 'OpenCode', href: '/docs/integrations/coding-agents/opencode', category: 'coding', summary: 'Trace terminal agent sessions, model steps and tools.', method: 'OpenCode plugin', logo: 'generic-framework' },
   { id: 'openllmetry', name: 'OpenLLMetry', href: '/docs/integrations/otel/openllmetry', category: 'frameworks', summary: 'Forward Traceloop SDK traces with OTLP/HTTP.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Traceloop'] },
+  {"id": "openlit", "name": "OpenLIT", "href": "/docs/integrations/traceai/openlit", "category": "frameworks", "summary": "Export synchronous Python OpenAI spans with OpenLIT.", "method": "Native OTLP", "logo": "generic-framework"},
   { id: 'gradio', name: 'Gradio', href: '/docs/integrations/traceai/gradio', category: 'frameworks', summary: 'Trace synchronous chat callbacks through their model client.', method: 'OpenAI client', logo: 'generic-framework' },
   { id: 'z-ai', name: 'Z.ai', href: '/docs/integrations/providers/z-ai', category: 'providers', summary: 'Trace Python chat completions on the general-platform endpoint.', method: 'OpenAI client', logo: 'generic-model' },
   { id: 'cursor', name: 'Cursor IDE', href: '/docs/integrations/coding-agents/cursor', category: 'coding', summary: 'Trace macOS IDE agent sessions through observation hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'langsmith', name: 'LangSmith', href: '/docs/integrations/langsmith', category: 'frameworks', summary: 'Forward supported LangSmith SDK traces over OTLP.', method: 'Native OTLP', logo: 'generic-framework' },
+  {"id": "mlflow", "name": "MLflow", "href": "/docs/integrations/mlflow", "category": "frameworks", "summary": "Export current MLflow traces with OTLP/HTTP.", "method": "Native OTLP", "logo": "generic-framework"},
   { id: 'openai', name: 'OpenAI', href: '/docs/integrations/traceai/openai', category: 'providers', summary: 'Instrument OpenAI client calls in your application.', method: 'traceAI SDK', logo: 'openai' },
   { id: 'anthropic', name: 'Anthropic', href: '/docs/integrations/traceai/anthropic', category: 'providers', summary: 'Capture Claude calls, token usage and latency.', method: 'traceAI SDK', logo: 'anthropic', aliases: ['Claude'] },
   { id: 'bedrock', name: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock', category: 'providers', summary: 'Trace model calls through Amazon Bedrock.', method: 'traceAI SDK', logo: 'bedrock', aliases: ['Amazon'] },
+  {"id": "aws-lambda-local", "name": "Lambda local lifecycle", "href": "/docs/integrations/runtimes/aws-lambda", "category": "frameworks", "summary": "Exercise handler reuse and bounded flush attempts locally.", "method": "Local OTLP example", "logo": "generic-framework"},
   { id: 'vertexai', name: 'Vertex AI', href: '/docs/integrations/traceai/vertexai', category: 'providers', summary: 'Instrument Gemini calls through Google Cloud.', method: 'traceAI SDK', logo: 'vertexai', aliases: ['Google', 'Gemini'] },
   { id: 'google-genai', name: 'Google GenAI', href: '/docs/integrations/traceai/google_genai', category: 'providers', summary: 'Trace Gemini requests with the Google GenAI SDK.', method: 'traceAI SDK', logo: 'google', aliases: ['Gemini'] },
   { id: 'groq', name: 'Groq', href: '/docs/integrations/traceai/groq', category: 'providers', summary: 'Capture model calls made with the Groq SDK.', method: 'traceAI SDK', logo: 'groq' },
@@ -69,6 +75,7 @@ export const integrations = [
   { id: 'mcp', name: 'Model Context Protocol', href: '/docs/integrations/traceai/mcp', category: 'frameworks', summary: 'Trace MCP client and server interactions.', method: 'traceAI SDK', logo: 'mcp', aliases: ['MCP'] },
   { id: 'mastra', name: 'Mastra', href: '/docs/integrations/traceai/mastra', category: 'frameworks', summary: 'Trace TypeScript agents and workflows in Mastra.', method: 'traceAI SDK', logo: 'mastra' },
   { id: 'vercel-ai-sdk', name: 'Vercel AI SDK', href: '/docs/integrations/traceai/vercel', category: 'frameworks', summary: 'Capture model and tool calls from the Vercel AI SDK.', method: 'traceAI SDK', logo: 'vercel' },
+  { id: 'tanstack-ai', name: 'TanStack AI', href: '/docs/integrations/frameworks/tanstack-ai', category: 'frameworks', summary: 'Send otelMiddleware chat, model-call and tool spans from Node.js.', method: 'OpenTelemetry', logo: 'generic-framework', aliases: ['TanStack'] },
   { id: 'agentscope', name: 'AgentScope', href: '/docs/integrations/frameworks/agentscope', category: 'frameworks', summary: 'Export native agent, model and tool spans.', method: 'OpenTelemetry', logo: 'agentscope' },
   { id: 'apollo-graphql', name: 'Apollo Server', href: '/docs/integrations/frameworks/apollo-graphql', category: 'frameworks', summary: 'Trace GraphQL operations and resolvers in Server 4.', method: 'OpenTelemetry', logo: 'apollo', aliases: ['Apollo GraphQL'] },
   { id: 'embabel', name: 'Embabel', href: '/docs/integrations/frameworks/embabel', category: 'frameworks', summary: 'Export JVM agent spans with the observability starter.', method: 'OpenTelemetry', logo: 'embabel', aliases: ['Spring Boot', 'Java', 'Kotlin'] },
@@ -87,6 +94,7 @@ export const integrations = [
 
   { id: 'portkey', name: 'Portkey', href: '/docs/integrations/traceai/portkey', category: 'gateways', summary: 'Instrument Portkey client calls in your application.', method: 'traceAI SDK', logo: 'portkey' },
   { id: 'envoy-ai-gateway', name: 'Envoy AI Gateway', href: '/docs/integrations/gateways/envoy-ai-gateway', category: 'gateways', summary: 'Export the gateway’s OpenAI-endpoint spans over OTLP.', method: 'Gateway OTLP', logo: 'envoy' },
+  { id: 'cloudflare-ai-gateway', name: 'Cloudflare AI Gateway', href: '/docs/integrations/gateways/cloudflare-ai-gateway', category: 'gateways', summary: 'Map gateway exports through a privacy-filtering collector.', method: 'Gateway OTLP', logo: 'generic-cloud' },
   { id: 'gravitee', name: 'Gravitee APIM', href: '/docs/integrations/gateways/gravitee', category: 'gateways', summary: 'Forward APIM request spans, not AI Gateway traces.', method: 'OTel collector', logo: 'gravitee', aliases: ['Gravitee Gateway'] },
   { id: 'kong-ai-gateway', name: 'Kong AI Gateway', href: '/docs/integrations/gateways/kong-ai-gateway', category: 'gateways', summary: 'Export GenAI spans with Kong’s OpenTelemetry plugin.', method: 'Gateway OTLP', logo: 'kong' },
   { id: 'litellm-proxy', name: 'LiteLLM Proxy', href: '/docs/integrations/gateways/litellm-proxy', category: 'gateways', summary: 'Export request spans from the proxy server’s callback.', method: 'Gateway OTLP', logo: 'litellm', aliases: ['server'] },
@@ -110,6 +118,7 @@ export const integrations = [
 
   { id: 'n8n', name: 'n8n', href: '/docs/integrations/traceai/n8n', category: 'apps', summary: 'Use Future AGI prompts in visual n8n workflows.', method: 'Prompt API', logo: 'n8n' },
   { id: 'librechat', name: 'LibreChat', href: '/docs/integrations/no-code/librechat', category: 'apps', summary: 'Forward agent runs and backend spans from LibreChat.', method: 'OTel collector', logo: 'librechat' },
+  { id: 'open-webui', name: 'Open WebUI', href: '/docs/integrations/no-code/open-webui', category: 'apps', summary: 'Trace self-hosted chat turns through the version-scoped filter Function.', method: 'Filter Function', logo: 'generic-framework' },
   { id: 'lobechat', name: 'LobeHub', href: '/docs/integrations/no-code/lobechat', category: 'apps', summary: 'Export server-side agent runs from self-hosted LobeHub.', method: 'OTel collector', logo: 'lobehub', aliases: ['LobeChat'] },
 
   { id: 'langfuse-import', name: 'Langfuse import', href: '/docs/integrations/import/langfuse', category: 'import', summary: 'Import existing traces and scores from your account.', method: 'Trace import', logo: 'langfuse' },
@@ -123,6 +132,9 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'DeepSeek Harness support status', href: '/docs/integrations/deepseek-harness', category: 'coding' },
+  { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
+  { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
