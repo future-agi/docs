@@ -2,8 +2,7 @@
 
 Runnable example for the docs page
 [Trace Amazon Bedrock AgentCore Runtime](https://docs.futureagi.com/docs/integrations/traceai/bedrock-agentcore).
-Alpha: verified locally against a self-hosted Future AGI. **Not run: a real AgentCore Runtime
-deployment in AWS (no AWS account).**
+Verified locally against a self-hosted Future AGI. **Managed AWS Runtime acceptance remains pending.**
 
 ## Setup pattern (matches common practice)
 
@@ -23,8 +22,7 @@ backend (sources on the docs page):
 
 Verified (2026-10-19): the same container AgentCore runs (the Dockerfile the starter toolkit generates
 with `--disable-otel`, built for linux/arm64), invoked through the Runtime contract locally:
-`GET /ping`, `POST /invocations` on port 8080 with the session header. Not run: a real AgentCore
-Runtime deployment in AWS (no AWS account).
+`GET /ping`, `POST /invocations` on port 8080 with the session header. Evidence scope: local container; managed AWS Runtime acceptance remains pending.
 
 | File | What it is |
 | --- | --- |
@@ -71,3 +69,7 @@ to the container by name (`docker run -e FI_API_KEY`), never baked into it.
 
 The privacy scan (`tools/scan_columns.py`) reads the ClickHouse and Postgres containers of a
 self-hosted Future AGI through `docker exec` (`FI_CH_CONTAINER`, `FI_PG_CONTAINER`).
+
+## AWS deployment prerequisites
+
+Install `python -m pip install -r requirements.txt -r requirements-deploy.txt` on the deployment host. The pinned starter toolkit is deprecated by AWS; the page documents its Python API, not the newer AgentCore CLI. Use an existing authorized AWS profile, check `aws sts get-caller-identity`, and load `FI_API_KEY`, `FI_SECRET_KEY` and `OPENAI_API_KEY` from your secret store. Run `python deploy.py` from this directory (path B by default, or `AGENT_ENTRYPOINT=agent_langchain.py`). `MODEL` is not used: the example reads `AGENT_MODEL`. The script creates AWS resources and can incur charges. Do not log its runtime environment. Follow the page for the managed invoke and acceptance steps.
