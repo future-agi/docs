@@ -1,0 +1,265 @@
+---
+title: "Local Lambda tracing lifecycle example"
+description: "Exercise Python and Go handler tracing locally: provider reuse, explicit flush attempts, error paths and bounded waiting. A local lifecycle example, not an AWS deployment guide."
+---
+
+## About
+
+[AWS Lambda’s execution-environment documentation](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html) says the environment is frozen after an invocation completes. A timer-based batch exporter cannot make progress while frozen. This page demonstrates the corresponding **local handler lifecycle**: build the tracer once, make one trace per invocation and attempt a bounded flush before returning, including on errors.
+
+The supported scope is the shipped in-process Python and Go runners with a stand-in Lambda context and an OTLP receiver. It is not an AWS-qualified deployment recipe or a guarantee that spans reach the receiver before a real Lambda freeze or platform timeout.
+
+```text
+cold start:   import / init          provider built once (project_name, both key headers)
+invocation 1  lambda.handler  (chain)      new trace, or the caller's trace when API Gateway sent a traceparent
+              └─ lookup_order (tool)       your own spans
+              flush  ->  Future AGI          before the handler returns
+invocation 2  lambda.handler  (chain)      warm start: the same provider, a new trace
+              └─ lookup_order (tool)
+              flush  ->  Future AGI
+```
+
+There is no Future AGI Lambda layer and no published package for this recipe. You copy two small files (`tracing.py` and a handler, or `tracing.go` and a handler) and call your own model or tool code inside the handler, with whichever [traceAI instrumentor](/docs/integrations) you already use.
+
+This page is about tracing a Lambda function that you write. It is not about how Future AGI runs on AWS.
+
+<Warning>
+Local lifecycle example only. The recorded end-to-end evidence is against self-hosted Future AGI, with handler calls in-process and a stand-in request id and remaining-time budget. AWS deployment, actual freeze/thaw, platform hard timeouts, SnapStart, provisioned concurrency and response streaming are outside this example’s supported scope. No AWS service or model call is needed for the local tests.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | Python 3.12.10 with `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` **1.45.1** (latest on PyPI, 2026-10-16). Go 1.26.0 with `go.opentelemetry.io/otel`, `otel/sdk` and `otlptracehttp` **v1.47.0** (latest, released 2026-10-02) and `github.com/aws/aws-lambda-go` v1.55.1 (only `lambdacontext` in the tests, `lambda.Start` in the entry point). Against a self-hosted Future AGI. |
+| Not used | `go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda` (latest v0.72.0). It wraps a handler and calls `ForceFlush` at the end of each invocation, which is the same mechanism as this recipe; read it as the reference ([package docs](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-lambda-go/otellambda)). This page does not depend on it. The AWS Distro for OpenTelemetry (ADOT) layers are not used either. |
+| AWS docs used | [Lambda execution environment lifecycle](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html) (read 2026-10-16: "After the invocation completes, the execution environment is frozen"), [function URL invocation payload](https://docs.aws.amazon.com/lambda/latest/dg/urls-invocation.html), [HTTP API Lambda integration (payload format 2.0)](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-lambda.html) |
+| Source | [examples/runtimes/aws-lambda](https://github.com/future-agi/docs/tree/main/examples/runtimes/aws-lambda): the Python and Go files, 18 Python and 12 Go tests, and the end-to-end script |
+
+### How this differs from other pages
+
+- **[Bedrock](/docs/integrations/traceai/bedrock).** That page traces calls to Amazon Bedrock models. This page is about the Lambda runtime around your code. The two combine: the Bedrock instrumentor's spans become children of `lambda.handler`.
+- **ADOT layer or X-Ray.** The ADOT layers send traces to AWS X-Ray or a collector extension. This recipe sends OTLP over HTTP straight to Future AGI from your function, with no layer.
+- **Other OpenTelemetry recipes on this site.** A long-running service can use a batch exporter and flush at shutdown. A Lambda function cannot rely on shutdown, because the process is frozen between invocations and not stopped.
+
+## Run the local example
+
+<Steps>
+
+<Step title="Install">
+
+Python:
+
+```bash
+pip install "opentelemetry-sdk==1.45.1" "opentelemetry-exporter-otlp-proto-http==1.45.1"
+```
+
+Go (OpenTelemetry Go v1.47 requires Go 1.26):
+
+```bash
+go get go.opentelemetry.io/otel@v1.47.0 go.opentelemetry.io/otel/sdk@v1.47.0 \
+  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0 \
+  github.com/aws/aws-lambda-go@v1.55.1
+```
+</Step>
+
+<Step title="Set the local runner environment">
+
+| Variable | Value |
+| --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | Your Future AGI keys. **Both** are required. Keep them in Secrets Manager or an encrypted environment variable, not in the source. |
+| `FI_BASE_URL` | Optional. Default `https://api.futureagi.com`. Self-hosted: your own URL. Traces go to `{FI_BASE_URL}/tracer/v1/traces`. |
+| `FI_PROJECT_NAME` | The Observe project. Default: the function name. |
+
+If either key is missing the recipe does not crash and does not export: it logs one line (without echoing the environment) and the invocation returns your result. That is deliberate. Tracing must never fail the function.
+</Step>
+
+<Step title="Build the provider once, flush before every return">
+
+Python (`tracing.py`, condensed; the file in the example also has the cold-start flag, the traceparent extraction and the flush budget):
+
+```python
+# file: tracing.py
+import os, threading, logging
+from opentelemetry.exporter.otlp.proto.http import Compression
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+FLUSH_BUDGET_S, FLUSH_RESERVE_S = 2.0, 0.25   # proposed budget, not a measurement
+log = logging.getLogger("lambda_tracing")
+
+def build_provider():
+    fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    project = os.environ.get("FI_PROJECT_NAME") or fn or "aws-lambda"
+    attrs = {"project_name": project, "project_type": "observe", "service.name": project}
+    if fn:
+        attrs["faas.name"] = fn            # only when the runtime provides it
+    provider = TracerProvider(resource=Resource.create(attrs))
+    key, secret = os.environ.get("FI_API_KEY"), os.environ.get("FI_SECRET_KEY")
+    if key and secret:
+        base = os.environ.get("FI_BASE_URL", "https://api.futureagi.com").rstrip("/")
+        exporter = OTLPSpanExporter(
+            endpoint=f"{base}/tracer/v1/traces",
+            headers={"X-Api-Key": key, "X-Secret-Key": secret},
+            timeout=int(FLUSH_BUDGET_S),
+            compression=Compression.NoCompression,        # Compatible with older self-hosted receivers
+        )
+        # a long timer: the explicit flush below is what exports, never the timer
+        provider.add_span_processor(BatchSpanProcessor(exporter, schedule_delay_millis=60_000))
+    else:
+        log.warning("FI_API_KEY / FI_SECRET_KEY not set: tracing is off, spans are not exported")
+    return provider
+
+def flush(provider, context):
+    """Never raises, never waits longer than Lambda has left."""
+    try:
+        budget = min(FLUSH_BUDGET_S, context.get_remaining_time_in_millis() / 1000 - FLUSH_RESERVE_S)
+        if budget <= 0:
+            log.warning("flush skipped: not enough time left, spans of this invocation are lost")
+            return
+        # BatchSpanProcessor.force_flush can hold for the exporter timeout, so stop waiting at the budget
+        t = threading.Thread(target=provider.force_flush, args=(int(budget * 1000),), daemon=True)
+        t.start(); t.join(budget)
+    except Exception as exc:
+        log.warning("flush failed (%s), spans of this invocation are lost", type(exc).__name__)
+```
+
+```python
+# file: handler.py
+from opentelemetry.trace import SpanKind, Status, StatusCode
+import tracing
+
+PROVIDER = tracing.build_provider()          # once per execution environment, outside the handler
+TRACER = PROVIDER.get_tracer("lambda-handler")
+
+def lambda_handler(event, context):
+    try:
+        with TRACER.start_as_current_span(
+            "lambda.handler", kind=SpanKind.SERVER, attributes={"fi.span.kind": "CHAIN"},
+            record_exception=False, set_status_on_exception=False,
+        ) as span:
+            try:
+                return do_work(event)              # your code, your instrumentors
+            except Exception as exc:
+                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                raise
+    finally:
+        tracing.flush(PROVIDER, context)           # the root span has ended; flush on success and on error
+```
+
+Go (`tracing/tracing.go` and `handler/handler.go` in the example; this is a condensed version of them, the files in the example are the ones the tests ran):
+
+```go
+var provider *sdktrace.TracerProvider // built once in main(), outside the handler
+
+func Init() *sdktrace.TracerProvider {
+	fn := os.Getenv("AWS_LAMBDA_FUNCTION_NAME")
+	project := cmp.Or(os.Getenv("FI_PROJECT_NAME"), fn, "aws-lambda")
+	attrs := []attribute.KeyValue{
+		attribute.String("project_name", project), attribute.String("project_type", "observe"),
+		attribute.String("service.name", project),
+	}
+	if fn != "" {
+		attrs = append(attrs, attribute.String("faas.name", fn))
+	}
+	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(resource.NewSchemaless(attrs...))}
+	if key, secret := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY"); key != "" && secret != "" {
+		base := cmp.Or(strings.TrimRight(os.Getenv("FI_BASE_URL"), "/"), "https://api.futureagi.com")
+		exp, err := otlptracehttp.New(context.Background(),
+			otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
+			otlptracehttp.WithHeaders(map[string]string{"X-Api-Key": key, "X-Secret-Key": secret}),
+			otlptracehttp.WithCompression(otlptracehttp.NoCompression), // Compatible with older self-hosted receivers
+			otlptracehttp.WithTimeout(2*time.Second))
+		if err == nil {
+			opts = append(opts, sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(time.Minute)))
+		}
+	} else {
+		log.Print("FI_API_KEY / FI_SECRET_KEY not set: tracing is off, spans are not exported")
+	}
+	provider = sdktrace.NewTracerProvider(opts...)
+	return provider
+}
+
+func Flush(ctx context.Context) {
+	budget := 2 * time.Second
+	if dl, ok := ctx.Deadline(); ok { // Lambda sets the invocation deadline on ctx
+		budget = min(budget, time.Until(dl)-250*time.Millisecond)
+	}
+	if budget <= 0 {
+		log.Print("flush skipped: not enough time left, spans of this invocation are lost")
+		return
+	}
+	// a cancelled invocation context still gets its flush attempt, with the budget
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	defer cancel()
+	if err := provider.ForceFlush(fctx); err != nil {
+		log.Printf("flush did not complete (%T), spans of this invocation may be lost", err)
+	}
+}
+
+func Handle(ctx context.Context, event json.RawMessage) (map[string]any, error) {
+	defer Flush(ctx)          // runs after invoke has returned, so the root span has ended
+	return invoke(ctx, event) // starts "lambda.handler" with tracer.Start, ends it with defer span.End()
+}
+```
+
+The compiled `cmd/function` entry point uses `lambda.Start(handler.Handle)`; the supported local runner is `cmd/e2e`, which invokes the handler in-process. The snippets above explain the lifecycle; run the complete files linked under Source.
+</Step>
+
+<Step title="Check it">
+
+From the example directory, exercise the local receiver and handler tests:
+
+```bash
+python -m pip install -r python/requirements-test.txt
+python -m pytest -q python/tests
+go -C go test ./...
+```
+
+These tests cover successive calls, errors and simulated remaining-time budgets without an AWS account. For the recorded self-hosted workflow, see `run_e2e.sh` and its README prerequisites. Local results do not establish AWS freeze/thaw behavior.
+</Step>
+
+</Steps>
+
+| Piece | Value |
+| --- | --- |
+| Endpoint | `{FI_BASE_URL}/tracer/v1/traces`, OTLP over HTTP (protobuf), not gRPC, not gzip |
+| Headers | `X-Api-Key` **and** `X-Secret-Key` on the exporter. One header is a failed setup. |
+| Resource | `project_name` and `project_type=observe` on the **resource**, set at init. A span attribute with that key is not a substitute. |
+| Processor | Batch processor with a long timer, plus an explicit `force_flush` / `ForceFlush` before every return. A synchronous (simple) processor would export inside every span end with no flush budget, so a slow collector would delay your handler. The simple-processor variant is outside this example’s scope. |
+| Flush budget | 2 seconds, and always less than the time Lambda has left (minus a 250 ms reserve). The 2 seconds is an example budget, not an AWS latency measurement or delivery guarantee. If less than the reserve is left the flush is skipped and a log line says so. |
+
+## What is captured
+
+| Source | Spans |
+| --- | --- |
+| Your handler | `lambda.handler` (kind `chain`, server span): `faas.coldstart`, `faas.trigger` (`http` or `other`), `faas.invocation_id` (the Lambda request id), `error.type` on failure |
+| Your code | Whatever you create inside the handler, for example `lookup_order` (kind `tool`) in the example, or the spans of a traceAI instrumentor |
+| Resource | `project_name`, `project_type`, `service.name`, and `faas.name` when `AWS_LAMBDA_FUNCTION_NAME` exists (never invented). No host name, no process or user information. |
+
+**Trace context in.** The W3C `traceparent` header is read from **API Gateway HTTP API (payload format 2.0) and Lambda function URL** events only (header names are lower-cased in those events). A valid header makes `lambda.handler` a child of the caller's span. These are not read, and an invocation from them starts a new trace: SQS, SNS, EventBridge, ALB, API Gateway REST API (payload 1.0) and X-Ray-only headers. A malformed `traceparent` is ignored. Direct invocations (SDK, console) start a new trace.
+
+**Trace context out.** Pass `traceparent` to your own downstream services if you want the trace to continue. Do not forward `X-Api-Key` or `X-Secret-Key` to anything.
+
+## Privacy
+
+Content is **off by default**. The default export contains no event body, no result, no tool arguments or results, and no error text: a failed span carries only the error type (`ValueError`, `*errors.errorString`), and no exception event or stack trace is recorded, because a stack trace carries file paths. Headers are never exported.
+
+To opt in, set `LAMBDA_TRACE_CAPTURE_CONTENT=true` in the local runner environment. The root span then carries the event (`input.value`) and the result (`output.value`), the `lookup_order` span its arguments and result, and a failed span the error message. Even then there are still no stack traces. The event can contain personal data: turn it on for debugging, not as a default.
+
+If you use a traceAI instrumentor inside the handler, its own content switches apply (`FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` and the related `FI_HIDE_*` variables); this page does not change them.
+
+## Local verification
+
+Both languages were called in-process with a stand-in context against a self-hosted Future AGI, each scenario in its own project: three invocations (an API Gateway v2 event with a `traceparent`, a direct event, an SQS event) gave three traces with the right shape and the API Gateway one adopting the caller's trace id; a failing handler gave ERROR spans on `lambda.handler` and `lookup_order`, was flushed anyway, and the next warm invocation was exported; with content off a unique marker, the OS user name, the host name, the home directory path and `Traceback`/`goroutine` were absent from **every column** of the stored spans (checked in ClickHouse, resource attributes and events included), while with the opt-in the marker was stored and the user name, host name, path and stack trace still were not; with no keys the handler returned its result and no project was created; with an unreachable collector all three invocations still returned. The unit tests (18 Python, 12 Go) assert: provider built once across invocations, an export happens before the handler returns on success and on error, the warm start is a new trace, both headers, resource, path and no gzip, no event body by default, traceparent parenting for the API Gateway event and a new trace for SQS, a 503 or unreachable collector never fails the invocation and does not hold it longer than the budget, a collector that answers too late cannot hold the handler past the remaining time, a skipped flush when no time is left, and a flush attempt on an already cancelled context.
+
+## Troubleshooting
+
+- **No traces for the project.** A missing `project_name` resource attribute drops the batch. Set it on the resource at init; a span attribute is not a substitute.
+- **Still nothing.** Both `X-Api-Key` and `X-Secret-Key` are needed. Check the function log for the one line "FI_API_KEY / FI_SECRET_KEY not set". Check that the function can reach the endpoint (for example, a function in a VPC with no route to the internet).
+- **The last invocation's spans are missing.** The flush did not run, ran after the handler returned, or was cut. Flush before every return including the error path (`finally` / `defer`), and keep it shorter than the time left. A hard timeout kill cannot be flushed: the flush-before-return rule is the mitigation, not a guarantee.
+- **Spans appear late or never after a quiet period.** You are relying on the batch timer. Lambda freezes the process before it fires.
+- **Two providers / duplicate spans.** The provider must be built outside the handler. Building it per invocation leaks processors.
+- **The invocation failed because export failed.** That is a bug in the snippet: exporter errors must never fail the invocation. The spans of that attempt are lost; the handler still returns the application result.
+- **A downstream call carries `X-Api-Key`.** Remove it. Downstream gets `traceparent` only.
+- **Go build fails with "requires go >= 1.26".** OpenTelemetry Go v1.47 needs Go 1.26. Use a newer toolchain (the `provided.al2023` runtime runs any compiled binary), or pin an older OpenTelemetry Go release.
