@@ -1,0 +1,161 @@
+---
+title: "Cursor Agent session tracing with Future AGI"
+description: "Trace Cursor IDE agent sessions in Future AGI with Cursor hooks: one trace per conversation, with turns, tool calls, subagents, model, timing, and errors. Prompt and code content stay off by default."
+---
+
+## About
+
+Cursor runs [hooks](https://cursor.com/docs/hooks) at fixed points of the agent loop and passes each one a JSON payload. This page registers the Future AGI [hook-to-OTLP emitter](/docs/integrations/coding-agents/hook-to-otlp) on those hooks, so every Cursor Agent conversation shows up in Future AGI as one trace:
+
+```
+Cursor session                 one Cursor conversation (conversation_id)
+└── Cursor turn                one user message (generation_id), model, stop status
+    ├── Shell                  tool call: duration, status, failure type
+    ├── Read
+    ├── Subagent: explore      Task subagent: duration, message and tool counts
+    ├── Agent thought          thinking block duration
+    └── Agent response         model, input/output/cache tokens
+```
+
+This is not the same as:
+
+- **The Cursor SDK**, which runs Cursor agents from your own code. That is a separate integration.
+- **Cursor Enterprise OpenTelemetry export**, an admin feature that sends team usage metrics and logs. It does not produce a per-session trace and is not used here.
+- **Model-call tracing.** Cursor calls the model on its servers. Hooks report one token total per turn, not each model request.
+
+| | |
+| --- | --- |
+| Verified scope | Cursor IDE 3.24.18 on macOS, free Hobby plan, with a POSIX login shell. This recipe supports that IDE/macOS path; Linux, WSL, native Windows, Cursor CLI, and cloud agents are outside its supported scope. |
+| Cursor docs used | [Hooks](https://cursor.com/docs/hooks), read 2026-10-14 |
+| Requires | Python 3.9+ on the `PATH` Cursor uses. No packages. |
+| Source | [examples/coding-agents/cursor](https://github.com/future-agi/docs/tree/main/examples/coding-agents/cursor) and [hook-to-otlp](https://github.com/future-agi/docs/tree/main/examples/coding-agents/hook-to-otlp) |
+
+## 1. Install the hook
+
+Clone the examples and run the installer against your project. It copies the emitter and the Cursor adapter into `.cursor/hooks/fi-hook-to-otlp/` and writes `.cursor/hooks.json`. If the project already has a `hooks.json`, the installer leaves it alone and prints the entries to merge.
+
+```bash
+git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
+fi-docs/examples/coding-agents/cursor/install.sh /path/to/your/project
+```
+
+To trace every project on this machine instead, install user hooks into `~/.cursor/`:
+
+```bash
+fi-docs/examples/coding-agents/cursor/install.sh --user
+```
+
+The project `.cursor/hooks.json` it writes registers the emitter on the observation hooks only:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart":       [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor sessionStart 2>/dev/null || true)", "timeout": 10 }],
+    "beforeSubmitPrompt": [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor beforeSubmitPrompt 2>/dev/null || true)", "timeout": 10 }],
+    "postToolUse":        [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor postToolUse 2>/dev/null || true)", "timeout": 10 }],
+    "postToolUseFailure": [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor postToolUseFailure 2>/dev/null || true)", "timeout": 10 }],
+    "subagentStop":       [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor subagentStop 2>/dev/null || true)", "timeout": 10 }],
+    "afterAgentThought":  [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor afterAgentThought 2>/dev/null || true)", "timeout": 10 }],
+    "afterAgentResponse": [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor afterAgentResponse 2>/dev/null || true)", "timeout": 10 }],
+    "preCompact":         [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor preCompact 2>/dev/null || true)", "timeout": 10 }],
+    "stop":               [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor stop 2>/dev/null || true)", "timeout": 10 }],
+    "sessionEnd":         [{ "command": "(python3 -B .cursor/hooks/fi-hook-to-otlp/emit.py cursor sessionEnd 2>/dev/null || true)", "timeout": 10 }]
+  }
+}
+```
+
+Each command is guarded with `2>/dev/null || true` so a missing emitter or `python3` can never return exit code 2, which Cursor treats as "block this action". Cursor runs each command with `$SHELL -c` (falling back to `/bin/sh`), so your login shell must be a POSIX shell such as zsh or bash (fish reads the parentheses as command substitution). The parentheses are required: the IDE agent pipes the hook payload to stdin, but Cursor's headless agent host appends it to the command as a heredoc (`<command> <<'CURSOR_HOOK_EOF'`), and without the subshell that heredoc would reach `true` instead of `python3`. `-B` keeps `__pycache__` out of your repository. Project hooks run from the project root, so the paths start with `.cursor/`. User hooks run from `~/.cursor/` and use `./hooks/fi-hook-to-otlp/emit.py` instead (the installer handles this). Project hooks only run in a [trusted workspace](https://cursor.com/docs/hooks).
+
+<Note>
+The emitter is deliberately not registered on permission hooks (`preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`, `subagentStart`). Tool timing comes from the `duration` Cursor reports in `postToolUse`, so tracing never takes part in approving or blocking an action. On `beforeSubmitPrompt` it always answers `{"continue": true}`. If you register it on a permission hook by mistake, it prints nothing: Cursor treats that as a failed hook and lets the action through, so it never approves or blocks anything.
+</Note>
+
+## 2. Add your Future AGI keys
+
+Cursor started from the Dock does not see variables exported in your shell. Put the keys in the emitter's env file instead:
+
+```bash
+mkdir -p ~/.config/fi-hook-to-otlp
+cat > ~/.config/fi-hook-to-otlp/env <<'EOF'
+FI_API_KEY=your-futureagi-api-key
+FI_SECRET_KEY=your-futureagi-secret-key
+FI_PROJECT_NAME=cursor-sessions
+EOF
+chmod 600 ~/.config/fi-hook-to-otlp/env
+```
+
+Variables set in the environment Cursor runs in take precedence over the file. For a self-hosted Future AGI, also set `FI_BASE_URL` (traces go to `$FI_BASE_URL/tracer/v1/traces`). All settings are listed on the [hook-to-OTLP page](/docs/integrations/coding-agents/hook-to-otlp#configuration).
+
+## 3. Run an agent session
+
+Open the project in Cursor (reload the window if it was already open; Cursor also reloads `hooks.json` on save), and send one Agent message that uses a tool, for example *"List the files in this folder and read README.md"*.
+
+Open **Observe** in Future AGI and select the project (`cursor-sessions` above). The conversation appears as one trace named **Cursor session**. Open it to see the turn and its tool spans. Later messages in the same Cursor chat are added to the same trace as new turns. A chat that was opened and closed without a message is not sent.
+
+To check that hooks are firing, open Cursor's **Hooks** output channel or the Hooks tab in **Customize**. To check the emitter, set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in the env file: each hook writes one line with the HTTP status.
+
+## What is captured
+
+| Cursor hook | Future AGI span | Fields |
+| --- | --- | --- |
+| `sessionStart` | **Cursor session** (root) | `session.id` = `conversation_id`, composer mode, background-agent flag |
+| `beforeSubmitPrompt` | **Cursor turn** start | `generation_id`, attachment count, model and model parameters |
+| `postToolUse` | tool span named after the tool (`Shell`, `Read`, `Write`, `MCP:<tool>`, ...) | `gen_ai.tool.name`, `gen_ai.tool.call.id` (`tool_use_id`), duration from `duration` |
+| `postToolUseFailure` | same tool span, status `ERROR` | status message = `failure_type` (`error`, `timeout`, `permission_denied`), interrupt flag |
+| `subagentStop` | **Subagent: &lt;type&gt;** | status, duration, message count, tool-call count, modified-file count |
+| `afterAgentThought` | **Agent thought** (`LLM`) | thinking duration, model |
+| `afterAgentResponse` | **Agent response** (`LLM`) | model; the turn's input, output, and cache-read/write tokens (`llm.token_count.*`) |
+| `preCompact` | **Context compaction** | trigger, context tokens, window size, message counts |
+| `stop` | **Cursor turn** end | stop status (`completed`, `aborted`, `error`; `error` marks the turn `ERROR`), loop count, the same token counts as `cursor.usage.*` |
+| `sessionEnd` | **Cursor session** end | reason, final status, duration |
+
+The model on turn and response spans is Cursor's `model_id` (for example `grok-4.6`), with the composer slug in `cursor.model` when it differs. Cursor reports `default` when no specific model is selected.
+
+Token counts come from `input_tokens`, `output_tokens`, `cache_read_tokens`, and `cache_write_tokens`, which Cursor 3.24.18 sends on `afterAgentResponse` and `stop` although the hooks reference does not list them yet. They are the totals for the turn and are recorded once, on the **Agent response** span, so trace totals are not doubled.
+
+In our tests Cursor did not send `sessionStart` for chats in the IDE, so the session span starts at the first hook of the conversation.
+
+## What is not available
+
+- **Per-request tokens and cost.** Tokens are reported per turn, not per model request, and Cursor does not report cost. `preCompact` reports context-window usage, which is recorded as an attribute, not as token usage.
+- **Model request spans.** There is no hook per model call, so there is no LLM span with inputs and outputs per request; *Agent response* marks when a reply finished.
+- **System prompt and provider request ids.** (`cursor.tool.provider_call_id` on tool spans is the model's function-call id, not a request id.)
+- **Tool calls that fire no hook.** Cursor's forum reports that the AskQuestion (human-in-the-loop) tool does not trigger hooks; such calls are missing from the trace.
+- **Subagent internals.** A subagent appears as one span. Whether its own tool calls fire hooks inside the parent conversation is not documented.
+- **Tab completions.** Tab hooks (`beforeTabFileRead`, `afterTabFileEdit`) are a separate surface and are not traced.
+- **Session end on window close.** In Cursor 3.24.18 the `sessionEnd` hook fails when the window closes ("MainThreadShellExec not initialized" in the Hooks channel), so the session span keeps the end of the last turn and has no end reason. Turns are not affected.
+
+### Cursor CLI and cloud agents
+
+Cursor CLI (`agent`) and cloud agents are outside this recipe's supported scope. Their hook coverage differs from the IDE: Cursor staff describe missing CLI events in the [hooks forum](https://forum.cursor.com/t/cursor-cli-doesnt-send-all-events-defined-in-hooks/148316), and the [cloud-agent reference](https://cursor.com/docs/hooks#cloud-agent-support) excludes `sessionStart` and `sessionEnd`. Do not use the IDE trace shape above as a guarantee for either surface. The guarded commands accept both piped stdin and shell heredocs; those transport checks establish command behavior, not CLI or cloud-agent qualification.
+
+### Plan availability
+
+Cursor's [pricing page](https://cursor.com/pricing) lists "MCPs, skills, and hooks" under the Individual (Pro) plan. In our test on Cursor 3.24.18 the agent hooks above did run on the free Hobby plan. Plans can change, so confirm in the Hooks output channel that hooks execute on yours.
+
+## Privacy
+
+By default only structure and metadata leave your machine: conversation and generation ids, tool names and call ids, model, durations, counts, and statuses.
+
+- **Not exported by default:** prompt text, tool arguments, tool output (file contents, command output), thinking and response text, subagent task and summary, tool error text.
+- **Never exported:** `user_email`, `transcript_path` (the emitter never opens it), and `workspace_roots`, `cwd`, and attachment paths as metadata.
+
+To include content, add `FI_HOOK_CAPTURE_CONTENT=1` to the env file. The prompt becomes the turn's `input.value`, the final response its `output.value`, tool arguments and output go on the tool span, and tool error text becomes the span's status message and `exception.message`. Tool input and output contain file paths (for example the Read tool's `file_path` and the Shell tool's `working_directory`); they are exported with the user name in home-directory paths replaced by `<user>`. Each field is capped at 4096 characters and common key formats are replaced with `[REDACTED]`. See [Privacy](/docs/integrations/coding-agents/hook-to-otlp#privacy) for details.
+
+## Troubleshooting
+
+**No trace appears.**
+1. Confirm the hook ran: Cursor's **Hooks** output channel lists each execution and any error.
+2. Set `FI_HOOK_LOG_FILE=/tmp/fi-hook.log` in `~/.config/fi-hook-to-otlp/env` and run another message. No lines: Cursor did not run the command (check the path in `hooks.json` and that the workspace is trusted). `error=` lines: the collector is unreachable. `http=401`/`403`: wrong keys.
+3. `python3` must resolve for Cursor. If your Mac has no developer tools installed, `/usr/bin/python3` prompts to install them; use an absolute interpreter path such as `/opt/homebrew/bin/python3` in `hooks.json`, and keep `-B`, the `2>/dev/null || true` guard, and the surrounding parentheses.
+
+**A turn is marked `ERROR` right after sending.** Cursor ended the agent loop with status `error`. On the free plan this happens when a named model is selected ("Named models unavailable"); switch the chat to Auto.
+
+**A tool span has `coding_agent.turn.inferred=true`.** The tool hook arrived without a `generation_id`, so the tool was attached to the turn that was open at the time.
+
+**A tool span sits directly under the session.** The tool hook arrived without a `generation_id` while no turn was open, so there was no turn to attach it to. These spans carry no turn marker.
+
+**The turn is marked incomplete.** The session ended (or the window closed) before Cursor sent `stop` for that turn. The turn is closed at session end with `coding_agent.incomplete=true`.
+
+**Hooks stopped firing after editing `hooks.json`.** Cursor reloads the file on save; if it does not, restart Cursor.
