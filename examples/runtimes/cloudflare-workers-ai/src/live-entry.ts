@@ -1,7 +1,4 @@
-// LIVE vendor verification (not shipped as the recipe): the same handler, with env.AI backed by the REAL Workers AI REST API.
-// Why not the real binding: `wrangler dev` with an `ai` binding opens a remote preview session, which needs a Workers Scripts
-// token; the token available for verification is scoped to Workers AI only. The REST endpoint is what the binding calls, and
-// the binding returns the `result` member of the REST envelope, so this adapter returns `.result` and throws on `success:false`.
+// Local REST-backed recipe. This is not a deployed Worker or a native AI-binding qualification.
 import { handle, tracedRun, type AiBinding, type Env } from "./index";
 import { createTracing, errorStatus } from "./tracing";
 
@@ -40,7 +37,9 @@ async function badModel(env: LiveEnv): Promise<Response> {
     return Response.json({ error: "ai_failed" }, { status: 502 });
   } finally {
     root.end();
-    await tracing.flush();
+    if (!(await tracing.flush()) && tracing.enabled) {
+      console.warn("Future AGI trace export failed or timed out");
+    }
   }
 }
 

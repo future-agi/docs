@@ -1,7 +1,7 @@
 // No network, no Cloudflare, no wrangler. A fake env.AI, a fake ctx and a fake exporter / fake fetch.
 import { describe, expect, it } from "vitest";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
-import { createTracing, fiExporter } from "../src/tracing";
+import { createTracing, fiExporter, FLUSH_BUDGET_MS } from "../src/tracing";
 import { handle, MODEL, type Env } from "../src/index";
 
 const KEYS = { FI_API_KEY: "k-test", FI_SECRET_KEY: "s-test", FI_PROJECT_NAME: "unit-proj" };
@@ -161,11 +161,12 @@ describe("missing keys and failing export never change the response (AC-08)", ()
       const t0 = Date.now();
       const res = await call(envWith(okAi()));
       expect(res.status).toBe(200);
-      expect(Date.now() - t0).toBeLessThan(3500);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(FLUSH_BUDGET_MS - 100);
+      expect(Date.now() - t0).toBeLessThan(FLUSH_BUDGET_MS + 1500);
     } finally {
       globalThis.fetch = orig;
     }
-  });
+  }, 25_000);
 });
 
 describe("what the exporter sends (AC-09)", () => {
@@ -208,4 +209,21 @@ describe("tracing helper with a fake exporter", () => {
     expect(fiExporter({})).toBeUndefined();
     expect(await createTracing({}).flush()).toBe(true);
   });
+});
+
+
+describe("qualified local flush budget", () => {
+  it("waits for a collector slower than the previous two-second bound", async () => {
+    const orig = globalThis.fetch;
+    let delivered = false;
+    globalThis.fetch = (async () => {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      delivered = true;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      expect((await call(envWith(okAi()))).status).toBe(200);
+      expect(delivered).toBe(true);
+    } finally { globalThis.fetch = orig; }
+  }, 5000);
 });

@@ -70,8 +70,10 @@ export async function handle(request: Request, env: Env, _ctx: Ctx): Promise<Res
   } finally {
     root.end();
     // Await the export before the Response is returned, on success and on error.
-    // ctx.waitUntil is deliberately NOT used as the flush: it is untested here (see the page).
-    await tracing.flush();
+    // This local REST recipe awaits export; it supplies no waitUntil lifecycle guarantee.
+    if (!(await tracing.flush()) && tracing.enabled) {
+      console.warn("Future AGI trace export failed or timed out");
+    }
   }
 }
 

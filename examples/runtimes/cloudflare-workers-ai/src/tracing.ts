@@ -20,7 +20,7 @@ import {
   type SpanExporter,
 } from "@opentelemetry/sdk-trace-base";
 
-export const FLUSH_BUDGET_MS = 2000; // proposed bound for one flush: a proposal, not a measurement
+export const FLUSH_BUDGET_MS = 20_000; // local REST recipe: awaited export; not a production delivery SLA
 
 export interface TracingEnv {
   FI_API_KEY?: string;
@@ -84,16 +84,17 @@ export function createTracing(env: TracingEnv, exporter: SpanExporter | undefine
     },
     async flush() {
       if (!exporter) return true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(false), FLUSH_BUDGET_MS);
         });
         const ok = await Promise.race([provider.forceFlush().then(() => true), timeout]);
-        clearTimeout(timer);
         return ok;
       } catch {
         return false; // a failed export never changes the user's response
+      } finally {
+        clearTimeout(timer);
       }
     },
   };
