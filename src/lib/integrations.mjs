@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'quarkus-langchain4j', name: 'Quarkus LangChain4j', href: '/docs/integrations/traceai/java/quarkus-langchain4j', category: 'java', summary: 'Export synchronous JVM AI-service spans to a self-hosted collector.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
