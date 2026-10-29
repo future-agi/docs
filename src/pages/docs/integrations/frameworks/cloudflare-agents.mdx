@@ -1,0 +1,525 @@
+---
+title: "Cloudflare Agents tracing with Future AGI"
+description: "Send the traces of a Cloudflare Agents SDK agent (npm agents, Agent class with wrapAISDK) to Future AGI through a Workers OTLP traces destination and a collector you run. Covers the span tree, the payload-off default, the opt-in, flushing, and the verified HTTP generateText scope."
+---
+
+## About
+
+This page is for the **Cloudflare Agents SDK**: the npm package `agents` (MIT, [cloudflare/agents](https://github.com/cloudflare/agents)), whose `Agent` class runs each agent instance in its own Durable Object. Your subclass handles HTTP requests (`onRequest`), WebSocket messages, RPC calls and schedules, and usually calls a model through the Vercel AI SDK.
+
+Tracing is Cloudflare's own. Workers tracing records the runtime's spans, the `Agent` class adds its lifecycle spans, and `wrapAISDK` from `agents/observability/ai` adds the GenAI spans: `invoke_agent`, `chat`, `execute_tool` and `tool_approval`, with OpenTelemetry `gen_ai.*` attributes. Cloudflare exports them to an OTLP **destination** you create in the dashboard. This recipe sends the destination to your OpenTelemetry Collector for project stamping, span mapping, token deduplication and privacy filtering, then forwards to Future AGI:
+
+```text
+Worker (Agent + wrapAISDK) --Workers tracing--> Cloudflare destination --OTLP/HTTP + Bearer--> your collector --project_name, mapping, privacy--> Future AGI
+```
+
+There is no traceAI package, no wrapper to install and no Future AGI code in the Worker. The Worker never holds Future AGI keys.
+
+How this differs from related pages and products:
+
+- **Cloudflare Think** (`@cloudflare/think`) traces its turns itself, without `wrapAISDK`. It is a separate recipe.
+- **Cloudflare AI Chat** (`@cloudflare/ai-chat`, class `AIChatAgent`) adds chat-turn spans over a WebSocket. It is a separate recipe. The destination and collector are the same for all three; the span roots differ.
+- **Workers AI** (a model provider) and **AI Gateway** (a gateway) are covered on their own pages. This page traces the agent runtime: it does not ask you to change a Workers AI or AI Gateway base URL.
+- **[Vercel AI SDK with `@traceai/vercel`](/docs/integrations/traceai/vercel)** needs the OpenTelemetry JavaScript API, which Workers does not support directly ([Cloudflare: Tracing](https://developers.cloudflare.com/agents/runtime/operations/observability/tracing/)). On Workers, trace the AI SDK with Cloudflare's `wrapAISDK` as shown below, and do not add `@traceai/vercel` on top.
+
+<Note>
+**Live vendor verification (2026-10-18).** The Worker below was deployed to a Cloudflare account on Workers Paid, with a real Traces destination pointing at this page's collector (hosted on a public HTTPS endpoint) and OpenAI `gpt-4o-mini` as the model. Cloudflare's own exporter delivered the spans; the collector forwarded them to `api.futureagi.com`, and the traces were read back from the Future AGI project. The same captured payloads were replayed through the same collector into a self-hosted Future AGI for the stored-column privacy scan. What the real export showed, and the three collector rules it added, are in [What the live run showed](#what-the-live-run-showed). Supported here: awaited HTTP `generateText` turns. WebSocket and RPC turns, `streamText`, scheduled turns, human tool approvals, sub-agents, sampling changes and Workers logs export are outside this recipe’s scope.
+</Note>
+
+<Warning>
+**Cloudflare plan and pricing.** Cloudflare's open-beta announcement says exporting traces to an OTLP destination needs a **Workers Paid** subscription ([blog](https://blog.cloudflare.com/workers-tracing-now-in-open-beta)), and observability pricing changes on December 1, 2026 ([pricing](https://developers.cloudflare.com/observability/pricing/)). Check both before you enable export. On the deployed Worker, the first turn on a new Agent instance exported 93 spans, about 75 of them Durable Object storage calls that the collector drops; a later turn on the same instance exported 11.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `agents` 0.28.1 (pinned to the deployed run), `ai` 7.0.142, `@ai-sdk/openai` 4.0.95, `zod` 4.6.7, `wrangler` 4.151.1 with workerd 1.20261012.1, Node 26.8.1, OpenTelemetry Collector contrib 0.162.0. |
+| Live run | 2026-10-18: the example deployed to Cloudflare Workers (Workers Paid) with a real Traces destination, the collector on a public HTTPS endpoint, `api.futureagi.com` as the target, OpenAI `gpt-4o-mini`. A turn with a tool, a turn whose tool throws, two turns on one Agent instance named with an e-mail address, Cloudflare payloads on (`STORE_MESSAGES` / `STORE_TOOLS`) with the collector default, and a turn whose model call fails (unknown model id). |
+| Run through | The same scenarios on local workerd against a self-hosted Future AGI (2026-10-16), plus content on; the live payloads replayed into a self-hosted Future AGI with content off and on (2026-10-18). |
+| Also run | `agents` 0.26.0 with the same files and scenarios: same span tree (including `tool_approval`), errors, sessions and privacy results. |
+| Stand-in | Only in the example's `run_e2e.sh`, which runs on local workerd without a Cloudflare account and replays workerd's spans in place of the destination. |
+| Outside this recipe’s supported scope | WebSocket (`onMessage`) and RPC (`@callable`) turns, `streamText`, scheduled turns, human tool approvals, sub-agents, sampling, Workers logs export, console output in an export. |
+| Cloudflare docs used | [Agents tracing](https://developers.cloudflare.com/agents/runtime/operations/observability/tracing/) (updated Oct 2, 2026), [Custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/), [Workers OpenTelemetry export](https://developers.cloudflare.com/workers/observability/opentelemetry-export/) (updated Oct 2, 2026), [Create a destination](https://developers.cloudflare.com/observability/export/opentelemetry/), [Observability pricing](https://developers.cloudflare.com/observability/pricing/) (updated Oct 15, 2026), all read 2026-10-16. |
+| Source | [examples/frameworks/cloudflare-agents](https://github.com/future-agi/docs/tree/main/examples/frameworks/cloudflare-agents): the Worker, the collector config, the stand-in, tests and the end-to-end script. |
+
+## What a turn looks like in Future AGI
+
+One HTTP request to the Agent, stored in Future AGI after the collector (Durable Object storage spans dropped):
+
+```text
+[chain] POST                                  the Worker's request, the trace root (carries the session)
+  [chain] durable_object_subrequest > fetch
+    [chain] POST                              the Agent's invocation (its Durable Object)
+      [chain] agent_initialization, agent_start, ...   Agent lifecycle, when the instance starts
+      [agent] invoke_agent weather-agent      wrapAISDK: the generateText call
+        [llm]  chat gpt-4o-mini               model call, model + input/output tokens
+          [chain] fetch                       the HTTP request to the model provider
+        [tool] execute_tool get_weather       your tool
+          [chain] tool_approval get_weather   the approval decision (cloudflare.agents.tool.approval.state)
+        [llm]  chat gpt-4o-mini               model call after the tool result
+```
+
+Cloudflare's real export (2026-10-18) has exactly this tree; the lifecycle spans appear only on an instance's first request. A plain `Agent` does not trace model or tool calls by itself. Without `wrapAISDK` you get the runtime and lifecycle spans only, with no model, token or tool spans. The `invoke_agent` name is the `functionId` you pass, not the class name.
+
+## 1. Install
+
+```bash
+npm install --save-exact agents@0.28.1 ai@7.0.142 @ai-sdk/openai@4.0.95 zod@4.6.7
+npm install --save-dev --save-exact wrangler@4.151.1
+```
+
+`wrapAISDK` ships in `agents` (`agents/observability/ai`). This recipe uses the pinned AI SDK v7 and OpenAI provider above.
+
+## 2. Trace the AI SDK inside your Agent
+
+Wrap the AI SDK namespace and call the wrapped `generateText`. Give the turn an agent identity, so the spans carry `gen_ai.agent.name`, `gen_ai.agent.id` and `gen_ai.conversation.id`.
+
+```ts title="src/index.ts"
+// A Cloudflare Agents SDK agent (npm `agents`, class `Agent`) whose turns are traced by Workers tracing.
+//
+// Nothing in this file talks to Future AGI. The Worker only creates spans; Cloudflare exports them to the
+// OTLP destination named in wrangler.jsonc, and your collector (otelcol.yaml) forwards them to Future AGI.
+//
+//   Agent (agent_start, agent_initialization, ... spans)            emitted by `agents` itself
+//   wrapAISDK(ai) (invoke_agent, chat, execute_tool, tool_approval)  emitted by agents/observability/ai
+//
+// A plain Agent does not trace model or tool calls on its own: without wrapAISDK you get the lifecycle spans
+// only, with no model, token or tool spans.
+import { tracing } from "cloudflare:workers";
+import { Agent, routeAgentRequest } from "agents";
+import { wrapAISDK } from "agents/observability/ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import * as ai from "ai";
+import { z } from "zod";
+
+type Env = {
+  WeatherAgent: DurableObjectNamespace;
+  OPENAI_API_KEY: string; // secret: `wrangler secret put OPENAI_API_KEY`
+  OPENAI_BASE_URL?: string; // optional, any OpenAI-compatible endpoint
+  MODEL?: string;
+  // Cloudflare's payload switches, both off unless set to "true". Off: no message text, tool arguments or
+  // tool results are written to spans at all, so nothing of it leaves Cloudflare.
+  STORE_MESSAGES?: string;
+  STORE_TOOLS?: string;
+};
+
+// One instance (Durable Object) per conversation: POST /agents/weather-agent/<conversation> {"question": "..."}
+export class WeatherAgent extends Agent<Env> {
+  async onRequest(request: Request): Promise<Response> {
+    if (request.method !== "POST") return new Response("POST {\"question\": \"...\"}", { status: 405 });
+    const { question } = (await request.json()) as { question?: string };
+    if (!question) return new Response("question is required", { status: 400 });
+
+    const { generateText } = wrapAISDK(ai, {
+      storeMessages: this.env.STORE_MESSAGES === "true",
+      storeTools: this.env.STORE_TOOLS === "true",
+    });
+    const openai = createOpenAI({ apiKey: this.env.OPENAI_API_KEY, baseURL: this.env.OPENAI_BASE_URL });
+
+    try {
+      // Awaited inside the request: the invocation stays open until the turn ends, so every span closes
+      // with its attributes before Cloudflare exports it. Background turns need this.ctx.waitUntil(...).
+      const result = await generateText({
+        model: openai.chat(this.env.MODEL ?? "gpt-4o-mini"),
+        system: "You answer weather questions. Call get_weather once, then answer in one sentence.",
+        prompt: question,
+        tools: {
+          get_weather: ai.tool({
+            description: "Current weather for a city",
+            inputSchema: z.object({ city: z.string() }),
+            execute: async ({ city }) => {
+              // Demo failure path: the tool throws, the turn continues, and execute_tool carries error.type.
+              if (city.toLowerCase().includes("atlantis")) throw new Error(`no weather station for ${city}`);
+              return { city, forecast: "sunny", celsius: 21 };
+            },
+          }),
+        },
+        // A server-side approval policy (no human in the loop). Cloudflare records it as a tool_approval span.
+        toolApproval: { get_weather: "approved" },
+        stopWhen: ai.isStepCount(3),
+        // Agent identity on invoke_agent, chat and execute_tool (gen_ai.agent.name / .id, gen_ai.conversation.id).
+        // The Durable Object id is the conversation: the Agent's own spans carry the same id, so one session.
+        runtimeContext: { agentId: this.name, conversationId: this.ctx.id.toString() },
+        telemetry: { functionId: "weather-agent", includeRuntimeContext: { agentId: true, conversationId: true } },
+      });
+      return Response.json({ answer: result.text, steps: result.steps.length });
+    } catch (error) {
+      // The spans already carry error.type (the error class). Do not echo provider error text to the caller.
+      return Response.json({ error: (error as Error)?.name ?? "Error" }, { status: 502 });
+    }
+  }
+}
+
+export default {
+  async fetch(request: Request, env: Env) {
+    const response = await routeAgentRequest(request, env, {
+      // Optional, recommended: put the conversation on the Worker's request span (the root of the trace), so
+      // Future AGI lists the whole trace under the conversation's session. Same value the Agent's spans carry.
+      onBeforeRequest: (_request, { name }) => {
+        tracing.getActiveSpan()?.setAttribute("gen_ai.conversation.id", env.WeatherAgent.idFromName(name).toString());
+      },
+    });
+    return response ?? new Response("Not found", { status: 404 });
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+- `STORE_MESSAGES` and `STORE_TOOLS` are this example's names for Cloudflare's `storeMessages` and `storeTools` options. Both default to off.
+- `conversationId` is the Durable Object id, the same value the `Agent` writes on its lifecycle spans (`cloudflare.agents.session.id`), so a whole instance is one session. Do not put credentials, tokens or user input in `runtimeContext` keys you include in telemetry: they become span attributes.
+- The `onBeforeRequest` line is optional. It writes the conversation id on the Worker's request span, the root of the trace, so Future AGI lists the trace under the session. Without it the spans still carry the session, but the trace row does not.
+- `toolApproval` is optional. A server-side policy (no human) is recorded as a `tool_approval` span under `execute_tool`.
+
+## 3. Turn on tracing and name the destination
+
+```jsonc title="wrangler.jsonc"
+// The Worker as you deploy it. The same file runs locally with `wrangler dev` (run_e2e.sh does that).
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "weather-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [{ "name": "WeatherAgent", "class_name": "WeatherAgent" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WeatherAgent"] }],
+  "observability": {
+    "traces": {
+      "enabled": true,
+      // The name of the Traces destination you create in the Cloudflare dashboard (Workers Observability).
+      "destinations": ["future-agi"],
+      // Every turn; lower it for busy Workers.
+      "head_sampling_rate": 1,
+      // Export to your collector only, keep no copy in the Cloudflare dashboard.
+      "persist": false
+    }
+  }
+  // Secrets, never in this file: wrangler secret put OPENAI_API_KEY
+  // Optional vars: MODEL, OPENAI_BASE_URL, STORE_MESSAGES / STORE_TOOLS ("true" opts in to payloads).
+}
+```
+
+`destinations` must match the destination name in the dashboard (step 5). With `persist: false` Cloudflare keeps no copy in its own dashboard. See [Flushing](#flushing-and-background-turns): there is no flush call to add.
+
+## 4. Run the collector
+
+The collector accepts OTLP/HTTP from Cloudflare only with your bearer token, drops the Durable Object storage spans, sets `project_name`, maps span types, errors and sessions, keeps content out unless you opt in, and forwards to Future AGI.
+
+```yaml title="otelcol.yaml"
+# OpenTelemetry Collector (contrib) between a Cloudflare Workers OTLP traces destination and Future AGI,
+# for Workers built on the Cloudflare Agents SDK (npm `agents`, `Agent` class, AI SDK wrapped with wrapAISDK).
+#
+# A Workers destination has a name, a type (Traces), an OTLP endpoint and optional custom headers. It has no
+# field for resource attributes, and Future AGI rejects any batch whose resource has no `project_name`. This
+# collector fills that gap and keeps your Future AGI keys out of Cloudflare:
+#   1. accepts OTLP/HTTP from the destination, only with your bearer token (a custom header on the destination),
+#   2. drops the destination's pre-flight test span and the per-call Durable Object storage spans,
+#   3. sets the Observe project,
+#   4. maps the Agents SDK span names onto Observe span types, errors and sessions,
+#   5. keeps prompts, completions, tool arguments/results, error text and the caller's location OUT unless you opt in,
+#   6. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+#
+# Environment:
+#   CF_DESTINATION_TOKEN        secret you invent; on the destination add the header `Authorization: Bearer <token>`
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they never go to Cloudflare)
+#   FI_PROJECT_NAME             Observe project every Worker trace goes to
+#   FI_TRACES_URL               full traces URL: https://api.futureagi.com/tracer/v1/traces
+#                               or, self-hosted, http://<your-host>:<port>/v1/traces
+#   FI_CAPTURE_CONTENT          optional, default false. `true` lets message text, tool arguments/results, error
+#                               text and the caller's location through. Cloudflare only records messages and tool
+#                               payloads when wrapAISDK gets storeMessages / storeTools, so content needs both switches.
+
+extensions:
+  # Cloudflare sends from its network, so this endpoint must be reachable from the internet. Never leave it open.
+  bearertokenauth/cloudflare:
+    scheme: Bearer
+    token: ${env:CF_DESTINATION_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/cloudflare
+        # Cloudflare sends OTLP/HTTP JSON with Content-Encoding: gzip; this receiver accepts both by default.
+        # Put TLS in front of this (load balancer or reverse proxy), or set `tls:` here with cert_file and key_file.
+
+processors:
+  # When you create a destination, Cloudflare sends one test span ("Hello from Cloudflare ...", resource
+  # telemetry.sdk.name=pre-flight-check) to check the endpoint. The 200 answers it; the span itself is not forwarded.
+  filter/preflight:
+    error_mode: ignore
+    traces:
+      span:
+        - resource.attributes["telemetry.sdk.name"] == "pre-flight-check"
+
+  # durable_object_storage_get / _put / _exec ...: one span per storage call. They are leaves (no children), so
+  # dropping them keeps every other parent link intact. Delete this processor to keep them.
+  filter/storage_spans:
+    error_mode: ignore
+    traces:
+      span:
+        - IsMatch(name, "^durable_object_storage_")
+
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: upsert
+
+  transform/cloudflare_agents:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span types. chat -> LLM and execute_tool -> TOOL are read by Future AGI directly. invoke_agent carries the
+          # turn's model and token totals, so it is pinned to AGENT (otherwise it would be stored as an unknown span).
+          # tool_approval spans reuse gen_ai.operation.name=execute_tool; they are a policy decision, not a second
+          # tool run, so they become chain steps. Everything else (agent_start, fetch, Durable Object invocations)
+          # is a chain step too.
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["cloudflare.agents.operation.name"] == "tool.approval"
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["gen_ai.operation.name"] == nil
+          # invoke_agent repeats the sum of its chat spans' usage. Session and project totals add up every span, so
+          # keep usage on the chat spans only. The turn total stays readable as cloudflare.agents.usage.total_tokens.
+          - delete_matching_keys(attributes, "^gen_ai\\.usage\\.") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          # Sessions: one Agent instance (Durable Object) is one conversation. The Agent's own lifecycle spans carry
+          # cloudflare.agents.session.id (the Durable Object id); wrapAISDK spans carry gen_ai.conversation.id.
+          - set(attributes["session.id"], attributes["cloudflare.agents.session.id"]) where attributes["cloudflare.agents.session.id"] != nil
+          - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
+          # Errors. The Workers custom-span API has no status setter, so the Agents SDK records a failure as the
+          # attribute error.type (an error class name, never the message). Turn that into span status ERROR.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - set(status.code, STATUS_CODE_ERROR) where attributes["error.type"] != nil
+          - set(status.message, attributes["error.type"]) where attributes["error.type"] != nil
+          # Content ON: fill the Input and Output panes from the OpenTelemetry GenAI JSON strings.
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.value"], attributes["gen_ai.tool.call.arguments"]) where attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.tool.call.result"]) where attributes["gen_ai.tool.call.result"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): messages, system instructions, tool arguments and results, in every spelling.
+          - delete_matching_keys(attributes, "^gen_ai\\.(input\\.messages|output\\.messages|system_instructions|tool\\.call\\.arguments|tool\\.call\\.result|prompt|completion)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, "^(input|output)\\.value$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Request URLs: keep the path, drop scheme, host, query string and fragment (tokens often ride in queries).
+          # Cloudflare also sends the query string on its own as url.query.
+          - replace_pattern(attributes["url.full"], "^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*([^?#]*).*$", "$$1")
+          - delete_key(attributes, "url.query")
+          # The caller's approximate location (geo.locality.name is the city; also region, country, continent,
+          # timezone) and network (cloudflare.asn), which Cloudflare adds to request spans: out unless you opt in.
+          - delete_matching_keys(attributes, "^geo\\.") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "cloudflare.asn") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # E-mail-shaped values (agent instance names, URLs) are replaced in both modes.
+          - replace_all_patterns(attributes, "value", "[A-Za-z0-9._+-]+(@|%40)[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}", "<email>")
+      - context: spanevent
+        statements:
+          # Exception events can carry messages, paths and stack traces: keep only the exception type.
+          - keep_keys(attributes, ["exception.type"]) where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # E-mail-shaped values are replaced here too, in both modes.
+          - replace_all_patterns(attributes, "value", "[A-Za-z0-9._+-]+(@|%40)[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}", "<email>")
+
+  # Content OFF: drop every other span event. Workers attributes console.log() output to the active span, and
+  # Cloudflare does not document how those lines are encoded in the export, so none of them pass by default.
+  filter/span_events:
+    error_mode: ignore
+    traces:
+      spanevent:
+        - name != "exception" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Future AGI reads at most 16 MiB per request, so batching keeps requests small.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # optional: Future AGI also accepts gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/cloudflare]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; this collector handles traces only
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/preflight, filter/storage_spans, resource/future_agi, transform/cloudflare_agents, filter/span_events, batch]
+      exporters: [otlp_http/future_agi]
+```
+
+```bash
+export CF_DESTINATION_TOKEN="$(openssl rand -hex 24)"     # paste into the destination header in step 5
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="weather-agent"
+export FI_TRACES_URL="https://api.futureagi.com/tracer/v1/traces"   # self-hosted: http://<host>:<port>/v1/traces
+
+docker run -d --name fi-cloudflare-collector -p 4318:4318 \
+  -e CF_DESTINATION_TOKEN -e FI_API_KEY -e FI_SECRET_KEY -e FI_PROJECT_NAME -e FI_TRACES_URL -e FI_CAPTURE_CONTENT \
+  -v "$PWD/otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+  otel/opentelemetry-collector-contrib:0.162.0
+```
+
+Cloudflare sends from its network, so the collector needs a public HTTPS address (TLS in front of port 4318). The collector is yours: Future AGI does not host one for Cloudflare. Cloudflare sends OTLP/HTTP JSON, gzip-compressed (`Content-Encoding: gzip`); the collector accepts it and forwards uncompressed protobuf. Both `api.futureagi.com` and a self-hosted Future AGI were tested as targets. In the live run the collector ran on a serverless container platform with the receiver on the platform's port; nothing else in the file changed.
+
+## 5. Create the destination and deploy
+
+In the Cloudflare dashboard, open **Workers Observability**, add a destination, and fill in:
+
+| Field | Value |
+| --- | --- |
+| Destination Name | `future-agi` (the name in `wrangler.jsonc`) |
+| Destination Type | Traces |
+| OTLP Endpoint | `https://<your-collector-host>/v1/traces` |
+| Custom Headers | `Authorization`: `Bearer <CF_DESTINATION_TOKEN>` |
+
+When you save the destination, Cloudflare sends one test span (`Hello from Cloudflare 👋 (<destination name>)`) to check the endpoint. The collector answers it and does not forward it, so it never appears as a trace.
+
+The same destination can be created with the Cloudflare API (used in the live run; the API token needs Workers Observability Write). `<TOKEN>` is a Cloudflare API token, `<CF_DESTINATION_TOKEN>` your collector's bearer token:
+
+```bash
+curl -X POST "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/workers/observability/destinations" \
+  -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
+  -d '{"name": "future-agi", "enabled": true, "configuration": {"type": "logpush",
+       "logpushDataset": "opentelemetry-traces", "url": "https://<your-collector-host>/v1/traces",
+       "headers": {"Authorization": "Bearer <CF_DESTINATION_TOKEN>"}}}'
+```
+
+A `GET` on the same URL lists your destinations; `configuration.jobStatus` shows the last delivery (`last_complete`) and the last error.
+
+Then deploy, with the model key as a secret binding (never a literal in `wrangler.jsonc`):
+
+```bash
+npx wrangler secret put OPENAI_API_KEY
+npx wrangler deploy
+```
+
+Cloudflare says events may take several minutes to reach a destination. In the live run spans arrived 1.5 to 3 minutes after each turn, and one turn's spans could come in several deliveries, the trace root last. Do not create a Logs destination for this collector: it has a traces pipeline only, and Future AGI ingests traces only.
+
+## 6. Check it in Future AGI
+
+Open the project named in `FI_PROJECT_NAME` under **Observe > Tracing**. Each request to the Agent is one trace named `POST`. Expand it down to `invoke_agent`. Requests to the same Agent instance share a session.
+
+## What is captured
+
+| Span | Type in Future AGI | What it carries |
+| --- | --- | --- |
+| `invoke_agent <functionId>` | agent | agent name/id, conversation id, requested model, provider, finish reason, tool count, `cloudflare.agents.usage.total_tokens`. Its `gen_ai.usage.*` copies are removed by the collector, so sessions do not count a turn's tokens twice. |
+| `chat <model>` | llm | requested and response model, provider, response id, input/output/cache/reasoning token counts. Cost appears when Future AGI knows the model's price. |
+| `execute_tool <tool>` | tool | tool name, type and call id |
+| `tool_approval <tool>` | chain | approval state (`approved`, `denied` or `requested`) and call id. Cloudflare marks it `gen_ai.operation.name=execute_tool`; the collector keeps it from counting as a second tool run. |
+| `agent_initialization`, `agent_start`, `restore_agent_state`, `schedule_agent_alarm`, ... | chain | `Agent` lifecycle: class name, Durable Object id and instance name |
+| `POST`, `fetch`, `durable_object_subrequest` | chain | Workers runtime: trigger, method, URL path, status code, body sizes, a few request headers (accept encoding, content type, content length), the user agent, `server.address` (the Worker's or the model provider's host name), the Cloudflare data center (`cloudflare.colo`), ray id, CPU and wall time. The caller's location (`geo.*`, city level) and network (`cloudflare.asn`) are removed unless you opt in; the query string (`url.query`) is always removed. |
+| `durable_object_storage_*` | (dropped) | one span per storage call, removed by the collector's filter |
+
+Resource attributes from Cloudflare: `service.name` and `faas.name` (the Worker name), `faas.version` (the deployed version id), `cloud.provider`, `cloud.platform`, `cloudflare.script_name`, `cloudflare.entrypoint` (the Agent class, on its Durable Object's spans), `cloudflare.colo`, `faas.invoked_region`, `telemetry.sdk.name=workers-observability`. The collector adds `project_name` and `project_type`.
+
+Sessions: the collector copies `gen_ai.conversation.id` (else `cloudflare.agents.session.id`, the Durable Object id) to `session.id`.
+
+Not captured: message text, system instructions, tool arguments and results, raw error messages and console output (off by default, see below); user ids (Cloudflare records `user.id` only from AI SDK v6 telemetry metadata); retrieval spans; cost from Cloudflare.
+
+## Privacy
+
+Content needs two switches, and both are off by default. Set `FI_CAPTURE_CONTENT=true` before creating the Docker container to opt in; remove and recreate an existing container with the command above to change this environment value. Restart alone does not update it.
+
+| Switch | Where | Default | Effect |
+| --- | --- | --- | --- |
+| `storeMessages` / `storeTools` | `wrapAISDK(ai, {...})` in the Worker (`STORE_MESSAGES` / `STORE_TOOLS` in the example) | off | Cloudflare writes `gen_ai.input.messages` / `gen_ai.output.messages` on `chat` and `gen_ai.tool.call.arguments` / `gen_ai.tool.call.result` on `execute_tool`. Off: these never leave Cloudflare. |
+| `FI_CAPTURE_CONTENT` | collector environment | `false` | `true` lets those attributes, error text, exception details, console output and the caller's location and network (`geo.*`, `cloudflare.asn`) through and fills the Input and Output panes. `false` deletes them, replaces status messages with the error class, keeps only `exception.type` on exception events and drops every other span event. |
+
+So turning on Cloudflare's payloads (for example for its own session replay) does not by itself send them to Future AGI. In both modes the collector replaces e-mail-shaped values (for example an Agent instance named after a user's e-mail, which also appears in the URL, in `gen_ai.agent.id` and in the lifecycle spans) with `<email>`, and keeps only the path of request URLs (no host, query string or fragment). The runtime's user agent, the Cloudflare data center and the few request headers listed above pass in both modes. Cloudflare records only the error class (`error.type`) on a failing span, never the error text. With `storeMessages` on, a tool's error text is part of the next `chat` span's `gen_ai.input.messages` (it is the tool result the model sees), so the collector removes it with the other messages unless you opt in.
+
+How this was checked: a unique marker in the question, the tool arguments and result, the model's answer and the tool's error text, and an Agent instance named with an e-mail address. Every column of every Future AGI table that stores the project (ClickHouse spans, traces, sessions, rollups and the attribute catalog; Postgres project tables), resource attributes and span events included, was scanned:
+
+| Run | Worker payloads | Collector | Marker stored | E-mail, user name, host name, paths, stack frames, keys stored |
+| --- | --- | --- | --- | --- |
+| Default | off | `false` | no | no |
+| Guard | on | `false` | no (the collector received it 15 times) | no |
+| Opt-in | on | `true` | yes, Input and Output filled | no |
+
+Each run used its own project; no run's marker appeared in another run's project.
+
+The live run (2026-10-18) repeated this with Cloudflare's real export. The hosted project received the default and guard turns; the captured payloads were then replayed through the same collector into a self-hosted Future AGI and every stored column scanned:
+
+| Live run | Worker payloads | Collector | Marker stored | Also checked, none stored |
+| --- | --- | --- | --- | --- |
+| Default | off | `false` | no | e-mail, the caller's city and region, network (ASN), query string, the destination's test span, keys and tokens |
+| Guard | on | `false` | no (Cloudflare sent it in 11 attributes: messages, tool arguments and result) | the tool's error text, e-mail, location, keys and tokens |
+| Opt-in | on | `true` | yes, Input and Output filled, location included | e-mail, keys and tokens |
+
+The traces read back from `api.futureagi.com` contained no marker and no e-mail either.
+
+## Flushing and background turns
+
+Workers tracing has no flush call. Cloudflare exports the spans after the invocation ends, so there is no `ctx.waitUntil(flush())` to add and no exporter to shut down. What matters is that each span **ends inside its invocation**: the runtime force-closes a span that is still open when its invocation ends, and such a span arrives with no attributes, so it is stored without model, tokens or type ([cloudflare/agents#2539](https://github.com/cloudflare/agents/issues/2539), open on 2026-10-16). Treat that as data loss for the span.
+
+- Await the turn in the handler, as the example does. The invocation stays open until `generateText` returns, and every span closes with its attributes.
+- Background turns are outside this supported recipe. A local workerd 1.20261012.1 experiment kept spans complete even without awaiting, but that local behavior is not evidence of deployed invocation lifetime; retain the example’s `await`.
+
+## How it behaves
+
+- **Tool throws:** the turn continues (the model sees the tool error). `execute_tool` is ERROR with the message `Error` (the class name), not the error text.
+- **Model call fails:** `chat` and `invoke_agent` are ERROR with `AI_APICallError`. The example answers HTTP 502 with the error class only. On a deployed Worker, Cloudflare also marks the model provider `fetch` (404 in the live run) and the Worker's request spans (502) ERROR, without a message, so the trace row shows the error.
+- **Status:** the Workers custom-span API has no status setter, so the Agents SDK records failures as `error.type`. The collector turns that into span status ERROR. Cloudflare sets status itself only on runtime spans: ERROR for a `fetch` that got a 4xx or 5xx and for a request answered with 5xx. A turn whose tool throws still answers 200, so its trace row stays UNSET; open the trace to see the failing span.
+- **Trace name and latency:** the root is the Worker's `POST`. Because the example awaits the turn, its latency is the turn's latency.
+- **Span kinds:** in the real export the Worker's request spans are SERVER and every other span, the GenAI spans included, is CLIENT. Future AGI types spans from their names and attributes, not from the kind.
+
+## What the live run showed
+
+Deployed Worker, real destination, 2026-10-18 (`agents` 0.28.1, `wrangler` 4.151.1, collector contrib 0.162.0):
+
+- **Same span tree as local workerd**, with `invoke_agent`, `chat`, `execute_tool` and `tool_approval`, the same `gen_ai.*` attributes, token counts on `chat`, and `error.type` for failures. No span events were exported in any turn.
+- **Pre-flight span.** Saving a destination sends one test span with resource `telemetry.sdk.name=pre-flight-check`. Without a filter it is stored as a one-span trace. The collector's `filter/preflight` drops it.
+- **Caller location and network.** Request spans carry `geo.locality.name` (city), `geo.locality.region`, `geo.country.code`, `geo.continent.code`, `geo.timezone` and `cloudflare.asn`. The collector removes them unless `FI_CAPTURE_CONTENT=true`.
+- **Query string.** Request spans carry `url.query` next to `url.full`. The collector removes it in both modes.
+- **Transport.** OTLP/HTTP JSON with `Content-Encoding: gzip`, from Cloudflare's network, with the destination's custom header; the collector rejected requests without the bearer token (401).
+- **Status.** Runtime spans get ERROR from Cloudflare on 4xx/5xx fetches and 5xx responses (see [How it behaves](#how-it-behaves)).
+- **Other requests.** Requests to other paths of the Worker (for example `GET /`, which the example answers 404) are traced as one-span `GET` traces in the same project.
+
+## Limitations
+
+- The live run created the destination through the API, not the dashboard form, and ran HTTP turns only (see the supported-scope table above).
+- Keep the collector for project stamping, mapping, token deduplication and privacy. One collector serves one project.
+- Supported execution is awaited `generateText` over HTTP (`onRequest`) with the pinned packages. Streaming, WebSocket and RPC turns are excluded.
+- Spans still open when their invocation ends arrive with no attributes (see [Flushing](#flushing-and-background-turns)).
+- Console output: Cloudflare says `console.log()` lines are attributed to the active span, but does not document how they appear in a traces export. The collector drops every non-exception span event unless you opt in.
+- Workers logs were not exported; Future AGI ingests traces only.
+
+## Troubleshooting
+
+- **No project in Future AGI.** The collector sets `project_name`; check its logs (`docker logs fi-cloudflare-collector`). A 401 in the logs means wrong `FI_API_KEY` / `FI_SECRET_KEY`. Cloudflare can take minutes to deliver, and the destination status in the dashboard (or `configuration.jobStatus` in the API) shows the last delivery or an error.
+- **Destination shows an error.** The endpoint must be the full `/v1/traces` URL on a public HTTPS address, and the header must be exactly `Authorization: Bearer <token>` with the token the collector has. Without it the collector answers 401.
+- **Only `POST`, `fetch` and `agent_*` spans, no `invoke_agent`, `chat` or `execute_tool`.** The Agent calls the plain AI SDK. Call the functions returned by `wrapAISDK(ai)`.
+- **`invoke_agent` stored as unknown, or session token totals doubled.** The `transform/cloudflare_agents` processor is missing or edited; it pins `invoke_agent` to agent and removes its token copies.
+- **Two tool spans per tool call.** The `tool_approval` line of the processor is missing.
+- **`invoke_agent` or `chat` stored without model or tokens.** The span was still open when its invocation ended (see [Flushing](#flushing-and-background-turns)).
+- **The trace has no session, but its spans do.** The `onBeforeRequest` line in the Worker is missing.
+- **Dozens of `durable_object_storage_*` spans.** The `filter/storage_spans` processor is not in the pipeline.
+- **A trace named `Hello from Cloudflare 👋 (...)`.** That is the destination's test span; the `filter/preflight` processor is missing from the pipeline.
+- **One-span `GET` traces.** Requests to other paths of your Worker are traced too. Lower `head_sampling_rate`, or add a filter on the span name to the collector, if you do not want them.
+- **Input and Output panes are empty.** That is the default. Set `STORE_MESSAGES` / `STORE_TOOLS` in the Worker and `FI_CAPTURE_CONTENT=true` on the collector.
+
+## Run the example locally
+
+The example runs the Worker on local workerd, so no Cloudflare account is needed. A local stand-in (not Cloudflare's exporter) replays workerd's recorded spans to the collector, which forwards to a Future AGI you can reach:
+
+```bash
+cd examples/frameworks/cloudflare-agents
+npm install
+npm test                                  # unit and config tests; the collector contract test needs Docker
+export FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:<port>
+export OPENAI_API_KEY=... OPENAI_BASE_URL=...   # any OpenAI-compatible endpoint
+./run_e2e.sh
+```
+
+See the example's README for what each scenario checks.
