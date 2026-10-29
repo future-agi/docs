@@ -53,6 +53,9 @@ def test_a_bearer_header_like_the_one_on_cloudflares_page_is_401():
     assert post(json.dumps(body({"project_name": PROJECT})).encode(), headers={"Authorization": f"Bearer {KEY}"}) == 401
 
 
-def test_gzip_bodies_are_refused():
+def test_gzip_bodies_are_refused_before_v1_56_and_accepted_after():
     import gzip
-    assert post(gzip.compress(json.dumps(body({"project_name": PROJECT})).encode()), extra={"Content-Encoding": "gzip"}) == 400
+    # Set FI_EXPECT_GZIP_STATUS=400 only when checking self-hosted before v1.56.0.
+    expected = int(os.environ.get("FI_EXPECT_GZIP_STATUS", "200"))
+    assert expected in (200, 400)
+    assert post(gzip.compress(json.dumps(body({"project_name": PROJECT})).encode()), extra={"Content-Encoding": "gzip"}) == expected

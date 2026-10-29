@@ -38,7 +38,7 @@ pytest tests -q
 
 `tests/test_real_payload_collector.py` posts the captured real payloads (JSON and protobuf) to `otel/opentelemetry-collector-contrib:0.162.0` running `otelcol.yaml` in Docker and checks what it forwards, with content off and on. It is skipped without Docker or the image, or with `CFAIG_SKIP_DOCKER=1`.
 
-`tests/test_contract_local_collector.py` is skipped unless `FI_API_KEY`, `FI_SECRET_KEY` and `FI_BASE_URL` (for example `http://localhost:14338`) are set. It asserts: a Cloudflare-shaped batch without `project_name` is rejected with 400; the same batch with it is accepted as JSON and as protobuf; wrong keys and a Bearer header are 401; gzip is 400.
+`tests/test_contract_local_collector.py` is skipped unless `FI_API_KEY`, `FI_SECRET_KEY` and `FI_BASE_URL` (for example `http://localhost:14338`) are set. It asserts: a Cloudflare-shaped batch without `project_name` is rejected with 400; the same batch with it is accepted as JSON and as protobuf; wrong keys and a Bearer header are 401; gzip is 400 on self-hosted Future AGI before v1.56.0 and accepted from v1.56.0. The test defaults to expecting HTTP 200; set `FI_EXPECT_GZIP_STATUS=400` only for an older self-hosted receiver.
 
 ## Try the stand-in by hand
 

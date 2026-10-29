@@ -149,5 +149,5 @@ def test_internal_links_point_at_pages_that_exist(page):
 
 def test_the_page_reports_the_live_verification_and_what_it_did_not_cover(page):
     assert "## Live vendor verification (2026-10-18)" in page
-    assert "Not covered by the live run" in page
+    assert "Scope of the live run" in page
     assert "Nobody ran Cloudflare" not in page and "STANDIN" not in page
