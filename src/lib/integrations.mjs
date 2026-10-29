@@ -81,6 +81,7 @@ export const integrations = [
   { id: 'ruby-llm', name: 'RubyLLM', href: '/docs/integrations/frameworks/ruby-llm', category: 'frameworks', summary: 'Trace RubyLLM calls with the third-party OTel gem.', method: 'OpenTelemetry', logo: 'ruby-llm', aliases: ['Ruby LLM', 'ruby_llm'] },
   { id: 'swiftide', name: 'Swiftide', href: '/docs/integrations/frameworks/swiftide', category: 'frameworks', summary: 'Connect Rust agent spans through tracing-opentelemetry.', method: 'OpenTelemetry', logo: 'swiftide', aliases: ['Rust'] },
   { id: 'temporal', name: 'Temporal', href: '/docs/integrations/frameworks/temporal', category: 'frameworks', summary: 'Follow Python workflows, activities and model calls.', method: 'OTel + traceAI', logo: 'temporal' },
+  { id: 'tanstack-ai', name: 'TanStack AI', href: '/docs/integrations/frameworks/tanstack-ai', category: 'frameworks', summary: 'Send otelMiddleware chat, model-call and tool spans from Node.js.', method: 'OpenTelemetry', logo: 'generic-framework', aliases: ['TanStack'] },
   { id: 'watsonx-orchestrate-adk', name: 'watsonx Orchestrate ADK', href: '/docs/integrations/frameworks/watsonx-orchestrate-adk', category: 'frameworks', summary: 'Forward Agentic SDK spans through a collector.', method: 'OTel collector', logo: 'watsonx', aliases: ['IBM', 'Agentic SDK'] },
   { id: 'langfuse-sdk', name: 'Langfuse SDK', href: '/docs/sdk/tracing/langfuse-integration', category: 'frameworks', summary: 'Send new traces with Langfuse SDK instrumentation.', method: 'SDK tracing', logo: 'langfuse', sharedGuide: true },
 
