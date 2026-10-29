@@ -9,6 +9,14 @@ export const redirectMap: Record<string, string> = {
   '/docs/prototype/features/evals': '/docs/evaluation/builtin',
   '/docs/prototype/features/choose-winner': '/docs/evaluation',
   '/docs/cookbook/quickstart/prototype-llm-app': '/docs/cookbook/quickstart/experimentation-compare-prompts',
+  // Shadow experiments: the page redirects to the Command Center overview
+  '/docs/command-center/features/shadow-experiments': '/docs/command-center',
+  // Async and batch: the page redirects to chat completions
+  '/docs/command-center/api/async-batch': '/docs/command-center/api/chat',
+  // Files: the page redirects to the endpoints reference
+  '/docs/command-center/api/files': '/docs/command-center/api/endpoints',
+  // The release notes page is the changelog
+  '/changelog': '/docs/release-notes',
   // Error Feed revamp: Concepts/Features replaced by Concepts/Guides/Reference/Troubleshooting.
   // NOTE /docs/error-feed/features/sampling is linked from inside the product
   // (frontend ConfigureProject.jsx), so that redirect must not be removed.
@@ -105,7 +113,7 @@ export const redirectMap: Record<string, string> = {
   '/docs/prism/features/providers': '/docs/command-center/features/providers',
   '/docs/prism/features/rate-limiting': '/docs/command-center/features/rate-limiting',
   '/docs/prism/features/routing': '/docs/command-center/features/routing',
-  '/docs/prism/features/shadow-experiments': '/docs/command-center/features/shadow-experiments',
+  '/docs/prism/features/shadow-experiments': '/docs/command-center',
   '/docs/prism/features/streaming': '/docs/command-center/features/streaming',
   '/docs/prism/quickstart': '/docs/command-center/quickstart',
   '/admin-settings': '/docs/admin-settings',
