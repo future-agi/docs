@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'openllmetry', name: 'OpenLLMetry', href: '/docs/integrations/otel/openllmetry', category: 'frameworks', summary: 'Forward Traceloop SDK traces with OTLP/HTTP.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Traceloop'] },
   { id: 'gradio', name: 'Gradio', href: '/docs/integrations/traceai/gradio', category: 'frameworks', summary: 'Trace synchronous chat callbacks through their model client.', method: 'OpenAI client', logo: 'generic-framework' },
   { id: 'z-ai', name: 'Z.ai', href: '/docs/integrations/providers/z-ai', category: 'providers', summary: 'Trace Python chat completions on the general-platform endpoint.', method: 'OpenAI client', logo: 'generic-model' },
   { id: 'cursor', name: 'Cursor IDE', href: '/docs/integrations/coding-agents/cursor', category: 'coding', summary: 'Trace macOS IDE agent sessions through observation hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
