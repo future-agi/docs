@@ -2,7 +2,7 @@
 
 Runnable companion to the docs page [Trace Helicone gateway calls in Observe](../../../src/pages/docs/integrations/gateways/helicone.mdx). It traces OpenAI-client calls that go through Helicone with the existing `traceAI-openai` (Python) and `@traceai/openai` (TypeScript) instrumentors. There is no Helicone package and no receiver.
 
-**Status: alpha.** No Helicone account was used and `ai-gateway.helicone.ai` / `oai.helicone.ai` are never called. `STANDIN` marks every place a local stand-in replaces a Helicone endpoint.
+**Supported setup: self-hosted AI Gateway 0.2.0-beta.30.** Hosted Helicone and classic-proxy delivery are outside the supported recipe. `STANDIN` marks every place a local stand-in replaces a Helicone endpoint.
 
 ## What is here
 
@@ -35,7 +35,7 @@ What the tests assert, with the acceptance criterion from the PRD each one cover
 - **AC-03** `FI_HIDE_INPUTS` / `FI_HIDE_OUTPUTS` keep a unique marker and an email out of every field of every exported span (prompts, answers, tool arguments and tool results); without them they are exported. The tool-definition and error-text gaps are pinned in their own tests.
 - **AC-05** `Helicone-Session-Id`, `Helicone-User-Id`, `Helicone-Property-*` reach Helicone and are not on any span; `using_session` / `using_user` are how a Future AGI session and user are set.
 - **AC-06** No Helicone or provider key reaches the collector; no real key is in this directory.
-- The base URLs the page publishes, built by the OpenAI SDK on an in-process transport (`STANDIN`), give the paths and headers the page describes.
+- Additional hosted URL shapes, built by the OpenAI SDK on an in-process transport (`STANDIN`), give the paths and headers the page describes.
 - TypeScript known gaps are pinned by tests that fail when the gap is fixed: failed calls leave no span, streamed calls have no tokens, the hide settings do not apply.
 - `run_e2e.sh` step 7 (`tests/test_run_e2e_step7.py`, with a stub gateway and a stub read-back, `STANDIN`): it refuses an `FI_GRPC_ENDPOINT` without `http://`/`https://`, refuses to run without `FI_VERIFY`, stops the gateway before the read-back, and fails unless the read-back finds stored spans.
 - Opt-in, the real gateway (`tests/test_gateway_otlp_real.py`, skipped unless `HELICONE_GATEWAY_BIN` points at the `ai-gateway` binary; step 2 of `run_e2e.sh` writes its path to `$E2E_WORKDIR/gw-bin.path`): with `otlp-endpoint: http://127.0.0.1:PORT` it sends OTLP/gRPC trace exports with the `OTEL_EXPORTER_OTLP_HEADERS` headers and the `OTEL_RESOURCE_ATTRIBUTES` resource attributes, and no `gen_ai.*` or `llm.*` attributes; with `127.0.0.1:PORT` (no scheme) it serves the request and exports nothing. No network: a local upstream stub and a local gRPC receiver.
@@ -69,15 +69,14 @@ Write `FI_GRPC_ENDPOINT` with its scheme. With `localhost:14337` the gateway sta
 ## Single runs
 
 ```bash
-export HELICONE_SURFACE=gateway                   # or proxy
-export HELICONE_BASE_URL=https://ai-gateway.helicone.ai    # https://oai.helicone.ai/v1 for the classic proxy
-export HELICONE_API_KEY=...                       # your Helicone key
-export OPENAI_API_KEY=...                         # classic proxy only
-export HELICONE_MODEL=gpt-4o-mini                 # an id from helicone.ai/models
+export HELICONE_SURFACE=gateway
+export HELICONE_BASE_URL=http://localhost:8080/ai   # your self-hosted gateway
+export HELICONE_API_KEY=local-placeholder         # local gateway auth is off
+export HELICONE_MODEL=openai/gpt-4o-mini          # configure this model on the gateway
 python python/run_demo.py --project helicone-demo --scenario core
 # content off, error details scrubbed:
 FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true FI_HIDE_LLM_INVOCATION_PARAMETERS=true \
   python python/run_demo.py --project helicone-demo-private --scrub-errors --scenario core
 ```
 
-Running against the hosted Helicone endpoints needs your own Helicone key and credits, and is not covered by the tests here.
+Hosted Helicone endpoints and the classic proxy are outside this supported setup; the stand-in tests establish only request construction, not hosted delivery.
