@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'github-copilot', name: 'GitHub Copilot CLI', href: '/docs/integrations/coding-agents/github-copilot', category: 'coding', summary: 'Export native CLI agent-turn traces with scoped credentials.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'goose', name: 'Goose', href: '/docs/integrations/coding-agents/goose', category: 'coding', summary: 'Forward CLI spans with privacy filtering and model-only usage totals.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'truefoundry', name: 'TrueFoundry', href: '/docs/integrations/gateways/truefoundry', category: 'gateways', summary: 'Trace Python client calls, not native gateway exports.', method: 'OpenAI client', logo: 'generic-framework' },
   { id: 'google-antigravity', name: 'Antigravity CLI', href: '/docs/integrations/coding-agents/google-antigravity', category: 'coding', summary: 'Trace version-scoped macOS CLI conversations with lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
