@@ -41,6 +41,7 @@ export const integrations = [
   { id: 'z-ai', name: 'Z.ai', href: '/docs/integrations/providers/z-ai', category: 'providers', summary: 'Trace Python chat completions on the general-platform endpoint.', method: 'OpenAI client', logo: 'generic-model' },
   { id: 'cursor', name: 'Cursor IDE', href: '/docs/integrations/coding-agents/cursor', category: 'coding', summary: 'Trace macOS IDE agent sessions through observation hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'langsmith', name: 'LangSmith', href: '/docs/integrations/langsmith', category: 'frameworks', summary: 'Forward supported LangSmith SDK traces over OTLP.', method: 'Native OTLP', logo: 'generic-framework' },
+  {"id": "mlflow", "name": "MLflow", "href": "/docs/integrations/mlflow", "category": "frameworks", "summary": "Export current MLflow traces with OTLP/HTTP.", "method": "Native OTLP", "logo": "generic-framework"},
   { id: 'openai', name: 'OpenAI', href: '/docs/integrations/traceai/openai', category: 'providers', summary: 'Instrument OpenAI client calls in your application.', method: 'traceAI SDK', logo: 'openai' },
   { id: 'anthropic', name: 'Anthropic', href: '/docs/integrations/traceai/anthropic', category: 'providers', summary: 'Capture Claude calls, token usage and latency.', method: 'traceAI SDK', logo: 'anthropic', aliases: ['Claude'] },
   { id: 'bedrock', name: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock', category: 'providers', summary: 'Trace model calls through Amazon Bedrock.', method: 'traceAI SDK', logo: 'bedrock', aliases: ['Amazon'] },
