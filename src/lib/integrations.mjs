@@ -89,6 +89,7 @@ export const integrations = [
 
   { id: 'portkey', name: 'Portkey', href: '/docs/integrations/traceai/portkey', category: 'gateways', summary: 'Instrument Portkey client calls in your application.', method: 'traceAI SDK', logo: 'portkey' },
   { id: 'envoy-ai-gateway', name: 'Envoy AI Gateway', href: '/docs/integrations/gateways/envoy-ai-gateway', category: 'gateways', summary: 'Export the gateway’s OpenAI-endpoint spans over OTLP.', method: 'Gateway OTLP', logo: 'envoy' },
+  { id: 'cloudflare-ai-gateway', name: 'Cloudflare AI Gateway', href: '/docs/integrations/gateways/cloudflare-ai-gateway', category: 'gateways', summary: 'Map gateway exports through a privacy-filtering collector.', method: 'Gateway OTLP', logo: 'generic-cloud' },
   { id: 'gravitee', name: 'Gravitee APIM', href: '/docs/integrations/gateways/gravitee', category: 'gateways', summary: 'Forward APIM request spans, not AI Gateway traces.', method: 'OTel collector', logo: 'gravitee', aliases: ['Gravitee Gateway'] },
   { id: 'kong-ai-gateway', name: 'Kong AI Gateway', href: '/docs/integrations/gateways/kong-ai-gateway', category: 'gateways', summary: 'Export GenAI spans with Kong’s OpenTelemetry plugin.', method: 'Gateway OTLP', logo: 'kong' },
   { id: 'litellm-proxy', name: 'LiteLLM Proxy', href: '/docs/integrations/gateways/litellm-proxy', category: 'gateways', summary: 'Export request spans from the proxy server’s callback.', method: 'Gateway OTLP', logo: 'litellm', aliases: ['server'] },
