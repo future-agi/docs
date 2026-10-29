@@ -113,6 +113,7 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
   { name: 'Hook-to-OTLP emitter', href: '/docs/integrations/coding-agents/hook-to-otlp', category: 'coding' },
