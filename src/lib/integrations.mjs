@@ -124,6 +124,7 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'DeepSeek Harness support status', href: '/docs/integrations/deepseek-harness', category: 'coding' },
   { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
   { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
