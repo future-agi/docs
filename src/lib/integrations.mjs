@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'google-antigravity', name: 'Antigravity CLI', href: '/docs/integrations/coding-agents/google-antigravity', category: 'coding', summary: 'Trace version-scoped macOS CLI conversations with lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
@@ -68,6 +69,7 @@ export const integrations = [
   { id: 'mcp', name: 'Model Context Protocol', href: '/docs/integrations/traceai/mcp', category: 'frameworks', summary: 'Trace MCP client and server interactions.', method: 'traceAI SDK', logo: 'mcp', aliases: ['MCP'] },
   { id: 'mastra', name: 'Mastra', href: '/docs/integrations/traceai/mastra', category: 'frameworks', summary: 'Trace TypeScript agents and workflows in Mastra.', method: 'traceAI SDK', logo: 'mastra' },
   { id: 'vercel-ai-sdk', name: 'Vercel AI SDK', href: '/docs/integrations/traceai/vercel', category: 'frameworks', summary: 'Capture model and tool calls from the Vercel AI SDK.', method: 'traceAI SDK', logo: 'vercel' },
+  { id: 'tanstack-ai', name: 'TanStack AI', href: '/docs/integrations/frameworks/tanstack-ai', category: 'frameworks', summary: 'Send otelMiddleware chat, model-call and tool spans from Node.js.', method: 'OpenTelemetry', logo: 'generic-framework', aliases: ['TanStack'] },
   { id: 'agentscope', name: 'AgentScope', href: '/docs/integrations/frameworks/agentscope', category: 'frameworks', summary: 'Export native agent, model and tool spans.', method: 'OpenTelemetry', logo: 'agentscope' },
   { id: 'apollo-graphql', name: 'Apollo Server', href: '/docs/integrations/frameworks/apollo-graphql', category: 'frameworks', summary: 'Trace GraphQL operations and resolvers in Server 4.', method: 'OpenTelemetry', logo: 'apollo', aliases: ['Apollo GraphQL'] },
   { id: 'embabel', name: 'Embabel', href: '/docs/integrations/frameworks/embabel', category: 'frameworks', summary: 'Export JVM agent spans with the observability starter.', method: 'OpenTelemetry', logo: 'embabel', aliases: ['Spring Boot', 'Java', 'Kotlin'] },
@@ -81,7 +83,6 @@ export const integrations = [
   { id: 'ruby-llm', name: 'RubyLLM', href: '/docs/integrations/frameworks/ruby-llm', category: 'frameworks', summary: 'Trace RubyLLM calls with the third-party OTel gem.', method: 'OpenTelemetry', logo: 'ruby-llm', aliases: ['Ruby LLM', 'ruby_llm'] },
   { id: 'swiftide', name: 'Swiftide', href: '/docs/integrations/frameworks/swiftide', category: 'frameworks', summary: 'Connect Rust agent spans through tracing-opentelemetry.', method: 'OpenTelemetry', logo: 'swiftide', aliases: ['Rust'] },
   { id: 'temporal', name: 'Temporal', href: '/docs/integrations/frameworks/temporal', category: 'frameworks', summary: 'Follow Python workflows, activities and model calls.', method: 'OTel + traceAI', logo: 'temporal' },
-  { id: 'tanstack-ai', name: 'TanStack AI', href: '/docs/integrations/frameworks/tanstack-ai', category: 'frameworks', summary: 'Send otelMiddleware chat, model-call and tool spans from Node.js.', method: 'OpenTelemetry', logo: 'generic-framework', aliases: ['TanStack'] },
   { id: 'watsonx-orchestrate-adk', name: 'watsonx Orchestrate ADK', href: '/docs/integrations/frameworks/watsonx-orchestrate-adk', category: 'frameworks', summary: 'Forward Agentic SDK spans through a collector.', method: 'OTel collector', logo: 'watsonx', aliases: ['IBM', 'Agentic SDK'] },
   { id: 'langfuse-sdk', name: 'Langfuse SDK', href: '/docs/sdk/tracing/langfuse-integration', category: 'frameworks', summary: 'Send new traces with Langfuse SDK instrumentation.', method: 'SDK tracing', logo: 'langfuse', sharedGuide: true },
 
@@ -123,6 +124,8 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
+  { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
