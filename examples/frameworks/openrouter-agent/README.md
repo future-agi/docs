@@ -1,7 +1,7 @@
 # OpenRouter Agent tracing with Future AGI
 
 Runnable example for the docs page `src/pages/docs/integrations/frameworks/openrouter-agent.mdx`
-(TH-8266). It traces [`@openrouter/agent`](https://www.npmjs.com/package/@openrouter/agent) 0.11.0
+(TH-8266). It traces [`@openrouter/agent`](https://github.com/OpenRouterTeam/typescript-agent) 0.11.0
 `callModel()` runs by turning the package's own lifecycle hooks into OpenTelemetry spans and sending
 them to Future AGI. There is no traceAI package for it and nothing wraps `callModel`.
 
