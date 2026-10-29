@@ -245,6 +245,66 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(status["reply_stream"].get("code"), 2, "the ERROR status is kept")
         self.assertFalse(status["reply_stream"].get("message"))
 
+    def test_exported_trace_and_session_usage_counts_model_calls_once(self):
+        # Rebuild a recorded real span tree with deterministic numeric usage.
+        # Two replies share a session, a third has its own; every agent level
+        # repeats each reply's totals, just as goose 1.54.0 does on the wire.
+        payload = json.loads(otlp_payload(DEFAULT))
+        scope = payload["resourceSpans"][0]["scopeSpans"][0]
+        recorded = scope["spans"]
+        scope["spans"] = []
+        expected_traces, expected_sessions = {}, {}
+        usage = ("input_tokens", "output_tokens", "cache_read.input_tokens", "cache_creation.input_tokens")
+        for turn, session in enumerate(("session-a", "session-a", "session-b"), 1):
+            spans = json.loads(json.dumps(recorded))
+            trace_id = "%032x" % turn
+            model_spans = [s for s in spans if attrs(s["attributes"]).get("gen_ai.operation.name") == "chat"]
+            totals = {key: 0 for key in usage}
+            total_cost = 0.0
+            for call, span in enumerate(model_spans, 1):
+                values = {key: (turn * 10 + call) * (i + 1) for i, key in enumerate(usage)}
+                for key, value in values.items():
+                    totals[key] += value
+                cost = (turn * 10 + call) / 100000
+                total_cost += cost
+                span["attributes"] = [a for a in span["attributes"] if not a["key"].startswith(("gen_ai.usage.", "gen_ai.cost."))]
+                span["attributes"] += [{"key": "gen_ai.usage." + k, "value": {"intValue": str(v)}} for k, v in values.items()]
+                span["attributes"].append({"key": "gen_ai.cost.total", "value": {"doubleValue": cost}})
+            for span in spans:
+                span["traceId"] = trace_id
+                span["attributes"] = [a for a in span["attributes"] if a["key"] != "session.id"]
+                span["attributes"].append(kv("session.id", session))
+                if attrs(span["attributes"]).get("gen_ai.operation.name") == "invoke_agent":
+                    span["attributes"] = [a for a in span["attributes"] if not a["key"].startswith(("gen_ai.usage.", "gen_ai.cost."))]
+                    span["attributes"] += [{"key": "gen_ai.usage." + k, "value": {"intValue": str(v)}} for k, v in totals.items()]
+                    span["attributes"].append({"key": "gen_ai.cost.total", "value": {"doubleValue": total_cost}})
+            expected_traces[trace_id] = dict(totals, cost=total_cost)
+            aggregate = expected_sessions.setdefault(session, dict.fromkeys((*usage, "cost"), 0))
+            for key, value in dict(totals, cost=total_cost).items():
+                aggregate[key] += value
+            scope["spans"].extend(spans)
+        _, exported = self.run_collector(DEFAULT, body=json.dumps(payload).encode())
+        self.assertEqual(len(exported), len(recorded) * 3)
+        trace_totals, session_totals = {}, {}
+        for _, span in exported:
+            a = attrs(span["attributes"])
+            if a.get("gen_ai.operation.name") == "invoke_agent":
+                self.assertFalse(any(k.startswith(("gen_ai.usage.", "gen_ai.cost.")) for k in a))
+                for key in usage:
+                    self.assertEqual(int(a["goose.agent.usage." + key]), expected_traces[span["traceId"]][key])
+                self.assertAlmostEqual(float(a["goose.agent.cost.total"]), expected_traces[span["traceId"]]["cost"])
+            for groups, group in ((trace_totals, span["traceId"]), (session_totals, a["session.id"])):
+                aggregate = groups.setdefault(group, dict.fromkeys((*usage, "cost"), 0))
+                for key in usage:
+                    aggregate[key] += int(a.get("gen_ai.usage." + key, 0))
+                aggregate["cost"] += float(a.get("gen_ai.cost.total", 0))
+        self.assertEqual(trace_totals.keys(), expected_traces.keys())
+        self.assertEqual(session_totals.keys(), expected_sessions.keys())
+        for actual, expected in ((trace_totals, expected_traces), (session_totals, expected_sessions)):
+            for group, totals in expected.items():
+                for key, value in totals.items():
+                    self.assertAlmostEqual(actual[group][key], value, msg=f"{group}: {key}")
+
     def test_content_opt_in_passes_through(self):
         # Content is goose's own switch; the collector forwards whatever goose sends.
         text, spans = self.run_collector(CONTENT)

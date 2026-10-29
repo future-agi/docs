@@ -11,7 +11,7 @@ Docs page: `src/pages/docs/integrations/coding-agents/goose.mdx`.
 
 | File | What it is |
 | --- | --- |
-| `otel-collector.yaml` | The collector: adds the Future AGI keys and project (`FI_PROJECT_NAME`, unless goose sends a `project_name`), deletes `user.name`, `host.name`, `session.user`, `session.host`, drops span events, labels `invoke_agent` spans as agents, traces only, uncompressed, no internal metrics port (so several can run side by side on different `GOOSE_OTLP_LISTEN` ports). Needs otelcol-contrib 0.144.0 or later (`otlp_http` exporter name). |
+| `otel-collector.yaml` | The collector: adds the Future AGI keys and project (`FI_PROJECT_NAME`, unless goose sends a `project_name`), deletes `user.name`, `host.name`, `session.user`, `session.host`, drops span events, labels `invoke_agent` spans as agents, moves their repeated usage/cost totals into `goose.agent.usage.*` / `goose.agent.cost.*` (only model spans retain billing keys), traces only, uncompressed, no internal metrics port (so several can run side by side on different `GOOSE_OTLP_LISTEN` ports). Needs otelcol-contrib 0.144.0 or later (`otlp_http` exporter name). |
 | `futureagi-otel.env` | The goose side: OTLP endpoint of the local collector, traces only, content off. |
 | `run_e2e.sh` | Starts the collector, runs one `goose run` with the recipe in a throwaway folder, stops the collector, and prints a marker string to search for. Needs a configured goose, `otelcol-contrib`, and `FI_API_KEY` / `FI_SECRET_KEY`. |
 | `record_otlp.py` | Loopback OTLP/HTTP receiver. Decodes what goose sends and writes span names, parents, and attribute keys, with values dropped except for a structural allowlist. |
@@ -19,7 +19,7 @@ Docs page: `src/pages/docs/integrations/coding-agents/goose.mdx`.
 | `fixtures/goose-1.54.0-content.json` | Same run with `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`. Values are still dropped; only the keys show content was exported. |
 | `fixtures/goose-1.54.0-anthropic.json` | Same prompt with goose's Anthropic provider (content off): the tree is the same, only `gen_ai.provider.name` and the model change. |
 | `test_contract.py`, `run_contract.sh` | Offline test of the span tree and the privacy default against the fixtures. |
-| `test_collector.py`, `collector-test-overrides.yaml` | Checks the shipped config keeps `service.telemetry.metrics.level: none` and `compression: none`, then runs `otel-collector.yaml` in a real `otelcol-contrib` on a payload rebuilt from the fixtures: user name, host name, and span events are gone, the project comes from `FI_PROJECT_NAME` or from goose, and two collectors start side by side (collector runs skipped without `otelcol-contrib`). |
+| `test_collector.py`, `collector-test-overrides.yaml` | Checks the shipped config keeps `service.telemetry.metrics.level: none` and `compression: none`, then runs `otel-collector.yaml` in a real `otelcol-contrib` on a payload rebuilt from the fixtures: user name, host name, and span events are gone, the project comes from `FI_PROJECT_NAME` or from goose, two collectors start side by side, and numeric exports across three replies/two sessions count model usage once while preserving agent diagnostics (collector runs skipped without `otelcol-contrib`). |
 
 ## Run the contract test
 
