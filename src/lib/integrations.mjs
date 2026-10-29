@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'gradio', name: 'Gradio', href: '/docs/integrations/traceai/gradio', category: 'frameworks', summary: 'Trace synchronous chat callbacks through their model client.', method: 'OpenAI client', logo: 'generic-framework' },
   { id: 'cursor', name: 'Cursor IDE', href: '/docs/integrations/coding-agents/cursor', category: 'coding', summary: 'Trace macOS IDE agent sessions through observation hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'langsmith', name: 'LangSmith', href: '/docs/integrations/langsmith', category: 'frameworks', summary: 'Forward supported LangSmith SDK traces over OTLP.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openai', name: 'OpenAI', href: '/docs/integrations/traceai/openai', category: 'providers', summary: 'Instrument OpenAI client calls in your application.', method: 'traceAI SDK', logo: 'openai' },
