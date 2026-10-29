@@ -1,0 +1,311 @@
+---
+title: "Eve (Vercel) tracing with Future AGI"
+description: "Send the OpenTelemetry traces of a Vercel eve agent to Future AGI with eve's own otel() and otelIntegration() files. Covers what is captured, the metadata-only default, and the opt-in for content."
+---
+
+## About
+
+This page is for **eve**, Vercel's open-source TypeScript agent framework: npm package `eve`, repository `vercel/eve`, Apache-2.0. It is not about any other product named Eve.
+
+eve already emits OpenTelemetry spans for every agent turn: one root span per turn, a span per step, and a span per model call and tool call. You send them to Future AGI by adding a destination with eve's own instrumentation files. There is no traceAI package for eve and you do not need one.
+
+This is not the [Vercel AI SDK integration](/docs/integrations/traceai/vercel). That page traces AI SDK calls your own app makes, with `@traceai/vercel` and `registerOTel`. Inside an eve agent, eve owns the tracer provider: use this page, and do not add `@traceai/vercel` or a `registerOTel` call of your own.
+
+<Warning>
+eve is beta software from Vercel, and this page is beta. It was tested end to end against a self-hosted Future AGI stack with a real model behind an OpenAI-compatible endpoint. This guide does not cover Vercel deployments, the Vercel AI Gateway, or the hosted `api.futureagi.com` endpoint.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | eve 0.80.0 (published 2026-10-15, the latest when this was tested; 0.81.0 and 0.82.0 came out since and were not run) with `eve dev` and with `eve build` plus `eve start`. eve 0.71.0 with `eve dev`. Node 26.8.1 (eve requires Node 24 or later). `@vercel/otel` 2.1.3, `@opentelemetry/sdk-trace-base` 2.12.0, `ai` 7.0.142, `@ai-sdk/openai-compatible` 3.0.70. |
+| Model | A real model behind an OpenAI-compatible endpoint, set with `createOpenAICompatible`. The spans do not depend on the model provider. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-15. |
+| Outside this guide’s scope | A deployment on Vercel, Vercel Workflow's hosted retries, sandboxes, schedules, subagents, and channels other than eve's own HTTP channel. |
+| eve docs used | [OpenTelemetry](https://eve.dev/docs/observability/otel) and [Migrate instrumentation](https://eve.dev/docs/observability/instrumentation-migration), read 2026-10-15, and the same guides inside the eve 0.80.0 package. |
+| Source | [examples/frameworks/eve](https://github.com/future-agi/docs/tree/main/examples/frameworks/eve): the agent, the three files below, tests, and an end-to-end script. |
+
+## 1. Install
+
+In your eve project:
+
+```bash
+npm install @vercel/otel @opentelemetry/sdk-trace-base
+```
+
+`@vercel/otel` supplies the OTLP/HTTP exporter (eve's own guide uses it). `@opentelemetry/sdk-trace-base` supplies the batching processor.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="eve-weather-agent"     # the Observe project the traces land in
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"   # default: https://api.futureagi.com
+# export FI_CAPTURE_CONTENT=1                  # opt in to prompts, outputs and tool payloads
+```
+
+Set `FI_BASE_URL` to the origin only. The code adds `/tracer/v1/traces`.
+
+## 3. Add the instrumentation files
+
+eve loads every file in `agent/instrumentation/` at startup. Each file there is one instrumentation slot, so helper code goes in `agent/lib/`.
+
+The first file names the Future AGI project. Future AGI files spans by the resource attribute `project_name`; a span attribute with that key does not count. An agent can declare `otel()` only once, so if you already have `agent/instrumentation/otel.ts`, add the two keys to its `resource` instead.
+
+```ts title="agent/instrumentation/otel.ts"
+// Process-wide OpenTelemetry settings. Declare otel() once per agent.
+// Future AGI files every span under the resource attribute `project_name`.
+import { otel } from "eve/instrumentation/otel";
+
+export default otel({
+  resource: {
+    project_name: process.env.FI_PROJECT_NAME ?? "eve-agent",
+    project_type: "observe",
+  },
+});
+```
+
+The second file is the Future AGI destination. eve combines it with any other destination you declare.
+
+```ts title="agent/instrumentation/futureagi.ts"
+// The Future AGI destination. eve combines it with any other destination file.
+import { otelIntegration } from "eve/instrumentation/otel";
+
+import { futureAGIExportPolicy, futureAGISpanProcessor } from "../lib/futureagi.ts";
+
+export default otelIntegration({
+  // Metadata only unless FI_CAPTURE_CONTENT=1. Applies to this destination
+  // only: eve's local traces and Workflow retention are unchanged.
+  exportPolicy: futureAGIExportPolicy(),
+  // Drops eve's durable-workflow spans, then batches and exports the rest.
+  spanProcessors: [futureAGISpanProcessor()],
+});
+```
+
+The third file holds the exporter, the scope filter and the export policy.
+
+```ts title="agent/lib/futureagi.ts"
+// Future AGI destination pieces for eve's OpenTelemetry pipeline.
+//
+// eve sends every span in the process to each destination, including the
+// durable-workflow plumbing under instrumentation scope "workflow" (dozens of
+// spans per turn, in separate traces). This file keeps eve's agent spans
+// (scope "eve.agent") and anything else you add, and drops the plumbing.
+import type { Context } from "@opentelemetry/api";
+import {
+  BatchSpanProcessor,
+  type ReadableSpan,
+  type Span,
+  type SpanExporter,
+  type SpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
+import { OTLPHttpProtoTraceExporter } from "@vercel/otel";
+import type { SpanExportPolicy } from "eve/instrumentation/otel";
+
+/** Instrumentation scopes that never reach Future AGI. */
+export const DROPPED_SCOPES: ReadonlySet<string> = new Set([
+  "workflow", // durable orchestration: steps, queues, replays, routes
+  "@vercel/otel/fetch", // outbound HTTP spans, when fetch instrumentation is on
+]);
+
+type Env = Readonly<Record<string, string | undefined>>;
+
+/** The instrumentation scope name of a span (OTel JS SDK 2.x and 1.x shapes). */
+export function scopeName(span: ReadableSpan | Span): string {
+  const s = span as unknown as {
+    instrumentationScope?: { name?: string };
+    instrumentationLibrary?: { name?: string };
+  };
+  return s.instrumentationScope?.name ?? s.instrumentationLibrary?.name ?? "";
+}
+
+/** True when the app opted in to exporting prompts, outputs and tool payloads. */
+export function captureContentEnabled(env: Env = process.env): boolean {
+  return /^(1|true|yes|on)$/i.test((env.FI_CAPTURE_CONTENT ?? "").trim());
+}
+
+/**
+ * Attributes that identify the caller. eve copies the authenticated principal's
+ * id here, which can be a user id or an email, so they are dropped unless the
+ * app opted in to content capture. The principal *type* is kept.
+ */
+export const PRINCIPAL_ID_KEYS: ReadonlySet<string> = new Set([
+  "agent.principal.current.id",
+  "agent.principal.initiator.id",
+]);
+
+/**
+ * The Future AGI destination's export policy. By default it keeps span
+ * metadata (names, timing, model, tokens, tool names, status code) and redacts
+ * content: prompts, system instructions, tool definitions, model output, tool
+ * arguments and results, error messages, exception events, the session title,
+ * and the principal ids above. FI_CAPTURE_CONTENT=1 turns all of that back on,
+ * up to eve's own otel({ tracePolicy }) ceiling.
+ */
+export function futureAGIExportPolicy(env: Env = process.env): SpanExportPolicy[] {
+  if (captureContentEnabled(env)) return [];
+  return [
+    {
+      span: () => ({ redact: true, inputs: true, outputs: true }),
+      attribute: ({ key }) => ({ emit: !PRINCIPAL_ID_KEYS.has(key) }),
+    },
+  ];
+}
+
+/** Forwards a span to `next` unless its instrumentation scope is dropped. */
+export class ScopeFilterSpanProcessor implements SpanProcessor {
+  readonly next: SpanProcessor;
+  readonly dropped: ReadonlySet<string>;
+
+  constructor(next: SpanProcessor, dropped: ReadonlySet<string> = DROPPED_SCOPES) {
+    this.next = next;
+    this.dropped = dropped;
+  }
+
+  onStart(span: Span, parentContext: Context): void {
+    if (!this.dropped.has(scopeName(span))) this.next.onStart(span, parentContext);
+  }
+
+  onEnd(span: ReadableSpan): void {
+    if (!this.dropped.has(scopeName(span))) this.next.onEnd(span);
+  }
+
+  forceFlush(): Promise<void> {
+    return this.next.forceFlush();
+  }
+
+  shutdown(): Promise<void> {
+    return this.next.shutdown();
+  }
+}
+
+/** The OTLP/HTTP traces URL: FI_BASE_URL (default: hosted) + /tracer/v1/traces. */
+export function futureAGITracesUrl(env: Env = process.env): string {
+  const base = (env.FI_BASE_URL || "https://api.futureagi.com").replace(/\/+$/, "");
+  return `${base}/tracer/v1/traces`;
+}
+
+/** OTLP/HTTP protobuf exporter for the Future AGI trace endpoint. */
+export function futureAGIExporter(env: Env = process.env): OTLPHttpProtoTraceExporter {
+  return new OTLPHttpProtoTraceExporter({
+    url: futureAGITracesUrl(env),
+    headers: {
+      "X-Api-Key": env.FI_API_KEY ?? "",
+      "X-Secret-Key": env.FI_SECRET_KEY ?? "",
+    },
+  });
+}
+
+/** Scope filter in front of a batching processor in front of the exporter. */
+export function futureAGISpanProcessor(
+  exporter: SpanExporter = futureAGIExporter(),
+): ScopeFilterSpanProcessor {
+  return new ScopeFilterSpanProcessor(new BatchSpanProcessor(exporter));
+}
+```
+
+Why a span processor and not `traceExporter`: eve hands every span in the process to each destination. That includes its durable-workflow plumbing under instrumentation scope `workflow`. In our test, a session with one turn and one tool call produced 6 agent spans and 95 workflow spans, the workflow ones spread over separate traces. A `traceExporter` would send all of them. eve's agent spans use scope `eve.agent` and are kept, as is anything else you add, such as a database instrumentation passed to `otel({ instrumentations })`.
+
+Both auth headers are required. The keys travel only as `X-Api-Key` and `X-Secret-Key` headers to the collector, never on a span and never to the model provider. The exporter sends uncompressed OTLP/HTTP protobuf.
+
+<Note>
+Guides written for eve before 0.62, including some third-party pages, put `registerOTel` in `agent/instrumentation.ts`. eve 0.62 and later reject that file: `eve build` stops with `Found removed instrumentation file "agent/instrumentation.ts"`. Use the files above instead.
+</Note>
+
+## 4. Run and check
+
+```bash
+npx eve dev
+```
+
+Ask the agent something that calls a tool. The trace appears in your Observe project about a second later:
+
+```text
+invoke_agent eve-weather-agent          turn total tokens, status
+├── agent.step
+│   ├── chat gpt-5.4-mini               model, provider, input and output tokens
+│   └── execute_tool get_weather        tool name, call id, ERROR if the tool throws
+└── agent.step
+    └── chat gpt-5.4-mini
+```
+
+The root span is named after the agent; in our runs that was the `name` from `package.json`. Each user turn is its own trace.
+
+| eve span | Future AGI type | What you see |
+| --- | --- | --- |
+| `invoke_agent <agent>` | unknown (see [Limitations](#limitations)) | Duration, the turn's total input and output tokens, status |
+| `agent.step` | unknown | Duration, step index |
+| `chat <model>` | llm | Model, provider (the AI SDK provider id), input and output tokens, finish reason |
+| `execute_tool <tool>` | tool | Tool name, tool call id, duration, `error.type` and ERROR status when the tool fails |
+
+A failed model call (for example a wrong model API key) shows ERROR on the `chat`, `agent.step` and `invoke_agent` spans.
+
+## What is captured
+
+| Data | Default | `FI_CAPTURE_CONTENT=1` |
+| --- | --- | --- |
+| Span names, timing, parent links, status code | Yes | Yes |
+| Model id, provider, token usage, finish reason | Yes | Yes |
+| Tool name, tool call id, `error.type` | Yes | Yes |
+| eve run, turn and step ids, channel name, `gen_ai.conversation.id`, principal type | Yes | Yes |
+| Prompts, system instructions, tool definitions | No | Yes, up to eve's ceiling |
+| Model output | No | Yes, up to eve's ceiling |
+| Tool arguments and results | No | Yes, up to eve's ceiling |
+| Error messages and exception events (stack traces) | No | Yes, up to eve's ceiling |
+| Session title (in our runs, the user's first message) | No | Yes, up to eve's ceiling |
+| Principal ids (`agent.principal.current.id`, `agent.principal.initiator.id`) | No | Yes |
+| eve's `workflow` spans | Never | Never |
+
+The resource carries `service.name` (your package name), `cloud.provider`, `process.runtime.name`, `vercel.runtime`, `project_name` and `project_type`. No host name, user name or file path was found in any stored column in our runs.
+
+## Privacy
+
+**Default: metadata only.** The destination's export policy uses eve's own redaction. It removes prompts, system instructions, tool definitions, model output, tool arguments and results, error messages, exception events and the session title from what Future AGI receives, and the recipe also drops the two principal id attributes. It does not change eve's local traces, other destinations, or Workflow run-data retention.
+
+**Opt in: `FI_CAPTURE_CONTENT=1`.** This removes the redaction for the Future AGI destination. Content then flows up to eve's own capture ceiling, `otel({ tracePolicy })`. By default eve records content only in development and for public conversations ([eve docs](https://eve.dev/docs/observability/otel#configure-opentelemetry)). In our test, a built server (`eve start`) with `FI_CAPTURE_CONTENT=1` exported no content for a request on eve's HTTP channel, and exported it once the ceiling was widened:
+
+```ts title="agent/instrumentation/otel.ts"
+import { otel } from "eve/instrumentation/otel";
+
+export default otel({
+  resource: {
+    project_name: process.env.FI_PROJECT_NAME ?? "eve-agent",
+    project_type: "observe",
+  },
+  // Widens content capture for every OpenTelemetry destination, not just Future AGI.
+  tracePolicy: () => ({ emit: true, recordInputs: true, recordOutputs: true }),
+});
+```
+
+`tracePolicy` applies to every destination, including Vercel Agent Runs on Vercel, and eve also uses the resolved decision to pick Workflow run-data retention. Read eve's notes on both before widening it.
+
+With content on, Future AGI stores it as span attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`), visible in the span's Attributes panel. The Input and Output panes stay empty; see [Limitations](#limitations).
+
+How this was checked: each run put a random marker in the prompt, the model repeated it, and it reached the tool's arguments and result. With the default, the marker was in none of the bytes sent and in no stored column of any table. With `FI_CAPTURE_CONTENT=1` it was stored. The same checks run without keys in the example's tests.
+
+## How it behaves
+
+- **Flushing.** eve flushes its pipeline after every tool call and every step, so batches reached the collector within about 0.1 seconds of a step ending. The last turn before Ctrl+C was exported. You do not need a `beforeExit` or `SIGINT` handler.
+- **Streaming.** One `chat` span per model call, ended when the stream ends, not one span per chunk.
+- **Sessions.** Each turn is a separate trace. Turns of the same eve session share `gen_ai.conversation.id` and `agent.run.id`. Future AGI does not group them as a session, because eve sets no `session.id`; filter on `gen_ai.conversation.id` to see a conversation.
+- **Durable replay.** With `eve dev`, a server killed mid-tool (`SIGKILL`) lost the spans of the unfinished step, and after a restart that step was not re-run within four minutes, so no duplicate spans appeared. Hosted Vercel Workflow retries are outside this guide’s coverage. Do not assume exactly-once spans for retried steps.
+- **eve 0.71.** Same files, same result, with one extra `agent.action` span between `agent.step` and `execute_tool`.
+
+## Limitations
+
+- **The root and step spans show type "unknown".** Future AGI maps `chat` spans to llm and `execute_tool` spans to tool, but not `gen_ai.operation.name=invoke_agent`. `agent.step` reports `gen_ai.operation.name=workflow`, eve's own label for a step (it is in scope `eve.agent` and is kept). The tree, timing and status are correct.
+- **Input and Output panes are empty**, even with `FI_CAPTURE_CONTENT=1`. Content is stored in attributes; Future AGI does not yet promote `gen_ai.input.messages` and `gen_ai.output.messages` into those panes.
+- **Tokens appear twice in a trace.** `invoke_agent` carries the turn's totals and each `chat` span carries its own usage. A sum over every span of a trace counts the turn twice.
+- **Cost.** eve did not emit a cost attribute with the OpenAI-compatible provider used here, and Future AGI showed a cost of $0.00.
+- **Provider** shows the AI SDK provider id, for example `openai-compatible.chat`.
+- **Outside this guide’s scope:** a Vercel deployment, the Vercel AI Gateway, sandboxes, schedules, subagents (eve documents their trace links), remote agents, and channels other than eve's HTTP channel.
+
+## Troubleshooting
+
+- **`eve build` fails with `Found removed instrumentation file "agent/instrumentation.ts"`.** The file is from a pre-0.62 guide. Move the setup into the three files above.
+- **No traces in the project.** Check that `otel.ts` sets `project_name` on the resource (a missing `project_name` makes the collector reject the batch), that both `FI_API_KEY` and `FI_SECRET_KEY` are set, and that `FI_BASE_URL` is an origin without a path.
+- **Dozens of `workflow.*` and `step.*` spans.** The destination uses `traceExporter`. Use `spanProcessors: [futureAGISpanProcessor()]` so the scope filter runs.
+- **`FI_CAPTURE_CONTENT=1` but no prompts from a deployed agent.** eve's ceiling excludes the conversation. Widen `otel({ tracePolicy })` as shown in [Privacy](#privacy).
+- **`Cannot select model ... modelContextWindowTokens`.** eve needs `modelContextWindowTokens` on `defineAgent` for a model it cannot look up in the AI Gateway catalog. Unrelated to tracing.
+- **`eve start` answers 401.** That is eve's route auth, not tracing. Configure an authenticator in `agent/channels/eve.ts`; see eve's authentication guide.
