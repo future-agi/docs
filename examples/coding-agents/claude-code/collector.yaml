@@ -1,0 +1,131 @@
+# OpenTelemetry Collector config: Claude Code beta traces -> Future AGI.
+#
+# Claude Code (CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1) sends its
+# claude_code.* spans here over OTLP/HTTP. This config tags each span with a
+# Future AGI span kind, copies the token counts onto the GenAI usage keys
+# Future AGI reads, names tool spans after the tool, replaces user-chosen MCP
+# server and tool names, keeps only the error class of failed requests, drops
+# user.email and user.groups, and forwards traces only. Claude Code's metrics
+# and log events are not ingested by Future AGI; leave OTEL_METRICS_EXPORTER
+# and OTEL_LOGS_EXPORTER unset.
+#
+# Run with otelcol-contrib (the transform processor is in contrib):
+#   FI_API_KEY=... FI_SECRET_KEY=... otelcol-contrib --config collector.yaml
+#
+# Environment:
+#   FI_API_KEY, FI_SECRET_KEY  Future AGI keys (required)
+#   FI_PROJECT_NAME            project for these traces (default claude-code)
+#   FI_OTLP_ENDPOINT           traces URL (default Future AGI cloud)
+#   FI_COLLECTOR_LISTEN        where Claude Code sends spans (default 127.0.0.1:4318)
+#   FI_KEEP_MCP_NAMES          1 = keep MCP server and tool names (default: replaced)
+#   FI_KEEP_ERROR_TEXT         1 = keep error messages (default: error class only)
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: ${env:FI_COLLECTOR_LISTEN:-127.0.0.1:4318}
+
+processors:
+  transform/claude_code:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span kinds. Future AGI reads fi.span.kind; Claude Code only sets
+          # gen_ai.operation.name on the interaction and tool spans.
+          - set(attributes["fi.span.kind"], "AGENT") where name == "claude_code.interaction"
+          - set(attributes["fi.span.kind"], "LLM") where name == "claude_code.llm_request"
+          - set(attributes["fi.span.kind"], "TOOL") where name == "claude_code.tool"
+          - set(attributes["fi.span.kind"], "CHAIN") where name == "claude_code.tool.blocked_on_user"
+          - set(attributes["fi.span.kind"], "CHAIN") where name == "claude_code.tool.execution"
+          - set(attributes["fi.span.kind"], "CHAIN") where name == "claude_code.hook"
+
+          # Token usage. Claude Code's input_tokens excludes prompt-cache reads
+          # and writes; the GenAI convention counts them in the input total.
+          - set(attributes["gen_ai.usage.input_tokens"], Int(attributes["input_tokens"]) + Int(attributes["cache_read_tokens"]) + Int(attributes["cache_creation_tokens"])) where name == "claude_code.llm_request" and attributes["input_tokens"] != nil and attributes["cache_read_tokens"] != nil and attributes["cache_creation_tokens"] != nil
+          # Claude Code sets each cache count only when it is defined.
+          - set(attributes["gen_ai.usage.input_tokens"], Int(attributes["input_tokens"])) where name == "claude_code.llm_request" and attributes["gen_ai.usage.input_tokens"] == nil and attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], Int(attributes["output_tokens"])) where name == "claude_code.llm_request" and attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cache_read.input_tokens"], Int(attributes["cache_read_tokens"])) where name == "claude_code.llm_request" and attributes["cache_read_tokens"] != nil
+          - set(attributes["gen_ai.usage.cache_creation.input_tokens"], Int(attributes["cache_creation_tokens"])) where name == "claude_code.llm_request" and attributes["cache_creation_tokens"] != nil
+          # The cache keys Future AGI shows on the span.
+          - set(attributes["gen_ai.usage.cache_read_tokens"], Int(attributes["cache_read_tokens"])) where name == "claude_code.llm_request" and attributes["cache_read_tokens"] != nil
+          - set(attributes["gen_ai.usage.cache_write_tokens"], Int(attributes["cache_creation_tokens"])) where name == "claude_code.llm_request" and attributes["cache_creation_tokens"] != nil
+
+          # Content, only when Claude Code was told to export it
+          # (OTEL_LOG_USER_PROMPTS=1 / OTEL_LOG_TOOL_DETAILS=1). Otherwise
+          # Claude Code sends "<REDACTED>" or omits the attribute.
+          - set(attributes["input.value"], attributes["user_prompt"]) where name == "claude_code.interaction" and attributes["user_prompt"] != nil and attributes["user_prompt"] != "<REDACTED>"
+          - set(attributes["input.value"], attributes["full_command"]) where name == "claude_code.tool" and attributes["full_command"] != nil
+          - set(attributes["input.value"], attributes["file_path"]) where name == "claude_code.tool" and attributes["input.value"] == nil and attributes["file_path"] != nil
+
+          # Signed-in users carry their email on every span; gateway (OIDC)
+          # sign-in adds group membership.
+          - delete_key(attributes, "user.email")
+          - delete_key(attributes, "user.groups")
+
+          # Error text. A failed model request carries the provider's or
+          # gateway's error message in the `error` attribute and in the span
+          # status message, with every content flag off. Keep only Claude
+          # Code's error_class (an identifier such as api_error or ShellError)
+          # unless FI_KEEP_ERROR_TEXT=1. The `error` attribute is deleted after
+          # the status, because the conditions read it.
+          - set(status.message, attributes["error_class"]) where status.code == STATUS_CODE_ERROR and attributes["error"] != nil and attributes["error_class"] != nil and "${env:FI_KEEP_ERROR_TEXT:-0}" != "1"
+          - set(status.message, "error") where status.code == STATUS_CODE_ERROR and attributes["error"] != nil and attributes["error_class"] == nil and "${env:FI_KEEP_ERROR_TEXT:-0}" != "1"
+          - delete_key(attributes, "error") where "${env:FI_KEEP_ERROR_TEXT:-0}" != "1"
+
+          # MCP tools: Claude Code exports the user-chosen server and tool names
+          # (tool_name mcp__<server>__<tool>, gen_ai.tool.name,
+          # anthropic.mcp.server.name) with every content flag off. Replace
+          # them with tool_name_safe ("mcp_other", or the tool name for a few
+          # fixed shapes) unless FI_KEEP_MCP_NAMES=1. tool_name is overwritten
+          # last because the conditions read it.
+          - set(attributes["tool_name_safe"], "mcp_other") where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and attributes["tool_name_safe"] == nil
+          - set(attributes["gen_ai.tool.name"], attributes["tool_name_safe"]) where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and "${env:FI_KEEP_MCP_NAMES:-0}" != "1"
+          - delete_key(attributes, "anthropic.mcp.server.name") where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and "${env:FI_KEEP_MCP_NAMES:-0}" != "1"
+          - set(attributes["tool_name"], attributes["tool_name_safe"]) where name == "claude_code.tool" and attributes["tool_name"] != nil and IsMatch(attributes["tool_name"], "^mcp__") and "${env:FI_KEEP_MCP_NAMES:-0}" != "1"
+
+          # Name tool spans after the tool (Bash, Read, mcp_other). Keep this
+          # last: the statements above match on the original span name.
+          - set(name, attributes["tool_name"]) where name == "claude_code.tool" and attributes["tool_name"] != nil
+
+      - context: spanevent
+        statements:
+          # OTEL_LOG_TOOL_CONTENT=1 puts tool output on a tool.output event.
+          - set(span.attributes["output.value"], attributes["output"]) where name == "tool.output" and attributes["output"] != nil
+          - set(span.attributes["output.value"], attributes["content"]) where name == "tool.output" and attributes["content"] != nil
+
+      - context: resource
+        statements:
+          - delete_key(attributes, "user.email")
+          - delete_key(attributes, "user.groups")
+
+  resource/futureagi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME:-claude-code}
+        action: insert
+
+  batch:
+    timeout: 2s
+
+exporters:
+  otlp_http/futureagi:
+    traces_endpoint: ${env:FI_OTLP_ENDPOINT:-https://api.futureagi.com/tracer/v1/traces}
+    # The Future AGI collector reads uncompressed OTLP; the exporter's
+    # default gzip is rejected with HTTP 400.
+    compression: none
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/claude_code, resource/futureagi, batch]
+      exporters: [otlp_http/futureagi]
