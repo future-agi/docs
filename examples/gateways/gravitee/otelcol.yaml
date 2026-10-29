@@ -1,0 +1,83 @@
+# OpenTelemetry Collector (contrib) between the Gravitee APIM Gateway and Future AGI.
+#
+# Why it is needed: Future AGI files every span under the resource attribute `project_name` and rejects a
+# batch without it (HTTP 400). Gravitee can add resource attributes (`services.opentelemetry.extraAttributes`),
+# but its config loader rewrites every `_` in a key to `.`, so `project_name` arrives as `project.name`.
+# This collector:
+#   1. accepts OTLP/HTTP from the Gateway, only with your bearer token,
+#   2. sets `project_name` (and `project_type: observe`) on every resource,
+#   3. only if you opt in (FI_CAPTURE_CONTENT=true), copies Gravitee's verbose header/context snapshots from
+#      span events onto the policy span, because Future AGI keeps span event names and times but not their
+#      attributes; otherwise it drops those snapshots,
+#   4. forwards plain (uncompressed) OTLP/protobuf to Future AGI with the two Future AGI key headers.
+# The main privacy controls live in the Gateway (verbose off + redaction rules in gravitee-opentelemetry.yml).
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+#
+# Environment:
+#   GATEWAY_TOKEN              secret you invent; the Gateway sends `Authorization: Bearer <token>`
+#   FI_API_KEY, FI_SECRET_KEY  Future AGI keys (they stay on the collector, not on the Gateway)
+#   FI_PROJECT_NAME            Observe project every Gravitee trace goes to
+#   FI_TRACES_URL              full traces URL: https://api.futureagi.com/tracer/v1/traces,
+#                              or http://<self-hosted>:4318/v1/traces
+#   FI_CAPTURE_CONTENT         optional, default false. true keeps the Gateway's verbose snapshots (headers,
+#                              context attributes). Has an effect only when verbose tracing is on in Gravitee.
+
+extensions:
+  bearertokenauth/gateway:
+    scheme: Bearer
+    token: ${env:GATEWAY_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318          # keep this on a private network next to the Gateway
+        auth:
+          authenticator: bearertokenauth/gateway
+
+processors:
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: insert
+  transform/gravitee_verbose:
+    error_mode: ignore
+    trace_statements:
+      - context: spanevent
+        statements:
+          # Opt-in: the snapshot taken after the policy ran becomes attributes of the policy span.
+          - merge_maps(span.attributes, attributes, "upsert") where name == "gravitee.policy.post" and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Default: keep the event (name and time), drop the snapshot.
+          - delete_matching_keys(attributes, ".*") where IsMatch(name, "^gravitee\\.policy\\.(pre|post)$") and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+  # Future AGI reads at most 16 MiB per request; small batches keep requests well under that.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none                   # the Future AGI HTTP receiver rejects gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/gateway]
+  telemetry:
+    metrics:
+      level: none                       # no self-metrics; Future AGI takes traces only
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/gravitee_verbose, batch]
+      exporters: [otlp_http/future_agi]
