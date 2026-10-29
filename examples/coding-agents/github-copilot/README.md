@@ -1,6 +1,6 @@
 # GitHub Copilot -> Future AGI
 
-GitHub Copilot CLI and VS Code Copilot Chat export OpenTelemetry traces natively.
+This customer recipe covers GitHub Copilot CLI 1.0.98 native OpenTelemetry export only. VS Code Copilot Chat is outside its qualification.
 Nothing here runs inside Copilot: these files configure Copilot's own exporter
 and check what it sends. Docs page:
 <https://docs.futureagi.com/docs/integrations/coding-agents/github-copilot>.
@@ -8,7 +8,7 @@ and check what it sends. Docs page:
 | File | Purpose |
 | --- | --- |
 | `copilot-otel.sh` | `copilot` shell function that sets the `OTEL_*` exporter variables on the Copilot process only and hides the keys from Copilot's shell commands and MCP servers (`--secret-env-vars`) |
-| `vscode-settings.json` | `github.copilot.chat.otel.*` user settings for VS Code |
+| `vscode-settings.json` | Development reference only; not a qualified Future AGI VS Code setup |
 | `run_e2e.sh` | one real Copilot CLI session in a throwaway folder, exported to Future AGI |
 | `check_spans.py` | checks a Copilot span dump (file exporter JSON lines) against the recipe contract |
 | `fixtures/copilot-cli-1.0.98-default.jsonl` | sanitized spans from a real Copilot CLI 1.0.98 session, content capture off |

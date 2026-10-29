@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one real GitHub Copilot CLI session that exports its trace to Future AGI.
 #
-# Needs: `copilot` (npm i -g @github/copilot) signed in, or COPILOT_GITHUB_TOKEN set;
+# Needs: `copilot` (npm i -g @github/copilot@1.0.98) signed in, or COPILOT_GITHUB_TOKEN set;
 #        FI_API_KEY and FI_SECRET_KEY in the environment.
 # Optional: FI_OTLP_BASE (default https://api.futureagi.com/tracer),
 #           FI_PROJECT_NAME (default my-copilot-sessions),

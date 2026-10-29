@@ -17,8 +17,7 @@
 #
 # Content capture is OFF. To opt in for one session, in a trusted environment:
 #   OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true copilot
-# (VS Code Copilot Chat is configured in its settings instead; see
-# vscode-settings.json and the docs page.)
+# This recipe covers CLI 1.0.98 only; VS Code export is a separate qualification.
 
 copilot() {
   OTEL_EXPORTER_OTLP_ENDPOINT="https://api.futureagi.com/tracer" \
