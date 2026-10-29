@@ -1,0 +1,159 @@
+---
+title: "Google ADK for Java Tracing in Future AGI"
+description: "Send Google ADK for Java traces to Future AGI by registering a global OpenTelemetry SDK before any ADK class loads. Tested with google-adk 1.12.0 and 1.4.0."
+---
+
+<TLDR>
+- Beta recipe, no new package. ADK for Java already emits OpenTelemetry spans; you give it an exporter.
+- ADK has no API to pass it an OpenTelemetry instance. Register one with `GlobalOpenTelemetry.set(...)` before any ADK class loads.
+- Tested with `com.google.adk:google-adk` 1.12.0 (latest on Maven Central, 2026-10-16) and 1.4.0.
+- ADK exports prompts, responses and tool arguments by default. This recipe turns that off unless you opt in.
+- The Python and TypeScript ADK instrumentors are unchanged. See [Google ADK (Python)](/docs/integrations/traceai/google_adk).
+</TLDR>
+
+## About
+
+Google's Agent Development Kit for Java creates spans for each agent invocation, model call and tool call. This page shows how to send those spans to Future AGI with a small OpenTelemetry setup class that you copy into your project. There is no Future AGI library to install.
+
+There is no `Tracing.setOpenTelemetry` method in ADK for Java. Some earlier notes mention one. It is not in the 1.4.0 or 1.12.0 release jars we inspected. The only setter on `Tracing` is `setTracerForTesting`, which is for tests. ADK reads the process-wide tracer from `GlobalOpenTelemetry` when its telemetry class first loads, so the only supported route is to register your SDK as the global first.
+
+## Order matters
+
+`GlobalOpenTelemetry.set` can be called once, and only before anything has called `GlobalOpenTelemetry.get`. ADK calls `get` when its `Tracing` class loads. If any ADK class is touched first, your registration throws `IllegalStateException`, and ADK keeps a tracer that exports nothing.
+
+So the setup class must not import or reference ADK, and `main` must call it before the first ADK class is used. In the example, the agent code lives in a separate class that `main` only reaches after registration.
+
+## Prerequisites
+
+- Java 17 or newer
+- A Future AGI API key and secret key
+- A model ADK can call. The example uses LangChain4j with any OpenAI-compatible endpoint. Gemini through ADK's own model classes works the same way for tracing.
+
+## 1. Add dependencies
+
+`google-adk` already brings `opentelemetry-api`, `opentelemetry-sdk` and `opentelemetry-exporter-otlp` (1.51.0 in the versions tested). Do not add a second OpenTelemetry SDK.
+
+```xml
+<dependency>
+  <groupId>com.google.adk</groupId>
+  <artifactId>google-adk</artifactId>
+  <version>1.12.0</version>
+</dependency>
+```
+
+## 2. Set environment variables
+
+```bash
+export FI_BASE_URL="https://api.futureagi.com"   # your self-hosted URL if you run your own
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+export FI_PROJECT_NAME="my-adk-java-agent"
+```
+
+## 3. Register OpenTelemetry before ADK loads
+
+Copy `FutureAgiTelemetry.java` and `ContentFilterExporter.java` from the [example project](https://github.com/future-agi/docs/tree/main/examples/languages/google-adk-java). `FutureAgiTelemetry.register` does four things:
+
+- Builds an OTLP/HTTP span exporter for `{FI_BASE_URL}/tracer/v1/traces` with both `X-Api-Key` and `X-Secret-Key` headers, and no compression. Future AGI rejects gzip request bodies.
+- Puts `project_name`, `project_type=observe` and `service.name` on the **resource**. `project_name` must be a resource attribute, not a span attribute.
+- Adds `fi.span.kind` (`AGENT`, `LLM`, `TOOL`, `CHAIN`) from the ADK span name. ADK does not write it, and without it Future AGI shows the spans as type `unknown`.
+- Adds `session.id` and `user.id` to every span, from OpenTelemetry Baggage that your code sets. Nothing is invented.
+
+```java
+public static void main(String[] args) throws Exception {
+  FutureAgiTelemetry.Config cfg = FutureAgiTelemetry.Config.fromEnv();
+  OpenTelemetrySdk sdk = FutureAgiTelemetry.register(cfg); // 1. before any ADK class loads
+  try {
+    Scenarios.run("gpt-4o-mini", "user-42", "What is the weather in Paris?"); // 2. ADK code
+  } finally {
+    FutureAgiTelemetry.shutdown(sdk); // 3. flush the batch before the JVM exits
+  }
+}
+```
+
+## 4. Run your agent
+
+Use ADK as usual. To attach your own session and user ids, put them in Baggage around the run:
+
+```java
+Baggage baggage = Baggage.builder().put("session.id", session.id()).put("user.id", userId).build();
+try (Scope ignored = Context.current().with(baggage).makeCurrent()) {
+  runner.runAsync(userId, session.id(), message).blockingForEach(e -> { /* ... */ });
+}
+```
+
+Always call `shutdown` in a `finally` block. A batch that is not flushed is lost. A process killed with `kill -9` loses the last batch.
+
+## What you see in Future AGI
+
+One agent run is one trace. This is the tree from the tested run (ADK 1.12.0):
+
+```text
+invocation                    CHAIN
+  invoke_agent weather_agent  AGENT
+    call_llm                  LLM    model, input/output token counts
+      execute_tool get_weather TOOL
+    call_llm                  LLM    model, input/output token counts
+```
+
+Note that ADK nests the tool span under the model call that requested it.
+
+| Captured | Source |
+| --- | --- |
+| Span names, timing, parent links | ADK |
+| `gen_ai.request.model`, `gen_ai.usage.*` token counts | ADK, when it reports them |
+| Tool name and description | ADK |
+| Status `ERROR` on `invocation` and `invoke_agent` when the run fails | ADK |
+| `fi.span.kind`, `session.id`, `user.id` | The recipe |
+| Prompt, response, tool arguments and results | Only with the opt-in below. ADK writes them as raw `gcp.vertex.agent.*` span attributes |
+
+## Privacy
+
+Content is **off by default** in this recipe. With it off, the exported spans carry no prompt, no model response, no tool arguments or results, no raw error text (the status description is blanked) and no span events (exception events hold the message and a stack trace). Span names, ids, timing, model name, token counts and status code are kept.
+
+ADK itself defaults the other way: it captures message content unless the environment variable `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` is `false`. The recipe does not rely on that default. It removes the content attributes before export.
+
+To turn content on, set both:
+
+```bash
+export FI_ADK_CAPTURE_CONTENT=true
+# and leave ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS unset (ADK default true), not false
+```
+
+`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false` also turns content off at the source, even when `FI_ADK_CAPTURE_CONTENT=true`. Either one off is enough to keep content out.
+
+With content on, prompt and response appear as `gcp.vertex.agent.llm_request`, `gcp.vertex.agent.llm_response`, `gcp.vertex.agent.tool_call_args` and `gcp.vertex.agent.tool_response` in the span attributes. They do not fill the Input and Output panels, because Future AGI does not read those keys.
+
+Credentials are never added as span attributes. The recipe never logs them.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `IllegalStateException: GlobalOpenTelemetry.set has already been called` | An ADK class loaded before `register`. Move `register` to the first line of `main`, and keep ADK imports out of the class that runs it. |
+| No traces, no error | Same cause when the failure is swallowed, or `shutdown` was not called before exit. Check the order and add the `finally`. |
+| HTTP 401 `missing credentials` | One of the two headers is missing. Both `X-Api-Key` and `X-Secret-Key` are required. |
+| HTTP 400 about the project | `project_name` is on a span, not the resource. Use the recipe's resource setup. |
+| Spans show type `unknown` | `fi.span.kind` is missing. Keep the `FiAttributesProcessor` in the setup class. |
+| Export fails with a gzip or 415 error | A compression setting was added. Use `setCompression("none")`. |
+
+## Tested versions and limits
+
+| Piece | Version |
+| --- | --- |
+| `com.google.adk:google-adk` | 1.12.0 (primary), 1.4.0 (also passes) |
+| `com.google.adk:google-adk-langchain4j` | 1.12.0 / 1.4.0 (example model wiring only) |
+| OpenTelemetry Java | 1.51.0 (from ADK) |
+| Java | 21 (compiled for 17) |
+
+- Registration is global to the JVM. Two Future AGI projects in one process are not possible with this recipe. Use one process per project.
+- The recipe depends on span names and attribute keys that ADK chooses (`call_llm`, `invoke_agent ...`, `execute_tool ...`, `gcp.vertex.agent.*`). A new ADK release can change them. Re-test when you upgrade.
+- Tool spans appear under the model span, not as siblings.
+- Failed model calls mark `invocation` and `invoke_agent` as `ERROR`. The `call_llm` span of a failed call was not marked `ERROR` in our run (ADK behavior).
+- Cost is not computed for these spans.
+- Cancelling a run mid-flight, streaming responses and multi-agent workflows were not exercised in the tested run.
+
+## How this differs from other Google ADK pages
+
+- [Google ADK (Python)](/docs/integrations/traceai/google_adk) uses the `traceAI-google-adk` instrumentor. There is no Java equivalent package, and the Python and TypeScript instrumentors are unchanged.
+- The other [Java pages](/docs/integrations/traceai/java) use the `traceai-java-*` wrappers around specific clients. This page wraps nothing. It only configures where ADK's own spans go.
