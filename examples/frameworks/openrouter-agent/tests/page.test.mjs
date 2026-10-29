@@ -29,3 +29,16 @@ test('the example never uses the OpenAI client or mentions Broadcast', () => {
     assert.ok(!/broadcast/i.test(text));
   }
 });
+
+test('the literal install pins every dependency to the qualified set', () => {
+  const dependencies = JSON.parse(read('../package.json')).dependencies;
+  const command = page.match(/```bash\nnpm install ([\s\S]*?)```/)[1];
+  for (const [name, version] of Object.entries(dependencies)) {
+    assert.ok(command.includes(`${name}@${version}`), `${name} must be pinned`);
+  }
+});
+
+test('supported setup is self-hosted and excludes broader execution modes', () => {
+  assert.ok(page.includes('export FI_BASE_URL="http://localhost:4318"'));
+  assert.ok(!/not tested|untested|unverified/i.test(page));
+});
