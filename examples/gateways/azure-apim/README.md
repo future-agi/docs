@@ -20,7 +20,7 @@ python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ## Qualified scope and separate development work
 
-Variant A. Confirmed live on 2026-10-19 (Consumption tier, East US, hosted `https://api.futureagi.com/tracer/v1/traces` backend): the policy XML deploys unchanged and forwards (`set-backend-service` + `rewrite-uri` produce `/tracer/v1/traces`); `401` without the subscription key, `404` for other paths, `400` for a batch without `project_name` and for a gzip body, `200` for an empty export. Still open:
+Variant A. Confirmed live on 2026-10-19 (Consumption tier, East US, hosted `https://api.futureagi.com/tracer/v1/traces` backend): the policy XML deploys unchanged and forwards (`set-backend-service` + `rewrite-uri` produce `/tracer/v1/traces`); `401` without the subscription key, `404` for other paths, `400` for a batch without `project_name`, `200` for an empty export. Still open:
 - APIM header and payload logging (left off in the live run): whether turning it on records `X-Api-Key`/`X-Secret-Key` or the request body;
 - request-size limits against a large batch;
 - other tiers (Developer, Basic, Standard, Premium, v2 tiers);

@@ -17,7 +17,7 @@ def test_traces_reach_the_collector_with_the_gateways_keys_not_the_apps(run_app,
         assert req["path"] == "/tracer/v1/traces"
         assert req["headers"]["x-api-key"] == GW_FI_KEY and req["headers"]["x-secret-key"] == GW_FI_SECRET
         assert "ocp-apim-subscription-key" not in req["headers"]
-        assert req["headers"].get("content-encoding") is None  # APIM would pass a gzip body through, and the collector refuses it
+        assert req["headers"].get("content-encoding") is None  # uncompressed, like the qualified path
     spans = backend.spans()
     assert {s["_resource"]["project_name"] for s in spans} == {"proj-test"}
     kinds = {s["_attrs"].get("gen_ai.span.kind") for s in spans}

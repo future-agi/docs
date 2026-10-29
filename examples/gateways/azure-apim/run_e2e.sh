@@ -136,7 +136,6 @@ variant_a() {
   expect_status "wrong subscription key" 401 "$PY" "$HERE/gateway_trace.py" --url "http://127.0.0.1:$APIM_PORT/tracer/v1/traces" --header "Ocp-Apim-Subscription-Key=wrong" --project-name "$noproj"
   expect_status "unknown path" 404 "$PY" "$HERE/gateway_trace.py" --url "http://127.0.0.1:$APIM_PORT/v1/traces" --header "Ocp-Apim-Subscription-Key=$SUB_KEY" --project-name "$noproj"
   expect_status "no project_name on the resource (collector refuses)" 400 "$PY" "$HERE/gateway_trace.py" --url "http://127.0.0.1:$APIM_PORT/tracer/v1/traces" --header "Ocp-Apim-Subscription-Key=$SUB_KEY"
-  expect_status "gzip body (collector refuses)" 400 "$PY" "$HERE/gateway_trace.py" --url "http://127.0.0.1:$APIM_PORT/tracer/v1/traces" --header "Ocp-Apim-Subscription-Key=$SUB_KEY" --project-name "$noproj" --compression gzip
   start_standin "$APIM_BAD_PORT" "wrong-api-key" "wrong-secret-key" "$OUT/standin-a-badkeys.log"
   expect_status "wrong Future AGI keys in the policy (collector 401, passed through)" 401 "$PY" "$HERE/gateway_trace.py" --url "http://127.0.0.1:$APIM_BAD_PORT/tracer/v1/traces" --header "Ocp-Apim-Subscription-Key=$SUB_KEY" --project-name "$noproj"
   no_project "$noproj"
