@@ -58,7 +58,7 @@ def build_provider(span_exporter=None, set_global=True) -> TracerProvider:
             endpoint=f"{base}/tracer/v1/traces",
             headers={"X-Api-Key": api_key, "X-Secret-Key": secret_key},
             timeout=int(FLUSH_BUDGET_S),   # bounds the exporter's own retries
-            compression=Compression.NoCompression,  # Future AGI rejects gzip bodies
+            compression=Compression.NoCompression,  # Compatible with older self-hosted receivers
         )
     elif span_exporter is None:
         log.warning("FI_API_KEY / FI_SECRET_KEY not set: tracing is off, spans are not exported")

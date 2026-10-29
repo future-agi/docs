@@ -67,7 +67,7 @@ def test_request_shape_matches_the_collector_contract(run_app, collector):
     assert collector.exports, "nothing exported"
     for export in collector.exports:
         assert export["path"] == "/tracer/v1/traces", "traces only, on the documented path"
-        assert export["headers"].get("content-encoding") in (None, "identity"), "the collector refuses gzip"
+        assert export["headers"].get("content-encoding") in (None, "identity"), "the recipe sends uncompressed bodies"
         assert export["headers"]["x-api-key"] == FI_API_KEY
         assert export["headers"]["x-secret-key"] == FI_SECRET_KEY
         assert "authorization" not in export["headers"]

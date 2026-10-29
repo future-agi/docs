@@ -72,7 +72,7 @@ python -m pytest tests/test_legacy_1x.py     # the 2.x tests skip themselves on 
 
 1.x has no content switch: prompts, answers and tool payloads are always exported.
 
-## What was and was not verified
+## What was tested and what was not covered
 
 Run on 2026-10-15 and 2026-10-16 with `agentscope` 2.0.10 (and 2.0.9, and 1.0.21 for the 1.x leg), `opentelemetry-sdk` 1.45.1, `openai` 3.31.0, Python 3.13.15 and 3.11.12, against a self-hosted Future AGI stack.
 

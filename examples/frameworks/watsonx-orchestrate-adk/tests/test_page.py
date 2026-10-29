@@ -44,7 +44,7 @@ def test_docker_command_on_the_page_matches_the_tested_image_and_env():
 
 def test_page_states_versions_privacy_and_limits():
     for needle in ("2.18.2", "2.18.0", "0.162.0", "langgraph", "## Privacy", "## Troubleshooting", "## Not covered",
-                   "untested", "KEEP_WXO_CONTENT=true", "traceai-java-watsonx", "External Collector",
+                   "outside this guide’s coverage", "KEEP_WXO_CONTENT=true", "traceai-java-watsonx", "External Collector",
                    "Developer Edition", "16 GB"):
         assert needle in TEXT, needle
 

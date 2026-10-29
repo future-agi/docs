@@ -67,6 +67,6 @@ PYTHON=.venv/bin/python VERIFY=/path/to/fi_verify.py ./run_e2e.sh all
 | `collector` | No token and a wrong token; real model calls as JSON and protobuf; a failed request with a synthetic exception event; missing usage, missing prompt, gzip; a gateway span linked to an application trace; then the content-on opt-in, and wrong Future AGI keys behind a collector that still accepts the gateway's token; secrets searched for in every log |
 | `replay` | The captured real payloads with content off (stored as `llm`, no request or response text in any stored row, metadata kept), then with content on (Input and Output panes filled) |
 
-## Not verified
+## Not covered
 
 The dashboard form itself (the live run set the same fields through the API), the exporter's Authorization field with a Secrets Store reference, whether Cloudflare retries an export that fails with a 5xx or a timeout (a 401 was not retried), providers other than OpenAI, Workers AI, custom providers, and TLS you terminate yourself.

@@ -107,7 +107,7 @@ class FutureAgiTelemetry(
             .setEndpoint(config.tracesEndpoint)
             .addHeader("X-Api-Key", config.apiKey)
             .addHeader("X-Secret-Key", config.secretKey)
-            // Future AGI rejects gzip request bodies.
+            // Optional: Future AGI cloud and self-hosted v1.56.0+ also accept gzip.
             .setCompression("none")
             .setTimeout(Duration.ofSeconds(10))
             // The exporter's own self-metrics are not sent anywhere.
