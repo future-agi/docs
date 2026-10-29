@@ -6,9 +6,9 @@ Date: 2026-10-16. Status: tracing stays deferred. Ships a "not supported yet" pa
 Keep the deferral approved in PRD r2 / decision D-F2. Publish `src/pages/docs/integrations/deepseek-harness.mdx` saying so.
 
 ## Why the premise changed but the answer did not
-- Still true: `deepseek-ai/deepseek-harness` has no trace export (`check_pin.sh`, three commits, positive controls pass). It only exports OTLP logs to a DeepSeek collector.
+- At the historical pins: `deepseek-ai/deepseek-harness` has no trace export (`check_pin.sh`, three commits, positive controls pass). It only exports OTLP logs to a DeepSeek collector.
 - No longer true: PRD r2 said no third-party OTel path exists. `@loongsuite/dsh-plugin` (Apache-2.0, created 2026-08-15) exports OTLP/HTTP traces and can be pointed at Future AGI. Spike below.
-- Spike result: it works, but with content capture off it still exports the working directory, host name and raw provider error text, shows a failing shell command as OK, and fails silently on a bad key. That breaks the privacy and error rules a supported page must meet.
+- Spike result: it works, but with content capture off it still exports the working directory, host name and raw provider error text, shows a failing shell command as OK, and fails silently on a bad key. Those concrete privacy and error-reporting issues are why this page supplies no customer setup. This is not a policy claim about every Future AGI integration.
 
 ## Spike evidence (local Future AGI, project th8103-rest-deepseek-harness, 2026-10-16)
 | Run | dsh | Trace id | Outcome |
@@ -25,3 +25,5 @@ The model was an OpenAI-compatible local proxy standing in for the provider; no 
 
 ## Reopen when
 `dsh` or a reviewable plugin exports traces with no cwd, host name or raw error text by default, and marks failed tools as errors. Then decide on documenting the third-party plugin (needs a Future AGI product decision) and run `check_pin.sh` against the new head.
+
+Source-only recheck, 2026-10-29: npm latest 0.2.1-rc.2 at 687f282e8625c6b8d11ff58211a90524be2e4317 has zero trace-term matches in packages/ and apps/; sdk-logs, JsonLogsSerializer and the logs collector URL all match. Plugin 0.1.3 remains current and its published code includes dsh.session.cwd and host.name. These checks do not extend the historical live-run scope.
