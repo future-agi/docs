@@ -1,0 +1,49 @@
+"""The docs page shows the shipped files, not a hand-edited copy of them."""
+import re
+from pathlib import Path
+
+EXAMPLE = Path(__file__).resolve().parent.parent
+PAGE = EXAMPLE.parents[2] / "src/pages/docs/integrations/frameworks/restate.mdx"
+TEXT = PAGE.read_text()
+BLOCKS = re.findall(r"^```(\w+)\n(.*?)^```", TEXT, flags=re.M | re.S)
+
+
+def _blocks(lang: str) -> list[str]:
+    return [body for kind, body in BLOCKS if kind == lang]
+
+
+def test_page_shows_the_collector_config_verbatim():
+    assert (EXAMPLE / "otelcol.yaml").read_text() in _blocks("yaml")
+
+
+def test_page_shows_the_server_config_verbatim():
+    assert (EXAMPLE / "restate.toml").read_text() in _blocks("toml")
+
+
+def test_every_python_line_on_the_page_is_in_the_example():
+    source = {line.rstrip() for line in (EXAMPLE / "agent_service.py").read_text().splitlines()}
+    blocks = _blocks("python")
+    assert len(blocks) >= 3
+    for block in blocks:
+        for line in block.splitlines():
+            if line.strip():
+                assert line.rstrip() in source, line
+
+
+def test_switches_named_on_the_page_exist():
+    from fi_instrumentation.instrumentation import config
+
+    for name in re.findall(r"FI_HIDE_[A-Z_]+", TEXT):
+        assert hasattr(config, name), name
+    assert "KEEP_RESTATE_DETAILS" in (EXAMPLE / "otelcol.yaml").read_text()
+
+
+def test_page_states_versions_privacy_and_limits():
+    for needle in ("1.8.0", "1.7.13", "restate-sdk", "1.0.5", "0.162.0", "## Privacy", "## Troubleshooting",
+                   "## Not covered", "untested", "KEEP_RESTATE_DETAILS=true"):
+        assert needle in TEXT, needle
+
+
+def test_page_has_no_local_details():
+    for needle in ("/Users/", "localhost:14338", "th8103", "gpt-6"):
+        assert needle not in TEXT, needle
