@@ -119,7 +119,7 @@ class ShippedConfig(unittest.TestCase):
         self.assertEqual(self.cfg.get("service.telemetry.metrics.level"), "none")
 
     def test_export_is_uncompressed(self):
-        # The Future AGI collector answers gzip-encoded OTLP with HTTP 400.
+        # The shipped config sends uncompressed OTLP (Future AGI accepts gzip too).
         self.assertEqual(self.cfg.get("exporters.otlp_http/futureagi.compression"), "none")
         self.assertEqual(self.cfg.get("service.pipelines.traces.exporters"), "[otlp_http/futureagi]")
 
