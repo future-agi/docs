@@ -1,0 +1,319 @@
+---
+title: "Flue tracing with Future AGI"
+description: "Send the OpenTelemetry traces of a Flue agent to Future AGI with @flue/opentelemetry and an OpenTelemetry SDK you own. Covers what is captured, the metadata-only default, and the opt-in for content."
+---
+
+## About
+
+This page is for **Flue**, the open-source TypeScript framework for durable agents and workflows from the creators of Astro: npm packages `@flue/runtime` and `@flue/opentelemetry`, repository `withastro/flue`, Apache-2.0, [flueframework.com](https://flueframework.com). It is not about any other product named Flue.
+
+Flue ships its own OpenTelemetry adapter, `@flue/opentelemetry`. It turns Flue's runtime events into OpenTelemetry GenAI spans: one `invoke_agent` span per run, one `chat` span per model call, one `execute_tool` span per tool call. It never creates an SDK or an exporter. Your app owns those, so you send the spans to Future AGI by pointing your own OpenTelemetry SDK at the Future AGI collector. There is no traceAI package for Flue and you do not need one.
+
+This is not a traceAI instrumentor. traceAI packages patch an LLM SDK client in your code. Flue makes the model call itself and emits its own spans, so this page configures the OpenTelemetry SDK instead, and does not cover combining it with traceAI instrumentors. For background on how Future AGI ingests OpenTelemetry, see [What is OpenTelemetry?](/docs/tracing/concepts/otel), and for keys and projects see [Setup Observability](/docs/quickstart/setup-observability).
+
+<Warning>
+**Flue exports prompts, tool arguments and results, and error text by default.** The explicit `instrument(...)` call is the consent, in Flue's words. This recipe turns all of that off unless you set `FI_CAPTURE_CONTENT=1`. See [Privacy](#privacy).
+</Warning>
+
+<Warning>
+This page is beta. It was tested end to end against a self-hosted Future AGI stack with a real model behind an OpenAI-compatible endpoint, on Flue's Node.js target only. This guide does not cover Flue's Cloudflare target, the hosted `api.futureagi.com` endpoint, durable database adapters, or subagents.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | Flue 2.3.0 (latest, published 2026-10-12): `@flue/runtime`, `@flue/opentelemetry`, `@flue/cli` and `@flue/vite` 2.3.0. Node 26.8.1 (Flue requires Node 22.19 or later). `@opentelemetry/sdk-node` 0.223.0, `@opentelemetry/exporter-trace-otlp-proto` 0.223.0, `@opentelemetry/sdk-trace-base` 2.12.0, `@opentelemetry/api` 1.9.1. |
+| Run through | `flue run`, the built server (`vite build` then `node dist/server.mjs`), and a standalone script that boots the runtime with `start()` and `init()`, all against Future AGI. `vite dev` was run against a loopback recorder only. |
+| Also checked | Flue 2.2.2 with the same files: every wire check passed against a mock model and a loopback recorder (no Future AGI, no real model). |
+| Model | A real model behind an OpenAI-compatible endpoint, registered with `setProvider()`. The spans do not depend on the model provider. |
+| Future AGI | Self-hosted stack on localhost, 2026-10-16. |
+| Outside this guide’s scope | Flue's Cloudflare target and its built-in `createCloudflareTracing`, deployed hosting, durable database adapters, subagent (task) spans, `dispatch()` from an HTTP route or channel, sampling, Flue's metrics and logs. |
+| Flue docs used | [OpenTelemetry](https://flueframework.com/docs/ecosystem/tooling/opentelemetry/) and [Observability](https://flueframework.com/docs/guide/observability/), read 2026-10-16, and the same guides inside the 2.3.0 packages. |
+| Source | [examples/frameworks/flue](https://github.com/future-agi/docs/tree/main/examples/frameworks/flue): the agent, the two files below, tests, and an end-to-end script. |
+
+## 1. Install
+
+In your Flue project:
+
+```bash
+npm install @flue/opentelemetry @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/sdk-trace-base @opentelemetry/resources @opentelemetry/exporter-trace-otlp-proto
+```
+
+`@flue/opentelemetry` declares `@flue/runtime` and `@opentelemetry/api` as peer dependencies, so keep the Flue packages on matching versions. The OTLP/HTTP protobuf exporter sends uncompressed requests, which is what the Future AGI collector accepts.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="flue-weather-agent"     # the Observe project the traces land in
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"    # default: https://api.futureagi.com
+# export FI_CAPTURE_CONTENT=1                   # opt in to prompts, outputs and tool payloads
+```
+
+Set `FI_BASE_URL` to the origin only. The code adds `/tracer/v1/traces`. Flue loads a project `.env` file for `flue run` and `vite dev`, and the built server reads only the real environment.
+
+## 3. Add the two files
+
+The first file holds the Future AGI settings as plain functions of the environment: the endpoint, both auth headers, the resource attributes and the content policy.
+
+```ts title="src/futureagi.ts"
+// Future AGI settings for the Flue OpenTelemetry recipe. Pure functions of the
+// environment, so they can be unit-tested without Flue or the network.
+import type { ContentOption } from '@flue/opentelemetry';
+
+type Env = Readonly<Record<string, string | undefined>>;
+
+/** True when the app opted in to exporting prompts, outputs and tool payloads. */
+export function captureContentEnabled(env: Env = process.env): boolean {
+  return /^(1|true|yes|on)$/i.test((env.FI_CAPTURE_CONTENT ?? '').trim());
+}
+
+/**
+ * The `content` option for createOpenTelemetryInstrumentation().
+ *
+ * Flue exports content by default: model messages, system instructions, tool
+ * definitions, tool arguments and results, exception messages and stack traces.
+ * `false` removes all of it. This recipe passes `false` unless the app sets
+ * FI_CAPTURE_CONTENT=1. The opt-in keeps Flue's content (up to its 56 KiB
+ * per-span budget) but still drops stack traces, which carry absolute local
+ * paths.
+ */
+export function contentOption(env: Env = process.env): ContentOption {
+  if (!captureContentEnabled(env)) return false;
+  return {
+    transform: (content, scope) => (scope.contentType === 'exception_stacktrace' ? undefined : content),
+  };
+}
+
+/** The OTLP/HTTP traces URL: FI_BASE_URL (default: hosted) + /tracer/v1/traces. */
+export function tracesUrl(env: Env = process.env): string {
+  const base = (env.FI_BASE_URL || 'https://api.futureagi.com').replace(/\/+$/, '');
+  return `${base}/tracer/v1/traces`;
+}
+
+/** Both auth headers are required; one alone is a failed setup. */
+export function exporterHeaders(env: Env = process.env): Record<string, string> | null {
+  const apiKey = env.FI_API_KEY?.trim();
+  const secretKey = env.FI_SECRET_KEY?.trim();
+  if (!apiKey || !secretKey) return null;
+  return { 'X-Api-Key': apiKey, 'X-Secret-Key': secretKey };
+}
+
+/**
+ * Resource attributes. Future AGI files spans by the RESOURCE attribute
+ * `project_name`; a span attribute with that key does not count.
+ */
+export function resourceAttributes(env: Env = process.env): Record<string, string> {
+  const project = env.FI_PROJECT_NAME?.trim() || 'flue-agent';
+  return {
+    project_name: project,
+    project_type: 'observe',
+    'service.name': env.OTEL_SERVICE_NAME?.trim() || project,
+  };
+}
+```
+
+The second file starts the SDK, registers Flue's instrumentation and arranges the flush.
+
+```ts title="src/telemetry.ts"
+// Sends Flue's OpenTelemetry spans to Future AGI. Import this module once, before
+// any agent runs: from src/app.ts for a server, and from the agent module for
+// `flue run` (which never loads app.ts).
+import { createOpenTelemetryInstrumentation } from '@flue/opentelemetry';
+import { instrument } from '@flue/runtime';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+
+import { contentOption, exporterHeaders, resourceAttributes, tracesUrl } from './futureagi.ts';
+
+export function installFutureAGITracing(env: NodeJS.ProcessEnv = process.env): (() => Promise<void>) | undefined {
+  const headers = exporterHeaders(env);
+  if (!headers) {
+    console.warn('[futureagi] FI_API_KEY and FI_SECRET_KEY must both be set; Flue tracing is off.');
+    return undefined;
+  }
+
+  // 1. The application owns the SDK: Flue's package never creates one.
+  //    Batches spans and exports every 5 seconds (OTEL_BSP_* env vars tune it).
+  const processor = new BatchSpanProcessor(new OTLPTraceExporter({ url: tracesUrl(env), headers })); // uncompressed OTLP/HTTP protobuf
+  const sdk = new NodeSDK({
+    resource: resourceFromAttributes(resourceAttributes(env)),
+    // The default detectors add host.name, host.id, process.owner (the OS user
+    // name), process.command_args and process.executable.path (absolute local
+    // paths) to every export. Turn them off.
+    autoDetectResources: false,
+    spanProcessors: [processor],
+    // Traces only. By default NodeSDK also starts OTLP metric and log exporters
+    // that post to http://localhost:4318 (or OTEL_EXPORTER_OTLP_ENDPOINT). The
+    // Future AGI collector takes traces only, and the failed exports would
+    // delay shutdown by about ten seconds.
+    metricReaders: [],
+    logRecordProcessors: [],
+  });
+  sdk.start();
+
+  // 2. Register Flue's instrumentation. Traces only: do not pass `meter` or
+  //    `logger`, because the Future AGI collector accepts traces only.
+  const instrumentation = createOpenTelemetryInstrumentation({ content: contentOption(env) });
+
+  // 3. Flush.
+  //    - `flue run` disposes module-scope instrumentation before it exits.
+  //    - A standalone script that boots the runtime itself exits when its event
+  //      loop drains: flush on `beforeExit`.
+  //    - A built server (`node dist/server.mjs`) does not dispose instrumentation
+  //      created in app.ts and calls process.exit() as soon as it has stopped, so
+  //      an async flush on SIGTERM loses the race. Export each submission's spans
+  //      as soon as it settles instead.
+  const dispose = instrument({
+    ...instrumentation,
+    observe(event, ctx) {
+      const result = instrumentation.observe(event, ctx);
+      if (event.type === 'submission_settled') void processor.forceFlush().catch(() => {});
+      return result;
+    },
+    async dispose() {
+      instrumentation.dispose(); // ends spans that are still open
+      await sdk.shutdown(); // flushes the batch processor
+    },
+  });
+  process.once('beforeExit', () => void dispose());
+  return dispose;
+}
+
+/** Call to flush and stop tracing yourself, for example at the end of a script. */
+export const shutdownTracing: () => Promise<void> = installFutureAGITracing() ?? (async () => {});
+```
+
+Why the code looks like this:
+
+- **`project_name` is a resource attribute.** Future AGI files spans by the resource attribute `project_name`. A span attribute with that key does not count, and a batch without it is rejected. `service.name` is not read as a project name.
+- **`autoDetectResources: false`.** The default `NodeSDK` resource detectors put `host.name`, `host.id`, `process.owner` (the OS user name), `process.command_args` and `process.executable.path` (absolute paths) on every export. In our run all of them were present until this was turned off.
+- **`metricReaders: []` and `logRecordProcessors: []`.** `NodeSDK` otherwise starts OTLP metric and log exporters that post to `http://localhost:4318`. Flue also emits metrics and logs, but only into a meter or logger it is given. The Future AGI collector takes traces only, so the recipe passes neither.
+- **`content`.** `false` unless `FI_CAPTURE_CONTENT=1`. See [Privacy](#privacy).
+- **Both auth headers are required.** The keys travel only as `X-Api-Key` and `X-Secret-Key` headers to the collector, never on a span and never to the model provider. If either key is missing, the module prints one warning and leaves tracing off; the agent still runs.
+- **Three flush paths.** See [How it behaves](#how-it-behaves).
+
+## 4. Import it before any agent runs
+
+Flue registers instrumentation at module scope. Import `telemetry.ts` first in `src/app.ts`, and also from the agent module if you run it with `flue run`, because `flue run` loads the agent module and never `app.ts`:
+
+```ts title="src/app.ts"
+import './telemetry.ts'; // first import: the SDK and Flue's instrumentation are installed before any agent runs
+import { createAgentRouter } from '@flue/runtime/routing';
+import { Hono } from 'hono';
+
+import { Weather } from './agents/weather.ts';
+
+const app = new Hono();
+app.route('/agents/weather', createAgentRouter(Weather));
+
+export default app;
+```
+
+```ts title="src/agents/weather.ts (the import for flue run)"
+'use agent';
+import { useModel, useTool } from '@flue/runtime';
+
+import '../telemetry.ts'; // `flue run` loads this module, not app.ts
+```
+
+Importing it twice is safe: the module runs once. Calling `instrument(createOpenTelemetryInstrumentation())` a second time is not. Flue throws `InstrumentationAlreadyInstalledError`, so keep one registration.
+
+## 5. Run and check
+
+Any of these starts a run. The trace appears in your Observe project a moment later:
+
+```bash
+# One-shot, as a CLI or CI step.
+npx flue run src/agents/weather.ts --message 'Use get_weather for the city "Paris".'
+
+# A server.
+npx vite build && node dist/server.mjs
+curl -X POST http://localhost:3000/agents/weather/demo-1 -H 'content-type: application/json' \
+  -d '{"kind":"user","body":"Use get_weather for the city \"Paris\"."}'
+
+# A standalone script (start() and init(), no server and no app.ts).
+node scripts/ask.ts 'Use get_weather for the city "Paris".'
+```
+
+```text
+invoke_agent Weather          one per run; status ERROR if the run fails
+├── chat gpt-6-luna           model, provider, input and output tokens, finish reason
+├── execute_tool get_weather  tool name, call id, ERROR if the tool throws
+└── chat gpt-6-luna
+```
+
+All three children hang directly off the `invoke_agent` span; Flue does not nest the tool span under the model call. The root is named after the agent function. Each run is its own trace.
+
+| Flue span | Future AGI type | What you see |
+| --- | --- | --- |
+| `invoke_agent <agent>` | unknown (see [Limitations](#limitations)) | Duration, status. No token counts. |
+| `chat <model>` | llm | Model, provider (the id you registered), input and output tokens, finish reason, reasoning level |
+| `execute_tool <tool>` | tool | Tool name, call id, duration, `error.type` and ERROR status when the tool throws |
+
+A failed model call, for example a wrong model API key, shows ERROR on the `chat` span and on the `invoke_agent` span. A tool that throws shows ERROR on its own span only: the model sees the error and the run can still finish, so the root stays OK.
+
+## What is captured
+
+| Data | Default | `FI_CAPTURE_CONTENT=1` |
+| --- | --- | --- |
+| Span names, timing, parent links, status code | Yes | Yes |
+| Model id, provider name, token usage (input, output, cache read, cache creation), finish reason, reasoning level, stream flag | Yes | Yes |
+| Tool name, tool call id, tool type | Yes | Yes |
+| `error.type`, and an `exception` event that carries only the exception type | Yes | Yes |
+| Flue ids and names: `flue.instance.id`, `flue.submission.id`, `flue.operation.id`, `flue.turn.id`, `flue.agent.name`, `flue.harness.name`, `flue.session.name`, `gen_ai.conversation.id` | Yes | Yes |
+| Model endpoint host and port (`server.address`, `server.port`) | Yes | Yes |
+| Prompts and replies (`gen_ai.input.messages`, `gen_ai.output.messages`), system instructions, tool definitions and descriptions | No | Yes, up to 56 KiB per span |
+| Tool arguments and results (`gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`) | No | Yes |
+| Error text (the span status message and `exception.message`) | No | Yes |
+| Stack traces (`exception.stacktrace`) | No | No |
+| Resource attributes | `project_name`, `project_type`, `service.name` only | The same |
+| Flue metrics and logs | Never | Never |
+
+`flue.instance.id` is the id in your agent's route (the `demo-1` in `/agents/weather/demo-1`, or `--id` for `flue run`). If you build that id from an email address or a user name, it is exported even with content off. Use opaque ids.
+
+## Privacy
+
+**Default: metadata only.** The recipe passes `content: false` to `createOpenTelemetryInstrumentation()`. Flue then removes model messages, system instructions, tool definitions, tool arguments and results, and exception messages and stack traces from every span.
+
+**Opt in: `FI_CAPTURE_CONTENT=1`.** The recipe then passes a content policy, `{ transform }`, instead of `false`. Flue's content is exported, truncated to its 56 KiB per-span budget, and the policy drops `exception_stacktrace` content in both modes. Without that line, a tool failure with content on put `/Users/<name>/...` paths from the stack trace into the exported span in our run. Error messages and tool arguments are content: if your tools put local paths or secrets in them, the opt-in exports them. Redact in the same `transform` before you opt in; Flue's [OpenTelemetry guide](https://flueframework.com/docs/ecosystem/tooling/opentelemetry/) documents its `content.transform(content, scope)` hook and its `scope.contentType` values.
+
+How this was checked: each run put a random marker in the prompt, and the model repeated it into the tool arguments. A tool failure carried it in its error text. With the default, the marker was in none of the bytes sent and in no column of any ClickHouse table or in the Postgres data of the Future AGI stack. The host name, the user name, `/Users/` paths and the three API keys (Future AGI key and secret, model key) were in none of the bytes sent and in no stored span of the project. With `FI_CAPTURE_CONTENT=1` the marker was stored in span attributes and in the tool failure's status message. With Flue's own default (no `content` option) the same checks failed. The same checks run without keys in the example's tests.
+
+## How it behaves
+
+- **Flushing.** The batch processor exports every 5 seconds, so the recipe does not depend on that timer. `flue run` disposes the instrumentation just before it exits, and the recipe's `dispose` shuts the SDK down there. A built server does not dispose instrumentation created in `app.ts`, and it calls `process.exit()` as soon as it has stopped, so a flush started on SIGTERM never finished in our runs. The recipe flushes each time a submission settles instead. A standalone script exits when its event loop drains, so the recipe flushes on `beforeExit`. We ran all three with the batch timer set to ten minutes, so only these paths could deliver: every span of the last run arrived. A run that settles within a few milliseconds of SIGTERM, a SIGKILL and a crash can still lose spans. A run that settles while a server drains on SIGTERM is outside this guide’s coverage.
+- **Exporter down.** With nothing listening at `FI_BASE_URL`, the workflow still finished: exit code 0 and the reply printed. Exporter errors are silent unless you enable OpenTelemetry's diagnostic logging. `flue run` waited roughly 9 to 12 seconds at exit for the exporter's 10-second timeout, against under one second with the collector up. `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT=1500` brought that to 2 seconds.
+- **Retried model calls.** A model call that fails and is retried by Flue shows an ERROR `chat` span followed by the retry's `chat` span. We saw this once with a real model.
+- **Sessions.** Each run is its own trace. Flue sets `gen_ai.conversation.id` for a persisted conversation but no `session.id`, so Future AGI does not group runs into sessions. Filter on `gen_ai.conversation.id` to see one conversation.
+- **Streaming.** One `chat` span per model call, ended when the stream ends.
+- **Recovery.** Flue states that crash recovery does not replay provider or tool execution and creates no spans for stored stream chunks. That is outside this guide’s coverage.
+- **Flue 2.2.2.** The same two files work on 2.2.2.
+
+## Limitations
+
+- **The `invoke_agent` span shows type "unknown".** Future AGI maps `chat` spans to llm and `execute_tool` spans to tool, but not `gen_ai.operation.name=invoke_agent`. The tree, timing and status are correct.
+- **Input and Output panes are empty**, even with `FI_CAPTURE_CONTENT=1`. Content is stored in attributes and shows in the span's Attributes panel; Future AGI does not yet promote `gen_ai.input.messages` and `gen_ai.output.messages` into those panes.
+- **No cost.** Flue 2.3.0 emits no cost attribute, and Future AGI showed a cost of $0.00 for the model used here. Cost for a model Future AGI has a price for is outside this guide’s coverage.
+- **Tokens are per model call.** The `invoke_agent` span carries none, so summing over a trace counts each call once.
+- **`dispatch()` does not propagate trace context**, according to Flue's OpenTelemetry guide. Runs started by `dispatch()` become their own traces. That path is outside this guide’s coverage.
+- **Flue does not emit spans** for embeddings, retrieval, memory operations or evaluations, per its guide.
+- **Outside this guide’s scope:** Flue's Cloudflare target, a durable `db.ts` adapter, subagent task spans, sampling.
+
+## Older guides
+
+Older guides, written for Flue's beta releases, use `createOpenTelemetryObserver({ exportContent })` with `observe(...)`. That API is gone: Flue's 2.x migration guide says it became `createOpenTelemetryInstrumentation()` registered with `instrument(...)`, and the `exportContent` option became the `content` option. The old function is not exported by `@flue/opentelemetry` 2.2.2 or 2.3.0, and neither is `createOpenTelemetryObservability`. Mind the default: the current package exports content unless you pass `content: false`.
+
+## Troubleshooting
+
+- **No traces in the project.** Check that `FI_API_KEY` and `FI_SECRET_KEY` are both set (the module warns and turns tracing off otherwise), that the resource carries `project_name`, and that `FI_BASE_URL` is an origin without a path.
+- **No traces from `flue run`.** Import `telemetry.ts` from the agent module. `flue run` never loads `src/app.ts`.
+- **The last run of a script or server is missing.** The script must end normally so `beforeExit` fires, or call `await shutdownTracing()` yourself. A server needs to be stopped with SIGTERM or SIGINT, not SIGKILL.
+- **`InstrumentationAlreadyInstalledError`.** Something already registered Flue's OpenTelemetry instrumentation. Keep one `instrument(createOpenTelemetryInstrumentation())` call.
+- **`flue run` exits ten seconds late.** The exporter cannot reach `FI_BASE_URL`. Fix the URL, or set `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` to a few thousand milliseconds.
+- **Prompts or tool arguments appear on spans.** `FI_CAPTURE_CONTENT` is set, or `content` was left out of `createOpenTelemetryInstrumentation()`, which means content on.
+- **`host.name` or `process.owner` on the resource.** The `NodeSDK` was created without `autoDetectResources: false`.
+- **`flue run` fails with `Failed to load tsconfig 'astro/tsconfigs/strict'`.** The Flue project sits inside another project whose `tsconfig.json` extends an Astro preset. Add a `tsconfig.json` to the Flue project folder.
