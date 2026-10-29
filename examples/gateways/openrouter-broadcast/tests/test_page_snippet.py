@@ -50,13 +50,15 @@ def test_docker_command_matches_the_config(page, blocks):
     cmd = block(blocks, "bash", "docker run")
     with open(os.path.join(HERE, "otelcol.yaml")) as f:
         text = f.read()
-    needed = set(re.findall(r"\$\{env:([A-Z_]+)", text)) - {"FI_CAPTURE_CONTENT"}
+    needed = set(re.findall(r"\$\{env:([A-Z_]+)", text))
     for name in needed:
         assert re.search(rf"-e {name}\b", cmd), name
     assert "otel/opentelemetry-collector-contrib:0.162.0" in cmd
     assert "--memory" in cmd and "-p 4318:4318" in cmd
     assert "/etc/otelcol/config.yaml" in cmd
-    assert "FI_CAPTURE_CONTENT" not in cmd, "content stays off unless the reader opts in"
+    assert '-e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}"' in cmd
+    assert "docker rm -f openrouter-broadcast-otelcol" in page
+    assert "docker restart` retains the environment" in page
 
 
 def test_every_environment_variable_is_explained(page):
@@ -103,3 +105,9 @@ def test_internal_links_point_at_pages_that_exist(page):
 def test_the_page_says_it_was_checked_live(page):
     assert "checked against real Broadcast traffic" in page and "Live vendor verification (2026-10-19)" in page
     assert "| OpenRouter | Run live on 2026-10-19" in page
+
+
+def test_comparison_matches_live_hierarchy(page):
+    row = next(line for line in page.splitlines() if line.startswith("| What you see |"))
+    assert "`LLM Generation` span is the root" in row
+    assert "a root span and a generation span" not in row
