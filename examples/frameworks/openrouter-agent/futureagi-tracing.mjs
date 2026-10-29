@@ -37,7 +37,7 @@ export function buildTracerProvider({
     : new OTLPTraceExporter({
         url: `${baseUrl.replace(/\/+$/, '')}/tracer/v1/traces`,
         headers: { 'X-Api-Key': apiKey, 'X-Secret-Key': secretKey },
-        // The exporter sends no compression by default; the Future AGI collector rejects gzip.
+        // The exporter sends no compression by default; Future AGI also accepts gzip.
       });
   return new BasicTracerProvider({
     // Future AGI files spans by the RESOURCE attribute project_name.
