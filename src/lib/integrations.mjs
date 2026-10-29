@@ -26,7 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
-  {"id": "openlit", "name": "OpenLIT", "href": "/docs/integrations/traceai/openlit", "category": "frameworks", "summary": "Export synchronous Python OpenAI spans with OpenLIT.", "method": "Native OTLP", "logo": "generic-framework"},
+  { id: 'google-antigravity', name: 'Antigravity CLI', href: '/docs/integrations/coding-agents/google-antigravity', category: 'coding', summary: 'Trace version-scoped macOS CLI conversations with lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'cognee', name: 'Cognee', href: '/docs/integrations/traceai/cognee', category: 'frameworks', summary: 'Export native memory-operation spans with a privacy filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openinference', name: 'OpenInference', href: '/docs/integrations/import/openinference', category: 'frameworks', summary: 'Send the qualified Python OpenAI instrumentor spans over OTLP.', method: 'OpenInference SDK', logo: 'generic-framework' },
   { id: 'oh-my-pi', name: 'Oh My Pi', href: '/docs/integrations/coding-agents/oh-my-pi', category: 'coding', summary: 'Trace omp sessions with the version-scoped local hook.', method: 'omp hook', logo: 'generic-framework' },
@@ -35,6 +35,7 @@ export const integrations = [
   { id: 'openclaw', name: 'OpenClaw', href: '/docs/integrations/coding-agents/openclaw', category: 'coding', summary: 'Export supported CLI and Gateway agent-turn traces.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'opencode', name: 'OpenCode', href: '/docs/integrations/coding-agents/opencode', category: 'coding', summary: 'Trace terminal agent sessions, model steps and tools.', method: 'OpenCode plugin', logo: 'generic-framework' },
   { id: 'openllmetry', name: 'OpenLLMetry', href: '/docs/integrations/otel/openllmetry', category: 'frameworks', summary: 'Forward Traceloop SDK traces with OTLP/HTTP.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Traceloop'] },
+  {"id": "openlit", "name": "OpenLIT", "href": "/docs/integrations/traceai/openlit", "category": "frameworks", "summary": "Export synchronous Python OpenAI spans with OpenLIT.", "method": "Native OTLP", "logo": "generic-framework"},
   { id: 'gradio', name: 'Gradio', href: '/docs/integrations/traceai/gradio', category: 'frameworks', summary: 'Trace synchronous chat callbacks through their model client.', method: 'OpenAI client', logo: 'generic-framework' },
   { id: 'z-ai', name: 'Z.ai', href: '/docs/integrations/providers/z-ai', category: 'providers', summary: 'Trace Python chat completions on the general-platform endpoint.', method: 'OpenAI client', logo: 'generic-model' },
   { id: 'cursor', name: 'Cursor IDE', href: '/docs/integrations/coding-agents/cursor', category: 'coding', summary: 'Trace macOS IDE agent sessions through observation hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
@@ -123,6 +124,8 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
+  { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
