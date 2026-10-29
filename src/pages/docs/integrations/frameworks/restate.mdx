@@ -1,0 +1,398 @@
+---
+title: "Restate tracing with Future AGI"
+description: "Trace Restate durable-execution invocations in Observe: Restate's own invocation and attempt spans, with your model and tool spans inside them. Retries show as attempts, and replayed steps are not traced twice."
+---
+
+## About
+
+[Restate](https://restate.dev) runs your handlers as durable invocations. It journals every `ctx.run` step, retries a failed attempt, and replays the journal so completed steps are not executed again. This page shows one Restate invocation as one trace in Observe:
+
+```text
+ingress WeatherAgent/{key}/ask                      Restate server
+└─ invocation-start WeatherAgent/{key}/ask          Restate server
+   ├─ invocation-attempt WeatherAgent/{key}/ask     Restate server, ERROR: the tool step failed
+   │  ├─ ChatCompletion  (llm)                      your service, traceai-openai
+   │  └─ get_weather     (tool, ERROR)              your service
+   ├─ invocation-attempt WeatherAgent/{key}/ask     Restate server, retry
+   │  ├─ get_weather     (tool)                     the failed step runs again
+   │  └─ ChatCompletion  (llm)                      the first model call is NOT repeated: it was journaled
+   └─ invocation-end WeatherAgent/{key}/ask         Restate server
+```
+
+Two exporters build that tree. The Restate server exports its runtime spans, and your Python service exports the model and tool spans it makes. Restate sends the attempt's W3C `traceparent` to your service, and `restate.ext.tracing.RestateTracerProvider` from the Restate Python SDK puts every span you create under that attempt. Both exporters send to an OpenTelemetry Collector you run, which names the Observe project, removes host names and error text, and forwards to Future AGI.
+
+<Warning>
+Beta. Everything on this page was run end to end against a self-hosted Future AGI: a real `restate-server`, a real Python service with traceAI, a real OpenTelemetry Collector, and real model calls through an OpenAI-compatible endpoint. Restate Cloud and the TypeScript and Java SDKs are outside this guide’s coverage.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | Restate server **1.8.0** (released 2026-10-14) and 1.7.13, release binaries for macOS arm64. Python SDK `restate-sdk` **1.0.5** on Python 3.13 and 3.10, `hypercorn` 0.18.0, `fi-instrumentation-otel` 1.1.0, `traceai-openai` 0.1.10, `openai` 3.31.0. OpenTelemetry Collector contrib 0.162.0 (Docker). Restate server 1.8.0 and `restate-sdk` 1.0.5 were the latest releases when this was tested. Restate server 1.8.1 and `restate-sdk` 1.1.0 came out on 2026-10-21: the example's unit tests pass with `restate-sdk` 1.1.0 on Python 3.13, and neither was run end to end. |
+| Restate docs used | [Tracing](https://docs.restate.dev/server/monitoring/tracing), [Server configuration](https://docs.restate.dev/server/configuration), [Python serving](https://docs.restate.dev/develop/python/serving), [v1.8.0 release notes](https://github.com/restatedev/restate/releases/tag/v1.8.0), all read 2026-10-15 |
+| Licenses | Restate server: [Business Source License 1.1](https://github.com/restatedev/restate/blob/v1.8.0/LICENSE); its Additional Use Grant allows any use except running a "Public Restate Platform Service". `restate-sdk`: MIT. Neither is bundled with Future AGI. |
+| Source | [examples/frameworks/restate](https://github.com/future-agi/docs/tree/main/examples/frameworks/restate): the service, `restate.toml`, `otelcol.yaml`, tests and the end-to-end script |
+
+### How this differs from other pages
+
+- **Agent frameworks on Restate.** Restate also has integrations for OpenAI Agents, Pydantic AI and Google ADK. Those combinations are **outside this guide’s coverage** here. The pattern is the same (pass `RestateTracerProvider(...)` as the instrumentor's tracer provider), but each framework's own page ([OpenAI Agents](/docs/integrations/traceai/openai_agents), [Google ADK](/docs/integrations/traceai/google_adk)) describes its spans without Restate.
+- **[OpenAI](/docs/integrations/traceai/openai).** That page traces OpenAI calls on their own. Here the same instrumentor is wrapped so its spans join the Restate invocation instead of starting a new trace per call.
+- **Exactly-once is Restate's job, not Future AGI's.** Future AGI does not deduplicate spans. Code inside `ctx.run` that already completed is not run again on replay, so it is not traced again. Code outside `ctx.run` (a log line, an un-journaled HTTP call) runs again on every attempt, and if it creates spans you see them again.
+
+## Set up
+
+<Steps>
+
+<Step title="Install">
+
+```bash
+pip install restate-sdk hypercorn fi-instrumentation-otel traceai-openai openai
+```
+
+Install the Restate server and CLI the way [Restate's quickstart](https://docs.restate.dev/quickstart) shows: `brew install restatedev/tap/restate-server restatedev/tap/restate`, `npm install --global @restatedev/restate-server@latest @restatedev/restate@latest`, the `docker.restate.dev/restatedev/restate` image, or a [release binary](https://github.com/restatedev/restate/releases/latest) (the binaries are what was tested). The OpenTelemetry Collector runs from the `otel/opentelemetry-collector-contrib` image.
+</Step>
+
+<Step title="Run the collector">
+
+Save this as `otelcol.yaml`:
+
+```yaml
+# OpenTelemetry Collector (contrib) between Restate and Future AGI.
+#
+# Restate's server and your Restate service both export to this collector. It then
+#   1. names the Observe project (resource attribute project_name) when the sender did not,
+#   2. removes host names, network addresses and stack traces, always,
+#   3. removes error text and Virtual Object / Workflow keys, unless KEEP_RESTATE_DETAILS=true,
+#   4. forwards plain (uncompressed) OTLP/HTTP with the X-Api-Key and X-Secret-Key headers
+#      that each sender put on its own request. This collector holds no Future AGI keys.
+#
+# It listens on /tracer/v1/traces, the same path Future AGI uses, so traceAI's register()
+# can be pointed here with FI_BASE_URL=http://<this host>:4318.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+#
+# Environment:
+#   FI_TRACES_URL         where to forward, e.g. https://api.futureagi.com/tracer/v1/traces
+#   FI_PROJECT_NAME       Observe project for spans that arrive without project_name
+#   KEEP_RESTATE_DETAILS  "true" keeps error text and Virtual Object / Workflow keys (default: removed)
+
+extensions:
+  # Copies the two Future AGI key headers from the incoming request onto the outgoing one.
+  headers_setter:
+    headers:
+      - action: upsert
+        key: X-Api-Key
+        from_context: X-Api-Key
+      - action: upsert
+        key: X-Secret-Key
+        from_context: X-Secret-Key
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        traces_url_path: /tracer/v1/traces
+        include_metadata: true   # needed for headers_setter to see the incoming headers
+
+processors:
+  # `insert` keeps a project_name the sender already set (traceAI's register() sets one).
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: insert
+      - key: project_type
+        value: observe
+        action: insert
+
+  # Always removed. service.instance.id is "<cluster>/<node-name>", and Restate's node name
+  # defaults to the machine's host name. Stack traces carry local paths and user names.
+  transform/always:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "service.instance.id")
+          - delete_key(attributes, "host.name")
+      - context: span
+        statements:
+          - delete_key(attributes, "restate.deployment.address")
+          - delete_key(attributes, "client.socket.address")
+          - delete_key(attributes, "client.socket.port")
+          - delete_key(attributes, "client.address")
+          - delete_key(attributes, "client.port")
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.stacktrace")
+
+  # Removed unless KEEP_RESTATE_DETAILS=true. Error text can quote user data, and a
+  # Virtual Object key is often a user id or an e-mail address. Restate already writes
+  # span names with {key}; this does the same for restate.invocation.target.
+  transform/details:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        conditions:
+          - '"${env:KEEP_RESTATE_DETAILS:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "error.message")
+          - set(status.message, "error") where status.message != ""
+          - replace_pattern(attributes["restate.invocation.target"], "^([^/]+)/.+/([^/]+)$$", "$$1/{key}/$$2")
+      - context: spanevent
+        conditions:
+          - '"${env:KEEP_RESTATE_DETAILS:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "exception.message")
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    auth:
+      authenticator: headers_setter
+
+service:
+  extensions: [headers_setter]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; this collector only carries traces
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/always, transform/details]
+      exporters: [otlp_http/future_agi]
+```
+
+Start it:
+
+```bash
+docker run -d --name restate-otelcol -p 4318:4318 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol.yaml:ro" \
+  -e FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces \
+  -e FI_PROJECT_NAME=restate-agent \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol.yaml
+```
+
+For a self-hosted Future AGI, set `FI_TRACES_URL` to your instance's `/tracer/v1/traces` URL. The collector holds no keys: each sender's `X-Api-Key` and `X-Secret-Key` headers are copied onto the request it forwards. Keep port 4318 on a private network.
+</Step>
+
+<Step title="Point the Restate server at the collector">
+
+Save this as `restate.toml` and start the server with `restate-server --config-file restate.toml`:
+
+```toml
+# Restate server: export invocation traces to the OpenTelemetry Collector in otelcol.yaml.
+#
+#   restate-server --config-file restate.toml
+#
+# otlp+http:// selects OTLP/HTTP (protobuf). A plain http:// endpoint would mean OTLP/gRPC.
+# The path is the collector's receiver path in otelcol.yaml.
+tracing-endpoint = "otlp+http://localhost:4318/tracer/v1/traces"
+
+# Sent on every export request. The collector copies them onto the request it makes to
+# Future AGI. Rather than writing keys into this file you can set them in the environment:
+#   RESTATE_TRACING_HEADERS='{X-Api-Key="<FI_API_KEY>", X-Secret-Key="<FI_SECRET_KEY>"}'
+[tracing-headers]
+X-Api-Key = "<FI_API_KEY>"
+X-Secret-Key = "<FI_SECRET_KEY>"
+```
+
+Both headers are required. Restate's docs show a single `authorization` header as the example; that header does not authenticate to Future AGI. Restate sends the export uncompressed, which is what Future AGI accepts.
+
+The environment form of the headers was tested and keeps the keys out of the file. Any server setting can be overridden this way (`RESTATE_TRACING_ENDPOINT`, for example). In Docker, use `host.docker.internal` or the collector's service name instead of `localhost`.
+</Step>
+
+<Step title="Trace your service">
+
+This is the shape of `agent_service.py` in the example. The four lines that matter are the `register()` call, the `RestateTracerProvider` wrapper, `instrument(tracer_provider=...)` with that wrapper, and `FITracer` over the wrapper for your own spans.
+
+```python
+import os
+
+import restate
+from fi_instrumentation import FITracer, TraceConfig, register, using_session
+from fi_instrumentation.fi_types import ProjectType
+from openai import AsyncOpenAI
+from restate.ext.tracing import RestateTracerProvider
+from traceai_openai import OpenAIInstrumentor
+
+# 1. A Future AGI tracer provider. Not registered globally: only the Restate-aware wrapper below uses it.
+tracer_provider = register(
+    project_name=os.environ.get("FI_PROJECT_NAME", "restate-agent"),
+    project_type=ProjectType.OBSERVE,
+    set_global_tracer_provider=False,
+    verbose=False,
+)
+# 2. Every span created through this wrapper becomes a child of the Restate invocation attempt
+#    that is running, and no span is created while Restate replays already-journaled steps.
+restate_tracer_provider = RestateTracerProvider(tracer_provider)
+OpenAIInstrumentor().instrument(tracer_provider=restate_tracer_provider)
+tracer = FITracer(restate_tracer_provider.get_tracer(__name__), config=TraceConfig())
+
+# Restate retries failed steps itself, so the OpenAI client should not retry on its own.
+client = AsyncOpenAI(max_retries=0)
+```
+
+Put every model call and tool call in its own `ctx.run` step, so a completed step is journaled and never repeated:
+
+```python
+agent = restate.VirtualObject("WeatherAgent")  # keyed by user: one conversation per user at a time
+
+
+@agent.handler()
+async def ask(ctx: restate.ObjectContext, req: dict) -> dict:
+    invocation_id = ctx.request().id
+    model = req.get("model", MODEL)
+    messages = [
+        {"role": "system", "content": "Use the get_weather tool, then answer in one sentence."},
+        {"role": "user", "content": req["question"]},
+    ]
+    # No application session id? Use the Restate invocation id, so one invocation is one session.
+    with using_session(req.get("session_id") or invocation_id):
+        try:
+            plan = await ctx.run_typed(
+                "llm-plan", chat, restate.RunOptions(max_attempts=2), model=model, messages=messages, with_tools=True
+            )
+        except TerminalError:
+            raise TerminalError("the model call failed")
+        messages.append(plan)
+        for call in plan["tool_calls"]:
+            result = await ctx.run_typed(
+                "tool-get_weather",
+                get_weather,
+                invocation_id=invocation_id,
+                arguments=call["function"]["arguments"],
+                flaky=bool(req.get("flaky")),
+            )
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+        final = await ctx.run_typed("llm-answer", chat, model=model, messages=messages, with_tools=False)
+    return {"answer": final["content"]}
+```
+
+The tool span is created with `record_exception=False` and keeps only the exception type as its status, so a failed tool step exports no message text and no stack trace (see [create tool spans](/docs/sdk/tracing/create-tool-spans) for the span helpers):
+
+```python
+    with tracer.start_as_current_span(
+        "get_weather", fi_span_kind="tool", record_exception=False, set_status_on_exception=False
+    ) as span:
+```
+
+Run the service with traceAI pointed at the collector, so the collector can also strip error text from your spans:
+
+```bash
+export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=restate-agent
+export FI_BASE_URL=http://localhost:4318      # the collector, not Future AGI
+export OPENAI_API_KEY=...                     # and OPENAI_BASE_URL for an OpenAI-compatible endpoint
+python agent_service.py                       # serves on 127.0.0.1:9080
+```
+</Step>
+
+<Step title="Register the service and invoke it">
+
+```bash
+curl localhost:9070/deployments --json '{"uri": "http://localhost:9080"}'   # or: restate deployments register http://localhost:9080
+curl localhost:8080/WeatherAgent/user-1/ask -H 'content-type: application/json' \
+  -d '{"question": "What is the weather in Lisbon today?"}'
+```
+
+The trace shows up in Observe under the project from `FI_PROJECT_NAME`. To see a retry, send `"flaky": true`: the first weather lookup fails and Restate retries the attempt.
+</Step>
+
+</Steps>
+
+### Flush on shutdown
+
+`register()` batches spans, so the service must shut its tracer provider down when it stops. `restate-sdk` 1.0.5 installs its own asyncio SIGTERM handler the first time the app is called ([`server.py`](https://github.com/restatedev/sdk-python/blob/v1.0.5/python/restate/server.py#L264)). That handler replaces the ASGI server's, so with the [Hypercorn development server from Restate's docs](https://docs.restate.dev/develop/python/serving) a SIGTERM does not stop the process (tested; Ctrl+C still does). The example lets the SDK install its handler first, then adds one on top that stops the server, and flushes after the server returns:
+
+```python
+async def serve() -> None:
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    # restate-sdk 1.0.5 adds its own asyncio SIGTERM handler the first time the app is called. It tells
+    # running invocations to wind down, but it replaces the server's handler, so SIGTERM alone would
+    # never stop the server or flush spans. Let the SDK install it first, then add a Python-level
+    # handler on top: asyncio still runs the SDK's handler, and this one stops the server.
+    await _let_sdk_install_sigterm_handler()
+    signal.signal(signal.SIGTERM, lambda *_: loop.call_soon_threadsafe(stop.set))
+    loop.add_signal_handler(signal.SIGINT, stop.set)
+    config = hypercorn.config.Config()
+    config.bind = [f"127.0.0.1:{os.environ.get('SERVICE_PORT', '9080')}"]
+    await hypercorn.asyncio.serve(app, config, shutdown_trigger=stop.wait)
+
+
+if __name__ == "__main__":
+    asyncio.run(serve())
+    tracer_provider.shutdown()  # flush spans still buffered when SIGTERM arrives
+```
+
+This was tested with a 60-second batch delay: spans of an invocation that finished just before SIGTERM still arrived. A crash (SIGKILL) loses spans still in the batch. Restate itself is not affected: it retries the attempt on the next healthy deployment.
+
+## What you see in Observe
+
+| Span | From | Type in Observe | What it carries |
+| --- | --- | --- | --- |
+| `ingress <target>` | Restate server | unknown | Invocation id, target. Only for calls made through the ingress. |
+| `invocation-start <target>` | Restate server | unknown | The parent of everything below. |
+| `invocation-attempt <target>` | Restate server | unknown | One per attempt. ERROR when the attempt failed with a retryable error. Span events list the journal commands (`ctx.run` names, state access, calls). |
+| `invocation-end <target>` | Restate server | unknown | `restate.invocation.result` (`success` or `failure`) and, on failure, the error code. |
+| `ChatCompletion` | your service, `traceai-openai` | llm | Model, token counts, prompt and response (unless hidden) |
+| your own spans, e.g. `get_weather` | your service, `FITracer` | tool, chain, ... | Whatever you set |
+
+- **One invocation, one trace.** An incoming `traceparent` on the ingress request is continued, so a caller's trace can contain the invocation. Calls between Restate handlers join the caller's trace; one-way sends start their own trace, linked to the parent (Restate's behaviour; outside this guide’s coverage).
+- **Retries are attempts.** Each physical attempt is its own `invocation-attempt` span with the spans of the steps that really ran in it. A step that failed and ran again appears once per run. A step that completed is not run again on replay, so it is not traced again.
+- **Sessions.** The example sets the session to the Restate invocation id, so the model and tool spans of one invocation are one [session](/docs/observe/features/session). Pass your own `session_id` to group several invocations of a conversation. Restate's own spans carry no session.
+- **Restate spans have no span type.** They show as `unknown`: they are runtime spans, not model or tool spans.
+- **The trace list shows the `ingress` span.** Each row in the trace list is the invocation's root span, so input, output and tokens are empty, latency is that span's own (about 0 ms), and the status is UNSET even when the invocation failed. Open the trace to see the attempts, the model and tool spans, and the failure on `invocation-end`.
+- **Failures.** A failed model call is an ERROR `llm` span in each attempt that made it. An attempt that Restate retries is ERROR. The last attempt, which returns the terminal error to Restate, ends normally, and `invocation-end` is ERROR with `restate.invocation.result = failure`.
+
+## Privacy
+
+| | Default | How to change it |
+| --- | --- | --- |
+| Prompts, responses, tool arguments and results, model request parameters (your service) | **Captured**, as in every traceAI instrumentor | `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS`, `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_LLM_INVOCATION_PARAMETERS` set to `true` on the service ([environment variables](/docs/sdk/tracing/environment-variables), [TraceConfig](/docs/sdk/tracing/trace-config)) |
+| Error text: `error.message`, span status messages, `exception.message` (Restate and your service) | **Removed** by the collector. Status messages become `error`; the ERROR status stays. | `KEEP_RESTATE_DETAILS=true` on the collector |
+| Virtual Object and Workflow keys in `restate.invocation.target` | **Replaced** with `{key}` by the collector, matching Restate's span names | `KEEP_RESTATE_DETAILS=true` on the collector |
+| Host names and addresses: `service.instance.id` (Restate's node name defaults to the host name), `restate.deployment.address`, client socket address and port | **Always removed** by the collector | Edit `transform/always` in `otelcol.yaml` |
+| Stack traces (`exception.stacktrace`) | **Always removed** by the collector. The example's own tool span records none. | — |
+| `X-Api-Key`, `X-Secret-Key` | Sent as headers only, never as span attributes | — |
+
+Restate never puts request or response payloads on its spans. The `ctx.run` names you choose are exported as span events, so do not put user data in them.
+
+Tested: with the five `FI_HIDE_*` switches on and the collector defaults, a unique marker placed in the question, the city the tool looked up, the Virtual Object key (an e-mail address) and the model name (so it appears in the model provider's error text) was found **0 times** in every stored column of the project (span attributes, resource attributes, span events, status messages, input, output) and **0 times** on the wire from the collector to Future AGI. So were the user name, host name, home directory, the service address, `Traceback`, `exception.stacktrace` and both key values. With `KEEP_RESTATE_DETAILS=true` and the traceAI defaults, the marker was stored in the prompt, the key and the error text, and the host names, addresses and stack traces were still removed.
+
+## Without a collector
+
+The Restate server reads `OTEL_RESOURCE_ATTRIBUTES` and puts every key on its resource ([source](https://github.com/restatedev/restate/blob/v1.8.0/crates/tracing-instrumentation/src/lib.rs#L160)), so it can name the project itself and export straight to Future AGI:
+
+```bash
+OTEL_RESOURCE_ATTRIBUTES="project_name=restate-agent,project_type=observe" \
+RESTATE_TRACING_ENDPOINT=otlp+https://api.futureagi.com/tracer/v1/traces \
+RESTATE_TRACING_HEADERS='{X-Api-Key="<FI_API_KEY>", X-Secret-Key="<FI_SECRET_KEY>"}' \
+restate-server
+```
+
+and the service with `FI_BASE_URL` left at its default. This was tested on Restate 1.8.0 and 1.7.13 (same tree, same retry behaviour), but use it only if the trade-offs are acceptable:
+
+- Restate's tracing docs only mention the `service.*` keys of `OTEL_RESOURCE_ATTRIBUTES`. That other keys work is current behaviour, not a documented setting.
+- Nothing is removed. Restate exports the host name (in `service.instance.id`, unless you set `node-name`), deployment addresses, client addresses, Virtual Object keys and error text, and failed model calls keep their error text in the status message.
+
+## Troubleshooting
+
+- **No traces in Observe.** Check the collector log (`docker logs restate-otelcol`) and the service log. A batch without `project_name` is dropped: the collector adds it, a direct export needs `OTEL_RESOURCE_ATTRIBUTES`. `service.name` is not read as a project name.
+- **401 from Future AGI in the collector log.** A sender did not send both headers. Restate needs both in `[tracing-headers]` or `RESTATE_TRACING_HEADERS`; the service needs `FI_API_KEY` and `FI_SECRET_KEY`.
+- **Nothing reaches the collector from Restate.** `tracing-endpoint` must start with `otlp+http://` (or `otlp+https://`) and end with the receiver path. A plain `http://` endpoint makes Restate speak OTLP/gRPC, which this collector does not listen for.
+- **Model spans are separate traces, one per call.** The instrumentor got the plain provider. Pass `RestateTracerProvider(tracer_provider)` to `instrument()`, and do not set `register(set_global_tracer_provider=True)` for a second, unwrapped path.
+- **The same step appears twice.** Either the step is outside `ctx.run` (it runs again on every attempt), it failed and ran again (two attempts, both shown), or two exporters send the same spans.
+- **`Failed to export spans batch` or `OTLP export exhausted retries - telemetry data will be lost` in the logs.** The collector is not reachable. Handlers keep working and answer normally (tested with nothing listening on the collector port); the spans of that period are lost. Start the collector, and wait until it answers, before the Restate server and the service: a batch exported while the collector is still starting is dropped, which shows up as invocations missing their `ingress` and `invocation-start` spans.
+- **The service does not stop on SIGTERM.** See [Flush on shutdown](#flush-on-shutdown).
+
+## Not covered
+
+- Restate Cloud, Kubernetes deployments, AWS Lambda handlers and Hypercorn's multi-worker production mode are outside this guide’s coverage.
+- The TypeScript and Java/Kotlin SDKs have their own tracing integrations ([TypeScript](https://docs.restate.dev/develop/ts/tracing), [Java](https://docs.restate.dev/develop/java/tracing)); they are not covered here.
+- OpenAI Agents, Pydantic AI and Google ADK on Restate are untested.
+- `traceai-openai` 0.1.10 sets no model on a failed call, so the failed `llm` span has no model name.
+- Restate's OTLP/gRPC export is outside this guide’s coverage; the page uses OTLP/HTTP.
