@@ -1,0 +1,143 @@
+---
+title: "Azure API Management OTLP egress"
+description: "Route application traces through Azure API Management Consumption tier to Future AGI. APIM holds the collector keys; your application creates the spans."
+---
+
+## About
+
+This page covers **API Management as an OTLP/HTTP egress only** (previously Variant A). Your application creates spans, then an APIM policy adds the Future AGI credentials and forwards the export. APIM does not create model spans.
+
+The separate AI Gateway tier's native telemetry (previously Variant B) is outside this recipe. Its synthetic trace fixtures are development experiments, not a customer setup or proof of Azure's actual attributes, transport, or privacy controls.
+
+Use the [OpenAI instrumentor](/docs/integrations/traceai/openai) to create client spans. The egress policy changes how those spans reach Future AGI, not what they contain.
+
+## Live vendor verification (2026-10-19)
+
+**Real API Management (Consumption tier, East US) to `api.futureagi.com`.** The policy XML on this page was deployed unchanged (API suffix `tracer`, one `POST /v1/traces` operation, two secret named values). The example app held no Future AGI keys and sent only `Ocp-Apim-Subscription-Key`; the model calls went to a real Azure OpenAI deployment (`gpt-4.1-nano`).
+
+| Check | Result |
+| --- | --- |
+| Hierarchy | Trace `ab4de4f8-c745-4da3-9c9f-f47738057169` read back from `GET /tracer/trace/<id>/`: `agent` > three `llm` spans and one `tool` span, plus one `llm` span with status ERROR. Model on the spans is the underlying model Azure returns (`gpt-4.1-nano-2025-04-14`). |
+| Policy behaviour | `set-backend-service`, `rewrite-uri` and `set-header` work as written on Consumption. A call without the subscription key gets `401`; another path gets `404`; a batch without `project_name` gets `400` from Future AGI through APIM. Empty export request: `200`. |
+| Privacy | With `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` (trace `6e7e995c-fb6e-47b9-8368-6cafeada90bf`, project `th8103-livefill-azapim-hidden`) a unique marker placed in prompt and system text appears 0 times in the stored trace; with defaults (`ab4de4f8`) it appears. Neither the Future AGI keys nor the Azure key appear in either trace. |
+
+Limits of this check: the stored trace was read through the hosted API, not by scanning database columns; APIM header and payload logging were left off; request size limits were not probed.
+
+## Configure API Management as an OTLP egress
+
+### 1. What Future AGI needs
+
+| Field | Value |
+| --- | --- |
+| URL | `https://api.futureagi.com/tracer/v1/traces` (hosted; verified through APIM on 2026-10-19), or `<your collector>/tracer/v1/traces` when self-hosted |
+| Protocol | OTLP/HTTP, protobuf. Not gRPC. |
+| Headers | `X-Api-Key` and `X-Secret-Key`. `Authorization: Bearer ...` always gets `401`. |
+| Resource attribute | `project_name`, set by the caller. A batch without it is refused with `400`. |
+
+Create the Observe project's keys first. The caller names the project; APIM does not.
+
+### 2. Configure APIM
+
+1. **Named values.** Create two secret named values, `fi-api-key` and `fi-secret-key`. A Key Vault reference is the better home for them.
+2. **API.** Create an API with the **URL suffix `tracer`** and one operation, `POST /v1/traces`. The suffix matters: the Future AGI Python SDK always sends to `/tracer/v1/traces` on the host in `FI_BASE_URL` and drops any other path you put there (checked in `fi-instrumentation-otel` 1.1.0).
+3. **Policy.** Add this to the operation (or the API), and replace the `base-url` with your collector's if you self-host:
+
+```xml
+<policies>
+  <inbound>
+    <base />
+    <set-backend-service base-url="https://api.futureagi.com" />
+    <rewrite-uri template="/tracer/v1/traces" copy-unmatched-params="false" />
+    <set-header name="X-Api-Key" exists-action="override">
+      <value>{{fi-api-key}}</value>
+    </set-header>
+    <set-header name="X-Secret-Key" exists-action="override">
+      <value>{{fi-secret-key}}</value>
+    </set-header>
+    <!-- the caller's APIM subscription key and Authorization header are for APIM, not for Future AGI -->
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+  </inbound>
+  <backend><base /></backend>
+  <outbound><base /></outbound>
+  <on-error><base /></on-error>
+</policies>
+```
+
+The same file is in the example as `policy/otlp-egress.policy.xml`, with a test that parses it. Verified on the Consumption tier on 2026-10-19 (see [Live vendor verification](#live-vendor-verification-2026-10-19)). The qualified deployment scope is Consumption tier.
+
+### 3. Point the app at APIM
+
+Install the published client packages in Python 3.10–3.13:
+
+```bash
+pip install "traceAI-openai==0.1.10" "fi-instrumentation-otel==1.1.0" "openai==3.31.0"
+```
+
+```python
+import os
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+# FI_BASE_URL=https://<your-apim>.azure-api.net     (host only; no FI_API_KEY or FI_SECRET_KEY on this machine)
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-chatbot",
+    headers={"Ocp-Apim-Subscription-Key": os.environ["APIM_SUBSCRIPTION_KEY"]},  # APIM's key, not Future AGI's
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+```
+
+Any other OpenTelemetry exporter works the same way: send OTLP/HTTP protobuf, uncompressed like the qualified path (`OTEL_EXPORTER_OTLP_COMPRESSION=none`), with `project_name` on the resource. If your APIM API requires a subscription key, send it in `Ocp-Apim-Subscription-Key`. Short scripts must flush before exit (`trace_provider.force_flush()`).
+
+### 4. What shows up in Observe
+
+Whatever the caller emitted. A run of the example app (an agent span, a tool call, three model calls and one failing call) looked like this after going through the APIM stand-in:
+
+```
+azure-apim-demo        agent   your own parent span, session id on it
+├── ChatCompletion     llm     model and tokens
+├── ChatCompletion     llm     tool call requested by the model
+├── tool lookup_record tool    your own span
+├── ChatCompletion     llm     final answer
+└── ChatCompletion     llm     failure case: status ERROR
+```
+
+This page does not invent an Azure attribute map for this egress recipe. Model, tokens and prompts are the caller's, or they are absent. Session and user exist only if the caller's spans carry them. If a policy you add strips attributes, they are gone.
+
+### Privacy for the egress recipe
+
+The spans are the caller's, so the caller's privacy settings apply, and the `traceAI-openai` default is to capture content. Turn it off in the app, not in APIM:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+APIM adds a second place text can leak: **its own logging.** If you enable request or response body logging, header logging, or a diagnostic that records request payloads for this API, APIM can store your prompts (and, if you log the outgoing request, the Future AGI keys). Keep payload and header logging off for the OTLP API. Future AGI cannot prevent this.
+
+## Scope
+
+The qualified path uses APIM Consumption tier, OTLP/HTTP protobuf without compression, and the hosted Future AGI trace endpoint. The historical hosted check read trace data through the API; it was not a database-column scan. Header/payload logging stays off. This guide does not qualify other APIM tiers, request-size limits, native AI Gateway telemetry, gRPC, logs, or metrics.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| App works but no trace arrives | `FI_BASE_URL` must be the APIM host with no path; API suffix `tracer`; subscription header; `project_name` resource; uncompressed OTLP; flush before exit. |
+| APIM returns `401` | The subscription key is missing or wrong. |
+| Backend returns `401` | The policy must set both secret named values and remove the caller's Authorization header. |
+| Backend returns `400` | Check `project_name` on the resource. |
+| Keys or prompts appear in APIM logs | Turn off header and payload logging for the OTLP API and rotate exposed keys. |
+
+## Example and references
+
+The [example folder](https://github.com/future-agi/docs/tree/main/examples/gateways/azure-apim) includes the exact policy, client app and local regression tests. `app.py` accepts `FI_BASE_URL` (your APIM host), `APIM_SUBSCRIPTION_KEY`, and `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` for your model endpoint. It deliberately rejects Future AGI keys in the app environment. Use `--scenario chat` for a single model call and flush.
+
+The local `run_e2e.sh a` uses an explicitly named APIM stand-in; it does not deploy or test Azure. The `b` mode and collector files are synthetic development fixtures only.
+
+- [Microsoft set-header policy](https://learn.microsoft.com/en-us/azure/api-management/set-header-policy)
+- [Microsoft set-backend-service policy](https://learn.microsoft.com/en-us/azure/api-management/set-backend-service-policy)
+- [Microsoft rewrite-uri policy](https://learn.microsoft.com/en-us/azure/api-management/rewrite-uri-policy)
+- [Langfuse APIM egress guide](https://langfuse.com/integrations/gateways/azure-api-management)
