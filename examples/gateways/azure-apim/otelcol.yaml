@@ -1,0 +1,94 @@
+# OpenTelemetry Collector (contrib) between the Azure AI Gateway tier of API Management and Future AGI.
+#
+# Why a collector: the Future AGI collector drops any trace batch whose resource has no `project_name`. Microsoft's
+# AI Gateway monitoring settings take a collector URL and "any required access token or headers"; nothing Microsoft
+# publishes says the gateway can add a resource attribute. This collector fills the gap:
+#   1. accepts OTLP/HTTP (protobuf or JSON, gzip or plain) from the gateway, only with your bearer token,
+#   2. sets the Observe project,
+#   3. keeps prompt/completion text, tool arguments, caller identity claims and raw error text OUT unless you opt in,
+#   4. forwards plain (uncompressed) traces to Future AGI with the two Future AGI key headers.
+# Configure ONLY the traces endpoint in the gateway. Future AGI takes traces only; a logs or metrics endpoint pointed
+# here would be refused (this collector has no logs or metrics pipeline).
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0 against a SYNTHETIC trace (see gateway_trace.py).
+#
+# Environment:
+#   GATEWAY_OTLP_TOKEN  secret you invent; the gateway sends it as `Authorization: Bearer <token>`
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they never go to Azure)
+#   FI_PROJECT_NAME     Observe project every gateway trace goes to
+#   FI_TRACES_URL       full traces URL: https://api.futureagi.com/tracer/v1/traces, or http://<self-hosted>:<port>/v1/traces
+#   FI_CAPTURE_CONTENT  optional, default false. `true` lets prompt/completion text, tool arguments/results, identity
+#                       claims and exception text through.
+
+extensions:
+  bearertokenauth/gateway:
+    scheme: Bearer
+    token: ${env:GATEWAY_OTLP_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/gateway
+        # Azure must reach this over HTTPS. Put TLS in front (load balancer, reverse proxy) or set `tls:` here.
+
+processors:
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: insert
+
+  transform/gateway:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span types in Observe. Without fi.span.kind Future AGI shows every span that has no model as "unknown".
+          # The model call the gateway makes to the backend is an LLM span; the gateway request and the policy spans are chains.
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["fi.span.kind"] == nil
+          - set(attributes["fi.span.kind"], "LLM") where kind == SPAN_KIND_CLIENT and attributes["gen_ai.request.model"] != nil
+          # Content OFF (default). Microsoft does not document whether the gateway trace carries prompt text; these
+          # are the OpenTelemetry GenAI spellings, in every indexed or dotted form, so a gateway that adds them is covered.
+          - delete_matching_keys(attributes, "^gen_ai\\.(prompt|completion|input\\.messages|output\\.messages|system_instructions|tool\\.call\\.(arguments|result))(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, "^(input|output)\\.value$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Caller identity claims (tenant, object id, app id ...; custom claims can be anything, e.g. a cost center or an email).
+          - delete_matching_keys(attributes, "^azure\\.ai_gateway\\.identity\\.claims\\..*$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Error text can echo the request. Keep the fact of the error, not the words.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # optional: Future AGI also accepts gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/gateway]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/gateway, batch]
+      exporters: [otlp_http/future_agi]
