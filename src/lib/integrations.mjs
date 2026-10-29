@@ -5,7 +5,7 @@
  * A method describes the connection path, not a support or testing badge.
  * Run `npm run test:integrations` when changing this file.
  *
- * @typedef {'providers'|'frameworks'|'gateways'|'voice'|'java'|'apps'|'import'|'export'} IntegrationCategory
+ * @typedef {'providers'|'frameworks'|'coding'|'gateways'|'voice'|'java'|'apps'|'import'|'export'} IntegrationCategory
  * @typedef {{id: string, name: string, href: string, category: IntegrationCategory,
  * summary: string, method: string, logo: string, aliases?: string[], sharedGuide?: boolean}} Integration
  * @typedef {{id: IntegrationCategory, name: string, description: string}} Category
@@ -15,6 +15,7 @@
 export const integrationCategories = [
   { id: 'providers', name: 'Model providers', description: 'Trace model calls from your application.' },
   { id: 'frameworks', name: 'Frameworks & agents', description: 'Connect the steps, tools and model calls in your application.' },
+  { id: 'coding', name: 'Coding agents', description: 'Connect coding-agent sessions, turns and tools.' },
   { id: 'gateways', name: 'Gateways', description: 'Trace proxied requests, using the connection method in each guide.' },
   { id: 'voice', name: 'Voice & realtime', description: 'Follow conversations across your voice stack.' },
   { id: 'java', name: 'Java', description: 'Set up JVM tracing with client wrappers or native OpenTelemetry.' },
@@ -25,6 +26,8 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'cursor', name: 'Cursor IDE', href: '/docs/integrations/coding-agents/cursor', category: 'coding', summary: 'Trace macOS IDE agent sessions through observation hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
+  { id: 'langsmith', name: 'LangSmith', href: '/docs/integrations/langsmith', category: 'frameworks', summary: 'Forward supported LangSmith SDK traces over OTLP.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'openai', name: 'OpenAI', href: '/docs/integrations/traceai/openai', category: 'providers', summary: 'Instrument OpenAI client calls in your application.', method: 'traceAI SDK', logo: 'openai' },
   { id: 'anthropic', name: 'Anthropic', href: '/docs/integrations/traceai/anthropic', category: 'providers', summary: 'Capture Claude calls, token usage and latency.', method: 'traceAI SDK', logo: 'anthropic', aliases: ['Claude'] },
   { id: 'bedrock', name: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock', category: 'providers', summary: 'Trace model calls through Amazon Bedrock.', method: 'traceAI SDK', logo: 'bedrock', aliases: ['Amazon'] },
@@ -109,6 +112,8 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
+  { name: 'Hook-to-OTLP emitter', href: '/docs/integrations/coding-agents/hook-to-otlp', category: 'coding' },
+  { name: 'OpenAI Assistants retirement', href: '/docs/integrations/traceai/openai_assistants', category: 'providers' },
   { name: 'traceAI setup', href: '/docs/integrations/traceai' },
   { name: 'Java SDK setup', href: '/docs/integrations/traceai/java', category: 'java' },
 ];
