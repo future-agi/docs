@@ -1,0 +1,140 @@
+# OpenTelemetry Collector (contrib) between a Cloudflare Workers OTLP traces destination and Future AGI.
+#
+# A Workers destination has a name, a type (Traces), an OTLP endpoint and optional custom headers. It has no
+# field for resource attributes, and Future AGI rejects any batch whose resource has no `project_name`. This
+# collector fills that gap and keeps your Future AGI keys out of Cloudflare:
+#   1. accepts OTLP/HTTP from the destination, only with your bearer token (a custom header on the destination),
+#   2. drops the per-call Durable Object storage spans (hundreds per chat turn, no AI information) and the test span
+#      Cloudflare sends when you create or edit the destination,
+#   3. sets the Observe project,
+#   4. maps the Agents SDK span names onto Observe span types, errors and sessions,
+#   5. keeps prompts, completions, tool arguments/results and error text OUT unless you opt in,
+#   6. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0, behind a real Cloudflare Workers traces destination
+# (2026-10-18).
+#
+# Environment:
+#   CF_DESTINATION_TOKEN        secret you invent; on the destination add the header `Authorization: Bearer <token>`
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they never go to Cloudflare)
+#   FI_PROJECT_NAME             Observe project every Worker trace goes to
+#   FI_TRACES_URL               full traces URL: https://api.futureagi.com/tracer/v1/traces
+#                               or, self-hosted, http://<your-host>:<port>/v1/traces
+#   FI_CAPTURE_CONTENT          optional, default false. `true` lets message text, tool arguments/results and error
+#                               text through. Cloudflare only records them when the Worker sets STORE_MESSAGES /
+#                               STORE_TOOLS, so content needs both switches.
+
+extensions:
+  # Cloudflare sends from its network, so this endpoint must be reachable from the internet. Never leave it open.
+  bearertokenauth/cloudflare:
+    scheme: Bearer
+    token: ${env:CF_DESTINATION_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/cloudflare
+        # Put TLS in front of this (load balancer or reverse proxy), or set `tls:` here with cert_file and key_file.
+
+processors:
+  # Creating or editing a destination makes Cloudflare send one test span ("Hello from Cloudflare ... (<destination>)",
+  # resource telemetry.sdk.name = pre-flight-check). The receiver still answers 200, so the check passes.
+  filter/preflight:
+    error_mode: ignore
+    traces:
+      span:
+        - resource.attributes["telemetry.sdk.name"] == "pre-flight-check"
+
+  # durable_object_storage_get / _put / _exec ...: one span per storage call. They are leaves (no children), so
+  # dropping them keeps every other parent link intact. Delete this processor to keep them.
+  filter/storage_spans:
+    error_mode: ignore
+    traces:
+      span:
+        - IsMatch(name, "^durable_object_storage_")
+
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: upsert
+
+  transform/cloudflare_agents:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span types. chat -> LLM and execute_tool -> TOOL are read by Future AGI directly; invoke_agent carries the
+          # turn's model and token totals, so it is pinned to AGENT (otherwise it would be counted as a second LLM
+          # call). Everything else (chat_turn, fetch, Durable Object and WebSocket invocations) is a chain step.
+          - set(attributes["gen_ai.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["gen_ai.operation.name"] == nil
+          # invoke_agent repeats the sum of its chat spans' usage. Session and project totals add up every span, so
+          # keep usage on the chat spans only. The turn total stays readable as cloudflare.agents.usage.total_tokens.
+          - delete_matching_keys(attributes, "^gen_ai\\.usage\\.") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          # Sessions: one Durable Object instance is one conversation.
+          - set(attributes["session.id"], attributes["cloudflare.agents.session.id"]) where attributes["cloudflare.agents.session.id"] != nil
+          - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
+          # WebSocket upgrade requests: when the client closes the socket, Cloudflare ends the upgrade with outcome
+          # responseStreamDisconnected and status ERROR. That is a normal close, so clear the status; the outcome stays.
+          - set(status.code, STATUS_CODE_UNSET) where attributes["cloudflare.outcome"] == "responseStreamDisconnected"
+          - set(status.message, "") where attributes["cloudflare.outcome"] == "responseStreamDisconnected"
+          # Errors. The Workers custom-span API has no status setter, so the Agents SDK records a failure as the
+          # attribute error.type (an error class name, never the message). Turn that into span status ERROR.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - set(status.code, STATUS_CODE_ERROR) where attributes["error.type"] != nil
+          - set(status.message, attributes["error.type"]) where attributes["error.type"] != nil
+          # Content ON: fill the Input and Output panes from the OpenTelemetry GenAI JSON strings.
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.value"], attributes["gen_ai.tool.call.arguments"]) where attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.tool.call.result"]) where attributes["gen_ai.tool.call.result"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): messages, system instructions, tool arguments and results, in every spelling.
+          - delete_matching_keys(attributes, "^gen_ai\\.(input\\.messages|output\\.messages|system_instructions|tool\\.call\\.arguments|tool\\.call\\.result|prompt|completion)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, "^(input|output)\\.value$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Request URLs: keep the path, drop scheme, host, query string and fragment (tokens often ride in queries).
+          - replace_pattern(attributes["url.full"], "^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*([^?#]*).*$", "$$1")
+          - delete_key(attributes, "url.query")
+          # Cloudflare records the caller's city and region on request spans. Removed in both modes; country,
+          # continent and timezone stay.
+          - delete_matching_keys(attributes, "^geo\\.(locality|region|postal_code|location)(\\..*)?$")
+          # E-mail-shaped values (agent instance names, URLs) are replaced in both modes.
+          - replace_all_patterns(attributes, "value", "[A-Za-z0-9._+-]+(@|%40)[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}", "<email>")
+      - context: spanevent
+        statements:
+          # Exception and log events can carry messages, paths and stack traces: keep only the exception type.
+          - keep_keys(attributes, ["exception.type"]) where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Future AGI reads at most 16 MiB per request, so batching keeps requests small.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # optional: Future AGI also accepts gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/cloudflare]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; this collector handles traces only
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/preflight, filter/storage_spans, resource/future_agi, transform/cloudflare_agents, batch]
+      exporters: [otlp_http/future_agi]
