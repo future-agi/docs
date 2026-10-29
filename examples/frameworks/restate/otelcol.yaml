@@ -1,0 +1,108 @@
+# OpenTelemetry Collector (contrib) between Restate and Future AGI.
+#
+# Restate's server and your Restate service both export to this collector. It then
+#   1. names the Observe project (resource attribute project_name) when the sender did not,
+#   2. removes host names, network addresses and stack traces, always,
+#   3. removes error text and Virtual Object / Workflow keys, unless KEEP_RESTATE_DETAILS=true,
+#   4. forwards plain (uncompressed) OTLP/HTTP with the X-Api-Key and X-Secret-Key headers
+#      that each sender put on its own request. This collector holds no Future AGI keys.
+#
+# It listens on /tracer/v1/traces, the same path Future AGI uses, so traceAI's register()
+# can be pointed here with FI_BASE_URL=http://<this host>:4318.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0.
+#
+# Environment:
+#   FI_TRACES_URL         where to forward, e.g. https://api.futureagi.com/tracer/v1/traces
+#   FI_PROJECT_NAME       Observe project for spans that arrive without project_name
+#   KEEP_RESTATE_DETAILS  "true" keeps error text and Virtual Object / Workflow keys (default: removed)
+
+extensions:
+  # Copies the two Future AGI key headers from the incoming request onto the outgoing one.
+  headers_setter:
+    headers:
+      - action: upsert
+        key: X-Api-Key
+        from_context: X-Api-Key
+      - action: upsert
+        key: X-Secret-Key
+        from_context: X-Secret-Key
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        traces_url_path: /tracer/v1/traces
+        include_metadata: true   # needed for headers_setter to see the incoming headers
+
+processors:
+  # `insert` keeps a project_name the sender already set (traceAI's register() sets one).
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: insert
+      - key: project_type
+        value: observe
+        action: insert
+
+  # Always removed. service.instance.id is "<cluster>/<node-name>", and Restate's node name
+  # defaults to the machine's host name. Stack traces carry local paths and user names.
+  transform/always:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "service.instance.id")
+          - delete_key(attributes, "host.name")
+      - context: span
+        statements:
+          - delete_key(attributes, "restate.deployment.address")
+          - delete_key(attributes, "client.socket.address")
+          - delete_key(attributes, "client.socket.port")
+          - delete_key(attributes, "client.address")
+          - delete_key(attributes, "client.port")
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.stacktrace")
+
+  # Removed unless KEEP_RESTATE_DETAILS=true. Error text can quote user data, and a
+  # Virtual Object key is often a user id or an e-mail address. Restate already writes
+  # span names with {key}; this does the same for restate.invocation.target.
+  transform/details:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        conditions:
+          - '"${env:KEEP_RESTATE_DETAILS:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "error.message")
+          - set(status.message, "error") where status.message != ""
+          - replace_pattern(attributes["restate.invocation.target"], "^([^/]+)/.+/([^/]+)$$", "$$1/{key}/$$2")
+      - context: spanevent
+        conditions:
+          - '"${env:KEEP_RESTATE_DETAILS:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "exception.message")
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    auth:
+      authenticator: headers_setter
+
+service:
+  extensions: [headers_setter]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; this collector only carries traces
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/always, transform/details]
+      exporters: [otlp_http/future_agi]
