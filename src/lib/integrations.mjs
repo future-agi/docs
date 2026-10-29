@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'arconia', name: 'Arconia', href: '/docs/integrations/traceai/java/arconia', category: 'java', summary: 'Export JVM HTTP server spans with an explicit error-detail filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'azure-apim', name: 'Azure API Management', href: '/docs/integrations/gateways/azure-apim', category: 'gateways', summary: 'Forward application spans through a Consumption-tier egress policy.', method: 'APIM OTLP egress', logo: 'generic-cloud' },
   { id: 'openrouter-agent', name: 'OpenRouter Agent', href: '/docs/integrations/frameworks/openrouter-agent', category: 'frameworks', summary: 'Trace non-streaming agent loops and tools through lifecycle hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'github-copilot', name: 'GitHub Copilot CLI', href: '/docs/integrations/coding-agents/github-copilot', category: 'coding', summary: 'Export native CLI agent-turn traces with scoped credentials.', method: 'Native OTLP', logo: 'generic-framework' },
