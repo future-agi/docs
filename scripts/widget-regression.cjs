@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const BASE = process.env.DOCS_BASE_URL || 'http://127.0.0.1:4321';
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     // These lifecycle checks must not talk to the chat backend or external CDNs.
