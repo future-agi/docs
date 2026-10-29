@@ -134,7 +134,7 @@ run_direct() {
   expect "D4 generation without project_name" 400 SO send --endpoint "$url" "${FIH[@]}" --scenario success --marker "ORBD4$(uid)"
   local d5="ORBD5$(uid)"
   expect "D5 generation with project_name set by the sender (STAND-IN for a stamp)" 200 SO send --endpoint "$url" "${FIH[@]}" --scenario success --marker "$d5" --resource "project_name=$p" --resource project_type=observe
-  expect "D6 same body gzipped" 400 SO send --endpoint "$url" "${FIH[@]}" --gzip --scenario success --marker "ORBD6$(uid)" --resource "project_name=$p"
+  expect "D6 same body gzipped" 200 SO send --endpoint "$url" "${FIH[@]}" --gzip --scenario success --marker "ORBD6$(uid)" --resource "project_name=$p-gzip"
   expect "D7 the /tracer/v1/traces path" 200 SO send --endpoint "$FI_BASE_URL/tracer/v1/traces" "${FIH[@]}" --scenario success --marker "ORBD7$(uid)" --resource "project_name=$p"
   local d8="ORBD8$(uid)"
   expect "D8 the same body twice (same trace id and span ids)" 200 SO send --endpoint "$url" "${FIH[@]}" --scenario success --marker "$d8" --repeat 2 --resource "project_name=$p-dup" --resource project_type=observe
