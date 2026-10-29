@@ -163,11 +163,11 @@ test("editions page: activation commands are scoped and keep keys off the comman
   }
 });
 
-test("editions page: hidden markers only for unfinished implementation details", () => {
+test("editions page: no implementation-confirmation markers remain", () => {
   const s = editions();
   assert.doesNotMatch(rendered(s), /To be confirmed|\bTBC\b/);
   for (const c of comments(s)) {
-    assert.doesNotMatch(c, /multi-line PEM|Deployment names|migration step|DRAFT/i, `resolved marker left: ${c.trim()}`);
+    assert.doesNotMatch(c, /Confirm against the implementation|multi-line PEM|Deployment names|migration step|DRAFT/i, `resolved marker left: ${c.trim()}`);
   }
 });
 
@@ -188,14 +188,18 @@ test("nav: Self-Hosting lists the editions page after Container images", () => {
   assert.equal(nav.split("/docs/self-hosting/editions'").length - 1, 1, "nav entry duplicated");
 });
 
-test("users page: members join by invitation on Community", () => {
+test("users page: later Community CLI accounts join existing organization and workspace", () => {
   const s = read(USERS);
   const text = flat(rendered(s));
   assert.doesNotMatch(text, /Anyone who can reach the instance can create an account/);
   const tldr = flat(s.match(/<TLDR>([\s\S]*?)<\/TLDR>/)?.[1] ?? "");
   assert.doesNotMatch(tldr, /sign-up in the UI/i);
   assert.match(tldr, /invite/i);
-  assert.match(text, /On Community[^.]*(second|another)[^.]*refused/);
+  assert.match(text, /Later `create_user` accounts join the existing organization and its workspace as members/);
+  assert.match(text, /A fourth member is refused/);
+  assert.match(text, /second Community sign-up is refused/);
+  assert.doesNotMatch(text, /second sign-up or `create_user` is refused|second account made either way is refused/);
+  assert.doesNotMatch(s, /Confirm against the implementation/);
   assert.match(text, /\]\(\/docs\/self-hosting\/editions\)/);
   assertLinksResolve(USERS);
 });
@@ -206,4 +210,13 @@ test("helm and support pages point to the editions page", () => {
   const support = flat(read("src/pages/docs/self-hosting/support.mdx"));
   assert.match(support, /## Commercial support[^#]*license[^#]*sales@futureagi\.com/i);
   assert.match(support, /## Commercial support[^#]*\/docs\/self-hosting\/editions/);
+});
+
+
+test("editions page: CLI membership matches Community account creation", () => {
+  const text = flat(rendered(editions()));
+  assert.match(text, /later CLI accounts join the existing organization and its workspace as members/);
+  assert.match(text, /three-member limit[^.]*including pending invites/);
+  assert.match(text, /A fourth member is refused/);
+  assert.doesNotMatch(text, /Running `create_user` a second time is refused/);
 });
