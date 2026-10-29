@@ -19,6 +19,10 @@ span types and sessions, keeps payloads out unless you opt in).
 | `test/` | Unit tests: stand-in conversion and tree checks on recorded Think spans, collector config, page/file drift |
 | `test/collector.docker.test.mjs` | The real collector (Docker) on a real Workers destination export recorded 2026-10-18 (`test/fixtures/cloudflare-export-2026-10-18.json`, sanitized): pre-flight span, storage spans, query strings, token totals, content off and on. Skipped without Docker |
 
+## Deploy
+
+Run `npm ci`. The config sets `MODEL=gpt-4o-mini` and `OPENAI_BASE_URL=https://api.openai.com/v1` as Worker vars. Run `npx wrangler secret put OPENAI_API_KEY` and enter your model key at the prompt before `npx wrangler deploy`. Configure the collector and the `future-agi` destination as described on the page first. A shell export does not set a deployed Worker binding. For local development, use a git-ignored `.dev.vars` file for the model key.
+
 ## Unit tests (no network)
 
 ```bash
