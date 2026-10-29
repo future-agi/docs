@@ -1,11 +1,13 @@
 ---
-title: "Trace AWS Lambda with Future AGI"
-description: "Send OpenTelemetry traces from an AWS Lambda handler to Future AGI and make sure they leave the function before Lambda freezes it. Python and Go recipes. No layer, no extra package."
+title: "Local Lambda tracing lifecycle example"
+description: "Exercise Python and Go handler tracing locally: provider reuse, explicit flush attempts, error paths and bounded waiting. A local lifecycle example, not an AWS deployment guide."
 ---
 
 ## About
 
-[AWS Lambda](https://aws.amazon.com/lambda/) freezes the execution environment as soon as your handler returns, and thaws the same environment for the next invocation. A tracer that exports on a timer (the default for the OpenTelemetry batch processor) loses the spans of the last invocation, because the timer never fires while the environment is frozen. This page is a recipe for that one problem. You build the tracer provider once, outside the handler, you make one trace per invocation, and you flush before every return, including the error path.
+[AWS Lambda’s execution-environment documentation](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html) says the environment is frozen after an invocation completes. A timer-based batch exporter cannot make progress while frozen. This page demonstrates the corresponding **local handler lifecycle**: build the tracer once, make one trace per invocation and attempt a bounded flush before returning, including on errors.
+
+The supported scope is the shipped in-process Python and Go runners with a stand-in Lambda context and an OTLP receiver. It is not an AWS-qualified deployment recipe or a guarantee that spans reach the receiver before a real Lambda freeze or platform timeout.
 
 ```text
 cold start:   import / init          provider built once (project_name, both key headers)
@@ -22,7 +24,7 @@ There is no Future AGI Lambda layer and no published package for this recipe. Yo
 This page is about tracing a Lambda function that you write. It is not about how Future AGI runs on AWS.
 
 <Warning>
-Alpha. Everything on this page was run end to end against a self-hosted Future AGI with the real OpenTelemetry SDKs, but **not on AWS**. The handlers were called in-process the way the Lambda runtime calls them (one cold start, then warm invocations) with a stand-in for the Lambda context. No Lambda function was deployed, the freeze and thaw of a real execution environment and a hard platform timeout were not exercised, and no AWS service was called. SnapStart, provisioned concurrency and response streaming are not covered. No model was called: the recipe is about the lifecycle.
+Local lifecycle example only. The recorded end-to-end evidence is against self-hosted Future AGI, with handler calls in-process and a stand-in request id and remaining-time budget. AWS deployment, actual freeze/thaw, platform hard timeouts, SnapStart, provisioned concurrency and response streaming are outside this example’s supported scope. No AWS service or model call is needed for the local tests.
 </Warning>
 
 | | |
@@ -38,7 +40,7 @@ Alpha. Everything on this page was run end to end against a self-hosted Future A
 - **ADOT layer or X-Ray.** The ADOT layers send traces to AWS X-Ray or a collector extension. This recipe sends OTLP over HTTP straight to Future AGI from your function, with no layer.
 - **Other OpenTelemetry recipes on this site.** A long-running service can use a batch exporter and flush at shutdown. A Lambda function cannot rely on shutdown, because the process is frozen between invocations and not stopped.
 
-## Set up
+## Run the local example
 
 <Steps>
 
@@ -54,11 +56,12 @@ Go (OpenTelemetry Go v1.47 requires Go 1.26):
 
 ```bash
 go get go.opentelemetry.io/otel@v1.47.0 go.opentelemetry.io/otel/sdk@v1.47.0 \
-  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0
+  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0 \
+  github.com/aws/aws-lambda-go@v1.55.1
 ```
 </Step>
 
-<Step title="Set the environment on the function">
+<Step title="Set the local runner environment">
 
 | Variable | Value |
 | --- | --- |
@@ -99,7 +102,7 @@ def build_provider():
             endpoint=f"{base}/tracer/v1/traces",
             headers={"X-Api-Key": key, "X-Secret-Key": secret},
             timeout=int(FLUSH_BUDGET_S),
-            compression=Compression.NoCompression,        # Future AGI rejects gzip bodies
+            compression=Compression.NoCompression,        # Compatible with older self-hosted receivers
         )
         # a long timer: the explicit flush below is what exports, never the timer
         provider.add_span_processor(BatchSpanProcessor(exporter, schedule_delay_millis=60_000))
@@ -165,7 +168,7 @@ func Init() *sdktrace.TracerProvider {
 		exp, err := otlptracehttp.New(context.Background(),
 			otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
 			otlptracehttp.WithHeaders(map[string]string{"X-Api-Key": key, "X-Secret-Key": secret}),
-			otlptracehttp.WithCompression(otlptracehttp.NoCompression), // Future AGI rejects gzip bodies
+			otlptracehttp.WithCompression(otlptracehttp.NoCompression), // Compatible with older self-hosted receivers
 			otlptracehttp.WithTimeout(2*time.Second))
 		if err == nil {
 			opts = append(opts, sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(time.Minute)))
@@ -200,12 +203,20 @@ func Handle(ctx context.Context, event json.RawMessage) (map[string]any, error) 
 }
 ```
 
-In `main()`, call the init once and then `lambda.Start(handler.Handle)`.
+The compiled `cmd/function` entry point uses `lambda.Start(handler.Handle)`; the supported local runner is `cmd/e2e`, which invokes the handler in-process. The snippets above explain the lifecycle; run the complete files linked under Source.
 </Step>
 
 <Step title="Check it">
 
-Call the function twice and open the project in Observe. You should see two traces, each with a `lambda.handler` span (kind `chain`) and your own spans below it, and the second invocation must not be missing. Locally, `./run_e2e.sh` in the example does exactly that against a self-hosted Future AGI.
+From the example directory, exercise the local receiver and handler tests:
+
+```bash
+python -m pip install -r python/requirements-test.txt
+python -m pytest -q python/tests
+go -C go test ./...
+```
+
+These tests cover successive calls, errors and simulated remaining-time budgets without an AWS account. For the recorded self-hosted workflow, see `run_e2e.sh` and its README prerequisites. Local results do not establish AWS freeze/thaw behavior.
 </Step>
 
 </Steps>
@@ -215,8 +226,8 @@ Call the function twice and open the project in Observe. You should see two trac
 | Endpoint | `{FI_BASE_URL}/tracer/v1/traces`, OTLP over HTTP (protobuf), not gRPC, not gzip |
 | Headers | `X-Api-Key` **and** `X-Secret-Key` on the exporter. One header is a failed setup. |
 | Resource | `project_name` and `project_type=observe` on the **resource**, set at init. A span attribute with that key is not a substitute. |
-| Processor | Batch processor with a long timer, plus an explicit `force_flush` / `ForceFlush` before every return. A synchronous (simple) processor would export inside every span end with no flush budget, so a slow collector would delay your handler. That variant was not tested here. |
-| Flush budget | 2 seconds, and always less than the time Lambda has left (minus a 250 ms reserve). The 2 seconds is a proposal, not a measurement. If less than the reserve is left the flush is skipped and a log line says so. |
+| Processor | Batch processor with a long timer, plus an explicit `force_flush` / `ForceFlush` before every return. A synchronous (simple) processor would export inside every span end with no flush budget, so a slow collector would delay your handler. The simple-processor variant is outside this example’s scope. |
+| Flush budget | 2 seconds, and always less than the time Lambda has left (minus a 250 ms reserve). The 2 seconds is an example budget, not an AWS latency measurement or delivery guarantee. If less than the reserve is left the flush is skipped and a log line says so. |
 
 ## What is captured
 
@@ -234,13 +245,13 @@ Call the function twice and open the project in Observe. You should see two trac
 
 Content is **off by default**. The default export contains no event body, no result, no tool arguments or results, and no error text: a failed span carries only the error type (`ValueError`, `*errors.errorString`), and no exception event or stack trace is recorded, because a stack trace carries file paths. Headers are never exported.
 
-To opt in, set `LAMBDA_TRACE_CAPTURE_CONTENT=true` on the function. The root span then carries the event (`input.value`) and the result (`output.value`), the `lookup_order` span its arguments and result, and a failed span the error message. Even then there are still no stack traces. The event can contain personal data: turn it on for debugging, not as a default.
+To opt in, set `LAMBDA_TRACE_CAPTURE_CONTENT=true` in the local runner environment. The root span then carries the event (`input.value`) and the result (`output.value`), the `lookup_order` span its arguments and result, and a failed span the error message. Even then there are still no stack traces. The event can contain personal data: turn it on for debugging, not as a default.
 
 If you use a traceAI instrumentor inside the handler, its own content switches apply (`FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` and the related `FI_HIDE_*` variables); this page does not change them.
 
-## How it was tested
+## Local verification
 
-Both languages, against a self-hosted Future AGI, each scenario in its own project: three invocations (an API Gateway v2 event with a `traceparent`, a direct event, an SQS event) gave three traces with the right shape and the API Gateway one adopting the caller's trace id; a failing handler gave ERROR spans on `lambda.handler` and `lookup_order`, was flushed anyway, and the next warm invocation was exported; with content off a unique marker, the OS user name, the host name, the home directory path and `Traceback`/`goroutine` were absent from **every column** of the stored spans (checked in ClickHouse, resource attributes and events included), while with the opt-in the marker was stored and the user name, host name, path and stack trace still were not; with no keys the handler returned its result and no project was created; with an unreachable collector all three invocations still returned. The unit tests (18 Python, 12 Go) assert: provider built once across invocations, an export happens before the handler returns on success and on error, the warm start is a new trace, both headers, resource, path and no gzip, no event body by default, traceparent parenting for the API Gateway event and a new trace for SQS, a 503 or unreachable collector never fails the invocation and does not hold it longer than the budget, a collector that answers too late cannot hold the handler past the remaining time, a skipped flush when no time is left, and a flush attempt on an already cancelled context.
+Both languages were called in-process with a stand-in context against a self-hosted Future AGI, each scenario in its own project: three invocations (an API Gateway v2 event with a `traceparent`, a direct event, an SQS event) gave three traces with the right shape and the API Gateway one adopting the caller's trace id; a failing handler gave ERROR spans on `lambda.handler` and `lookup_order`, was flushed anyway, and the next warm invocation was exported; with content off a unique marker, the OS user name, the host name, the home directory path and `Traceback`/`goroutine` were absent from **every column** of the stored spans (checked in ClickHouse, resource attributes and events included), while with the opt-in the marker was stored and the user name, host name, path and stack trace still were not; with no keys the handler returned its result and no project was created; with an unreachable collector all three invocations still returned. The unit tests (18 Python, 12 Go) assert: provider built once across invocations, an export happens before the handler returns on success and on error, the warm start is a new trace, both headers, resource, path and no gzip, no event body by default, traceparent parenting for the API Gateway event and a new trace for SQS, a 503 or unreachable collector never fails the invocation and does not hold it longer than the budget, a collector that answers too late cannot hold the handler past the remaining time, a skipped flush when no time is left, and a flush attempt on an already cancelled context.
 
 ## Troubleshooting
 

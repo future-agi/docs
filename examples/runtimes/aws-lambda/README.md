@@ -39,8 +39,6 @@ column with the defaults; then the opt-in `LAMBDA_TRACE_CAPTURE_CONTENT=true` st
 still no username, hostname, path or stack), `nokeys` (handler works, nothing is exported, no project
 is created), `dead end` (the collector is unreachable: the invocation still returns).
 
-## What is not tested
+## Supported scope
 
-A real Lambda deployment. The handler is called in-process with a stand-in context (request id and
-remaining time). Freeze/thaw, a hard platform timeout, SnapStart, provisioned concurrency and response
-streaming are not tested.
+This is a local lifecycle example, not an AWS deployment guide. The handler is called in-process with a stand-in context (request id and remaining time). Actual AWS freeze/thaw, hard platform timeouts, SnapStart, provisioned concurrency and response streaming are outside this example’s supported scope.
