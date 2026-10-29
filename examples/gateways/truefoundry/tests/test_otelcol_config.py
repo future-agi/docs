@@ -64,7 +64,7 @@ def test_receivers_accept_http_and_grpc(cfg):
     assert set(cfg["receivers"]["otlp"]["protocols"]) == {"http", "grpc"}
 
 
-def test_the_yaml_on_the_page_is_the_yaml_in_the_repo():
+def test_development_collector_is_not_a_customer_setup():
     page = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "src", "pages", "docs",
         "integrations", "gateways", "truefoundry.mdx",
@@ -72,5 +72,7 @@ def test_the_yaml_on_the_page_is_the_yaml_in_the_repo():
     if not os.path.exists(page):
         pytest.skip("docs page not in this checkout")
     text = open(page).read()
-    block = re.search(r"```yaml\n(.*?)\n```", text, re.S).group(1)
-    assert yaml.safe_load(block) == yaml.safe_load(open(PATH))
+    assert "Python client tracing only" in text
+    assert "```yaml" not in text
+    assert "### Configure the exporter" not in text
+    assert "deferred to a separate qualification" in text

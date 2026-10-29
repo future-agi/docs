@@ -5,7 +5,7 @@ Runnable assets behind the page
 
 ## Live vendor verification (2026-10-20)
 
-Run against a real TrueFoundry SaaS tenant on the free Developer plan, with a model account added through the API (`PUT /api/svc/v1/apply`, `provider-account/openai`) and deleted afterwards. `client_example.py` (success with a tool call, `--stream`, and a rejected model) works unchanged against `https://gateway.truefoundry.ai` with a Personal Access Token and a `provider_account/model_name` id. The gateway's own OTEL export could not be enabled on that plan (HTTP 402, `settings.otelConfig`, PRO). `native/replay_spans.py` therefore re-encodes real spans read from TrueFoundry's Query Spans API (`POST /api/svc/v1/spans/query`) as OTLP and posts them; the collector recipe was run on those. The stand-ins below remain for CI and for anything not proven live (the exporter's wire behaviour, Exclude Request Data, `gen_ai.*` placement).
+Run against a real TrueFoundry SaaS tenant on the free Developer plan, with a model account added through the API (`PUT /api/svc/v1/apply`, `provider-account/openai`) and deleted afterwards. `client_example.py` (success with a tool call, `--stream`, and a rejected model) works unchanged against `https://gateway.truefoundry.ai` with a Personal Access Token and a `provider_account/model_name` id. The gateway's own OTEL export could not be enabled on that plan (HTTP 402, `settings.otelConfig`, PRO). `native/replay_spans.py` therefore re-encodes real spans read from TrueFoundry's Query Spans API (`POST /api/svc/v1/spans/query`) as OTLP and posts them; the collector recipe was run on those. The stand-ins below remain for CI and for development-only exporter experiments (wire behavior, Exclude Request Data, `gen_ai.*` placement).
 
 ## Stand-ins
 
@@ -26,7 +26,7 @@ What is real: `traceai-openai`, the `openai` client, the OpenTelemetry Collector
 | `standin_gateway.py` | Stand-in gateway (see above) |
 | `native/replay_spans.py` | REAL gateway spans from the Query Spans API, re-encoded as OTLP (no resource attributes or events in that API) |
 | `native/tfy_batch.py`, `native/post_batch.py` | Synthetic TrueFoundry-shaped batches and a poster (HTTP proto or JSON, gzip, gRPC, five auth modes) |
-| `native/otelcol.yaml` | The OpenTelemetry Collector recipe from the page |
+| `native/otelcol.yaml` | Development-only collector fixture; not in the customer guide |
 | `tools/wire_tap.py` | Records what an OTLP/HTTP exporter sent, then forwards it unchanged |
 | `tools/scan_local_stack.py` | Counts needles across every stored row of a project and across wire-tap files |
 | `run_e2e.sh` | Runs all of it against a self-hosted Future AGI |
@@ -83,6 +83,6 @@ See the page for the tables. In short, on the local stack tested:
 - Model and tokens appear only when the batch carries the `gen_ai.*` attributes, which TrueFoundry writes only with `ENABLE_GEN_AI_OTEL_ATTRIBUTES=true`.
 - The collector recipe removed every content, identity and error-text attribute it lists.
 
-## Not verified
+## Publication scope
 
-A real TrueFoundry gateway, TrueFoundry's OTEL Config screen, whether its exporter compresses, the real attribute placement and values, what the hosted gateway lets you set, Future AGI cloud (`api.futureagi.com`) with a TrueFoundry batch, and streaming.
+The customer guide documents Python client tracing only. The 2026-10-20 real gateway run above covered success, tools, streaming and a rejected model. Native-export wire behavior and its privacy controls require a separate vendor qualification; replayed or synthetic spans are development evidence only, not a supported gateway-export setup.
