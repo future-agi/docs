@@ -6,6 +6,8 @@
  * Tab-based navigation: Each tab has its own sidebar groups
  */
 
+import { integrationNavigation } from './integrations.mjs';
+
 export interface NavItem {
   title: string;
   href?: string;
@@ -904,6 +906,47 @@ export const tabNavigation: NavTab[] = [
           },
         ]
       },
+      {
+        group: 'Environments',
+        icon: 'layers',
+        items: [
+          { title: 'Overview', href: '/docs/environments' },
+          { title: 'Quickstart', href: '/docs/environments/quickstart' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Understanding Environments', href: '/docs/environments/concepts/understanding-environments' },
+              { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
+              { title: 'Scenarios & Trials', href: '/docs/environments/concepts/scenarios-and-trials' },
+              { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
+              { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
+              { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
+              { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
+              { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
+              { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
+              { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
+            ]
+          },
+          {
+            title: 'References',
+            items: [
+              { title: 'Supported agents', href: '/docs/environments/reference/supported-agents' },
+            ]
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              { title: 'Environment FAQ & fixes', href: '/docs/environments/troubleshooting' },
+            ]
+          },
+        ]
+      },
     ]
   },
   {
@@ -913,122 +956,7 @@ export const tabNavigation: NavTab[] = [
     groups: [
       {
         group: 'Integrations',
-        items: [
-          { title: 'Overview', href: '/docs/integrations' },
-          {
-            title: 'LLM Providers',
-            items: [
-              { title: 'OpenAI', href: '/docs/integrations/traceai/openai' },
-              { title: 'Anthropic', href: '/docs/integrations/traceai/anthropic' },
-              { title: 'AWS Bedrock', href: '/docs/integrations/traceai/bedrock' },
-              { title: 'Vertex AI', href: '/docs/integrations/traceai/vertexai' },
-              { title: 'Google GenAI', href: '/docs/integrations/traceai/google_genai' },
-              { title: 'Google ADK', href: '/docs/integrations/traceai/google_adk' },
-              { title: 'Groq', href: '/docs/integrations/traceai/groq' },
-              { title: 'MistralAI', href: '/docs/integrations/traceai/mistralai' },
-              { title: 'Together AI', href: '/docs/integrations/traceai/togetherai' },
-              { title: 'Ollama', href: '/docs/integrations/traceai/ollama' },
-              { title: 'Portkey', href: '/docs/integrations/traceai/portkey' },
-            ]
-          },
-          {
-            title: 'Frameworks & Agents',
-            items: [
-              { title: 'LangChain', href: '/docs/integrations/traceai/langchain' },
-              { title: 'LangGraph', href: '/docs/integrations/traceai/langgraph' },
-              { title: 'LlamaIndex', href: '/docs/integrations/traceai/llamaindex' },
-              { title: 'LlamaIndex Workflows', href: '/docs/integrations/traceai/llamaindex-workflows' },
-              { title: 'LiteLLM', href: '/docs/integrations/traceai/litellm' },
-              { title: 'CrewAI', href: '/docs/integrations/traceai/crewai' },
-              { title: 'AutoGen', href: '/docs/integrations/traceai/autogen' },
-              { title: 'Haystack', href: '/docs/integrations/traceai/haystack' },
-              { title: 'DSPy', href: '/docs/integrations/traceai/dspy' },
-              { title: 'OpenAI Agents', href: '/docs/integrations/traceai/openai_agents' },
-              { title: 'Smol Agents', href: '/docs/integrations/traceai/smol_agents' },
-              { title: 'Instructor', href: '/docs/integrations/traceai/instructor' },
-              { title: 'PromptFlow', href: '/docs/integrations/traceai/promptflow' },
-              { title: 'Guardrails', href: '/docs/integrations/traceai/guardrails' },
-              { title: 'MCP', href: '/docs/integrations/traceai/mcp' },
-              { title: 'Mastra', href: '/docs/integrations/traceai/mastra' },
-              { title: 'Vercel AI SDK', href: '/docs/integrations/traceai/vercel' },
-            ]
-          },
-          {
-            title: 'Coding Agents',
-            items: [
-              { title: 'Hook-to-OTLP Emitter', href: '/docs/integrations/coding-agents/hook-to-otlp' },
-              // coding-agents:augment-code
-              // coding-agents:claude-code
-              // coding-agents:claude-cowork
-              // coding-agents:codex
-              // coding-agents:codex-sdk
-              // coding-agents:cursor
-              { title: 'Cursor', href: '/docs/integrations/coding-agents/cursor' },
-              // coding-agents:cursor-sdk
-              // coding-agents:devin
-              // coding-agents:devin-desktop
-              // coding-agents:gemini-cli
-              // coding-agents:github-copilot
-              // coding-agents:google-antigravity
-              // coding-agents:goose
-              // coding-agents:grok-build
-              // coding-agents:hermes-agent
-              // coding-agents:kiro-cli
-              // coding-agents:kiro-ide
-              // coding-agents:oh-my-pi
-              // coding-agents:openclaw
-              // coding-agents:opencode
-              // coding-agents:pi
-              { title: 'Pi', href: '/docs/integrations/coding-agents/pi' },
-              // coding-agents:pi-sdk
-            ]
-          },
-          {
-            title: 'Voice & Realtime',
-            items: [
-              { title: 'LiveKit', href: '/docs/integrations/traceai/livekit' },
-              { title: 'Pipecat', href: '/docs/integrations/traceai/pipecat' },
-            ]
-          },
-          {
-            title: 'Java',
-            items: [
-              { title: 'Overview', href: '/docs/integrations/traceai/java' },
-              { title: 'Spring Boot', href: '/docs/integrations/traceai/spring-boot' },
-              { title: 'OpenAI', href: '/docs/integrations/traceai/java/openai' },
-              { title: 'Anthropic', href: '/docs/integrations/traceai/java/anthropic' },
-              { title: 'AWS Bedrock', href: '/docs/integrations/traceai/java/bedrock' },
-              { title: 'Cohere', href: '/docs/integrations/traceai/java/cohere' },
-              { title: 'Pinecone', href: '/docs/integrations/traceai/java/pinecone' },
-              { title: 'LLM Providers', href: '/docs/integrations/traceai/java/llm-providers' },
-              { title: 'Vector Databases', href: '/docs/integrations/traceai/java/vector-databases' },
-              { title: 'Frameworks', href: '/docs/integrations/traceai/java/frameworks' },
-            ]
-          },
-          {
-            title: 'Other',
-            items: [
-              { title: 'n8n', href: '/docs/integrations/traceai/n8n' },
-            ]
-          },
-          {
-            title: 'Import Traces',
-            items: [
-              { title: 'Langfuse', href: '/docs/integrations/import/langfuse' },
-            ]
-          },
-          {
-            title: 'Export & Alerts',
-            items: [
-              { title: 'Datadog', href: '/docs/integrations/export/datadog' },
-              { title: 'PostHog', href: '/docs/integrations/export/posthog' },
-              { title: 'Mixpanel', href: '/docs/integrations/export/mixpanel' },
-              { title: 'PagerDuty', href: '/docs/integrations/export/pagerduty' },
-              { title: 'Cloud Storage', href: '/docs/integrations/export/cloud-storage' },
-              { title: 'Message Queues', href: '/docs/integrations/export/message-queues' },
-            ]
-          },
-        ]
+        items: integrationNavigation
       }
     ]
   },

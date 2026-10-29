@@ -1,0 +1,233 @@
+---
+title: "Trace Novita AI chat completions"
+description: "Trace Novita AI calls made with the OpenAI Python client in Future AGI using traceAI-openai. One base URL, no new package. Verified against the live Novita API on 2026-10-18."
+---
+
+## About
+
+Novita AI serves an OpenAI-compatible chat API. You keep using `openai.OpenAI`, set `base_url` to Novita's versioned OpenAI-compatible URL, and the existing [traceAI-openai](/docs/integrations/traceai/openai) instrumentor traces the call. There is no Novita package to install and nothing to configure on the Novita side.
+
+This page is not:
+
+- **A Novita export.** It traces calls your own code makes. It does not read Novita usage logs or billing, and it does not import history.
+- **A new traceAI package.** There is no `traceai-novita`, and nothing here rewrites a wrong URL. The instrumentor traces whatever the client sends. [What is not captured](#what-is-not-captured) lists the gaps found.
+- **Novita's other products.** Image, video and audio generation, GPU instances, serverless GPUs, agent sandboxes, batch jobs, embeddings, rerank and Novita's own `novita-client` and `novita-sdk` packages are outside this guide’s coverage. Novita's Anthropic-compatible URL (`https://api.novita.ai/anthropic`, used in Novita's Claude Code guide) is a different route and is not covered.
+
+The provider name on the span reads `openai`, not Novita. That is a display limit of the instrumentor, not something this page can change.
+
+<div style={{ overflowX: 'auto' }}>
+
+| | |
+| --- | --- |
+| Tested with | traceAI-openai 0.1.10 (latest on PyPI), fi-instrumentation-otel 1.1.0, openai 3.35.1 (latest, checked 2026-10-18), Python 3.13. The example's tests also pass on openai 1.109.1. The traceAI-openai metadata allows Python 3.10 to 3.13. |
+| Novita API | Live calls to `api.novita.ai` on 2026-10-18 with `meta-llama/llama-3.1-8b-instruct`, `meta-llama/llama-3.3-70b-instruct` (tool calls) and `openai/gpt-oss-120b` (reasoning). See [Live vendor verification](#live-vendor-verification-2026-10-18) |
+| Novita docs read | [Quickstart](https://docs.novita.ai/guides/quickstart), [API reference overview](https://docs.novita.ai/api-reference/api-reference-overview), [LLM API guide](https://docs.novita.ai/guides/llm-api), [Create chat completion](https://docs.novita.ai/api-reference/model-apis-llm-create-chat-completion), [Function calling](https://docs.novita.ai/guides/llm-function-calling), [Common error codes](https://docs.novita.ai/guides/error), [Hermes guide](https://docs.novita.ai/guides/hermes) and [`llms.txt`](https://docs.novita.ai/llms.txt), read 2026-10-15. Quickstart and LLM API guide re-read 2026-10-18, unchanged. |
+| Source | [examples/providers/novita-ai](https://github.com/future-agi/docs/tree/main/examples/providers/novita-ai) |
+
+</div>
+
+## Which base URL
+
+Use `https://api.novita.ai/openai/v1`. Novita's own pages show more than one string, so here is what each one is. The pages were read on 2026-10-15; the "Live API" column is what `api.novita.ai` answered on 2026-10-18.
+
+<div style={{ overflowX: 'auto' }}>
+
+| Base URL | Where it appears | Live API | Use it? |
+| --- | --- | --- | --- |
+| `https://api.novita.ai/openai/v1` | The [Quickstart](https://docs.novita.ai/guides/quickstart) (`curl .../openai/v1/chat/completions`), the curl examples in the [LLM API guide](https://docs.novita.ai/guides/llm-api), the first request in the [API reference overview](https://docs.novita.ai/api-reference/api-reference-overview) (`.../openai/v1/models`), the [Hermes guide](https://docs.novita.ai/guides/hermes), and Novita's [Kimi K3 post](https://blogs.novita.ai/kimi-k3-api-quick-start) of 2026-07-22 | 200 on chat, streaming and tool calls | Yes. This is the recipe. The OpenAI client appends `/chat/completions`, so it requests `https://api.novita.ai/openai/v1/chat/completions`, the URL in Novita's Quickstart |
+| `https://api.novita.ai/openai` | The API overview and `llms.txt` ("OpenAI-Compatible Endpoints"), the Python examples in the LLM API guide, and Novita's guides for the OpenAI Agents SDK, LangChain, Langfuse, Cursor and function calling | 200 on the same calls. The client requests `https://api.novita.ai/openai/chat/completions` | Works. If your code already uses it, keep it. The spans were the same as with `/openai/v1` |
+| `https://api.novita.ai/v3/openai` | [Langfuse's Novita page](https://langfuse.com/integrations/model-providers/novitaai). It appears in none of the Novita pages above | 200 on a chat call | No. It still answers, but no current Novita page shows it, so nothing promises it stays |
+
+</div>
+
+Novita's pages disagree with each other, but the live API answered on both of Novita's forms. The recipe uses the form whose request URL matches Novita's Quickstart. Tracing does not depend on the choice: traceAI-openai reads the host of `base_url` and never its path, and the live runs with `/openai/v1` and `/openai` produced the same spans. A path the API does not route, such as a doubled `/v1` (`.../openai/v1/v1/chat/completions`) or a base URL without `/openai`, gets HTTP 404 with the plain-text body `404 page not found`. The span for that call is an `ERROR` span with the HTTP status, so the failure is visible in Future AGI too.
+
+## Install
+
+Install the OpenAI instrumentor and the OpenAI SDK.
+
+```bash
+pip install traceAI-openai openai
+```
+
+## Trace a chat completion
+
+Set the three keys. The Novita key goes to the OpenAI client. The Future AGI keys go to `register()`. Neither key belongs on a span.
+
+```bash
+export NOVITA_API_KEY="YOUR_NOVITA_API_KEY"
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+```
+
+Then register the tracer, install the instrumentor, and build the client. Replace the model with an id copied from Novita's Model Hub.
+
+```python
+import os
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from openai import OpenAI
+from traceai_openai import OpenAIInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-chatbot",
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = OpenAI(
+    api_key=os.environ["NOVITA_API_KEY"],
+    base_url="https://api.novita.ai/openai/v1",
+)
+
+response = client.chat.completions.create(
+    model="your-model-id",
+    messages=[{"role": "user", "content": "What is the capital of France?"}],
+    max_tokens=128,
+)
+print(response.choices[0].message.content)
+```
+
+<div style={{ overflowX: 'auto' }}>
+
+| Piece | Value |
+| --- | --- |
+| Client | `openai.OpenAI` from the `openai` package |
+| Base URL | `https://api.novita.ai/openai/v1`. See [Which base URL](#which-base-url) |
+| Auth | `Authorization: Bearer <NOVITA_API_KEY>`, which the OpenAI client sends for `api_key`. Do not add a second auth scheme |
+| Model | An id from Novita's Model Hub. Novita's own examples use ids such as `deepseek/deepseek-v4.1-flash` (Quickstart). The live runs used `meta-llama/llama-3.1-8b-instruct`. `GET https://api.novita.ai/openai/v1/models` lists every id with its price and `features`. This page does not freeze one |
+| Tool calls | Need a model whose `features` include `function-calling`. `meta-llama/llama-3.1-8b-instruct` does not, and Novita answered a request with `tools` with HTTP 400 `model features function calling not support`. `meta-llama/llama-3.3-70b-instruct` does |
+| `max_tokens` | Novita's chat reference lists it as a required field and its Quickstart sends it, so the recipe does too. The live API also accepted a call without it on 2026-10-18; sending it caps output and cost |
+| Project | `project_name` in `register()`. The instrumentor does not set it |
+| Self-hosted Future AGI | Also export `FI_BASE_URL` with your collector URL |
+
+</div>
+
+Build the client after `register()` and `instrument()`, as above. Novita still receives your prompt: tracing sends a copy to Future AGI and does not change what the API sees.
+
+## What you get
+
+Each call below went to the live Novita API on 2026-10-18 and produced the spans shown.
+
+<div style={{ overflowX: 'auto' }}>
+
+| Call | What lands in Observe | Notes |
+| --- | --- | --- |
+| `chat.completions.create` | One `LLM` span with the model, input and output messages, and input, output and total tokens | The model on a non-streaming span is the `model` field of the response body. Novita returned the id that was sent for every model tried |
+| `stream=True` | One `LLM` span with a first-token event and input, output and total tokens | Novita sent a final usage chunk with or without `stream_options={"include_usage": True}`, and the span had token counts both ways. The recipe still passes the option, which Novita's chat reference documents. No model on the span on 0.1.10 (see below) |
+| Tool calls | Two `LLM` spans, one per round trip. The first carries the tool definitions and the tool call | Needs a model with function calling (see the table above). Running the tool is your code. It becomes a span only if you create one. Novita's function-calling guide says not to repeat `tools` on the request that carries the tool result, and the example app does not |
+| Wrong API key | An `LLM` span with status `ERROR`: `AuthenticationError: Error code: 401` and Novita's body, `FAILED_TO_AUTH` "failed to authenticate API key", plus an `exception` event | No token counts |
+| Unknown model id | An `LLM` span with status `ERROR`: `NotFoundError: Error code: 404` and Novita's body, `MODEL_NOT_FOUND` with `"reason": "model: <id> not found"`, plus an `exception` event | The id you sent is only in that error text: 0.1.10 does not set the model attribute on failed calls |
+
+</div>
+
+Spans group under any parent span or session you create. The example app wraps its calls in one `AGENT` span and a session id so the whole run is one trace.
+
+## What is not captured
+
+- **The host, the path and the region.** The exported span carries no Novita hostname and no URL. You cannot filter by base URL from the span. Put what you need in your `project_name` or in your own span attribute.
+- **Novita response and request ids.** The `id` of a successful response is not on the span. The live error bodies carried no request id: `metadata` was empty for the 401 and held only a `reason` for the 404.
+- **Reasoning text.** With `openai/gpt-oss-120b`, Novita returned the answer in `content` and the reasoning in `reasoning_content`. The span kept only `content`. The reasoning tokens are counted: the raw response reported 35 completion tokens for the two-character answer `51`. `separate_reasoning` and `enable_thinking` are outside this guide’s coverage.
+- **The model on streaming and failed calls, on 0.1.10.** traceAI-openai 0.1.10 leaves `gen_ai.request.model` off streaming spans and failed-call spans. [traceAI PR 249](https://github.com/future-agi/traceAI/pull/249) (open, not released) records it. The tests in the example pass on both.
+- **Provider name.** `gen_ai.provider.name` is `openai` for the Novita host. PR 249 adds a host-to-provider table that does not contain `api.novita.ai`, so the value stays `openai` there too.
+- **Cost.** The span carries no price, and the self-hosted Future AGI used for the live runs stored a cost of 0 for `meta-llama/llama-3.1-8b-instruct`, `meta-llama/llama-3.3-70b-instruct` and `openai/gpt-oss-120b`, so it shows `$0.00`. Use Novita's billing for spend. `GET https://api.novita.ai/openai/v1/models` lists each model's price.
+- **Other Novita APIs.** Legacy completions, embeddings, rerank, batch, structured outputs, vision and audio inputs are outside this guide’s coverage.
+- **TypeScript.** Only the Python client was tested.
+
+## Privacy
+
+traceAI-openai follows the standard traceAI `TraceConfig` defaults: prompts, completions, tool arguments and results, and request parameters are captured unless you turn them off. Novita sees your prompts too, so decide what you want in Future AGI separately. Set these before the process starts, or pass the same settings to `TraceConfig`.
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+export FI_HIDE_LLM_INVOCATION_PARAMETERS=true
+```
+
+With those three set, the model, token counts, status and timing still arrive and the content does not. Input and output fields hold `__REDACTED__` and the request parameters attribute is absent. In the live runs of 2026-10-18 a unique marker went into the system prompt and the user prompt, Novita's models repeated it in their answers and passed it as a tool-call argument, and the tool result carried it back. With content hidden, the marker appeared in no stored column of a self-hosted Future AGI stack (every ClickHouse table and a full Postgres dump). With the variables unset, it appeared in the stored input, output and attribute columns. Content is therefore on by default. To turn it back on after hiding it, unset the variables or set them to `false`.
+
+What the hide settings do not remove on traceAI-openai 0.1.10:
+
+- **Tool definitions.** The name, description and JSON schema of tools you pass are still on the span.
+- **Session id.** The id you set, if any, stays.
+- **Error text.** The status message, such as `AuthenticationError: Error code: 401 - ...`, includes the error body Novita returned. For an unknown model that body names the model id. The exported `exception` event also carries the exception message and a stack trace with local file paths. The self-hosted platform did not keep the stack trace in its span store in the runs documented here, but it is on the wire.
+
+If your errors can contain sensitive text, do not rely on the hide settings for them. In the live runs, no local path, user name, host name, stack trace, Novita key or Future AGI key was in any stored row of the project, with content hidden or with the default.
+
+## Live vendor verification (2026-10-18)
+
+The recipe ran against the live Novita API with a real key, exporting to a self-hosted Future AGI. Two things ran as a customer would run them: `run_e2e.sh` from the example, and the Python snippet above, copied as written with only the model id and project name filled in.
+
+<div style={{ overflowX: 'auto' }}>
+
+| | |
+| --- | --- |
+| Packages | traceAI-openai 0.1.10, fi-instrumentation-otel 1.1.0, openai 3.35.1, opentelemetry-sdk 1.45.1, Python 3.13.15 |
+| Models | `meta-llama/llama-3.1-8b-instruct` (chat, streaming, errors, the snippet), `meta-llama/llama-3.3-70b-instruct` (tool round trips), `openai/gpt-oss-120b` (one reasoning call) |
+| `/openai/v1` | Trace `bac4b677-2c2d-4891-86d4-dfd6fa4bb08e`: chat, stream, tool round trip, wrong key (401), unknown model (404). Trace `405658af-fd2a-4071-ab13-5e00d41e29c2`: a second tool round trip |
+| `/openai` | Trace `c300c854-7ca1-472a-ac67-f93f2a9ee7aa`: the same five calls, the same span shapes |
+| The snippet | Trace `6a06baac-ea0e-465d-86b4-858d4a9e7c80`: one `LLM` span, model `meta-llama/llama-3.1-8b-instruct`, 42 input and 8 output tokens |
+| Privacy | Content hidden: traces `e967f6ab-9cb6-4999-812d-ae400b8f4b40` and `f4516c03-96f2-4aff-9776-4eb4f94664ea`, marker found 0 times in every stored table. Default: traces `3c79be5d-df20-48f6-b1f8-24991c817b7f` and `d610050e-4536-4e09-aad8-04c00cd8ac03`, marker found 48 times, all in the stored spans |
+| Spend | About 3,100 input and 1,000 output tokens in total, about $0.0006 at the prices `GET /openai/v1/models` lists |
+
+</div>
+
+The span tree for the first trace, as the verification script read it back from the platform:
+
+```text
+- [agent] novita-ai-demo
+  - [llm] ChatCompletion model=meta-llama/llama-3.1-8b-instruct tok=44/11
+  - [llm] ChatCompletion tok=44/9                                    # stream
+  - [llm] ChatCompletion model=meta-llama/llama-3.3-70b-instruct tok=185/28   # tool call requested
+  - [tool] tool lookup_record
+  - [llm] ChatCompletion model=meta-llama/llama-3.3-70b-instruct tok=86/7     # final answer
+  - [llm] ChatCompletion status=ERROR:AuthenticationError: Error code: 401 - {'code': 401, 'reason ...
+  - [llm] ChatCompletion status=ERROR:NotFoundError: Error code: 404 - {'code': 404, 'reason': 'MO ...
+PASS
+```
+
+Not covered by these runs: Novita's 403 responses, `separate_reasoning` and `enable_thinking`, TypeScript, and the other Novita APIs listed in [What is not captured](#what-is-not-captured). The example's tests run against a local stand-in whose status codes, error bodies, routes and streaming usage copy the live responses above; its reply text is made up.
+
+## Run it yourself
+
+The example in [`examples/providers/novita-ai`](https://github.com/future-agi/docs/tree/main/examples/providers/novita-ai) contains the recipe as a runnable app (chat, streaming, a tool round trip, a wrong key and an unknown model id), a local stand-in shaped like Novita's live responses, and tests. Its `run_e2e.sh` installs the pinned versions in a virtual environment, runs the tests, and exports to your collector.
+
+```bash
+cd examples/providers/novita-ai
+export FI_API_KEY="YOUR_API_KEY" FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_BASE_URL="http://localhost:4318"   # your collector, if self-hosted
+./run_e2e.sh                                   # local stand-in, no Novita account needed
+
+export NOVITA_API_KEY="YOUR_NOVITA_API_KEY"
+NOVITA_MODEL="meta-llama/llama-3.1-8b-instruct" NOVITA_TOOLS_MODEL="meta-llama/llama-3.3-70b-instruct" ./run_e2e.sh   # real Novita
+```
+
+With `NOVITA_API_KEY` set, the script calls Novita at `https://api.novita.ai/openai/v1`. It never creates an account. A real run costs money; the live runs for this page used a few thousand tokens on the models above, well under one cent at Novita's listed prices. `NOVITA_TOOLS_MODEL` is only needed when `NOVITA_MODEL` has no function calling. To try the other form from [Which base URL](#which-base-url), add `NOVITA_BASE_URL="https://api.novita.ai/openai"`.
+
+## Troubleshooting
+
+<div style={{ overflowX: 'auto' }}>
+
+| Symptom | Cause and fix |
+| --- | --- |
+| The span says `openai`, not Novita | Known display limit. Look for the project and model, not the provider name |
+| HTTP 401 `FAILED_TO_AUTH` | The key is wrong, missing or deleted. A wrong key on a live chat call returned 401 with "failed to authenticate API key". Novita's [error codes page](https://docs.novita.ai/guides/error) also lists 403 `INVALID_API_KEY` and model-access 403s; no 403 was seen in these runs. The span is an `ERROR` span, and the instrumentor does not retry |
+| HTTP 404 `MODEL_NOT_FOUND` | The model id does not exist for your key. The error body says `model: <id> not found`. Copy the id from the Model Hub or `GET https://api.novita.ai/openai/v1/models` |
+| HTTP 404 `404 page not found` (plain text) | The request path is wrong, for example a doubled `/v1` or a base URL without `/openai`. Use a form from [Which base URL](#which-base-url). The instrumentor does not fix a path |
+| HTTP 400 `model features function calling not support` | The model has no function calling and the request carried `tools`. Pick a model whose `features` include `function-calling`, such as `meta-llama/llama-3.3-70b-instruct` |
+| No spans appear | Install the instrumentor with `tracer_provider=trace_provider` and use the `openai` package. Check `FI_API_KEY`, `FI_SECRET_KEY` and, if self-hosted, `FI_BASE_URL`. See [No traces appearing](/docs/observe/troubleshooting/no-traces-appearing) |
+| A streaming span has no token counts | Novita sent usage on every streamed call in the live runs. If a model does not, pass `stream_options={"include_usage": True}` |
+| `ai-evaluation is not installed, please install it to trace protect` printed at startup | Warning logged by `traceai-openai` on import. It concerns tracing Protect guardrails and did not affect chat tracing in these runs |
+| `pip install` fails on Python 3.14 | traceAI-openai 0.1.10 requires Python below 3.14. Use 3.10 to 3.13 |
+
+</div>
+
+## How this differs from the OpenAI page
+
+The [OpenAI integration](/docs/integrations/traceai/openai) assumes `api.openai.com`. This page assumes a different vendor's endpoint behind the same client: which of Novita's base URLs to use and what each one means, the required `max_tokens`, and what the spans do and do not show for a vendor that is not OpenAI.
+
+## Next steps
+
+- [OpenAI integration](/docs/integrations/traceai/openai) for everything traceAI-openai captures on `api.openai.com`.
+- [No traces appearing](/docs/observe/troubleshooting/no-traces-appearing) if the export does not arrive.
