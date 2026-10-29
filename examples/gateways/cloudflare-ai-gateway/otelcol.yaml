@@ -1,0 +1,111 @@
+# OpenTelemetry Collector (contrib) between Cloudflare AI Gateway's OpenTelemetry exporter and Future AGI.
+#
+# The exporter has four fields: URL, Headers, Authorization (a Secrets Store reference) and Content type.
+# It has no field for resource attributes, and the Future AGI collector rejects any batch whose resource has
+# no `project_name`. This collector fills the gap:
+#   1. accepts OTLP/HTTP (JSON or protobuf, gzip or plain) from the gateway, only with your bearer token,
+#   2. sets the Observe project, so the gateway does not have to,
+#   3. maps Cloudflare's gen_ai.* names to the ones Observe reads (span type, cost, Input and Output panes),
+#   4. keeps prompts, completions and error text OUT unless you opt in,
+#   5. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0 and a real Cloudflare AI Gateway on 2026-10-18.
+# The real span (`cf.aig.request`) carries gen_ai.provider.name, gen_ai.input.messages (the request body as
+# JSON) and gen_ai.output.messages (the response body as JSON). Cloudflare's page names gen_ai.model.provider,
+# gen_ai.prompt_json and gen_ai.completion_json instead; both spellings are handled.
+#
+# Environment:
+#   GATEWAY_TOKEN       secret you invent; paste `Authorization: Bearer <token>` into the exporter's Headers field
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they never go to Cloudflare)
+#   FI_PROJECT_NAME     Observe project every gateway trace goes to
+#   FI_TRACES_URL       full traces URL, for example http://<self-hosted>:4318/v1/traces
+#                       or https://api.futureagi.com/tracer/v1/traces
+#   FI_CAPTURE_CONTENT  optional, default false. `true` lets prompts, completions and error text through.
+
+extensions:
+  # The endpoint has to be reachable from Cloudflare's network, so it must not be open: anyone who finds it
+  # could write into your project.
+  bearertokenauth/gateway:
+    scheme: Bearer
+    token: ${env:GATEWAY_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/gateway
+        # Put TLS in front of this (a load balancer, a reverse proxy, or a platform that terminates TLS for
+        # you, such as Cloud Run), or set `tls:` here with cert_file and key_file.
+
+processors:
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: insert
+
+  transform/cloudflare:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span type in Observe: a span with a model is an LLM span, anything else a chain.
+          - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.request.model"] != nil
+          - set(attributes["fi.span.kind"], "CHAIN") where attributes["gen_ai.request.model"] == nil
+          # Cloudflare sends gen_ai.provider.name; its page names gen_ai.model.provider. Observe reads the first.
+          - set(attributes["gen_ai.provider.name"], attributes["gen_ai.model.provider"]) where attributes["gen_ai.model.provider"] != nil
+          # Cloudflare's own cost estimate (gen_ai.usage.cost). Observe reads gen_ai.cost.total.
+          - set(attributes["gen_ai.cost.total"], attributes["gen_ai.usage.cost"]) where attributes["gen_ai.usage.cost"] != nil
+          # Content ON: fill the Input and Output panes from Cloudflare's JSON strings (request and response bodies).
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.value"], attributes["gen_ai.prompt_json"]) where attributes["gen_ai.prompt_json"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.completion_json"]) where attributes["gen_ai.completion_json"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.mime_type"], "application/json") where attributes["input.value"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.mime_type"], "application/json") where attributes["output.value"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): the prompt and completion in both of Cloudflare's spellings and in the
+          # other OpenTelemetry GenAI spellings, indexed keys included. Content ON keeps nothing twice.
+          - delete_key(attributes, "gen_ai.input.messages")
+          - delete_key(attributes, "gen_ai.output.messages")
+          - delete_key(attributes, "gen_ai.prompt_json")
+          - delete_key(attributes, "gen_ai.completion_json")
+          - delete_matching_keys(attributes, "^gen_ai\\.(prompt|completion|input\\.messages|output\\.messages)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Error text can echo the request. Keep the fact of the error, not the words.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Future AGI reads at most 16 MiB per request, so batching keeps requests small.
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # plain bodies work on every Future AGI version; self-hosted before v1.56.0 rejects gzip
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/gateway]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; the gateway sends traces only
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/cloudflare, batch]
+      exporters: [otlp_http/future_agi]

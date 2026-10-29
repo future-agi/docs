@@ -1,0 +1,126 @@
+---
+title: "Send OpenLIT Traces to Future AGI"
+description: "Point OpenLIT's OTLP exporter at Future AGI with openlit.init(). A recipe, not a package: install steps, what is captured, privacy defaults, tested versions and limitations."
+---
+
+OpenLIT already exports OpenTelemetry traces over OTLP/HTTP. There is no traceAI package for it and no adapter: you call `openlit.init()` with the Future AGI endpoint, your keys and a project name, and the spans land in Observe.
+
+<Note>
+This recipe supports Python 3.10–3.13 with `openlit` 1.45.0 and `openai` 2.54.0, using synchronous OpenAI Chat Completions over OTLP/HTTP. The recorded local-stack run used Python 3.12; the compatibility checks used Python 3.10–3.13. Python 3.9 is outside this recipe’s supported scope.
+</Note>
+
+## 1. Install
+
+```bash
+pip install "openlit==1.45.0" "openai==2.54.0"
+```
+
+OpenLIT 1.45.0 requires `openai>=1.92.0,<3.0.0`, so stay on the 2.x line.
+
+## 2. Configure
+
+See the runnable [app.py recipe](https://github.com/future-agi/traceAI/blob/dev/python/examples/openlit/src/app.py). For the inline setup below, first create an empty local pricing table so initialization does not download one:
+
+```bash
+printf '{}\n' > empty_pricing.json
+export OPENLIT_PRICING_JSON="$PWD/empty_pricing.json"
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://YOUR_FUTURE_AGI_COLLECTOR_ORIGIN"   # origin only, no path
+export OTEL_RESOURCE_ATTRIBUTES="project_name=my-chatbot,project_type=observe"
+```
+
+```python
+import os
+from urllib.parse import quote
+import openlit
+
+openlit.init(
+    service_name="my-app",
+    otlp_endpoint=os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"],
+    otlp_headers={
+        "x-api-key": quote(os.environ["FI_API_KEY"], safe=""),
+        "x-secret-key": quote(os.environ["FI_SECRET_KEY"], safe=""),
+    },
+    capture_message_content=False,  # OpenLIT's default is True
+    disable_metrics=True,           # Future AGI ingests traces only
+    disable_events=True,            # events go to /v1/logs, which is not served
+    pricing_json=os.environ["OPENLIT_PRICING_JSON"],
+)
+```
+
+Why each setting matters:
+
+| Setting | Reason |
+|---|---|
+| Endpoint is the origin | OpenLIT's exporter always appends `/v1/traces`. A full `.../v1/traces` URL doubles the path and returns 404. |
+| Percent-encoded header values | OpenLIT joins the header dict on commas. Encoding keeps a secret that contains `,` or `=` intact. |
+| `project_name` in `OTEL_RESOURCE_ATTRIBUTES` | `init()` has no resource argument. A batch with no `project_name` is rejected with HTTP 400. |
+| `disable_metrics`, `disable_events` | Metrics and events are sent to `/v1/metrics` and `/v1/logs`, which Future AGI does not serve. |
+| `pricing_json` | Without it, every `init()` downloads a price table from `raw.githubusercontent.com`. Pass a local file (the recipe ships an empty table). |
+
+Then call OpenAI as usual. A short script exports its spans when the process exits.
+
+## 3. What is captured
+
+One chat call produces a `chat <model>` span with `model`, `provider`, input tokens, output tokens and a derived total, plus a child `POST` span from OpenLIT's httpx instrumentation. A tool-calling run adds one `chat` span per model call. Functions you wrap with `@openlit.trace` become spans too.
+
+In the local run, the stored tree was:
+
+```text
+agent                          (@openlit.trace)    kind unknown
+  chat gpt-4o-mini             llm   tokens 75/22
+    POST                       kind unknown
+  lookup_order                 (@openlit.trace)    kind unknown
+  chat gpt-4o-mini             llm   tokens 90/13
+    POST                       kind unknown
+```
+
+A failed call (for example an unknown model) is stored with status `ERROR`.
+
+Storage behavior in Future AGI 1.56.1:
+
+- The collector promotes `gen_ai.input.messages` and `gen_ai.output.messages` into the span's input and output when present, and retains the raw attributes. With message capture off, those message attributes are absent. The older local run recorded empty input/output columns; that result does not describe the 1.56.1 collector.
+- `gen_ai.usage.cost` is not a cost field; cost is empty or computed from the model and token counts by Future AGI's own price table, when configured.
+- `@openlit.trace` spans, and the `POST` spans, have no span-kind attribute and show as `unknown`.
+
+The full key inventory (30 keys on the model-call span) is in the recipe README.
+
+## 4. Privacy defaults and opt-in
+
+OpenLIT captures message content by default (`capture_message_content=True`). The recipe turns it off, and with it off the prompt, answer and system prompt are not exported. To turn content on, pass `capture_message_content=True` (or leave it out).
+
+`capture_message_content=False` is not a full privacy switch. These still reach Future AGI:
+
+- Tool-call arguments the model generated (`gen_ai.tool.args`), which often repeat what the user typed.
+- The `user` argument of `chat.completions.create()` (`gen_ai.request.user`).
+- The function arguments and return value of anything wrapped in `@openlit.trace`.
+- The provider's error body, in the span's status message on a failed call.
+- The full request URL on the `POST` span.
+
+If tool arguments or `user` values can carry personal data, pass `disabled_instrumentors=["openai"]` to `openlit.init()` (no model-call span is then created) or accept that these keys are exported.
+
+In a local run with content off, a unique prompt marker was absent from every stored column; the tool-argument, `user`, `@openlit.trace` and error-text markers were present, as listed above. The stored span events kept only event names and timestamps, not stack traces.
+
+## 5. Using OpenLIT with other Future AGI integrations
+
+- **traceai-openai.** Enabling both on one client gives two LLM spans for one call, and traceai-openai's span carries the prompt and answer even when OpenLIT's content capture is off. Pick one. `disabled_instrumentors=["openai"]` leaves only traceAI's span.
+- **traceAI `register()`.** If `register()` already set a global tracer provider, `openlit.init()` reuses it and adds no exporter of its own (read from source).
+- **Firecrawl.** OpenLIT's Firecrawl instrumentor wraps the v1 `FirecrawlApp` client and ignores the content switch (read from source). The traceAI Firecrawl package wraps the v2 client. Use one.
+
+## 6. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| Nothing arrives, no error | The exporter logs export failures and carries on. Check stderr for `Failed to export spans batch code: 401` (keys) or `400` (no `project_name`). |
+| HTTP 404 | The endpoint includes `/v1/traces`. Use the origin only. |
+| Spans print to the terminal | No endpoint is set; OpenLIT falls back to the console. |
+| Two LLM spans per call | OpenLIT and traceai-openai are both enabled. |
+| No input or output in the trace view | Message capture is off in this recipe. With capture on, Future AGI 1.56.1 promotes the message attributes; check the collector version and exported attributes. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_TRACES_EXPORTER` set | These override the recipe. OpenLIT also writes the endpoint and headers into `os.environ`, so later OTLP exporters in the same process, and child processes, inherit them. |
+
+## 7. Limitations
+
+- Traces only. OpenLIT metrics and events are disabled, not translated.
+- Supported execution is synchronous OpenAI Chat Completions with the pinned versions above. Streaming, embeddings, the Responses API, gRPC and other OpenLIT instrumentors are outside this recipe’s scope.
+- Older OpenLIT versions and Python 3.9 are not supported by this recipe.
