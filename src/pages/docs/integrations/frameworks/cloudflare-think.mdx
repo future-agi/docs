@@ -1,0 +1,460 @@
+---
+title: "Cloudflare Think tracing with Future AGI"
+description: "Send the traces Cloudflare Think already emits (invoke_agent, chat, execute_tool) to Future AGI through a Workers OpenTelemetry destination and your own OpenTelemetry Collector. No package and no wrapper. Covers what is captured, the payloads-off default, and the opt-in."
+---
+
+## About
+
+This page is for **Cloudflare Think**: npm package `@cloudflare/think`, directory `packages/think` in [cloudflare/agents](https://github.com/cloudflare/agents), MIT. Think is an agent framework that runs as a Durable Object on Cloudflare Workers.
+
+Think traces itself. When Workers tracing is on, every turn produces an `invoke_agent` span with a `chat` span per model call and an `execute_tool` span per tool call, using the OpenTelemetry GenAI attribute names ([Cloudflare: Tracing](https://developers.cloudflare.com/agents/runtime/operations/observability/tracing/)). You do not add a Future AGI package or wrap anything. You send those spans out of Cloudflare with a **Workers OpenTelemetry destination**, through an **OpenTelemetry Collector that you run**, into Future AGI:
+
+```text
+Think agent (Durable Object)            emits invoke_agent / chat / execute_tool
+  └─ Workers tracing                    observability.traces.enabled = true
+      └─ OTLP destination "future-agi"  Cloudflare dashboard: your collector URL + one bearer header
+          └─ your OpenTelemetry Collector (otelcol.yaml below)
+                sets project_name, marks agent / LLM / tool spans, links sessions,
+                keeps prompts and tool payloads out unless you opt in
+              └─ Future AGI  /tracer/v1/traces  (X-Api-Key, X-Secret-Key)
+```
+
+The collector is not optional. A Workers destination has a name, an endpoint and custom headers, and no field for resource attributes ([Cloudflare: Exporting OpenTelemetry data](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/), read 2026-10-16). Future AGI rejects a batch whose resource has no `project_name`, so something between Cloudflare and Future AGI has to add it. That collector is yours to run; Future AGI does not host one for you.
+
+### How this differs from other pages
+
+- **Cloudflare Agents SDK (`agents`) and AI Chat (`@cloudflare/ai-chat`).** Those are separate packages with their own setup: a plain `Agent` or an AI Chat agent does not trace its model calls unless you wrap the AI SDK. Think does it for you, so this page has no wrapper step. The destination and collector below are the same for all three.
+- **Cloudflare Workers AI.** That page sends spans from inside the Worker with the OpenTelemetry JS SDK, for Workers that call `env.AI.run` directly. This page uses Cloudflare's own tracing and export instead, because Think already emits the spans.
+- **traceAI packages.** traceAI instruments client libraries in your process. Nothing here uses traceAI.
+
+<Note>
+**Live vendor verification (2026-10-18).** The whole path on this page ran for real: the example agent deployed with `wrangler deploy` to a Workers Paid account, a Traces destination pointing at this page's collector on a public HTTPS host (its pipeline unchanged; only the listen port differed, plus a test-only copy of the incoming payload to the host's log so we could read what Cloudflare sent), and Future AGI cloud (`api.futureagi.com`). Turns with a tool call, a second turn in the same conversation, a tool that throws, a failed model call and the payload switches on all arrived as `invoke_agent > chat + execute_tool` traces with model, tokens, cost, session and ERROR status. The destination was created with Cloudflare's API (same fields as the dashboard form in step 5). For the supported scope, see [Limitations](#limitations).
+</Note>
+
+| | |
+| --- | --- |
+| Tested with | `@cloudflare/think` **0.20.2** (published 2026-10-09; pinned for this recipe) with `agents` 0.28.1, and `@cloudflare/think` 0.20.0 with `agents` 0.26.0. `ai` 7.0.142, `@ai-sdk/openai` 4.0.95, `zod` 4.6.7. `wrangler` 4.151.1 with `workerd` 1.20261012.1, `compatibility_date` 2026-10-01, Node 26.8.1. `otel/opentelemetry-collector-contrib` 0.162.0. |
+| Model | OpenAI `gpt-4o-mini` in the live run, a model behind an OpenAI-compatible endpoint in the local runs (AI SDK `createOpenAI(...).chat(model)`). Workers AI string models are outside this recipe's verified scope; Cloudflare documents `getModel()` returning a `"@cf/..."` id. |
+| Turn API | `runTurn()` from a Durable Object RPC method. The supported path here is Durable Object RPC; WebSocket chat turns (`useAgentChat`), sub-agents and tool approvals are outside its scope. |
+| Cloudflare | Live, 2026-10-18: Workers Paid account, Worker deployed to `workers.dev`, Traces destination, `head_sampling_rate: 1`, `persist: false`. Before that (2026-10-16) the same agent ran under `wrangler dev` with a stand-in for the destination. |
+| Future AGI | Future AGI cloud (live run, 2026-10-18), and a self-hosted stack on localhost (local runs and a replay of the recorded Cloudflare export, 2026-10-16 and 2026-10-18). |
+| Cloudflare docs used | [Tracing (Agents)](https://developers.cloudflare.com/agents/runtime/operations/observability/tracing/), [Exporting OpenTelemetry data](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/), [Spans and attributes](https://developers.cloudflare.com/workers/observability/traces/spans-and-attributes/), [Custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/), [Local Explorer](https://developers.cloudflare.com/workers/local-development/local-explorer/), all read 2026-10-16. |
+| Source | [examples/frameworks/cloudflare-think](https://github.com/future-agi/docs/tree/main/examples/frameworks/cloudflare-think): the agent, `wrangler.jsonc`, `otelcol.yaml`, unit tests and the end-to-end script. |
+
+### What Cloudflare requires
+
+OpenTelemetry export is a Workers Paid feature. On 2026-10-16 Cloudflare's export page said: Workers Free, traces "Not available"; Workers Paid, 10 million events per month included and $0.05 per million after; "starting on October 1, 2026, tracing will be billed". The Agents tracing page adds that, from December 1, 2026, agent traces count toward Cloudflare Observability ingestion and storage. `persist: false` (below) keeps traces out of Cloudflare's own storage. Prices change; check Cloudflare's pages.
+
+## 1. Install
+
+```bash
+npm install --save-exact @cloudflare/think@0.20.2 agents@0.28.1 ai@7.0.142 @ai-sdk/openai@4.0.95 zod@4.6.7
+npm install -D --save-exact wrangler@4.151.1
+```
+
+`@ai-sdk/openai` is only for this example's model. With Workers AI, `getModel()` can return a model id string and Think resolves it through its bundled `workers-ai-provider`.
+
+## 2. Turn on tracing and name the destination
+
+```jsonc title="wrangler.jsonc"
+{
+  "name": "think-weather",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "MODEL": "gpt-4o-mini", "OPENAI_BASE_URL": "https://api.openai.com/v1" },
+  "durable_objects": { "bindings": [{ "name": "WeatherAgent", "class_name": "WeatherAgent" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WeatherAgent"] }],
+  "observability": {
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "destinations": ["future-agi"],
+      "persist": false
+    }
+  }
+}
+```
+
+- `enabled: true` is what makes Think emit its spans. Without it there is nothing to export.
+- `destinations` names the destination you create in step 5. The names must match.
+- `head_sampling_rate: 1` traces every request. Lower it in production; an unsampled request has no trace at all.
+- `persist: false` exports without also storing the traces in Cloudflare's dashboard.
+
+## 3. Write the agent
+
+Nothing in the agent is about tracing. The two `store*` properties decide whether Cloudflare records message and tool payloads; both default to `false` and this page leaves them off (see [Privacy](#privacy)).
+
+```ts title="src/agent.ts"
+// A Think agent with one tool. Nothing in this file is about tracing: Think emits the
+// invoke_agent / chat / execute_tool spans itself when `observability.traces.enabled` is true
+// in wrangler.jsonc. The only tracing decision here is the two payload switches.
+import { Think } from "@cloudflare/think";
+import { createOpenAI } from "@ai-sdk/openai";
+import { tool } from "ai";
+import { z } from "zod";
+
+export interface Env {
+  WeatherAgent: DurableObjectNamespace<WeatherAgent>;
+  // Any OpenAI-compatible endpoint. With Workers AI, return a "@cf/..." model id from getModel() instead.
+  OPENAI_BASE_URL: string;
+  OPENAI_API_KEY: string;
+  MODEL: string;
+  // This example's own switch for the payload opt-in (not a Cloudflare setting). See the page.
+  THINK_STORE_PAYLOADS?: string;
+}
+
+export class WeatherAgent extends Think<Env> {
+  // Cloudflare's default for both is false: no messages on `chat` spans, no arguments or results on
+  // `execute_tool` spans. In your own agent, `override storeMessages = true` is the whole opt-in.
+  override storeMessages = this.env.THINK_STORE_PAYLOADS === "true";
+  override storeTools = this.env.THINK_STORE_PAYLOADS === "true";
+
+  getModel() {
+    return createOpenAI({ baseURL: this.env.OPENAI_BASE_URL, apiKey: this.env.OPENAI_API_KEY }).chat(this.env.MODEL);
+  }
+
+  getSystemPrompt() {
+    return "You answer weather questions. Call the get_weather tool once, then answer in one sentence.";
+  }
+
+  getTools() {
+    return {
+      get_weather: tool({
+        description: "Current weather for a city",
+        inputSchema: z.object({ city: z.string() }),
+        execute: async ({ city }) => {
+          if (city.toLowerCase().includes("atlantis")) throw new Error(`no weather station for ${city}`);
+          return { city, forecast: "sunny", celsius: 21 };
+        },
+      }),
+    };
+  }
+
+  // One turn, called over Durable Object RPC from the Worker below.
+  async ask(text: string) {
+    const result = await this.runTurn({ input: text });
+    return { status: result.status };
+  }
+}
+```
+
+## 4. Tag the request span with the conversation (optional, recommended)
+
+Each turn's trace starts at the Worker's request span, not at `invoke_agent`, and Future AGI takes a trace's session from its root span. One line in the Worker puts the conversation on that root, so the whole trace is linked to the conversation's session. Think's own spans carry the same value, the Durable Object id, as `gen_ai.conversation.id`.
+
+```ts title="src/index.ts"
+// Worker entry: POST /turn?conversation=<id> with {"text": "..."} runs one Think turn.
+// One conversation id = one Durable Object = one gen_ai.conversation.id in the traces.
+import { tracing } from "cloudflare:workers";
+import { getAgentByName } from "agents";
+import { WeatherAgent, type Env } from "./agent";
+
+export { WeatherAgent };
+
+export default {
+  async fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/turn") return new Response("not found", { status: 404 });
+    const conversation = url.searchParams.get("conversation") || "default";
+    const { text } = (await request.json()) as { text?: string };
+    if (!text) return new Response("text is required", { status: 400 });
+    // Optional, recommended: put the conversation on the Worker's request span, the root of the trace,
+    // so Future AGI links the whole trace (not only Think's spans) to the conversation's session.
+    // Think's own spans carry the same value: the Durable Object id.
+    tracing.getActiveSpan()?.setAttribute("gen_ai.conversation.id", env.WeatherAgent.idFromName(conversation).toString());
+    const agent = await getAgentByName(env.WeatherAgent, conversation);
+    return Response.json(await agent.ask(text));
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+`tracing.getActiveSpan()` returns the invocation's root span when no custom span is active ([Custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/)). Without this line the turn still arrives; only the root request span has no session.
+
+## 5. Run the collector and create the destination
+
+The collector config:
+
+```yaml title="otelcol.yaml"
+# OpenTelemetry Collector (contrib) between Cloudflare Workers Observability and Future AGI, for Think agents.
+#
+# A Workers OTLP destination has a name, an endpoint and custom headers. It has no field for resource
+# attributes, and Future AGI rejects any batch whose resource has no `project_name`. This collector:
+#   1. accepts OTLP/HTTP (Cloudflare sends gzip-compressed JSON, not binary protobuf) only with your bearer token,
+#   2. drops the test span Cloudflare sends when you create the destination, and the Durable Object storage
+#      spans Workers records around every turn (optional, see below),
+#   3. sets the Observe project (`project_name`), which the destination cannot,
+#   4. marks Think's spans as agent / LLM / tool, links each conversation as a session, turns
+#      Think's `error.type` into an error status, and counts each turn's tokens once,
+#   5. keeps prompts, outputs, tool arguments and results, and error text OUT unless you opt in,
+#   6. forwards uncompressed OTLP to Future AGI with the two Future AGI key headers.
+#
+# Tested with otel/opentelemetry-collector-contrib 0.162.0, receiving a real Workers destination export (2026-10-18).
+#
+# Environment:
+#   COLLECTOR_TOKEN             a secret you invent; the Workers destination sends `Authorization: Bearer <it>`
+#   FI_API_KEY, FI_SECRET_KEY   Future AGI keys (they stay here; they never go to Cloudflare)
+#   FI_PROJECT_NAME             the Observe project every Think trace goes to
+#   FI_TRACES_URL               https://api.futureagi.com/tracer/v1/traces, or your self-hosted collector URL
+#   FI_CAPTURE_CONTENT          optional, default false. `true` forwards the payloads Think recorded
+#                               (only present if the agent sets storeMessages / storeTools) and error text.
+
+extensions:
+  # Cloudflare's network has to reach this endpoint, so it must not be open: anyone who finds it could
+  # write into your project. Put TLS in front of it (a load balancer or reverse proxy), or set `tls:` below.
+  bearertokenauth/cloudflare:
+    scheme: Bearer
+    token: ${env:COLLECTOR_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/cloudflare
+
+processors:
+  # Creating a destination makes Cloudflare send one test span ("Hello from Cloudflare 👋 (<destination name>)",
+  # resource telemetry.sdk.name = pre-flight-check). Without this it shows up as a one-span trace in your project.
+  filter/preflight:
+    error_mode: ignore
+    traces:
+      span:
+        - resource.attributes["telemetry.sdk.name"] == "pre-flight-check"
+
+  # Workers traces every Durable Object storage call: about 250 leaf spans per Think turn, with no
+  # GenAI content. Remove this processor (and its name in the pipeline) to keep them.
+  filter/storage_spans:
+    error_mode: ignore
+    traces:
+      span:
+        - IsMatch(name, "^durable_object_storage_")
+
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: upsert
+
+  transform/think:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Span types in Observe. Future AGI already reads `chat` and `execute_tool`; it does not read
+          # `invoke_agent` yet, so all three are set here.
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "chat"
+          - set(attributes["fi.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "execute_tool"
+          # invoke_agent repeats the token totals of its chat spans. Future AGI adds up tokens and cost over every
+          # span of a trace, so keep the turn totals under other names and count tokens once, on the chat spans.
+          - set(attributes["think.turn.input_tokens"], attributes["gen_ai.usage.input_tokens"]) where attributes["gen_ai.operation.name"] == "invoke_agent" and attributes["gen_ai.usage.input_tokens"] != nil
+          - set(attributes["think.turn.output_tokens"], attributes["gen_ai.usage.output_tokens"]) where attributes["gen_ai.operation.name"] == "invoke_agent" and attributes["gen_ai.usage.output_tokens"] != nil
+          - delete_matching_keys(attributes, "^gen_ai\\.usage\\.") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          # One Think conversation (one Durable Object) is one Observe session.
+          - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
+          # Think records a failed model call or tool as `error.type` without a span status.
+          - set(status.code, STATUS_CODE_ERROR) where attributes["error.type"] != nil
+          # Query strings can carry user input or API keys (some providers take `?key=`). Always cut them:
+          # Workers puts the query string both in url.full and on its own in url.query.
+          - replace_pattern(attributes["url.full"], "[?#].*$", "") where attributes["url.full"] != nil
+          - delete_key(attributes, "url.query")
+          # Content ON: fill the Input and Output panes from Think's payload attributes.
+          - set(attributes["input.value"], attributes["gen_ai.input.messages"]) where attributes["gen_ai.input.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["input.value"], attributes["gen_ai.tool.call.arguments"]) where attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          - set(attributes["output.value"], attributes["gen_ai.tool.call.result"]) where attributes["gen_ai.tool.call.result"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
+          # Content OFF (the default): even if the agent sets storeMessages / storeTools (for example to
+          # use Cloudflare's own session replay), the payloads stop here.
+          - delete_matching_keys(attributes, "^gen_ai\\.(input\\.messages|output\\.messages|system_instructions|tool\\.call\\.arguments|tool\\.call\\.result|tool\\.definitions)$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Error text can echo the request. Keep the fact of the error, not the words.
+          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  # Content OFF: drop every other span event (console output attributed to a span, for example).
+  filter/span_events:
+    error_mode: ignore
+    traces:
+      spanevent:
+        - name != "exception" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 2s
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # optional: Future AGI also accepts gzip bodies
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/cloudflare]
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/preflight, filter/storage_spans, resource/future_agi, transform/think, filter/span_events, batch]
+      exporters: [otlp_http/future_agi]
+```
+
+Run it where Cloudflare can reach it over HTTPS (behind your load balancer or reverse proxy):
+
+```bash
+export COLLECTOR_TOKEN="$(openssl rand -hex 24)"    # paste the same value into the destination below
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+
+docker run -d --name futureagi-otelcol -p 4318:4318 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+  -e COLLECTOR_TOKEN -e FI_API_KEY -e FI_SECRET_KEY \
+  -e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}" \
+  -e FI_PROJECT_NAME=think-weather \
+  -e FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces \
+  otel/opentelemetry-collector-contrib:0.162.0
+```
+
+Self-hosted Future AGI: set `FI_TRACES_URL` to your own traces URL. Keep `compression: none` on releases before v1.56.0, which do not decode gzip bodies.
+
+Then, in the Cloudflare dashboard, open your account's **Workers Observability** section (Workers & Pages → Observability) and add a destination ([Cloudflare's steps](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/#creating-a-destination)):
+
+| Field | Value |
+| --- | --- |
+| Destination Name | `future-agi` (the name in `wrangler.jsonc`) |
+| Destination Type | Traces |
+| OTLP Endpoint | `https://<your-collector-host>/v1/traces` |
+| Custom Headers | `Authorization` = `Bearer <COLLECTOR_TOKEN>` |
+
+Or with Cloudflare's API (this is how the live run created it; the token needs permission to edit Workers Observability):
+
+```bash
+curl -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/observability/destinations" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'content-type: application/json' \
+  -d '{"name": "future-agi", "enabled": true,
+       "configuration": {"type": "logpush", "logpushDataset": "opentelemetry-traces",
+                         "url": "https://<your-collector-host>/v1/traces",
+                         "headers": {"Authorization": "Bearer <COLLECTOR_TOKEN>"}}}'
+```
+
+When you create the destination, Cloudflare sends one test span, `Hello from Cloudflare 👋 (<destination name>)`, to check the endpoint. The collector answers it and `filter/preflight` drops it, so it does not show up as a trace in your project.
+
+The Future AGI keys stay on the collector. Cloudflare holds the collector token and your model API key as a Worker secret. Before deploying, set the model secret interactively (paste only the key when Wrangler prompts; do not put it in `wrangler.jsonc` or source control):
+
+```bash
+npx wrangler secret put OPENAI_API_KEY
+npx wrangler deploy
+```
+
+`MODEL` and `OPENAI_BASE_URL` are Worker vars in the config above, read by `getModel()`. For another OpenAI-compatible provider, change both vars and use that provider's key. Exporting these values in your shell alone does not configure the deployed Worker. For local development, put `OPENAI_API_KEY` in a git-ignored `.dev.vars` file and use `npx wrangler dev`.
+
+ Cloudflare says events can take a few minutes to reach a destination; in the live run they reached the collector 1.5 to 3 minutes after each turn.
+
+## 6. Check the trace
+
+Send a turn to the deployed Worker:
+
+```bash
+curl -X POST "https://think-weather.<your-subdomain>.workers.dev/turn?conversation=demo-1" \
+  -H 'content-type: application/json' -d '{"text": "What is the weather in Lisbon?"}'
+```
+
+In your Observe project each turn is one trace:
+
+This is the shape Cloudflare exported in the live run:
+
+```text
+POST                                          the Worker request (root): session linked by step 4
+├─ durable_object_subrequest > jsRpc… > jsrpc       getAgentByName: agent_initialization, think_start, …
+└─ durable_object_subrequest > jsRpc… > jsrpc > jsRpcCall
+   └─ chat_turn                               Think's turn (cloudflare.agents.turn.status: completed / error)
+      └─ invoke_agent WeatherAgent            agent: model, ERROR if the turn failed
+         ├─ chat gpt-4o-mini                  LLM: model, provider, input / output / cached tokens, cost
+         │  └─ fetch                          the call to the model endpoint
+         ├─ execute_tool get_weather          tool: name, call id, ERROR if the tool threw
+         └─ chat gpt-4o-mini
+            └─ fetch
+```
+
+| Think span | Future AGI type | What you see |
+| --- | --- | --- |
+| `invoke_agent <AgentClass>` | agent | Duration, model, provider, finish reason, tool count, agent name (`gen_ai.agent.name`), Durable Object name (`gen_ai.agent.id`), session. The turn's token totals stay on the span as `think.turn.input_tokens` and `think.turn.output_tokens` (see the note below) |
+| `chat <model>` | llm | Model, provider (`openai` for this example's AI SDK provider), input, output and cached tokens, cost when Future AGI has a price for the model (it did for `gpt-4o-mini`), finish reason, time to first chunk, response id, session |
+| `execute_tool <tool>` | tool | Tool name, call id, duration, ERROR status and `error.type` when the tool throws |
+| Workers and Think internals (`POST`, `jsRpc…`, `chat_turn`, `think_start`, outbound `fetch`, …) | unknown | Timing and the runtime's own attributes. 31 to 34 spans per turn in the live run, after the collector drops the storage spans |
+
+`invoke_agent` repeats the token totals of its `chat` spans in `gen_ai.usage.*`. Future AGI adds up tokens and cost over every span of a trace, so with those attributes left in place each turn's tokens and cost counted twice (the live run's first turn showed 4,044 tokens for 2,022 used). The collector moves them to `think.turn.*` names; the trace total then equals what the model reported.
+
+A failed model call (in the live run, an unknown model id that OpenAI answered with HTTP 404) shows ERROR on `chat`, on `invoke_agent` and on the outbound `fetch`, with `error.type` `AI_APICallError`. A tool that throws shows ERROR on its `execute_tool` span only, with `error.type` `Error`; the model sees the error and the turn can still complete. Cloudflare exported no span events in either case, and Think records no error text, also with `storeTools` on (the failed `execute_tool` span then has the arguments and no result): the error message is not on the span.
+
+Cloudflare sent each trace in several requests (gzip-compressed OTLP/HTTP JSON): the Durable Object's spans first, the Worker's request spans up to a minute later. Future AGI joins them by trace id. After we deleted and re-created the destination under the same name, every request arrived twice; Future AGI kept one copy of each span. The resource of every span names the Worker: `service.name` and `faas.name` are the Worker name, plus `faas.version`, `cloudflare.script_version.id`, `cloudflare.colo`, `cloud.provider: cloudflare`, `cloud.platform: cloudflare.workers` and, on the Durable Object's spans, `cloudflare.entrypoint` (the agent class).
+
+## Privacy
+
+Two switches decide whether prompts and tool payloads reach Future AGI, and both are off by default:
+
+| | `storeMessages` / `storeTools` off (Think default) | `storeMessages` / `storeTools` on |
+| --- | --- | --- |
+| **`FI_CAPTURE_CONTENT` unset (collector default)** | Cloudflare records no payloads. Nothing to forward. | Cloudflare records payloads (for its own session replay, for example). The collector deletes them before Future AGI. |
+| **`FI_CAPTURE_CONTENT=true`** | Nothing to forward. | Payloads reach Future AGI and fill the Input and Output panes of `chat` and `execute_tool` spans. |
+
+To opt in, set both properties on the agent class, as Cloudflare documents, and redeploy the Worker. Run `export FI_CAPTURE_CONTENT=true`, remove the collector with `docker rm -f futureagi-otelcol`, then rerun the Docker command above. Recreate the container after each toggle change; restarting an existing container keeps its original environment:
+
+```ts
+export class WeatherAgent extends Think<Env> {
+  override storeMessages = true; // gen_ai.input.messages, gen_ai.output.messages on chat spans (includes the system prompt)
+  override storeTools = true;    // gen_ai.tool.call.arguments, gen_ai.tool.call.result on execute_tool spans
+}
+```
+
+Cloudflare's own warning applies: "Message and tool payloads can contain personally identifiable information. Only record payloads that are safe to store." Cloudflare also says long payloads may be truncated by span size limits.
+
+With content off (the default), the collector also:
+
+- cuts query strings and fragments from every `url.full` and deletes `url.query`, where Workers also records the query string (always, also with content on, because some providers take an API key as `?key=`),
+- replaces any span status message with `error` and deletes `exception.message` and `exception.stacktrace` from exception events,
+- drops span events other than exceptions.
+
+What is exported in both modes: span names and timing, model ids, token counts, tool names and call ids, `error.type` names, the agent class name, the Durable Object name you pass to `getAgentByName` (`gen_ai.agent.id`, `cloudflare.agents.session.name`), the Durable Object id, and the platform attributes Workers records (for example the request method and path, the outbound model endpoint URL without its query string, `cloudflare.ray_id`, and the caller's `user_agent.original`, `cloudflare.asn` and `geo.*` attributes, down to the city, listed in [Spans and attributes](https://developers.cloudflare.com/workers/observability/traces/spans-and-attributes/)). Do not name Durable Objects after email addresses or user names. To drop more platform attributes, add `delete_key` or `delete_matching_keys` lines to `transform/think`, for example `delete_matching_keys(attributes, "^geo\\.")`.
+
+How this was checked: each run put a random marker in the user's question and in the request's query string; the model passed it to the tool as the city name and repeated it in the answer, and a failing tool put it in its error text. We then counted the marker in every column of every ClickHouse table and Postgres table of the Future AGI project (span attributes, resource attributes, span events, status message, input, output, sessions). In the local runs (2026-10-16), with both switches off: 0 occurrences stored. With `storeMessages`/`storeTools` on and the collector default: 0 stored, although the spans sent to the collector carried it. With both on: stored in the span attributes and the Input and Output panes. In all runs the Future AGI keys, the model key, the collector token, the local user name, home directory and host name were in no stored row.
+
+The live run (2026-10-18) found one gap the local runs could not: the real Workers export also carries the query string in `url.query`, which the first version of this config did not remove, so the marker from the query string was stored. The `delete_key(attributes, "url.query")` line closes it. We replayed the recorded Cloudflare export through the config on this page into a self-hosted Future AGI: with the collector default the marker, the system prompt and the tool result were stored 0 times, also from the turn with `storeMessages`/`storeTools` on; with `FI_CAPTURE_CONTENT=true` they filled the Input and Output panes. A last live run with this config and both payload switches on stored none of them in Future AGI cloud.
+
+## Limitations
+
+- **Cloudflare's export is a beta.** Cloudflare says span and attribute names may change during the tracing beta ([Known limitations](https://developers.cloudflare.com/workers/observability/traces/known-limitations/)). The names on this page are what it exported on 2026-10-18.
+- **`invoke_agent` is mapped by the collector.** Future AGI maps `gen_ai.operation.name` `chat` to LLM and `execute_tool` to tool on its own, not `invoke_agent`. Without the `fi.span.kind` lines in `transform/think` the turn span shows type "unknown".
+- **Input and Output panes need the opt-in.** Future AGI fills them from `input.value` / `output.value`, which the collector sets from Think's payload attributes only when content is on. The `invoke_agent` span has no payload.
+- **Cost comes from Future AGI's price list.** Think sends no cost attribute. Future AGI computes cost from the model and tokens when it knows the model (it did for `gpt-4o-mini`); a model it has no price for shows no cost.
+- **The trace list shows the Worker request.** Each row is the root `POST` span: its status is the HTTP request's, and it carries no tokens. A turn that failed while the Worker still answered 200 shows UNSET in the list and ERROR on `invoke_agent` inside the trace.
+- **Platform spans.** About 30 Workers and Think internal spans per turn, typed "unknown". The collector drops the Durable Object storage spans (about 250 per turn, all leaves); remove `filter/storage_spans` to keep them.
+- **Logs are not handled.** Think writes model errors to `console.error`. Workers exports logs only to a Logs destination; Future AGI ingests traces only, so do not point a Logs destination at this collector. In the live run Cloudflare attached no console output (and no exception events) to exported spans; the collector would drop non-exception events by default anyway.
+- **Delivery is minutes, not seconds.** Spans reached the collector 1.5 to 3 minutes after each turn, one trace spread over several requests.
+- **Outside the verified scope:** WebSocket chat turns (`useAgentChat`), sub-agents, `tool_approval` spans, Workers AI string models, sampling below 1, trace context arriving from a caller, creating the destination in the dashboard (the live run used the API, same fields), and Cloudflare's retention.
+
+## Troubleshooting
+
+- **No traces in the project.** Wait a few minutes first: exports arrived 1.5 to 3 minutes after each turn in our run. Then check the destination's status in the Cloudflare dashboard ("Never run" or "Error"), that the destination name equals the one in `wrangler.jsonc`, and the collector log (`docker logs futureagi-otelcol`). A `401` from the collector means the destination's `Authorization` header does not match `COLLECTOR_TOKEN`. A rejected batch at Future AGI usually means `FI_PROJECT_NAME` is empty or a key is wrong.
+- **A one-span trace "Hello from Cloudflare 👋 (…)".** That is the test span Cloudflare sends when a destination is created. Your collector config predates `filter/preflight`; add it.
+- **Each turn's tokens and cost look doubled.** Your collector config predates the `think.turn.*` lines in `transform/think`; add them.
+- **Spans arrive but there is no `invoke_agent`.** Tracing is off (`observability.traces.enabled`), or the request was not sampled. Payloads being off does not remove spans.
+- **The turn span shows type "unknown".** The `fi.span.kind` statements were removed from `transform/think`.
+- **The trace has no session.** Add the step 4 line, or open the `invoke_agent` span: Think's spans carry the session even without it.
+- **Prompts or tool arguments appear on spans.** `FI_CAPTURE_CONTENT=true` is set on the collector and the agent sets `storeMessages` / `storeTools`.
+- **The collector rejects the body.** Cloudflare sends OTLP/HTTP JSON; the `otlp` receiver above accepts it. Do not put a gRPC-only receiver in front.
+- **Locally, nothing is exported.** Expected: `wrangler dev` records traces in the Local Explorer (press `e`) but does not send them to destinations. The example's `run_e2e.sh` shows how we tested locally.
