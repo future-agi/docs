@@ -47,6 +47,12 @@ class Page(unittest.TestCase):
         self.assertIn("No Anthropic Console destination and no real Managed Agents session", TEXT)
         self.assertIn("an API key with Managed Agents access and billing", TEXT)
 
+    def test_draft_gate_and_explicit_content_toggle(self):
+        self.assertIn("Live destination/session qualification is pending", TEXT)
+        self.assertIn('-e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}"', TEXT)
+        self.assertIn("docker rm -f cma-otelcol", TEXT)
+        self.assertNotRegex(TEXT.lower(), r"not tested|untested|unverified")
+
     def test_both_setup_paths_and_beta_header(self):
         self.assertIn("settings/telemetry-destinations", TEXT)
         self.assertIn("telemetry-destinations-2026-08-11", TEXT)
