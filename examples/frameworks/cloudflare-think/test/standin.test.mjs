@@ -104,7 +104,7 @@ test("forward posts uncompressed OTLP JSON with the bearer header and reports st
   for (const c of calls) {
     assert.equal(c.init.headers["content-type"], "application/json");
     assert.equal(c.init.headers.authorization, "Bearer t0ken");
-    assert.equal(c.init.headers["content-encoding"], undefined, "Future AGI rejects gzip; nothing here compresses");
+    assert.equal(c.init.headers["content-encoding"], undefined, "nothing here compresses");
     assert.ok(JSON.parse(c.init.body).resourceSpans);
   }
 });
