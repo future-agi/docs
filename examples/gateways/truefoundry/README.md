@@ -79,7 +79,7 @@ See the page for the tables. In short, on the local stack tested:
 
 - Client path: agent, LLM, tool, LLM hierarchy; model and tokens from the response; failure as `ERROR`.
 - Content off: no marker, user name, host name or path in the exporter's output or in any stored column. A failed call still exports the error text, and on the wire a stack trace.
-- Gateway export, synthetic: the collector rejects a batch without `project_name` (400), accepts two header pairs or one Basic header, rejects Bearer (401) and gzip (400), and takes a 15 MiB request but not a 17 MiB one (413).
+- Gateway export, synthetic: the collector rejects a batch without `project_name` (400), accepts two header pairs or one Basic header, rejects Bearer (401), answers gzip with 400 (releases before v1.56.0 answered HTTP 400; current releases accept gzip), and takes a 15 MiB request but not a 17 MiB one (413).
 - Model and tokens appear only when the batch carries the `gen_ai.*` attributes, which TrueFoundry writes only with `ENABLE_GEN_AI_OTEL_ATTRIBUTES=true`.
 - The collector recipe removed every content, identity and error-text attribute it lists.
 

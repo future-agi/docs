@@ -4,7 +4,7 @@
   wire_check.py wire.jsonl [--project NAME] [--expect NAME=COUNT ...] [--total N] [--allow-empty] [--allow-duplicates]
 
 Rules, each one printed as PASS/FAIL:
-  uncompressed   no request carried a Content-Encoding (the Future AGI HTTP receiver rejects gzip)
+  uncompressed   no request carried a Content-Encoding (the recipe sends plain bodies)
   key-headers    every request carried X-Api-Key and X-Secret-Key (and, when the tap knew the
                  expected values, they matched)
   project-name   every resource carried project_name (equal to --project when given)

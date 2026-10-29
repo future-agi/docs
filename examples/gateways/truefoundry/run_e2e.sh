@@ -177,7 +177,7 @@ run_native() {
   post --url "$url" --auth bearer --marker TFYH2 --resource "project_name=$p-auth" || note "(expected) Bearer is rejected with 401"
   post --url "$url" --auth wrong  --marker TFYH2B --resource "project_name=$p-auth" || note "(expected) keys that belong to no account, 401"
   post --url "$url" --auth none   --marker TFYH3 --resource "project_name=$p-auth" || note "(expected) no credentials, 401"
-  post --url "$url" --gzip        --marker TFYH4 --resource "project_name=$p-auth" || note "(expected) gzip bodies are rejected with 400"
+  post --url "$url" --gzip        --marker TFYH4 --resource "project_name=$p-auth" || note "(expected before v1.56.0) gzip got HTTP 400; current releases accept gzip"
   post --url "$url" --encoding json --marker TFYH5 --resource "project_name=$p-auth" --resource project_type=observe
   post --url "$FI_BASE_URL/tracer/v1/traces" --marker TFYH6 --resource "project_name=$p-auth" --resource project_type=observe
   if [ -n "${FI_GRPC_TARGET:-}" ]; then

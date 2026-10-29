@@ -65,7 +65,7 @@ class EnvExampleTest(unittest.TestCase):
 
 
 class ScrubCollectorTest(unittest.TestCase):
-    """Future AGI's collector serves traces only and rejects compressed bodies (BRIEF DoD 6)."""
+    """Future AGI's collector serves traces only; the config sends uncompressed bodies (BRIEF DoD 6)."""
 
     def setUp(self):
         self.text = read("collector/otelcol-scrub.yaml")

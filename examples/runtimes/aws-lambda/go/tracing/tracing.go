@@ -86,7 +86,7 @@ func Init(exporter sdktrace.SpanExporter, setGlobal bool) *sdktrace.TracerProvid
 		exp, err := otlptracehttp.New(context.Background(),
 			otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
 			otlptracehttp.WithHeaders(map[string]string{"X-Api-Key": key, "X-Secret-Key": secret}),
-			otlptracehttp.WithCompression(otlptracehttp.NoCompression), // Future AGI rejects gzip bodies
+			otlptracehttp.WithCompression(otlptracehttp.NoCompression), // Compatible with older self-hosted receivers
 			otlptracehttp.WithTimeout(FlushBudget),                     // bounds the exporter's own retries
 		)
 		if err != nil {

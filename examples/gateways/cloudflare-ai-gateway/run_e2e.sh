@@ -139,7 +139,7 @@ run_direct() {
   local d4="CFGD4$(uid)"
   expect "D4 JSON with project_name set by the sender (STAND-IN for a stamp)" 200 CF send --endpoint "$url" "${FIH[@]}" --live --marker "$d4" --resource "project_name=$p" --resource project_type=observe
   expect "D5 protobuf with project_name" 200 CF send --endpoint "$url" "${FIH[@]}" --content-type protobuf --marker "CFGD5$(uid)" --resource "project_name=$p"
-  expect "D6 JSON gzipped" 400 CF send --endpoint "$url" "${FIH[@]}" --gzip --marker "CFGD6$(uid)" --resource "project_name=$p"
+  expect "D6 JSON gzipped (400 before v1.56.0, set FI_EXPECT_GZIP_STATUS=400 for one)" "${FI_EXPECT_GZIP_STATUS:-200}" CF send --endpoint "$url" "${FIH[@]}" --gzip --marker "CFGD6$(uid)" --resource "project_name=$p"
   expect "D7 the /tracer/v1/traces path" 200 CF send --endpoint "$FI_BASE_URL/tracer/v1/traces" "${FIH[@]}" --marker "CFGD7$(uid)" --resource "project_name=$p"
   expect "D8 no prompt in the span" 200 CF send --endpoint "$url" "${FIH[@]}" --scenario no-prompt --marker "CFGD8$(uid)" --resource "project_name=$p"
   sleep 6

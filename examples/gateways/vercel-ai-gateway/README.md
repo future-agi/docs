@@ -92,7 +92,7 @@ Run on 2026-10-18 with `traceAI-openai` 0.1.10, `fi-instrumentation-otel` 1.1.0,
 | Content hidden by `FI_HIDE_*`, shown by default | live marker scans, see Privacy |
 | Gateway key and Future AGI keys never cross | `tests/test_recipe.py`, and a by-value search of the stored rows |
 | A dead collector does not fail the request | `tests/test_recipe.py` |
-| A drain-shaped batch without `project_name` is rejected, with it accepted; Bearer is 401; gzip is refused | `drain/replay_drain.py` against the local collector |
+| A drain-shaped batch without `project_name` is rejected, with it accepted; Bearer is 401; gzip got HTTP 400 (a release before v1.56.0; current releases accept gzip) | `drain/replay_drain.py` against the local collector |
 | Tests pass on `traceAI-openai` 0.1.10 with `openai` 3.35.1 and 1.109.1, and on the open traceAI pull request 249 | three environments; with pull request 249 a live run also showed the model on streamed and failed spans |
 
 | **Not** verified | Why |
