@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'claude-code', name: 'Claude Code', href: '/docs/integrations/coding-agents/claude-code', category: 'coding', summary: 'Forward native CLI telemetry through a privacy-filtering collector.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'pi', name: 'Pi', href: '/docs/integrations/coding-agents/pi', category: 'coding', summary: 'Trace upstream Pi sessions through a local extension.', method: 'Pi extension', logo: 'generic-framework' },
   { id: 'openclaw', name: 'OpenClaw', href: '/docs/integrations/coding-agents/openclaw', category: 'coding', summary: 'Export supported CLI and Gateway agent-turn traces.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'opencode', name: 'OpenCode', href: '/docs/integrations/coding-agents/opencode', category: 'coding', summary: 'Trace terminal agent sessions, model steps and tools.', method: 'OpenCode plugin', logo: 'generic-framework' },
