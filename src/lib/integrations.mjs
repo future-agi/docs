@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'quarkus-langchain4j', name: 'Quarkus LangChain4j', href: '/docs/integrations/traceai/java/quarkus-langchain4j', category: 'java', summary: 'Export synchronous JVM AI-service spans to a self-hosted collector.', method: 'Native OTLP', logo: 'generic-framework' },
   {"id": "cloudflare-ai-chat", "name": "Cloudflare AI Chat", "href": "/docs/integrations/frameworks/cloudflare-ai-chat", "category": "frameworks", "summary": "Trace deployed AIChatAgent chat turns through a collector.", "method": "Workers OTLP", "logo": "generic-framework"},
   { id: 'arconia', name: 'Arconia', href: '/docs/integrations/traceai/java/arconia', category: 'java', summary: 'Export JVM HTTP server spans with an explicit error-detail filter.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'azure-apim', name: 'Azure API Management', href: '/docs/integrations/gateways/azure-apim', category: 'gateways', summary: 'Forward application spans through a Consumption-tier egress policy.', method: 'APIM OTLP egress', logo: 'generic-cloud' },
