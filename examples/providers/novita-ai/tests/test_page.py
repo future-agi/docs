@@ -79,6 +79,10 @@ def test_the_page_explains_privacy_and_provider_label_without_a_test_diary():
     assert "Live vendor verification" not in text and "stand-in" not in text
     assert "`openai`, not Novita" in text
     assert "Open **Observe**" in text
+    assert "traceAI-openai==0.1.10 fi-instrumentation-otel==1.1.0 openai==3.35.1" in text
+    assert "With the pinned versions" in text
+    code = snippet()
+    assert "finally:" in code and "trace_provider.force_flush()" in code and "trace_provider.shutdown()" in code
     for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
         assert name in text
     assert "error messages" in text and "tool definitions" in text

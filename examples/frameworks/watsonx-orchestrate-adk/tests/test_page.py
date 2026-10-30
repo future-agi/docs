@@ -13,7 +13,11 @@ def _blocks(lang: str) -> list[str]:
 
 
 def test_page_shows_the_collector_config_verbatim():
-    assert (EXAMPLE / "otelcol.yaml").read_text() in _blocks("yaml")
+    # Internal version-check history is not part of the customer configuration.
+    config = (EXAMPLE / "otelcol.yaml").read_text().replace(
+        "# Tested with otel/opentelemetry-collector-contrib 0.162.0.\n#\n", ""
+    )
+    assert config in _blocks("yaml")
 
 
 def test_every_python_line_on_the_page_is_in_the_example():
@@ -44,7 +48,7 @@ def test_docker_command_on_the_page_matches_the_tested_image_and_env():
 
 def test_page_states_setup_privacy_and_scope():
     for needle in ("2.18.2", "0.162.0", "langgraph", "## Privacy", "## Troubleshooting", "## Scope",
-                   "KEEP_WXO_CONTENT=true", "traceai-java-watsonx", "External Collector",
+                   "KEEP_WXO_CONTENT=true", "/docs/integrations/traceai/java/llm-providers#ibm-watsonx", "External Collector",
                    "exception stack traces", "private network", "examples/frameworks/watsonx-orchestrate-adk"):
         assert needle in TEXT, needle
     assert "How this was checked" not in TEXT

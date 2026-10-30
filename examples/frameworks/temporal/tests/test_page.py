@@ -47,6 +47,7 @@ def test_front_matter_and_sections():
 def test_page_states_the_example_version_and_plugin_requirements():
     text = page()
     assert "**1.34.0**" in text
+    assert '"temporalio[opentelemetry]==1.34.0"' in text
     assert "add_temporal_spans=True" in text and "default is `False`" in text
     assert "experimental" in text
     assert "create_tracer_provider(sampler, resource, shutdown_on_exit, active_span_processor, id_generator, span_limits)" in text

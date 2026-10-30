@@ -1,6 +1,6 @@
 ---
 title: "LiteLLM Proxy tracing with Future AGI"
-description: "Send LiteLLM Proxy request traces to Future AGI with the proxy's own OpenTelemetry callback: model, tokens, latency and errors for every request. Prompts stay out by default. This is not the traceAI-litellm SDK package. Beta."
+description: "Trace LiteLLM Proxy requests in Future AGI with the proxy's OpenTelemetry v2 callback."
 ---
 
 Trace requests sent through LiteLLM Proxy in Future AGI using the proxy's OpenTelemetry callback. For calls to the LiteLLM Python SDK inside your application, use the [LiteLLM traceAI integration](/docs/integrations/traceai/litellm) instead.
@@ -9,18 +9,9 @@ This guide uses LiteLLM Proxy 1.105.1 and the v2 callback.
 
 ## 1. Pick the callback mode
 
-LiteLLM has two OpenTelemetry implementations for the proxy. Choose one.
+Use the proxy's [OpenTelemetry v2 callback](https://docs.litellm.ai/docs/observability/opentelemetry_v2): set `LITELLM_OTEL_V2=true` and `callbacks: ["otel"]`. It places the HTTP request, authentication and model call in one trace. Additional proxy features can add spans; do not rely on a fixed span count. Do not enable a second tracing callback for the same requests.
 
-| | v2 (use this) | v1 (also works) |
-| --- | --- | --- |
-| Switch | `LITELLM_OTEL_V2=true` plus `callbacks: ["otel"]` | `callbacks: ["otel"]` only |
-| Spans per request | 3: the HTTP request, `auth`, and `chat <model>` | 7 or more: `Received Proxy Server Request`, `auth`, `proxy_pre_call`, two `router`, `litellm_request`, `self` |
-| The LLM call in Observe | Type **LLM**, named `chat <model group>`, with model, provider and tokens | Type **unknown**, named `litellm_request`, with model and tokens |
-| `model` is | the model group your caller sent (`demo-model`) | the provider model the proxy called (`mock-model`) |
-| Health checks (`/health/liveliness`) | not traced | can create traces of their own |
-| Extra request metadata with content off | caller address and user agent on the HTTP span | caller address, user agent and inbound request headers on the LLM span |
-
-v2 is what the rest of this page configures, because Future AGI types its LLM span as an LLM call and it adds the fewest unrelated spans. v1 is covered in [The v1 callback](#the-v1-callback). Do not turn both on.
+If you are migrating from v1, review [The v1 callback](#the-v1-callback), especially its additional data exposure.
 
 ## 2. Install
 
@@ -123,9 +114,9 @@ A Docker `--env-file` takes values literally, so do not put quotes around them. 
 
 ## What you see in Observe
 
-Each request through the proxy is one trace. With the v2 callback it has three spans:
+Open a recent chat-completion request. With the v2 callback, its trace includes an HTTP request, authentication and a model-call span:
 
-```
+```text
 POST /v1/chat/completions      type unknown   the HTTP request to the proxy
 ├─ auth /v1/chat/completions   type unknown   the proxy key check
 └─ chat demo-model             type LLM       the model call: model, provider, tokens, finish reason
@@ -135,9 +126,9 @@ Only the `chat <model>` span is typed as an LLM call. The other two are plain sp
 
 | Signal | Where it is | Notes |
 | --- | --- | --- |
-| Model | `chat` span, `gen_ai.request.model` | The model group your caller sent (`demo-model`), not the provider model. The provider model is the attribute `litellm.provider.model` (`openai/gpt-6-luna`). |
-| Provider | `gen_ai.provider.name` | `openai` for any OpenAI-compatible upstream. |
-| Tokens | `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens` | Present on successful calls, streamed or not. |
+| Model | `chat` span, `gen_ai.request.model` | The model group your caller sent (`demo-model`), not the upstream model. Inspect `litellm.provider.model` for the configured upstream (`openai/gpt-4o-mini` in this example). |
+| Provider | `gen_ai.provider.name` | The provider label reported by LiteLLM. |
+| Tokens | `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens` | Available when the upstream returns usage; a missing value is not zero. |
 | Latency | every span | Streams also carry `gen_ai.response.time_to_first_chunk`. |
 | Errors | `chat` and request spans | Status ERROR, `error.type`, and the message. See [Errors](#errors). |
 | Tools | `gen_ai.tool.<n>.name`, `description`, `parameters` | The tool **definitions** you send. Arguments and results appear only with content capture on. |
@@ -187,15 +178,7 @@ Inspect the exported message attributes on the span. Future AGI's collector serv
 
 ## Errors
 
-A failed model call sets status ERROR on the `chat` span and on the request span, with `error.type` (`InternalServerError` when the upstream is unreachable or returns 5xx) and the provider's message. A request the proxy rejects before the model call fails the `auth` span instead. The caller got HTTP 500 for the first two rows and HTTP 400 for the third:
-
-| Request | Result in Observe |
-| --- | --- |
-| Upstream refuses the connection | `chat <model>` ERROR with `litellm.InternalServerError ... Connection error`, and the request span ERROR. |
-| Upstream returns HTTP 500 | The same two spans, with the provider's text in the message. |
-| A wrong proxy key | The `auth` span and the request span are ERROR; there is no `chat` span, because no model call happened. With no database configured the message is `ProxyException: No connected db.`. |
-
-The proxy retries a failed call before it gives up. The retries are not separate spans in v2; the `chat` span covers them.
+Inspect the failing span's status and `error.type`. A model-call failure appears on the `chat` span; an authentication rejection can occur before any model-call span exists. Provider error text may be exported even with message capture off, so keep the [collector scrub rules](#remove-error-text-stack-traces-and-addresses) if you must suppress it. The caller's HTTP response and retry behavior depend on your proxy configuration and the upstream error.
 
 ## Join a caller's trace
 
@@ -205,16 +188,9 @@ Do not use `OTEL_IGNORE_CONTEXT_PROPAGATION` to stop that. Only the v1 code read
 
 ## The v1 callback
 
-v1 is `callbacks: ["otel"]` without `LITELLM_OTEL_V2`. It also exports to Future AGI with the same endpoint, headers and `project_name` variables, so use it only if you cannot run v2. Differences on 1.105.1:
+Without `LITELLM_OTEL_V2=true`, `callbacks: ["otel"]` uses v1. Its span layout differs and can include health checks; use the vendor's [v1 migration guide](https://docs.litellm.ai/docs/observability/opentelemetry_v2_migration) when updating saved queries.
 
-- More spans. The official image exports 7 per request (`Received Proxy Server Request`, `auth`, `proxy_pre_call`, two `router`, `litellm_request`, `self`). A `pip` install with the FastAPI instrumentor adds the HTTP request span and FastAPI's own internals. Observe types none of them as an LLM call; `litellm_request` carries the model and tokens.
-- `gen_ai.request.model` is the provider model, and the model group is in `litellm.model_group`.
-- Health checks can create traces of their own.
-- A failed request adds a `Failed Proxy Server Request` span.
-- It exports more request metadata with content off: `metadata.requester_ip_address`, `metadata.user_agent`, `hidden_params` (which includes the upstream `api_base`) and the inbound request headers **with their values** in `metadata.requester_metadata` and `metadata.requester_custom_headers`. Custom headers and `X-Forwarded-For` can reach Future AGI in clear. This is the main reason to prefer v2.
-- The scrub config does not remove these v1 attributes.
-
-Header parsing differs too; see [Header rules](#header-rules).
+v1 can export additional request metadata even with content off: `metadata.requester_ip_address`, `metadata.user_agent`, `hidden_params` (including the upstream `api_base`) and inbound headers **with their values** in `metadata.requester_metadata` and `metadata.requester_custom_headers`. Custom headers and `X-Forwarded-For` can reach Future AGI in clear. The linked scrub configuration does **not** remove these v1 attributes. Prefer the v2 setup above; review [Header rules](#header-rules) if you retain v1.
 
 ## Limits
 

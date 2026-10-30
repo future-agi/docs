@@ -1,5 +1,5 @@
 // Static checks on what the page tells you to deploy: otelcol.yaml, wrangler.jsonc, src/index.ts, and that the
-// page shows those files verbatim.
+// page shows the same executable configuration and Worker code.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -122,11 +122,12 @@ test("Worker: a plain Agent that traces the AI SDK with payloads off by default,
 test("page shows the shipped configuration and Worker", { skip: !existsSync(PAGE) && "page not in this checkout" }, () => {
   const page = readFileSync(PAGE, "utf8");
   for (const f of ["otelcol.yaml", "wrangler.jsonc", "src/index.ts"]) {
-    const expected = read(f).trim().replace(
-      "// The Worker as you deploy it. The same file runs locally with `wrangler dev` (run_e2e.sh does that).",
-      "// The Worker as you deploy it."
-    );
-    assert.ok(page.includes(expected), `${f} differs from the page`);
+    const fence = new RegExp('```[^\\n]+ title="' + f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"\\n([\\s\\S]*?)```');
+    const shown = page.match(fence)?.[1];
+    assert.ok(shown, `${f} is missing from the page`);
+    // Documentation comments can differ; compare every executable line unchanged.
+    const code = (text) => text.split("\n").filter((line) => !/^\s*(?:\/\/|#)/.test(line) && line.trim()).join("\n").trim();
+    assert.equal(code(shown), code(read(f)), `${f} differs from the page`);
   }
 });
 

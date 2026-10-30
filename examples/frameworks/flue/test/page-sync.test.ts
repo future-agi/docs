@@ -52,7 +52,9 @@ describe('flue.mdx', () => {
   test('install line lists every OpenTelemetry package the example imports', () => {
     const imports = [...read('../src/telemetry.ts').matchAll(/from '(@opentelemetry\/[^']+)'/g)].map((m) => m[1]);
     const install = /```bash\nnpm install ([^\n]+)\n```/.exec(page)?.[1] ?? '';
-    for (const name of imports) assert.ok(install.includes(name), `${name} in the install line`);
-    assert.ok(install.includes('@flue/opentelemetry'));
+    const packages = install.split(/\s+/);
+    for (const name of [...imports, '@flue/runtime', '@flue/opentelemetry']) {
+      assert.ok(packages.includes(`${name}@${pkg.dependencies[name]}`), `${name} pinned to the example version`);
+    }
   });
 });

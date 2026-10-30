@@ -1,6 +1,6 @@
 //! The docs page shows code from this crate. Every line of a code block labelled `Cargo.toml`,
-//! `src/lib.rs` or `src/main.rs` must exist in that file, so the page cannot drift from the code
-//! that the tests and the end-to-end script run.
+//! `src/lib.rs` or `src/main.rs` must exist in that file, except that the public recipe omits
+//! the companion's test-only shutdown opt-out. All other code remains source-matched.
 
 use std::path::Path;
 
@@ -38,8 +38,16 @@ fn page_code_blocks_match_the_example() {
         let source = std::fs::read_to_string(root.join(&label)).unwrap();
         let source_lines: Vec<&str> = source.lines().map(str::trim).collect();
         for line in lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+            // The public recipe always shuts down; only the companion's loss test can opt out.
+            let source_line = if label == "src/main.rs"
+                && line == "if let Err(err) = provider.shutdown() {"
+            {
+                "if !skip_shutdown && let Err(err) = provider.shutdown() {"
+            } else {
+                line
+            };
             assert!(
-                source_lines.contains(&line),
+                source_lines.contains(&source_line),
                 "{label}: page line not in source: {line}"
             );
             checked += 1;
@@ -73,4 +81,6 @@ fn page_states_versions_and_defaults() {
     assert!(page.contains("Content capture is **off by default**"));
     assert!(page.contains("TRACE_CONTENT=true"));
     assert!(page.contains("/tracer/v1/traces"));
+    assert!(page.contains("if let Err(err) = provider.shutdown() {"));
+    assert!(!page.contains("SKIP_SHUTDOWN"));
 }
