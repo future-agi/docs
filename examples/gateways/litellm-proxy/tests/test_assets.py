@@ -118,7 +118,8 @@ class PageTest(unittest.TestCase):
         self.assertNotRegex(self.text, r"(?m)^\s*(pip|uv pip) install[^\n]*traceAI-litellm")
 
     def test_style_guide_basics(self):
-        self.assertTrue(self.text.split("---", 2)[2].lstrip().startswith("## About"))
+        self.assertIn("Trace requests sent through LiteLLM Proxy", self.text.split("---", 2)[2])
+        self.assertNotIn("Live model verification", self.text)
         self.assertNotIn("—", self.text)  # no em-dashes
         self.assertFalse("PLACEHOLDER" in self.text, "a placeholder is left in the page")
 

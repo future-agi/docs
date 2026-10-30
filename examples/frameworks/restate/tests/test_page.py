@@ -44,6 +44,14 @@ def test_page_states_versions_privacy_and_limits():
         assert needle in TEXT, needle
 
 
+def test_page_links_complete_service_without_verification_diary():
+    assert "examples/frameworks/restate/agent_service.py" in TEXT
+    assert "not a standalone service" in TEXT
+    assert "private network" in TEXT
+    assert "Tested: with the five" not in TEXT
+    assert "Everything on this page was run end to end" not in TEXT
+
+
 def test_page_has_no_local_details():
     for needle in ("/Users/", "localhost:14338", "th8103", "gpt-6"):
         assert needle not in TEXT, needle

@@ -10,7 +10,7 @@ test('the page embeds the helper file exactly', () => {
   assert.ok(page.includes(read('../futureagi-tracing.mjs').trimEnd()));
 });
 
-test('the page states the tested versions and the pinned install', () => {
+test('the page states the recipe version and the pinned install', () => {
   const pkg = JSON.parse(read('../package.json')).dependencies;
   assert.equal(pkg['@openrouter/agent'], '0.11.0');
   assert.ok(page.includes('`@openrouter/agent` 0.11.0'));
@@ -20,6 +20,13 @@ test('the page states the tested versions and the pinned install', () => {
 test('the page states the privacy default and the opt-in', () => {
   assert.ok(page.includes('**Default: metadata only.**'));
   assert.ok(page.includes('FI_CAPTURE_CONTENT=1'));
+});
+
+test('the page describes its scope without a verification diary', () => {
+  assert.ok(page.includes('self-hosted Future AGI instance'));
+  assert.ok(page.includes('one hooks object for each `callModel()`'));
+  assert.ok(!page.includes('Live vendor verification'));
+  assert.ok(!page.includes('How this was checked:'));
 });
 
 test('the example never uses the OpenAI client or mentions Broadcast', () => {

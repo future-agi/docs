@@ -24,47 +24,45 @@ def snippets(text, lang):
 
 def test_the_page_has_the_required_sections(page):
     for heading in (
-        "## About",
         "## Install",
         "## Trace a chat completion",
-        "### Coding Plan is not this page",
-        "### Z.ai's own SDK is not traced",
-        "## What you get",
-        "## What is not captured",
+        "## View the trace",
         "## Privacy",
-        "## Run it yourself",
         "## Troubleshooting",
-        "## How this differs from the OpenAI page",
     ):
         assert heading in page, heading
     assert page.startswith('---\ntitle: "Trace Z.ai chat completions"')
 
 
 def test_the_page_states_version_url_and_provider_label(page):
-    assert "traceAI-openai 0.1.10" in page
     assert page.count(f'base_url="{ZAI_URL}"') == 1
-    assert "pip install traceAI-openai openai" in page
-    assert "`openai`, not Z.ai" in page
+    assert "pip install traceAI-openai==0.1.10 openai==3.31.0" in page
+    assert "**Provider shows `openai`:**" in page
 
 
-def test_the_page_names_the_three_coding_plan_urls_and_zai_sdk(page):
-    for url in CODING_PLAN_URLS:
-        assert f"`{url}`" in page, url
-    assert "zai-sdk" in page and "ZaiClient" in page
-    assert "traceai-zai" in page  # said not to exist
+def test_the_page_uses_the_general_platform_and_openai_client(page):
+    assert "general platform API key" in page
+    assert "https://docs.z.ai/devpack/quick-start" in page
+    assert "rather than substituting `ZaiClient`" in page
     assert "pip install zai-sdk" not in page, "the recipe must not depend on zai-sdk"
+    (code,) = [s for s in snippets(page, "python") if "OpenAIInstrumentor" in s]
+    for url in CODING_PLAN_URLS:
+        assert url not in code, "this example must use the general platform route"
 
 
-def test_the_page_flags_the_stand_in_and_the_unverified_parts(page):
-    assert "`STANDIN`" in page
-    assert "Verified against the real Z.ai general platform" in page
-    assert "Still not proven live" in page
-    assert "Live vendor verification (2026-10-17)" in page
+def test_page_is_customer_facing_and_preserves_data_handling_guidance(page):
+    for phrase in ("STANDIN", "Live vendor verification", "Still not proven live"):
+        assert phrase not in page
+    assert "request, response, and error content" in page
+    assert "Use data approved for tracing" in page
+    assert "illustrated with a sample trace" in page
+    assert "/images/docs/integrations/z-ai-trace-view.png" in page
 
 
-def test_the_page_names_every_hide_setting_the_example_uses(page):
-    for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
-        assert name in page
+def test_optional_masking_links_to_the_client_guide_without_promising_error_redaction(page):
+    assert "[OpenAI integration](/docs/integrations/traceai/openai)" in page
+    assert "masking does not change what you send to Z.ai" in page
+    assert "FI_HIDE_ERROR_DETAILS=true" not in page
 
 
 def test_no_credentials_in_the_page_or_the_example():

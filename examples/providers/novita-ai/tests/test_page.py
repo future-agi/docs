@@ -66,7 +66,7 @@ def test_the_page_and_the_app_agree_on_the_recipe_url(stub):
 
 def test_the_page_names_every_url_form_and_keeps_secrets_out():
     text = PAGE.read_text()
-    for form in (NOVITA_URL, NOVITA_BARE_URL, "https://api.novita.ai/v3/openai"):
+    for form in (NOVITA_URL, NOVITA_BARE_URL):
         assert f"`{form}`" in text
     assert "## Which base URL" in text
     assert chr(0x2014) not in text, "the docs style guide forbids em dashes"
@@ -74,8 +74,11 @@ def test_the_page_names_every_url_form_and_keeps_secrets_out():
     assert not re.search(r"sk[-_][A-Za-z0-9]{16,}", text)
 
 
-def test_the_page_records_the_live_run_and_does_not_claim_a_novita_provider_label():
+def test_the_page_explains_privacy_and_provider_label_without_a_test_diary():
     text = PAGE.read_text()
-    assert "## Live vendor verification (2026-10-18)" in text
-    assert "no request was sent" not in text
+    assert "Live vendor verification" not in text and "stand-in" not in text
     assert "`openai`, not Novita" in text
+    assert "Open **Observe**" in text
+    for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
+        assert name in text
+    assert "error messages" in text and "tool definitions" in text

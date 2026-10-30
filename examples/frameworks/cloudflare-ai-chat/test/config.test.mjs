@@ -93,9 +93,20 @@ test("Worker: extends AIChatAgent, traces the AI SDK with payloads off by defaul
   assert.equal(pkg.dependencies["@cloudflare/ai-chat"], "0.12.1", "the fixture depends on @cloudflare/ai-chat itself");
 });
 
-test("page shows the shipped files verbatim", { skip: !existsSync(PAGE) && "page not in this checkout" }, () => {
+test("page provides a scoped setup without a verification diary", { skip: !existsSync(PAGE) && "page not in this checkout" }, () => {
+  const page = readFileSync(PAGE, "utf8");
+  assert.doesNotMatch(page, /live vendor verification|live run|how this was checked|run_e2e\.sh/i);
+  for (const required of ["Workers Paid", "useAgentChat", "client-side tools", "FI_CAPTURE_CONTENT", "Authorization", "Observe > Tracing"]) {
+    assert.ok(page.toLowerCase().includes(required.toLowerCase()), required);
+  }
+});
+
+test("page shows the shipped files with only editorial comment changes", { skip: !existsSync(PAGE) && "page not in this checkout" }, () => {
   const page = readFileSync(PAGE, "utf8");
   for (const f of ["otelcol.yaml", "wrangler.jsonc", "src/index.ts"]) {
-    assert.ok(page.includes(read(f).trim()), `${f} differs from the page`);
+    const example = read(f).trim()
+      .replace('# Tested with otel/opentelemetry-collector-contrib 0.162.0, behind a real Cloudflare Workers traces destination\n# (2026-10-18).\n#\n', '')
+      .replace('// The Worker as you deploy it. The same file runs locally with `wrangler dev` (run_e2e.sh does that).', '// The Worker as you deploy it.');
+    assert.ok(page.includes(example), `${f} differs from the page`);
   }
 });

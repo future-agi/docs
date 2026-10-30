@@ -67,6 +67,15 @@ def test_arize_snippet_matches_the_variant_script():
         assert line in text and line in variant, line
 
 
+def test_page_describes_setup_without_verification_diary():
+    text = PAGE.read_text(encoding="utf-8")
+    assert "LangGraph adapter" in text
+    assert "FI_HIDE_INPUTS" in text and "FI_HIDE_OUTPUTS" in text
+    assert "mask_sensitive_information=True" in text
+    assert "How that was checked:" not in text
+    assert "Agent Spec source read" not in text
+
+
 def test_install_line_matches_requirements():
     requirements = (EXAMPLE / "requirements.txt").read_text(encoding="utf-8")
     pin = re.search(r"pyagentspec\[langgraph\]==([\d.]+)", requirements).group(1)

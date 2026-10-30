@@ -1,4 +1,4 @@
-"""The docs page is a stop notice. These checks keep it one: pinned facts match the scripts, no setup steps."""
+"""The page preserves the unsupported boundary and actionable privacy warning."""
 import os
 import re
 import unittest
@@ -6,38 +6,38 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 PAGE = os.path.join(ROOT, "src", "pages", "docs", "integrations", "frameworks", "ai-sdk-cpp.mdx")
-SCRIPT = os.path.join(HERE, "..", "check_pin.sh")
-
-
-def read(path):
-    with open(path) as f:
-        return f.read()
 
 
 class PageTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.page = read(PAGE)
-        cls.body = cls.page.split("---", 2)[2]
+        with open(PAGE) as f:
+            cls.page = f.read()
 
-    def test_pin_in_page_matches_the_script(self):
-        pin = re.search(r'CHECK_PIN_SHA:-([0-9a-f]{40})', read(SCRIPT)).group(1)
-        self.assertIn(pin, self.page)
+    def test_says_direct_tracing_is_not_supported(self):
+        self.assertIn("not supported as a direct tracing integration", self.page)
+        self.assertIn("not the OTLP traces", self.page)
+        self.assertIn("Do not point its Langfuse host", self.page)
 
-    def test_first_heading_is_about(self):
-        self.assertEqual(re.findall(r"^#{2,3} (.+)$", self.body, re.M)[0], "About")
+    def test_preserves_capture_warning(self):
+        for phrase in ("prompts", "tool arguments and results", "model output", "provider error text", "does not provide a switch to omit"):
+            self.assertIn(phrase, self.page)
 
-    def test_says_not_supported(self):
-        self.assertIn("Not supported", self.page)
-        self.assertIn("has no setup steps", self.page)
+    def test_source_audit_script_retains_pin_and_searches(self):
+        with open(os.path.join(HERE, "..", "check_pin.sh")) as f:
+            script = f.read()
+        self.assertIn("9d8cd18200a33b64460c9101ed0dd6d4988bea61", script)
+        for term in ("otlp", "opentelemetry", "exporter", "traceparent", "gen_ai", "/v1/traces", "langfuse", "x-api-key"):
+            self.assertIn(term, script)
 
-    def test_no_setup_steps_no_code_blocks(self):
+    def test_no_setup_steps_or_code_blocks(self):
         self.assertNotIn("```", self.page)
         for word in ("pip install", "npm install", "cmake -", "export FI_", "FI_API_KEY", "FI_SECRET_KEY"):
             self.assertNotIn(word, self.page)
 
-    def test_makes_no_claim_that_a_trace_arrived(self):
-        self.assertIn("No AI SDK C++ trace has been sent to Future AGI", self.page)
+    def test_no_internal_verification_diary(self):
+        for phrase in ("What was checked", "Observed on the pinned build", "local stand-in", "2026-10-16"):
+            self.assertNotIn(phrase, self.page)
 
     def test_no_em_dashes(self):
         self.assertNotIn("—", self.page)
@@ -48,12 +48,6 @@ class PageTest(unittest.TestCase):
             rel = href.rstrip("/")
             candidates = [os.path.join(pages, rel.lstrip("/") + ".mdx"), os.path.join(pages, rel.lstrip("/"), "index.mdx")]
             self.assertTrue(any(os.path.exists(c) for c in candidates), href)
-
-    def test_every_search_in_the_table_is_run_by_the_script(self):
-        script = read(SCRIPT)
-        for term in ("otlp", "opentelemetry", "exporter", "traceparent", "gen_ai", "/v1/traces", "langfuse", "x-api-key"):
-            self.assertIn(f"`{term}`", self.page)
-            self.assertIn(term, script)
 
 
 if __name__ == "__main__":
