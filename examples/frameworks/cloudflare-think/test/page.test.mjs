@@ -14,7 +14,9 @@ function block(title) {
 
 for (const file of ["wrangler.jsonc", "src/agent.ts", "src/index.ts", "otelcol.yaml"]) {
   test(`page block ${file} equals the example file`, () => {
-    assert.equal(block(file), readFileSync(here(`../${file}`), "utf8").replace(/\n$/, ""));
+    const example = readFileSync(here(`../${file}`), "utf8").replace(/\n$/, "")
+      .replace('# Tested with otel/opentelemetry-collector-contrib 0.162.0, receiving a real Workers destination export (2026-10-18).\n#\n', '');
+    assert.equal(block(file), example);
   });
 }
 
@@ -27,9 +29,9 @@ test("the page states the tested versions that package.json pins", () => {
   assert.ok(page.includes("otel/opentelemetry-collector-contrib:0.162.0"));
 });
 
-test("the page states the live verification and lists the runtime scope", () => {
-  assert.match(page, /Live vendor verification \(2026-10-18\)/);
-  for (const t of ["useAgentChat", "sub-agents", "`tool_approval`", "sampling below 1", "creating the destination in the dashboard"]) {
+test("the page provides customer setup and states the recipe scope without a verification diary", () => {
+  assert.doesNotMatch(page, /live vendor verification|live run|how this was checked/i);
+  for (const t of ["Workers Paid", "useAgentChat", "sub-agents", "`tool_approval`", "sampling below 1", "incoming trace context", "Authorization", "FI_CAPTURE_CONTENT", "Observe > Tracing"]) {
     assert.ok(page.includes(t), t);
   }
 });

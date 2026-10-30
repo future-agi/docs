@@ -119,9 +119,24 @@ test("Worker: a plain Agent that traces the AI SDK with payloads off by default,
   assert.equal(pkg.dependencies["@cloudflare/ai-chat"], undefined);
 });
 
-test("page shows the shipped files verbatim", { skip: !existsSync(PAGE) && "page not in this checkout" }, () => {
+test("page shows the shipped configuration and Worker", { skip: !existsSync(PAGE) && "page not in this checkout" }, () => {
   const page = readFileSync(PAGE, "utf8");
   for (const f of ["otelcol.yaml", "wrangler.jsonc", "src/index.ts"]) {
-    assert.ok(page.includes(read(f).trim()), `${f} differs from the page`);
+    const expected = read(f).trim().replace(
+      "// The Worker as you deploy it. The same file runs locally with `wrangler dev` (run_e2e.sh does that).",
+      "// The Worker as you deploy it."
+    );
+    assert.ok(page.includes(expected), `${f} differs from the page`);
   }
+});
+
+test("page provides a customer setup without a verification diary", { skip: !existsSync(PAGE) && "page not in this checkout" }, () => {
+  const page = readFileSync(PAGE, "utf8");
+  assert.match(page, /Workers Paid/);
+  assert.match(page, /public HTTPS endpoint protected by the bearer token/);
+  assert.match(page, /awaited HTTP `generateText`/);
+  assert.match(page, /\/agents\/weather-agent\/demo/);
+  assert.match(page, /FI_CAPTURE_CONTENT/);
+  assert.match(page, /both are off by default/);
+  assert.doesNotMatch(page, /live vendor verification|what the live run showed|how this was checked|run_e2e\.sh/i);
 });

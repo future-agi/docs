@@ -40,17 +40,18 @@ def test_front_matter_and_sections():
     text = page()
     assert text.startswith("---\ntitle: ")
     assert re.search(r'^description: ".+"$', text, flags=re.M)
-    for heading in ("## About", "## Set up", "## What you see in Observe", "## Privacy", "## Flush on shutdown", "## Troubleshooting", "## Not covered"):
+    for heading in ("## About", "## Set up", "## What you see in Observe", "## Privacy", "## Flush on shutdown", "## Troubleshooting", "## Scope"):
         assert heading in text
 
 
-def test_page_states_the_tested_version_and_the_facts_the_prd_got_wrong():
+def test_page_states_the_example_version_and_plugin_requirements():
     text = page()
     assert "**1.34.0**" in text
-    assert "[MIT]" in text and "Apache" not in text
     assert "add_temporal_spans=True" in text and "default is `False`" in text
-    assert "Beta" in text and "experimental" in text
+    assert "experimental" in text
     assert "create_tracer_provider(sampler, resource, shutdown_on_exit, active_span_processor, id_generator, span_limits)" in text
+    assert "examples/frameworks/temporal" in text
+    assert "Everything on this page was run end to end" not in text
 
 
 def test_page_documents_the_headers_project_compression_and_privacy_switches():
@@ -62,7 +63,7 @@ def test_page_documents_the_headers_project_compression_and_privacy_switches():
 
 def test_page_is_customer_application_tracing_and_links_no_internal_worker_code():
     text = page()
-    assert "It is not about how Future AGI itself uses Temporal" in text
+    assert "Temporal Python SDK" in text
     for internal in ("otel_sync_to_async", "bind_context", "futureagi/", "tfc/", "/Users/"):
         assert internal not in text, internal
 

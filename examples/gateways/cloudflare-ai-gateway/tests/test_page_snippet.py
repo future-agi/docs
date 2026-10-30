@@ -147,7 +147,10 @@ def test_internal_links_point_at_pages_that_exist(page):
         assert any(os.path.exists(c) for c in candidates), href
 
 
-def test_the_page_reports_the_live_verification_and_what_it_did_not_cover(page):
-    assert "## Live vendor verification (2026-10-18)" in page
-    assert "Scope of the live run" in page
+def test_page_focuses_on_setup_and_content_safety(page):
+    assert "## Live vendor verification" not in page
+    assert "Scope of the live run" not in page
+    assert "<Step title=\"Add the exporter in Cloudflare\">" in page
+    assert "The collector filters them before export to Observe by default" in page
+    assert "Do not put your Future AGI keys here" in page
     assert "Nobody ran Cloudflare" not in page and "STANDIN" not in page

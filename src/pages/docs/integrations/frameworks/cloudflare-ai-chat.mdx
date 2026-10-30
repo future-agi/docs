@@ -1,72 +1,15 @@
 ---
 title: "Cloudflare AI Chat tracing with Future AGI"
-description: "Send the traces of a Cloudflare AI Chat agent (@cloudflare/ai-chat AIChatAgent) to Future AGI through a Workers OTLP traces destination and a collector you run. Covers the real span tree, the payload-off default, the opt-in, and what was verified live on Cloudflare."
+description: "Send Cloudflare AI Chat agent traces to Future AGI through a Workers OTLP destination and your own OpenTelemetry Collector."
 ---
 
-## About
+Send Cloudflare AI Chat (`@cloudflare/ai-chat`) traces to Future AGI using Workers tracing and an OpenTelemetry Collector you run. The collector adds the project, maps spans and sessions, deduplicates usage, and filters content before forwarding traces. Future AGI keys remain on the collector, not in the Worker.
 
-This page is for **Cloudflare AI Chat**: the npm package `@cloudflare/ai-chat` (MIT, directory `packages/ai-chat` of [cloudflare/agents](https://github.com/cloudflare/agents)), whose `AIChatAgent` base class runs a chat agent in a Durable Object. Your subclass implements `onChatMessage()`, usually with the Vercel AI SDK's `streamText`, and browsers talk to it over a WebSocket with `useAgentChat`.
-
-Tracing is Cloudflare's own. Workers tracing records the runtime's spans, and the Agents SDK adds its own custom spans through the Workers tracing API. Cloudflare exports them to an OTLP **destination** you create in the dashboard. This recipe uses an OpenTelemetry Collector to stamp `project_name`, map span types and sessions, remove duplicated usage and apply the privacy filters below. The destination points at your collector, which forwards to Future AGI:
-
-```text
-Worker (AIChatAgent + wrapAISDK) --Workers tracing--> Cloudflare destination --OTLP/HTTP + Bearer--> your collector --project_name, mapping, privacy--> Future AGI
-```
-
-There is no traceAI package and no Future AGI code in the Worker. The Worker never holds Future AGI keys.
-
-How this differs from related pages and products:
-
-- **Cloudflare Agents** (`agents` without `AIChatAgent`, `@cloudflare/think`) use the same destination and collector. Their span roots differ, so they are covered separately. This page assumes your class extends `AIChatAgent`.
-- **Workers AI** is a model provider, not a chat-agent class. If the Worker only calls `env.AI.run()`, this page is not for you.
-- **[Vercel AI SDK with `@traceai/vercel`](/docs/integrations/traceai/vercel)** needs the OpenTelemetry JavaScript API, which Workers does not support directly ([Cloudflare: Tracing](https://developers.cloudflare.com/agents/runtime/operations/observability/tracing/)). On Workers, trace the AI SDK with Cloudflare's `wrapAISDK` as shown below, and do not add `@traceai/vercel` on top.
-
-<Note>
-**Deployed AIChatAgent recipe (verified 2026-10-18).** This page was followed as written on a real Cloudflare account on Workers Paid: the Worker below deployed to `workers.dev`, a real Workers Traces destination, the collector below on Google Cloud Run, and Future AGI cloud (`api.futureagi.com`). The span tree, errors and privacy results on this page come from Cloudflare's real export. See [Live vendor verification](#live-vendor-verification-2026-10-18) for the deployed chat-turn scope.
-</Note>
+This example uses `AIChatAgent` with a server-side tool, AI SDK v7, and the pinned packages below. Client-side tools and approvals, resumed or programmatic turns, sub-agents, multiple messages on one socket, sampling below 1, and Workers logs export are outside this recipe's scope. A plain Cloudflare Agent or `@cloudflare/think` uses a different agent setup. Do not add `@traceai/vercel` to this Workers recipe; use Cloudflare's `wrapAISDK` for model and tool spans.
 
 <Warning>
-**Cloudflare plan and pricing.** Exporting traces to an OTLP destination needs a **Workers Paid** subscription ([blog](https://blog.cloudflare.com/workers-tracing-now-in-open-beta)), and observability pricing changes on December 1, 2026 ([pricing](https://developers.cloudflare.com/observability/pricing/)). Check both before you enable export. On the deployed Worker, one WebSocket connection with one chat turn produced about 280 spans, about 85% of them Durable Object storage calls (the collector drops those after Cloudflare has counted them).
+Exporting traces to an OTLP destination requires **Workers Paid**. Review [Cloudflare's observability pricing](https://developers.cloudflare.com/observability/pricing/) before enabling export.
 </Warning>
-
-| | |
-| --- | --- |
-| Tested with | `@cloudflare/ai-chat` 0.12.1 and `agents` 0.28.1 (both the latest on 2026-10-18), `ai` 7.0.142, `@ai-sdk/openai` 4.0.95, `zod` 4.6.7, `wrangler` 4.151.1 with workerd 1.20261012.1, Node 26.8.1, OpenTelemetry Collector contrib 0.162.0, model `gpt-4o-mini` (OpenAI). `@cloudflare/ai-chat` accepts `agents` from 0.25 up to (not including) 1.0. This recipe pins the deployed package set rather than following newer releases. |
-| Run live (2026-10-18) | Deployed Worker, real Traces destination, this collector on Cloud Run, Future AGI cloud: a chat turn with a tool (twice on one Durable Object), a turn whose tool throws, a turn whose model call fails, content off and content on. The captured export was also replayed through this collector into a self-hosted Future AGI for the type checks and the stored-column privacy scan. |
-| Also run | On local workerd (`wrangler dev`) against a self-hosted Future AGI (2026-10-16), with `agents` 0.28.1 and 0.26.0: same spans, errors and privacy results, but the turn nested in the upgrade request's trace (see [What a turn looks like](#what-a-turn-looks-like-in-future-agi)). In one local content-on run a turn outlived its invocation (see [Limitations](#limitations)). |
-| Outside this recipe’s supported scope | Client-side tools and tool approvals, resumed streams, scheduled and programmatic turns (`saveMessages`), sub-agents, several messages on one socket, sampling below 1, Workers logs export, AI SDK v6. |
-| Cloudflare docs used | [Agents tracing](https://developers.cloudflare.com/agents/runtime/operations/observability/tracing/), [Custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/), [Workers OpenTelemetry export](https://developers.cloudflare.com/workers/observability/opentelemetry-export/) (updated Oct 2, 2026), [Create a destination](https://developers.cloudflare.com/observability/export/opentelemetry/), and the Agents SDK [observability guide](https://github.com/cloudflare/agents/blob/main/docs/agents/observability.md), read 2026-10-16 and again 2026-10-18. |
-| Source | [examples/frameworks/cloudflare-ai-chat](https://github.com/future-agi/docs/tree/main/examples/frameworks/cloudflare-ai-chat): the Worker, the collector config, the stand-in, tests and the end-to-end script. |
-
-## What a turn looks like in Future AGI
-
-A client opens a WebSocket, sends one message and closes the socket. On a deployed Worker that arrives as three traces, stored in Future AGI after the collector (Durable Object storage spans dropped). From Cloudflare's real export, 2026-10-18:
-
-```text
-Trace "GET"  (about 16 spans)                  the WebSocket upgrade request
-[chain] GET  /agents/support-chat/<instance>
-  [chain] durable_object_subrequest > fetch > GET
-    [chain] agent_initialization, chat_initialization, load_chat_messages, agent_start ...
-
-Trace "hibernatableWebSocket"  (about 18 spans) the message: one AIChatAgent turn
-[chain] hibernatableWebSocket                  the Durable Object invocation that received the message
-  [chain] chat_interaction
-    [chain] clear_previous_chat_state, persist_incoming_messages
-    [chain] chat_turn                          one AIChatAgent turn (cloudflare.agents.*)
-      [agent] invoke_agent support-chat        wrapAISDK: the streamText call
-        [llm]  chat gpt-4o-mini                model call, model + input/output tokens
-          [chain] fetch                        the HTTP request to the model provider
-        [tool] execute_tool lookup_order       your tool
-        [llm]  chat gpt-4o-mini                model call after the tool result
-          [chain] fetch
-      [chain] prepare_chat_context, repair_interrupted_tools, persist_chat_result, schedule_agent_alarm
-
-Trace "hibernatableWebSocket"  (1 span)        the invocation after the client closed the socket
-```
-
-Each WebSocket event is its own Durable Object invocation, so each message is its own trace. The spans of one conversation are tied together by `session.id` (see [What is captured](#what-is-captured)). Local `wrangler dev` (workerd) differs: there the turn is nested under the upgrade `GET` in a single trace.
-
-There is no span named `onChatMessage`. The turn is `chat_turn`, created by `AIChatAgent`. The `invoke_agent`, `chat` and `execute_tool` spans come only from `wrapAISDK`: without it you still get the `AIChatAgent` spans, but no model, token or tool spans.
 
 ## 1. Install
 
@@ -153,7 +96,7 @@ export default {
 ## 3. Turn on tracing and name the destination
 
 ```jsonc title="wrangler.jsonc"
-// The Worker as you deploy it. The same file runs locally with `wrangler dev` (run_e2e.sh does that).
+// The Worker as you deploy it.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "support-chat",
@@ -197,9 +140,6 @@ The collector accepts OTLP/HTTP from Cloudflare only with your bearer token, dro
 #   4. maps the Agents SDK span names onto Observe span types, errors and sessions,
 #   5. keeps prompts, completions, tool arguments/results and error text OUT unless you opt in,
 #   6. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
-#
-# Tested with otel/opentelemetry-collector-contrib 0.162.0, behind a real Cloudflare Workers traces destination
-# (2026-10-18).
 #
 # Environment:
 #   CF_DESTINATION_TOKEN        secret you invent; on the destination add the header `Authorization: Bearer <token>`
@@ -340,7 +280,7 @@ docker run -d --name fi-cloudflare-collector -p 4318:4318 \
   otel/opentelemetry-collector-contrib:0.162.0
 ```
 
-Cloudflare sends from its network, so the collector needs a public HTTPS address (TLS in front of port 4318). The collector is yours: Future AGI does not host one for Cloudflare. Forwarding to `api.futureagi.com` and to a self-hosted URL were both verified.
+Cloudflare sends from its network, so the collector needs a public HTTPS address with TLS in front of port 4318. Future AGI does not host the collector.
 
 On a platform that assigns the listening port, such as Google Cloud Run, keep `otelcol.yaml` unchanged and load a second file after it that only moves the receiver:
 
@@ -356,8 +296,6 @@ receivers:
 otelcol-contrib --config=otelcol.yaml --config=port.yaml
 ```
 
-The live verification ran this way on Cloud Run (image `otel/opentelemetry-collector-contrib:0.162.0`, both files and the three secrets from Secret Manager, unauthenticated invocations allowed so Cloudflare can reach it; the bearer token protects the receiver).
-
 ## 5. Create the destination and deploy
 
 In the Cloudflare dashboard, go to **Observability > Destinations**, select **Add destination**, and fill in:
@@ -369,7 +307,7 @@ In the Cloudflare dashboard, go to **Observability > Destinations**, select **Ad
 | OTLP endpoint | `https://<your-collector-host>/v1/traces` |
 | Custom headers | `Authorization`: `Bearer <CF_DESTINATION_TOKEN>` |
 
-Or create the same destination with the Cloudflare API (an API token with Workers Observability Write); this is how the page was verified:
+Or create the destination with the Cloudflare API using a token with Workers Observability Write:
 
 ```bash
 curl -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/observability/destinations" \
@@ -388,11 +326,11 @@ npx wrangler secret put OPENAI_API_KEY
 npx wrangler deploy
 ```
 
-Cloudflare says events may take several minutes to reach a destination; in the live run each turn reached the collector 80 to 160 seconds after it ended. Do not create a Logs destination for this collector: it has a traces pipeline only, and Future AGI ingests traces only.
+Cloudflare says events may take several minutes to reach a destination. Do not create a Logs destination for this collector: it has a traces pipeline only, and Future AGI ingests traces only.
 
 ## 6. Check it in Future AGI
 
-Open the project named in `FI_PROJECT_NAME` under **Observe > Tracing**. Each chat message is one trace named `hibernatableWebSocket`; expand it down to `chat_interaction > chat_turn > invoke_agent`. The connection's upgrade request is a separate trace named `GET`. The turn spans of one Durable Object instance carry the same `session.id` (see [What is captured](#what-is-captured)).
+Send a message to the deployed agent using your `useAgentChat` client. Open the project named in `FI_PROJECT_NAME` under **Observe > Tracing**. Open the `hibernatableWebSocket` trace and expand `chat_interaction > chat_turn > invoke_agent` to see model and tool spans. The connection upgrade is a separate `GET` trace; the turn spans of one Durable Object instance share a `session.id` (see [What is captured](#what-is-captured)).
 
 ## What is captured
 
@@ -423,8 +361,6 @@ Content needs two switches, and both are off by default. Set `FI_CAPTURE_CONTENT
 
 In both modes the collector replaces e-mail-shaped values (for example an agent instance named after a user's e-mail, which also appears in `url.full`, `url.path`, `gen_ai.agent.id` and `cloudflare.agents.session.name`) with `<email>`, keeps only the path of request URLs (no host, query string or fragment), drops `url.query`, and removes the caller's city and region (`geo.locality.name`, `geo.locality.region`) that Cloudflare records on every incoming request span. Country, continent and timezone stay. The agent's own wrapper never records raw error messages, request headers or provider options ([Agents SDK observability guide](https://github.com/cloudflare/agents/blob/main/docs/agents/observability.md)); the error text of a failing tool still reaches the model's input messages, so it is stored only when you opt in.
 
-How this was checked (live export, 2026-10-18): a unique marker in the prompt, the tool arguments and result, and the tool's error text, plus an agent instance named with an e-mail address, sent to the deployed Worker with its switches off and with them on. Cloudflare's export was replayed through this collector into a self-hosted Future AGI. With the collector default, every column of every Future AGI table that stores the project (ClickHouse spans, traces, sessions, rollups and the attribute catalog; Postgres project tables), resource attributes and span events included, had no marker (also none from the Worker that had its switches on), no e-mail, no caller city or region, no query string, no local user name, host name, home or working directory, no stack frame, and none of the keys. With both switches on, the marker was stored and the Input and Output panes filled, and the e-mail, city, region, user name, host name, paths, stack frames and keys were still absent.
-
 Do not put credentials, tokens or user input in `runtimeContext` keys you include in telemetry: they become span attributes.
 
 ## How it behaves
@@ -440,9 +376,9 @@ Do not put credentials, tokens or user input in `runtimeContext` keys you includ
 
 - Keep the collector for project stamping, mapping, token deduplication and privacy. One collector serves one project.
 - A conversation is several traces (one per message, plus the upgrade request); use the session to see it whole.
-- Spans still open when their invocation ends are force-closed by the runtime and arrive with no attributes at all ([cloudflare/agents#2539](https://github.com/cloudflare/agents/issues/2539), open on 2026-10-16; it names client-side tools and mid-turn RPCs). Seen once on local workerd: a model call that took about 28 seconds outlived its WebSocket invocation, which ended at 30 seconds. `chat_turn`, `invoke_agent` and that `chat` span arrived empty, so Future AGI stored them as chain spans without model or tokens. The turn itself completed. Not seen in the live run, whose turns took under 15 seconds.
-- Only `@cloudflare/ai-chat` 0.12.1 with `agents` 0.28.1 (and 0.26.0 locally) and AI SDK v7 was run end to end.
-- Workers logs and `console.log` lines were not exported; Future AGI ingests traces only.
+- Spans still open when their invocation ends can be force-closed without attributes, leaving them as chain spans without model or token data. See [cloudflare/agents#2539](https://github.com/cloudflare/agents/issues/2539).
+- This recipe uses the pinned `@cloudflare/ai-chat` and `agents` versions above and AI SDK v7.
+- Workers logs and `console.log` lines are not exported through this traces pipeline.
 
 ## Troubleshooting
 
@@ -456,36 +392,3 @@ Do not put credentials, tokens or user input in `runtimeContext` keys you includ
 - **Hundreds of `durable_object_storage_*` spans.** The `filter/storage_spans` processor is not in the pipeline.
 - **Input and Output panes are empty.** That is the default. Set `STORE_MESSAGES` / `STORE_TOOLS` in the Worker and `FI_CAPTURE_CONTENT=true` on the collector.
 - **Looking for an `onChatMessage` span.** There is none. The turn is `chat_turn`.
-
-## Live vendor verification (2026-10-18)
-
-Followed as a customer would, on a real Cloudflare account on Workers Paid:
-
-1. Collector: `otelcol.yaml` from this page with `port.yaml` (above), image `otel/opentelemetry-collector-contrib:0.162.0`, on Google Cloud Run, forwarding to `https://api.futureagi.com/tracer/v1/traces`. For the test only, a separate debug pipeline (no processors, `debug` exporter, verbosity detailed) logged what Cloudflare sent, so the raw export could be read.
-2. Destination created with the Cloudflare API call above, pointing at the Cloud Run URL plus `/v1/traces` with the bearer header. Its test span arrived and the destination showed its last delivery with no error. Without the token, or with a wrong one, the collector answered 401.
-3. Worker: `src/index.ts` and `wrangler.jsonc` from this page (only the names changed), `wrangler secret put OPENAI_API_KEY`, `wrangler deploy` to `workers.dev`, model `gpt-4o-mini`.
-4. Turns over the WebSocket protocol `useAgentChat` speaks: a chat turn with a tool (twice on one Durable Object), a turn whose tool throws, a turn with a wrong model name, and the privacy turns with the Worker switches off and on.
-
-Results:
-
-- Every turn reached Future AGI cloud with the tree above: `invoke_agent` stored as agent, both `chat` spans as llm with `gpt-4o-mini` and input/output tokens, `execute_tool` as tool, no storage spans; the tool error and the model error as described in [How it behaves](#how-it-behaves). The collector logged no export failure.
-- Cloudflare's real export differs from the local stand-in in four ways: the turn is its own trace (not nested in the upgrade request), the destination sends a test span, the upgrade `GET` is ERROR when the socket closes, and request spans carry the caller's city and region. This page documents the first; the collector drops the test span, clears the closed-socket ERROR and removes city and region. `invoke_agent` repeats the summed usage of its `chat` spans, as locally, and the collector removes that copy.
-- The first turns went through the collector as it was before those fixes. The final `otelcol.yaml` was then deployed to Cloud Run and checked live with a tool turn, a tool-error turn and a re-saved destination: in Future AGI cloud the test span is gone, the upgrade `GET` is not ERROR, and no city or region is stored.
-- The captured export replayed through this collector into a self-hosted Future AGI: all 27 traces stored with the expected types and errors (`fi_verify` PASS for agent, llm, tool and chain), and the privacy scan described in [Privacy](#privacy) passed in both modes.
-
-The supported deployed path is one AIChatAgent message per WebSocket connection with the pinned OpenAI provider. Client-side tools, approvals, resumed or programmatic turns and other modes listed above are excluded. The [force-closed-span limitation](#limitations) remains: its recorded reproduction is local workerd, not a deployed-Worker result.
-
-## Run the example locally
-
-The example runs the Worker on local workerd, so no Cloudflare account is needed. A stand-in replays workerd's recorded spans to the collector in place of Cloudflare's destination, which forwards to a Future AGI you can reach:
-
-```bash
-cd examples/frameworks/cloudflare-ai-chat
-npm install
-npm test                                  # unit and config tests; the collector contract test needs Docker
-export FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:<port>
-export OPENAI_API_KEY=... OPENAI_BASE_URL=...   # any OpenAI-compatible endpoint
-./run_e2e.sh
-```
-
-See the example's README for what each scenario checks.

@@ -102,9 +102,10 @@ def test_internal_links_point_at_pages_that_exist(page):
         assert any(os.path.exists(c) for c in candidates), href
 
 
-def test_the_page_says_it_was_checked_live(page):
-    assert "checked against real Broadcast traffic" in page and "Live vendor verification (2026-10-19)" in page
-    assert "| OpenRouter | Run live on 2026-10-19" in page
+def test_the_page_describes_the_customer_setup_without_a_test_diary(page):
+    assert "project_name" in page and "bearer token" in page
+    assert "Privacy Mode" in page and "FI_CAPTURE_CONTENT" in page
+    assert "Live vendor verification" not in page and "checked against real Broadcast traffic" not in page
 
 
 def test_comparison_matches_live_hierarchy(page):

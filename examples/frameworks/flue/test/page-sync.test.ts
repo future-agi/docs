@@ -41,6 +41,14 @@ describe('flue.mdx', () => {
     assert.doesNotMatch(current, /createOpenTelemetryObserv|exportContent|recording\.content/);
   });
 
+  test('keeps the content and resource privacy setup without a verification diary', () => {
+    assert.match(page, /content: false/);
+    assert.match(page, /exception_stacktrace/);
+    assert.match(page, /autoDetectResources: false/);
+    assert.match(page, /Use opaque ids/);
+    assert.doesNotMatch(page, /How this was checked:|In our run/);
+  });
+
   test('install line lists every OpenTelemetry package the example imports', () => {
     const imports = [...read('../src/telemetry.ts').matchAll(/from '(@opentelemetry\/[^']+)'/g)].map((m) => m[1]);
     const install = /```bash\nnpm install ([^\n]+)\n```/.exec(page)?.[1] ?? '';

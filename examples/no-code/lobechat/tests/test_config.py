@@ -106,8 +106,12 @@ def test_page_prints_the_shipped_files_verbatim():
     assert ENV.read_text().rstrip("\n") in blocks
 
 
-def test_page_has_required_sections():
+def test_page_has_customer_setup_and_safety_contract():
     text = PAGE.read_text()
-    for heading in ("## About", "## What is captured", "## Privacy", "## Troubleshooting", "## Limitations",
-                    "## How this differs from related integrations", "Tested with"):
-        assert heading in text, heading
+    for phrase in ("## 1. Add the collector", "## 2. Point LobeHub at it", "## 3. Run an agent and open Observe",
+                   "## What is captured", "## Privacy", "## Troubleshooting", "## Limitations",
+                   "## How this differs from related integrations", "v2.2.18 or v2.2.19", "Agent Gateway", "FI_CAPTURE_CONTENT=false",
+                   "Keep port 4318 on the private Compose network"):
+        assert phrase in text, phrase
+    assert "## Run the test yourself" not in text
+    assert "| Tested with |" not in text

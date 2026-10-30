@@ -47,3 +47,12 @@ def test_page_names_the_versions_it_was_tested_with():
     pom = (EXAMPLE / "pom.xml").read_text()
     assert "<embabel-agent.version>1.5.3</embabel-agent.version>" in pom and "Embabel 1.5.3" in text
     assert "<version>4.1.1</version>" in pom and "Spring Boot 4.1.1" in text
+
+
+def test_page_keeps_setup_and_privacy_without_verification_diary():
+    text = PAGE.read_text()
+    assert "capture-message-content: ${EMBABEL_CAPTURE_CONTENT:false}" in text
+    assert "ErrorTextRedactingSpanExporter" in text
+    assert "trace-http-details: false" in text
+    assert "How this was checked:" not in text
+    assert "run_e2e.sh" not in text
