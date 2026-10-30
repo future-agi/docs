@@ -99,10 +99,13 @@ def test_run_script_syntax():
 
 
 # ---- docs page -------------------------------------------------------------------------------------------
-def test_page_prints_the_shipped_files_verbatim():
-    blocks = code_blocks(PAGE.read_text())
-    assert OVERRIDE.read_text().rstrip("\n") in blocks
-    assert CONFIG.read_text().rstrip("\n") in blocks
+def test_page_prints_the_shipped_configuration():
+    text = PAGE.read_text()
+    blocks = code_blocks(text)
+    yaml_blocks = re.findall(r"```yaml\n(.*?)\n```", text, re.S)
+    # Comments may differ; all operational configuration must remain identical.
+    for source in (OVERRIDE, CONFIG):
+        assert any(yaml.safe_load(block) == load(source) for block in yaml_blocks), source
     assert ENV.read_text().rstrip("\n") in blocks
 
 
@@ -110,7 +113,7 @@ def test_page_has_customer_setup_and_safety_contract():
     text = PAGE.read_text()
     for phrase in ("## 1. Add the collector", "## 2. Point LobeHub at it", "## 3. Run an agent and open Observe",
                    "## What is captured", "## Privacy", "## Troubleshooting", "## Limitations",
-                   "## How this differs from related integrations", "v2.2.18 or v2.2.19", "Agent Gateway", "FI_CAPTURE_CONTENT=false",
+                   "## Related integrations", "v2.2.18 or v2.2.19", "Agent Gateway", "FI_CAPTURE_CONTENT=false",
                    "Keep port 4318 on the private Compose network"):
         assert phrase in text, phrase
     assert "## Run the test yourself" not in text

@@ -31,6 +31,8 @@ def test_page_java_is_the_tested_java():
 
 def test_page_yaml_tracing_settings_are_the_tested_ones():
     example = (EXAMPLE / "src" / "main" / "resources" / "application.yml").read_text()
+    # The self-hosted guide requires an explicit origin rather than the example's hosted fallback.
+    example = example.replace("${FI_BASE_URL:https://api.futureagi.com}", "${FI_BASE_URL}")
     tested = {line.split("#")[0].rstrip() for line in example.splitlines() if line.strip()}
     page = block("application.yml")
     start = page.index("management:")
@@ -54,5 +56,8 @@ def test_page_keeps_setup_and_privacy_without_verification_diary():
     assert "capture-message-content: ${EMBABEL_CAPTURE_CONTENT:false}" in text
     assert "ErrorTextRedactingSpanExporter" in text
     assert "trace-http-details: false" in text
+    assert "endpoint: ${FI_BASE_URL}/tracer/v1/traces" in text
+    assert 'export FI_BASE_URL="http://localhost:4318"' in text
+    assert "not a general-purpose scrubber" in text
     assert "How this was checked:" not in text
     assert "run_e2e.sh" not in text

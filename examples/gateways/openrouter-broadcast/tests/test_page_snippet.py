@@ -108,7 +108,16 @@ def test_the_page_describes_the_customer_setup_without_a_test_diary(page):
     assert "Live vendor verification" not in page and "checked against real Broadcast traffic" not in page
 
 
-def test_comparison_matches_live_hierarchy(page):
+def test_comparison_describes_configurable_hierarchy(page):
     row = next(line for line in page.splitlines() if line.startswith("| What you see |"))
-    assert "`LLM Generation` span is the root" in row
-    assert "a root span and a generation span" not in row
+    assert "Generation spans and optional grouping spans" in row
+    assert "`LLM Generation` span is the root" not in page
+    assert "`trace_name`" in page and "`generation_name`" in page
+    assert "not a duplicate under `trace.input` or `trace.output`" in page
+    assert "sends the prompt twice" not in page
+
+
+def test_privacy_is_scoped_to_the_actual_filter(page):
+    assert "including caller-supplied `stop` sequences" in page
+    assert "does not redact those parameters, arbitrary metadata" in page
+    assert "Any other value, or none, keeps content out" not in page

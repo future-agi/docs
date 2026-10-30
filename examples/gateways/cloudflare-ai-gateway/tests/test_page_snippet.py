@@ -29,14 +29,14 @@ def block(blocks, lang, contains):
 
 
 def test_frontmatter_and_first_heading(page):
-    m = re.match(r'---\ntitle: "([^"]+)"\ndescription: "([^"]+)"\n---\n\n## About\n', page)
-    assert m, "frontmatter, a blank line, then '## About'"
+    m = re.match(r'---\ntitle: "([^"]+)"\ndescription: "([^"]+)"\n---\n\n\[Cloudflare AI Gateway\]', page)
+    assert m, "frontmatter, a blank line, then a task-oriented introduction"
     assert 120 <= len(m.group(2)) <= 160, len(m.group(2))
 
 
 def test_style_rules(page):
     assert "—" not in page and "–" not in page, "no em or en dashes"
-    assert page.rstrip().split("\n## ")[-1].startswith("Next Steps")
+    assert page.rstrip().split("\n## ")[-1].startswith("Related guides")
     assert not re.search(r"\b(powerful|seamless|cutting-edge|game-changer)\b", page, re.I)
 
 

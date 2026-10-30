@@ -1,279 +1,103 @@
 ---
-title: "Pipecat Integration with Future AGI for Voice App Tracing"
-description: "Integrate Pipecat with Future AGI for voice application observability. Trace and monitor voice pipelines with OpenTelemetry-based traceAI-pipecat."
+title: "Trace a Pipecat voice pipeline"
+description: "Send native Pipecat conversation, turn and service spans to Future AGI with the traceAI-pipecat attribute-mapping exporter."
 ---
 
-## Overview
+Add Future AGI tracing to an existing Pipecat voice bot to inspect conversation, turn, STT, LLM and TTS spans in **Observe**. Pipecat creates the spans; the maintained `traceAI-pipecat` package maps their attributes for Future AGI.
 
-This integration provides support for using OpenTelemetry with Pipecat applications. It enables tracing and monitoring of voice applications built with Pipecat, with automatic attribute mapping to Future AGI conventions.
+## Before you start
 
-## 1. Installation
+Use a working Pipecat bot with its service credentials, transport and client already configured. If you need a bot first, follow the [Pipecat quickstart](https://docs.pipecat.ai/get-started/quickstart). Keep the service and transport extras required by that application: the `tracing` extra alone does not install a WebRTC runner or your speech services.
 
-Install the traceAI Pipecat package:
+The configuration below uses [Pipecat 1.15.0](https://pypi.org/project/pipecat-ai/1.15.0/) and [traceAI-pipecat 0.1.1](https://pypi.org/project/traceAI-pipecat/0.1.1/) with Python 3.11 to 3.13.
+
+## Install
 
 ```bash
-pip install traceAI-pipecat pipecat-ai[tracing]
+pip install traceAI-pipecat==0.1.1 "pipecat-ai[tracing]==1.15.0"
 ```
 
----
+For a SmallWebRTC bot using OpenAI, Deepgram, Cartesia and Silero, include its service and runner extras:
 
-## 2. Set Environment Variables
+```bash
+pip install "pipecat-ai[tracing,webrtc,runner,openai,deepgram,cartesia,silero]==1.15.0"
+```
 
-Set the Future AGI credentials in your environment:
+## Set environment variables
 
 ```bash
 export FI_API_KEY="your-futureagi-api-key"
 export FI_SECRET_KEY="your-futureagi-secret-key"
 ```
 
-For the example below, also set `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`, and `OPENAI_API_KEY` for the services it uses.
+For self-hosted Future AGI, also set `FI_BASE_URL` to your collector origin. Keep the provider keys used by your bot in its normal environment.
 
----
+<Warning>
+Pipecat's native spans can include transcripts, prompts, model output, synthesized text, tool arguments/results and error details. The mapping exporter preserves original attributes; it is not a content filter. Do not rely on `FI_HIDE_INPUTS` or `FI_HIDE_OUTPUTS` to remove native Pipecat content. If you cannot export this data, leave `enable_tracing=False` on the pipeline worker. See [Pipecat's tracing data reference](https://docs.pipecat.ai/server/utilities/opentelemetry).
+</Warning>
 
-## 3. Initialize Trace Provider
+## Register the provider and mapping
 
-Set up the trace provider to establish the observability pipeline:
+Run this once at application startup, before constructing the pipeline worker. Use this provider instead of separately calling Pipecat's `setup_tracing()` or installing a second exporter.
 
 ```python
 from fi_instrumentation import register
 from fi_instrumentation.fi_types import ProjectType
+from fi_instrumentation.otel import Transport
+from traceai_pipecat import enable_http_attribute_mapping
 
 trace_provider = register(
     project_type=ProjectType.OBSERVE,
     project_name="Pipecat Voice App",
+    transport=Transport.HTTP,
     set_global_tracer_provider=True,
+)
+
+if not enable_http_attribute_mapping():
+    raise RuntimeError("No Future AGI HTTP exporter found for Pipecat mapping")
+```
+
+The mapping function updates the existing Future AGI exporter. It returns `False` when it cannot find one; do not continue assuming that mapping is enabled.
+
+## Enable native tracing in your bot
+
+In the code that constructs your existing pipeline worker, enable tracing and turn tracking. Here, `pipeline` is the pipeline your bot already builds; keep its transport handlers, observers and runner lifecycle.
+
+```python
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+
+worker = PipelineWorker(
+    pipeline,
+    params=PipelineParams(
+        enable_metrics=True,
+        enable_usage_metrics=True,
+    ),
+    enable_tracing=True,
+    enable_turn_tracking=True,
 )
 ```
 
----
+Pipecat generates a conversation ID when you omit `conversation_id`. If you supply an ID or `additional_span_attributes`, use non-sensitive values. The current [Pipecat OpenTelemetry guide](https://docs.pipecat.ai/server/utilities/opentelemetry) uses `PipelineWorker`; the older `PipelineTask` API is deprecated in Pipecat 1.15.0.
 
-## 4. Enable Attribute Mapping
+Start the bot with its existing launch command and connect using its normal voice client. For SmallWebRTC setup and client launch, follow the [Pipecat quickstart](https://docs.pipecat.ai/get-started/quickstart) rather than running an incomplete transport example.
 
-Enable attribute mapping to convert Pipecat attributes to Future AGI conventions. This method automatically updates your existing span exporters:
-
-<CodeGroup titles={["HTTP Transport", "gRPC Transport", "Explicit Transport"]}>
-
-```python HTTP Transport
-from traceai_pipecat import enable_http_attribute_mapping
-
-# For HTTP transport
-success = enable_http_attribute_mapping()
-```
-
-```python gRPC Transport
-from traceai_pipecat import enable_grpc_attribute_mapping
-
-# For gRPC transport
-success = enable_grpc_attribute_mapping()
-```
-
-```python Explicit Transport
-from traceai_pipecat import enable_fi_attribute_mapping
-from fi_instrumentation.otel import Transport
-
-# Or specify transport explicitly via enum
-success = enable_fi_attribute_mapping(transport=Transport.HTTP)  # or Transport.GRPC
-```
-
-</CodeGroup>
-
----
-
-## 5. Initialize The Pipecat Application
-
-Initialize the Pipecat application with the trace provider:
-
-<Note>
- Enable tracing for the pipeline as shown below. See [Pipecat’s OpenTelemetry setup](https://docs.pipecat.ai/server/utilities/opentelemetry#basic-setup) for details.
-</Note>
+After the bot's runner has stopped and its conversation spans have ended, flush and shut down the provider once during application shutdown:
 
 ```python
-import os
+trace_provider.force_flush()
+trace_provider.shutdown()
+```
 
-from loguru import logger
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-from pipecat.runner.types import RunnerArguments
-from pipecat.services.cartesia.tts import CartesiaTTSService
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.transports.base_transport import BaseTransport, TransportParams
-from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
+Do not shut down the provider after each conversation in a process serving multiple conversations.
 
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
-    logger.info(f"Starting bot")
+## Open the result
 
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
-
-    tts = CartesiaTTSService(
-        api_key=os.getenv("CARTESIA_API_KEY"),
-        voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
-    )
-
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
-
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a friendly AI assistant. Respond naturally and keep your answers conversational.",
-        },
-    ]
-
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
-
-    rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
-
-    pipeline = Pipeline(
-        [
-            transport.input(),  # Transport user input
-            rtvi,  # RTVI processor
-            stt,
-            context_aggregator.user(),  # User responses
-            llm,  # LLM
-            tts,  # TTS
-            transport.output(),  # Transport bot output
-            context_aggregator.assistant(),  # Assistant spoken responses
-        ]
-    )
-
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-        enable_tracing=True,
-        enable_turn_tracking=True,
-        conversation_id="customer-123",
-        additional_span_attributes={"session.id": "abc-123"},
-        observers=[RTVIObserver(rtvi)],
-    )
-
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info(f"Client connected")
-        # Kick off the conversation.
-        messages.append(
-            {"role": "system", "content": "Say hello and briefly introduce yourself."}
-        )
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
-
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info(f"Client disconnected")
-        await task.cancel()
-
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-
-    await runner.run(task)
-
-async def bot(runner_args: RunnerArguments):
-    """Main bot entry point for the bot starter."""
-
-    transport = SmallWebRTCTransport(
-        params=TransportParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
-        ),
-        webrtc_connection=runner_args.webrtc_connection,
-    )
-
-    await run_bot(transport, runner_args)
-
-if __name__ == "__main__":
-    from pipecat.runner.run import main
-
-    main()
-
-``` 
-
-Open **Pipecat Voice App** in Future AGI **Observe** to inspect the pipeline trace.
-
-## Features
-
-### Automatic Attribute Mapping
-
-The integration automatically maps Pipecat-specific attributes to Future AGI conventions:
-
-- **LLM Operations**: Maps `gen_ai.system`, `gen_ai.request.model` to `llm.provider`, `llm.model_name`
-- **Input/Output**: Maps `input`, `output`, `transcript` to structured Future AGI format
-- **Token Usage**: Maps `gen_ai.usage.*` to `llm.token_count.*`
-- **Tools**: Maps tool-related attributes to Future AGI tool conventions
-- **Session Data**: Maps conversation and session information
-- **Metadata**: Consolidates miscellaneous attributes into structured metadata
-
-### Transport Support
-
-- **HTTP**: Full support for HTTP transport with automatic endpoint detection
-- **gRPC**: Support for gRPC transport (requires `fi-instrumentation-otel[grpc]`)
-
-### Span Kind Detection
-
-Automatically determines the appropriate `fi.span.kind` based on span attributes:
-- `LLM`: For LLM, STT, and TTS operations
-- `TOOL`: For tool calls and results
-- `AGENT`: For setup and configuration spans
-- `CHAIN`: For turn and conversation spans
-
----
-
-## API Reference
-
-### Integration Functions
-
-#### `enable_fi_attribute_mapping(transport: Transport = Transport.HTTP) -> bool`
-Install attribute mapping by replacing existing span exporters.
-
-**Parameters:**
-- `transport`: Transport protocol enum (`Transport.HTTP` or `Transport.GRPC`)
-
-**Returns:**
-- `bool`: True if at least one exporter was replaced
-
-#### `enable_http_attribute_mapping() -> bool`
-Convenience function for HTTP transport.
-
-#### `enable_grpc_attribute_mapping() -> bool`
-Convenience function for gRPC transport.
-
-### Exporter Creation Functions
-
-#### `create_mapped_http_exporter(endpoint: Optional[str] = None, headers: Optional[dict] = None)`
-Create a new HTTP exporter with Pipecat attribute mapping.
-
-#### `create_mapped_grpc_exporter(endpoint: Optional[str] = None, headers: Optional[dict] = None)`
-Create a new gRPC exporter with Pipecat attribute mapping.
-
-### Exporter Classes
-
-#### `MappedHTTPSpanExporter`
-HTTP span exporter that maps Pipecat attributes to Future AGI conventions.
-
-#### `MappedGRPCSpanExporter`
-gRPC span exporter that maps Pipecat attributes to Future AGI conventions.
-
-#### `BaseMappedSpanExporter`
-Base class for mapped span exporters.
-
----
+Open **Observe** and select **Pipecat Voice App**. Inspect the conversation and turn spans and the service spans your pipeline emits. Model, token and timing fields depend on the services and metrics they report; enabling mapping does not create measurements that Pipecat did not emit.
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **No exporters found to replace**
-   - Ensure you've called `register()` before installing attribute mapping
-   - Check that the transport type matches your tracer provider configuration
-
-2. **Import errors for gRPC**
-   - Install gRPC dependencies: `pip install "fi-instrumentation-otel[grpc]"`
-
-3. **Data not being sent to FutureAGI**
-   - Ensure that you have set the `FI_API_KEY` and `FI_SECRET_KEY` environment variables
-   - Ensure that the `set_global_tracer_provider` in the `register` function is set to `True`
+- **No exporter found for mapping:** call `register()` first with `set_global_tracer_provider=True` and HTTP transport. Do not replace the global provider afterward.
+- **No conversation or turn spans:** install Pipecat's `tracing` extra and enable tracing and turn tracking on the worker.
+- **Bot or WebRTC client will not start:** confirm the bot works without tracing, and install its service, `webrtc` and `runner` extras as needed. Tracing setup does not configure the voice transport.
+- **Last spans are missing:** let the runner finish before flushing. A forced process kill can lose buffered spans.
+- **Sensitive content appears in attributes:** native Pipecat tracing includes content. Disable tracing if this is incompatible with your data policy; attribute mapping alone does not redact it.

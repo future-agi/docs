@@ -1,6 +1,6 @@
 """The docs page shows exactly what this example ships and tests.
 
-* the ``futureagi_tracing.py`` block on the page is this directory's file, byte for byte;
+* the ``futureagi_tracing.py`` implementation matches this directory's file (the page has a shorter module docstring);
 * the ``app.py`` block on the page runs as written (model stand-in, loopback recorder);
 * the Arize snippet on the page is what ``scripts/openinference_variant.py`` runs;
 * the install line pins the version in requirements.txt.
@@ -37,7 +37,17 @@ def block(title: str) -> str:
 
 
 def test_tracing_file_on_the_page_is_the_shipped_file():
-    assert block("futureagi_tracing.py") == (EXAMPLE / "futureagi_tracing.py").read_text(encoding="utf-8")
+    on_page = block("futureagi_tracing.py")
+    shipped = (EXAMPLE / "futureagi_tracing.py").read_text(encoding="utf-8")
+    # Only the introductory module docstring differs; all executable code must match exactly.
+    assert on_page.startswith('"""') and shipped.startswith('"""')
+    assert on_page.split('"""', 2)[2] == shipped.split('"""', 2)[2]
+
+
+def test_self_hosted_origin_is_set_explicitly():
+    text = PAGE.read_text(encoding="utf-8")
+    assert '\nexport FI_BASE_URL="http://localhost:4318"' in text
+    assert '# export FI_BASE_URL=' not in text
 
 
 def test_app_on_the_page_runs_as_written(tmp_path):

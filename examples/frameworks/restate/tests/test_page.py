@@ -12,8 +12,15 @@ def _blocks(lang: str) -> list[str]:
     return [body for kind, body in BLOCKS if kind == lang]
 
 
-def test_page_shows_the_collector_config_verbatim():
-    assert (EXAMPLE / "otelcol.yaml").read_text() in _blocks("yaml")
+def test_page_shows_the_collector_config_without_test_diary_comment():
+    config = (EXAMPLE / "otelcol.yaml").read_text().replace(
+        "# Tested with otel/opentelemetry-collector-contrib 0.162.0.\n#\n", ""
+    )
+    assert config in _blocks("yaml")
+    assert "# Tested with" not in TEXT
+    assert "@latest" not in TEXT
+    assert "releases/tag/v1.8.0" in TEXT
+    assert "releases/tag/v1.7.13" in TEXT
 
 
 def test_page_shows_the_server_config_verbatim():

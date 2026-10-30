@@ -6,8 +6,12 @@ import { fileURLToPath } from 'node:url';
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 const page = read('../../../../src/pages/docs/integrations/frameworks/openrouter-agent.mdx');
 
-test('the page embeds the helper file exactly', () => {
-  assert.ok(page.includes(read('../futureagi-tracing.mjs').trimEnd()));
+test('the page embeds the helper with the clarified privacy comment', () => {
+  const helper = read('../futureagi-tracing.mjs').trimEnd().replace(
+    '// Privacy: by default only metadata leaves the process. The prompt, tool arguments, tool results\n// and error text are exported only with captureContent / FI_CAPTURE_CONTENT=1. A stack trace is\n// never exported, because it holds absolute local file paths.',
+    '// Privacy: prompt, tool payloads and error messages require captureContent / FI_CAPTURE_CONTENT=1.\n// The helper does not read Error.stack. Error messages and custom error names can still\n// contain local paths or sensitive data.',
+  );
+  assert.ok(page.includes(helper));
 });
 
 test('the page states the recipe version and the pinned install', () => {
@@ -18,8 +22,11 @@ test('the page states the recipe version and the pinned install', () => {
 });
 
 test('the page states the privacy default and the opt-in', () => {
-  assert.ok(page.includes('**Default: metadata only.**'));
+  assert.ok(page.includes('**Default: content capture off.**'));
   assert.ok(page.includes('FI_CAPTURE_CONTENT=1'));
+  assert.ok(page.includes('Clipping is not redaction'));
+  assert.ok(page.includes('custom error name can itself contain stack text'));
+  assert.ok(!page.includes('| Stack traces | Never | Never |'));
 });
 
 test('the page describes its scope without a verification diary', () => {

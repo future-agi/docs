@@ -66,7 +66,10 @@ def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
 def test_the_page_follows_the_docs_style_and_carries_no_secret():
     text = PAGE.read_text()
     assert chr(0x2014) not in text, "the docs style guide forbids em dashes"
-    assert text.split("---", 2)[2].lstrip().startswith("## About")
+    assert text.split("---", 2)[2].lstrip().startswith("Trace your CometAPI")
+    assert "traceAI-openai==0.1.10 fi-instrumentation-otel==1.1.0 openai==3.31.0" in text
+    code = snippet()
+    assert "finally:" in code and "trace_provider.force_flush()" in code and "trace_provider.shutdown()" in code
     assert 'COMETAPI_KEY="YOUR_COMETAPI_KEY"' in text  # placeholders only, no key in the page
     for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
         assert name in text
