@@ -92,8 +92,136 @@ Control what data gets captured. Useful for privacy compliance, reducing payload
 | `hide_llm_invocation_parameters` | bool | False | Model parameters (temperature, etc.) |
 | `base64_image_max_length` | int | 32000 | Truncate base64 images beyond this length |
 | `pii_redaction` | bool | False | Automatically mask PII (Python only) |
+| `hide_error_details` | bool | Derived | Error messages and stack traces on failed spans (Python and TypeScript). See [Errors and privacy](#errors-and-privacy) |
 
-Each field maps to an environment variable with the `FI_` prefix (e.g. `hide_inputs` -> `FI_HIDE_INPUTS`).
+Each field maps to an environment variable with the `FI_` prefix (e.g. `hide_inputs` -> `FI_HIDE_INPUTS`, `hide_error_details` -> `FI_HIDE_ERROR_DETAILS`).
+
+## Errors and privacy
+
+<Note>
+Available in `fi-instrumentation-otel` 1.2.0 (Python, option `hide_error_details`, env var `FI_HIDE_ERROR_DETAILS`) and `@traceai/fi-core` 1.1.0 (TypeScript, option `hideErrorDetails`, same env var). The instrumentation packages must be published after fi-core to pick it up: in Python `traceai-langchain` 0.2.1 and `traceai-autogen` 0.2.1; in TypeScript `@traceai/openai` 0.1.14, `@traceai/anthropic` 0.1.3, `@traceai/bedrock` 0.1.1 and `@traceai/langchain` 0.1.3. Java and C# don't support it yet.
+</Note>
+
+When a call fails, traceAI marks the span `ERROR` and records the exception. Error text can carry the same data you hid with the other `hide_*` fields: a provider error body can quote your prompt back or include provider and gateway request IDs, and a framework error can include a stack trace with local file paths. `hide_error_details` keeps the fact that a span failed and what kind of failure it was, and drops the text.
+
+| Field | Where it lives | `hide_error_details` off | `hide_error_details` on |
+|-------|----------------|--------------------------|-------------------------|
+| Status code | Span status | `ERROR` | `ERROR` |
+| Status description | Span status | The exception message, never a traceback | Empty |
+| `error.type` | Span attribute | The provider's error code when the SDK exposes one, otherwise the fully qualified exception class (e.g. `billing.errors.PaymentDeclined`), otherwise `_OTHER` | Kept |
+| `exception.type` | `exception` event | The exception class | Kept |
+| `exception.escaped` | `exception` event | Kept when set | Kept when set |
+| `exception.message` | `exception` event | Kept | Dropped |
+| `exception.stacktrace` | `exception` event | Kept | Dropped |
+| `error.message` | Span attribute | Kept | Dropped |
+| Other error-text attributes: any key ending in `.exception.message`, `.exception.stacktrace`, `.error.message` or `.error_message` (for example `autogen.error.message`) | Span attributes | Kept | Dropped |
+| Output of a failed LangChain run (Python) | Span attributes | Kept. langchain-core fills it with the provider's error response | Dropped |
+
+The status description never carries a traceback, whatever the setting. LangChain spans used to put the full traceback there; the stack trace now lives only in `exception.stacktrace` on the exception event.
+
+### Default
+
+You rarely need to set `hide_error_details` yourself. When you don't set it in code or through `FI_HIDE_ERROR_DETAILS`, traceAI derives it from the content fields:
+
+| `hide_error_details` setting | Result |
+|------------------------------|--------|
+| Not set | On if any of `hide_inputs`, `hide_outputs`, `hide_input_messages`, `hide_output_messages`, `hide_input_text`, or `hide_output_text` is true. Off otherwise. |
+| `True` or `FI_HIDE_ERROR_DETAILS=true` | On, whatever the other fields are |
+| `False` or `FI_HIDE_ERROR_DETAILS=false` | Off, even when content is hidden |
+
+The content fields count whether you set them in code or through their own environment variables, so `FI_HIDE_INPUTS=true` on its own also hides error details. `hide_input_images`, `hide_embedding_vectors`, `hide_llm_invocation_parameters`, and `pii_redaction` don't affect it. As with the other fields, a value set in code takes precedence over the environment variable.
+
+<Warning>
+This is a behaviour change if you already hide content. After you upgrade, setting any of the content fields above also hides error details: failed spans keep their `ERROR` status, `error.type`, and `exception.type`, but lose the status description, exception message, and stack trace. Set `hide_error_details=False` (or `FI_HIDE_ERROR_DETAILS=false`) to keep them.
+</Warning>
+
+`hide_error_details` applies to spans created through the shared traceAI wrapper (`FiSpan` / `FITracer`): spans from the instrumentors that use it, spans you start through `FITracer`, and an exception recorded automatically when it escapes a span's context manager. A span you start with a plain OpenTelemetry tracer isn't filtered.
+
+<Warning>
+These instrumentors bypass the shared wrapper, so neither the content `hide_*` fields nor `hide_error_details` apply to their spans yet. Fixes for them are being followed up.
+
+- Python: a2a, beeai, strands, claude-agent-sdk, pydantic-ai, agno, pipecat, mcp, and the vector stores chromadb, lancedb, milvus, mongodb-vector, pgvector, pinecone, qdrant, redis-vector and weaviate (17 packages), plus livekit.
+- TypeScript: `@traceai/llamaindex`, `@traceai/vercel` and `@traceai/mastra`.
+</Warning>
+
+### Content-hiding fixes in the same release
+
+These are privacy fixes for anyone who already uses `FI_HIDE_*`:
+
+- `hide_inputs` / `hideInputs` now also redacts `raw.input` and the prompt-template variables (`llm.prompt_template.variables` / `gen_ai.prompt.template.variables`). `hide_outputs` / `hideOutputs` now also redacts `raw.output`.
+- TypeScript now masks the attributes passed when a span is created (`startSpan` and `startActiveSpan`), and link attributes. Before, `FI_HIDE_INPUTS` did not mask prompts that instrumentors set at creation, which affected about 22 TypeScript instrumentors, `@traceai/openai` included. Every published `@traceai/fi-core` release up to 1.0.0 has this gap.
+
+### Behaviour changes (TypeScript)
+
+- `FI_HIDE_*` environment variables now apply even when no `traceConfig` is passed.
+- Inside `FITracer.startActiveSpan`, the active span is now the `FISpan`, not the SDK span. Code that casts it to the SDK `Span` breaks there.
+
+### Example
+
+Hide inputs and outputs but keep error messages and stack traces for debugging:
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    from fi_instrumentation import register, TraceConfig
+    from fi_instrumentation.fi_types import ProjectType
+    from traceai_openai import OpenAIInstrumentor
+
+    trace_provider = register(
+        project_name="my-chatbot",
+        project_type=ProjectType.OBSERVE,
+    )
+
+    config = TraceConfig(
+        hide_inputs=True,
+        hide_outputs=True,
+        # Without this line, hide_inputs would also hide error details
+        hide_error_details=False,
+    )
+
+    OpenAIInstrumentor().instrument(
+        tracer_provider=trace_provider,
+        config=config,
+    )
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    import { register, ProjectType } from "@traceai/fi-core";
+    import { OpenAIInstrumentation } from "@traceai/openai";
+    import { registerInstrumentations } from "@opentelemetry/instrumentation";
+
+    const tracerProvider = register({
+      projectName: "my-chatbot",
+      projectType: ProjectType.OBSERVE,
+    });
+
+    registerInstrumentations({
+      tracerProvider,
+      instrumentations: [
+        new OpenAIInstrumentation({
+          traceConfig: {
+            hideInputs: true,
+            hideOutputs: true,
+            // Without this line, hideInputs would also hide error details
+            hideErrorDetails: false,
+          },
+        }),
+      ],
+    });
+    ```
+  </Tab>
+  <Tab title="Environment Variable">
+    ```bash
+    export FI_HIDE_INPUTS=true
+    export FI_HIDE_OUTPUTS=true
+    # Without this line, FI_HIDE_INPUTS would also hide error details
+    export FI_HIDE_ERROR_DETAILS=false
+    ```
+  </Tab>
+</Tabs>
+
+To hide error details while still capturing content, set `hide_error_details=True` (or `FI_HIDE_ERROR_DETAILS=true`) on its own.
 
 ## Cap attribute size
 
