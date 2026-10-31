@@ -1,7 +1,7 @@
 # Open Agent Spec (pyagentspec) tracing example
 
 Runnable companion to the docs page
-[Open Agent Spec tracing with Future AGI](../../../../src/pages/docs/integrations/frameworks/open-agent-spec.mdx).
+[Open Agent Spec tracing with Future AGI](../../../src/pages/docs/integrations/frameworks/open-agent-spec.mdx).
 
 An Oracle Open Agent Spec agent (one `OpenAiCompatibleConfig`, one `ServerTool`) is
 compiled by pyagentspec's LangGraph adapter and traced into Future AGI with traceAI's
