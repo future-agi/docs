@@ -58,6 +58,34 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Envoy native OTLP endpoints retain the Future AGI receiver prefix', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  const cloud = page.match(/export OTEL_EXPORTER_OTLP_ENDPOINT="([^"]+)"/)?.[1];
+  const selfHosted = page.match(/# self-hosted: (\S+)/)?.[1];
+  assert.equal(cloud, 'https://api.futureagi.com/tracer');
+  assert.equal(selfHosted, 'http://<collector>:4318/tracer');
+  // Generic OTLP HTTP endpoints are base URLs, not full signal endpoints.
+  for (const base of [cloud, selfHosted.replace('<collector>', 'localhost')]) {
+    assert.equal(new URL(`${base}/v1/traces`).pathname, '/tracer/v1/traces');
+  }
+});
+test('Envoy guide distinguishes propagated spans from separate traces', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  assert.doesNotMatch(page, /Running both gives two traces/);
+  assert.match(page, /traceparent/);
+  assert.match(page, /same trace/);
+  assert.match(page, /Without propagated context/);
+});
+test('Envoy guide keeps native tracing and content-safe trace-only defaults', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  assert.match(page, /no Future AGI package/);
+  assert.match(page, /OTEL_EXPORTER_OTLP_PROTOCOL="http\/protobuf"/);
+  for (const signal of ['METRICS', 'LOGS']) assert.ok(page.includes(`OTEL_${signal}_EXPORTER="none"`));
+  for (const field of ['INPUTS', 'OUTPUTS', 'EMBEDDINGS_TEXT', 'EMBEDDINGS_VECTORS']) {
+    assert.ok(page.includes(`OPENINFERENCE_HIDE_${field}=true`));
+  }
+  assert.match(page, /do not hide error status messages/);
+});
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
