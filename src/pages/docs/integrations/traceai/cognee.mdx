@@ -1,163 +1,63 @@
 ---
 title: "Cognee Integration with Future AGI for Memory Tracing"
-description: "Send Cognee's own OpenTelemetry spans for add, cognify and search to Future AGI. A small recipe registers the Future AGI tracer provider and an export filter that keeps prompts and documents out by default. No traceAI package is needed."
+description: "Send Cognee's native OpenTelemetry traces to Future AGI."
 ---
 
-## About
+Inspect Cognee memory operations, searches, and model calls in Future AGI using Cognee's native traces.
 
-[Cognee](https://github.com/topoteretes/cognee) (PyPI `cognee`) creates its own OpenTelemetry spans when `COGNEE_TRACING_ENABLED=true`: one per API call (`memory.store`, `memory.process`, `memory.retrieve`), its pipeline tasks, every LLM and embedding call, and its graph and vector database queries. There is no `traceAI-cognee` package and nothing to instrument. A second instrumentor would double every span.
+## Install
 
-This page is a recipe: a few lines that register the Future AGI tracer provider before Cognee's first call, plus an export filter you copy next to your app. The filter keeps Cognee's prompts, documents, answers and search questions out of the export by default, and gives search, LLM, and embedding spans a Future AGI span type. The runnable example and its tests are in the traceAI repository under [`python/examples/cognee`](https://github.com/future-agi/traceAI/tree/dev/python/examples/cognee).
-
-| | |
-|---|---|
-| Tested versions | `cognee` 1.6.5 (latest on PyPI, 2026-10-16) and 1.6.2; `fi-instrumentation-otel` 1.1.0; OpenTelemetry SDK 1.45.1; Python 3.12 for the live runs, 3.10, 3.11 and 3.13 for the recipe's tests |
-| Verified | 2026-10-16 against a Future AGI stack with real OpenAI models (`gpt-4o-mini`, `text-embedding-3-small`): content off and on, a failing model call, and Cognee's own exporter over gRPC and over HTTPS to Future AGI cloud |
-| Supported scope | Cognee 1.6.5 and 1.6.2 with its local default graph/vector backends and the add/cognify/GRAPH_COMPLETION path shown below. Cognee Cloud, other versions/backends, `cognee.recall`, and agent-memory entry points are outside this recipe’s supported scope. |
-| Delivery | A recipe (code you copy), not an additional package |
-
-## 1. Installation
+Use Python 3.10–3.13. Install Cognee and the Future AGI adapter, then configure Cognee's model and embedding providers as described in the [Cognee documentation](https://docs.cognee.ai/).
 
 ```bash
-pip install "cognee==1.6.5" "fi-instrumentation-otel>=1.1.0,<1.2"
+pip install "cognee[tracing]==1.6.5" "traceai-cognee==0.1.0"
 ```
 
-`fi-instrumentation-otel` provides `register()` and the OpenTelemetry SDK and OTLP/HTTP exporter Cognee's tracing needs. It supports Python 3.10 to 3.13.
+## Configure tracing
 
-Copy [`cognee_filter.py`](https://github.com/future-agi/traceAI/tree/dev/python/examples/cognee/src) next to your app. It depends only on the OpenTelemetry SDK.
-
-## 2. Set environment variables
+Set your [Future AGI API and secret keys](/docs/admin-settings/api-keys) and enable Cognee's native tracing before starting your application. Configure the adapter before the first Cognee operation; do not add a second Cognee or LiteLLM instrumentor.
 
 ```bash
-export FI_API_KEY="YOUR_FI_API_KEY"        # sent as the X-Api-Key header
-export FI_SECRET_KEY="YOUR_FI_SECRET_KEY"  # sent as the X-Secret-Key header
+export FI_API_KEY="YOUR_FI_API_KEY"
+export FI_SECRET_KEY="YOUR_FI_SECRET_KEY"
 export FI_PROJECT_NAME="my-cognee-app"
 export COGNEE_TRACING_ENABLED=true
-
-# Cognee's own model settings, unchanged by this recipe:
-export LLM_API_KEY="YOUR_LLM_KEY"          # plus LLM_MODEL, EMBEDDING_* as usual
 ```
 
-For a self-hosted Future AGI, also set `FI_BASE_URL` to its origin.
-
-## 3. Register Future AGI before the first Cognee call
+## Run Cognee
 
 ```python
 import asyncio
 import os
+from traceai_cognee import configure
 
-from fi_instrumentation import register
-from fi_instrumentation.fi_types import ProjectType
-from fi_instrumentation.otel import BatchSpanProcessor, HTTPSpanExporter
+handle = configure(project_name=os.environ["FI_PROJECT_NAME"])
 
-from cognee_filter import CogneeExportFilter
+import cognee
 
-provider = register(
-    project_name=os.environ["FI_PROJECT_NAME"],
-    project_type=ProjectType.OBSERVE,
-    set_global_tracer_provider=True,  # Cognee attaches to the global provider
-    verbose=False,
-)
-exporter = CogneeExportFilter(HTTPSpanExporter())
-provider.add_span_processor(BatchSpanProcessor(exporter))  # required, see below
-
-
-async def remember_and_ask(question: str, document: str):
-    import cognee
-
-    await cognee.add(document)
+async def main():
+    await cognee.add("Ada works on the Lighthouse project.")
     await cognee.cognify()
-    return await cognee.search(question, query_type=cognee.SearchType.GRAPH_COMPLETION)
+    answer = await cognee.search(
+        "Who works on Lighthouse?", query_type=cognee.SearchType.GRAPH_COMPLETION
+    )
+    print(answer)
 
-
-with provider.get_tracer(__name__).start_as_current_span("remember_and_ask"):
-    print(asyncio.run(remember_and_ask("Who works on Lighthouse?", "Ada works on the Lighthouse project.")))
-provider.force_flush()
+try:
+    with handle.provider.get_tracer(__name__).start_as_current_span("remember_and_ask"):
+        asyncio.run(main())
+    handle.force_flush()
+finally:
+    handle.shutdown()
 ```
 
-Four details matter:
+Open **Observe → Tracing** in Future AGI and select `my-cognee-app` to inspect memory operations, searches, and model calls.
 
-- **Register before Cognee's first traced call.** Cognee looks for a global tracer provider when it sets up tracing. If none is set, it installs its own, and a later `register(set_global_tracer_provider=True)` is ignored.
-- **Keep the `add_span_processor(BatchSpanProcessor(exporter))` line.** `register()` marks its exporter as a default that the next `add_span_processor()` call replaces, and Cognee calls `add_span_processor()` to attach its in-memory span buffer. Without the line nothing is exported. The line also carries the export filter. If you pass exporter options to `register()` (headers, timeout, gRPC), pass the same ones to the exporter you add here.
-- **Wrap the calls in one span if you want one trace.** Each Cognee API call starts its own root span, so without a parent span one add, cognify and search sequence arrives as five traces.
-- **Do not call `cognee.disable_tracing()` or `shutdown_tracing()`.** They shut down the provider Cognee attached to, which is your global Future AGI provider. To turn Cognee's spans off, unset `COGNEE_TRACING_ENABLED`.
-
-Do not also set `OTEL_EXPORTER_OTLP_ENDPOINT` with this setup: Cognee's metrics and log bridge would send to it.
-
-## What is captured
-
-From a real run of cognee 1.6.5 (one `add`, one `cognify`, one `GRAPH_COMPLETION` search): one trace of 120 spans.
-
-| Span | Future AGI type | Notes |
-|---|---|---|
-| `remember_and_ask` | unknown | your parent span |
-| `memory.store`, `memory.process` | unknown | one per `add` and `cognify` |
-| `memory.retrieve`, `cognee.search.authorize`, `cognee.search.dataset` | retriever | the search; type set by the export filter |
-| `cognee.pipeline.task.*` | unknown | `resolve_data_directories`, `ingest_data`, `classify_documents`, `extract_chunks_from_documents`, `extract_graph_and_summarize`, `add_data_points` |
-| `cognee.observe.acreate_structured_output` | llm | every LLM call; type set by the export filter |
-| `cognee.observe.embed_text` | embedding | every embedding call |
-| `cognee.retrieval.*`, `cognee.llm.completion`, `cognee.session.*` | unknown | retriever steps, prompt names and lengths, session ids |
-| `cognee.db.graph.query`, `cognee.db.vector.search` | unknown | database system, collection, row counts |
-
-- **Model**: filled on LLM and embedding spans from `gen_ai.request.model` (for example `openai/gpt-4o-mini`). The provider column shows `litellm-native`, Cognee's adapter name, not the upstream provider.
-- **Tokens and cost**: empty. Cognee records no token usage on its spans.
-- **Errors**: a failing model call is stored as ERROR on the LLM span, on each pipeline task it passed through, on `memory.process` and on your parent span.
-- **Missing-collection probes**: in every search Cognee probes vector collections that do not exist yet, and each probe span ends in ERROR (60 of 66 vector searches in a typical run). The export filter sends those as OK with `cognee.vector_search.collection_missing=true`, so successful runs do not show dozens of errors. Set `COGNEE_FI_COLLECTION_MISSING_AS_ERROR=true` to keep them as errors.
-- cognee 1.6.5 and 1.6.2 emit the same span names, types and attributes; only the number of graph queries differs (17 and 14).
-
-## Privacy
-
-Cognee writes prompts, document text, answers and search questions to span attributes whenever tracing is on, and has no switch to stop that. The export filter removes them before export.
-
-- **Content is off by default.** The filter removes `langfuse.observation.input`, `langfuse.observation.output`, `memory.query.text`, `cognee.search.query` and `cognee.db.query`. On every span it also replaces exception messages with `__REDACTED__ (content capture off)` and status descriptions with the exception type, because an error can quote the prompt.
-- **Stack traces are never exported**, in either mode: they name local files (home directory, user name, virtualenv layout).
-- **Opt in:** set `COGNEE_FI_CAPTURE_CONTENT=true` (or pass `capture_content=True` to `CogneeExportFilter`). Content and error messages are then exported as Cognee recorded them, and the filter copies the LLM call's arguments and response, and the search question, to the span's Input and Output.
-- **Never exported:** your Future AGI keys and the LLM and embedding API keys; they travel only as request headers.
-- **Checked on 2026-10-16:** with the defaults, a unique marker placed in the document and the question, the document text, the answer, local paths, the user name and host name, and all keys were found in no stored column of 262 spans (two successful and two failed runs). With content capture on, the marker appeared in the Input and Output of the LLM and search spans; a failing run sent no `exception.stacktrace` on the wire and stored no local path.
-
-## Alternative: Cognee's own exporter, without traceAI
-
-Cognee can export by itself when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and no provider was registered:
-
-```bash
-pip install "cognee[tracing]==1.6.5"
-
-export COGNEE_TRACING_ENABLED=true
-export OTEL_EXPORTER_OTLP_ENDPOINT="https://api.futureagi.com:443/tracer/v1/traces"
-export OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=$FI_API_KEY,X-Secret-Key=$FI_SECRET_KEY"
-export OTEL_RESOURCE_ATTRIBUTES="project_name=my-cognee-app,project_type=observe"
-```
-
-**This path exports content and sets no span types.** The export filter cannot be attached to Cognee's own exporter, so prompts, documents, answers and questions are exported, LLM and search spans are stored as `unknown`, and the missing-collection probes arrive as errors. Prefer the recipe above.
-
-- **Keep `:443` in the URL.** Cognee uses HTTP only for URLs containing `:443/` or `:4318` (and a few vendor paths); for any other URL it uses gRPC, because `cognee[tracing]` installs the gRPC exporter. Without `:443` nothing arrives.
-- **Self-hosted Future AGI:** an HTTP URL on another port goes to gRPC too. Point the endpoint at the collector's OTLP gRPC port instead (`http://HOST:GRPC_PORT`, no path) and write the header names in lower case: `x-api-key=...,x-secret-key=...`. With `X-Api-Key`, every gRPC export fails with `Invalid metadata`.
-- **Give the full path** for HTTP. Cognee does not append `/v1/traces`.
-- **Expect 404s for logs.** Cognee also sends its log records to the same URL with `/v1/logs`; Future AGI ingests traces only. Spans are unaffected.
+Request and response content is excluded by default. To include approved application data, set `capture_content=True` in `configure`. Recognized credential fields are redacted, but free text is not scanned for secrets. Error descriptions and stack traces remain excluded in both modes. Keep sensitive data out of span names and apply your data policy to any other exporters configured in your application.
 
 ## Troubleshooting
 
-- **No traces with the recipe.** The `add_span_processor(BatchSpanProcessor(exporter))` line is missing, or `register()` ran after Cognee's first call.
-- **Traces stop part-way.** Something called `cognee.disable_tracing()` or `shutdown_tracing()`.
-- **Five traces per request.** Wrap the Cognee calls in one parent span.
-- **Prompts or documents visible.** `COGNEE_FI_CAPTURE_CONTENT=true` is set, or the exporter is not wrapped in `CogneeExportFilter`, or you use Cognee's own exporter.
-- **Dozens of `cognee.db.vector.search` errors.** The exporter is not wrapped in the filter, or `COGNEE_FI_COLLECTION_MISSING_AS_ERROR=true` is set.
-- **Error messages read `__REDACTED__ (content capture off)`.** That is the default. Turn content capture on for the original messages; check Cognee's own log for tracebacks.
-- **Spans doubled.** Another instrumentor (for example `traceAI-litellm` or `traceAI-openai`) also wraps the LLM calls Cognee makes. Remove it.
-- **Cognee's own exporter sends nothing.** `cognee[tracing]` is not installed, or the URL lacks `:443` so Cognee chose gRPC.
-- **First run fails offline.** cognee 1.6.5 downloads tiktoken's `cl100k_base` file on its first embedding unless `TIKTOKEN_CACHE_DIR` points at a copy.
-
-## Limitations
-
-- Token usage and cost are not available: Cognee does not record them.
-- Only search, LLM, and embedding spans get a Future AGI type; pipeline, retrieval-step and database spans stay `unknown`.
-- `cognee.recall` and the agent-memory entry points (`cognee.api.recall`, `cognee.agent_memory.retrieve`) are not mapped; their query text is still removed by default.
-- With content capture off, error detail is limited to the exception type.
-- `register()` replacing its default exporter is tracked as a traceAI follow-up (TH-8394); once fixed, the re-add line goes away.
-- Metrics and logs are not ingested.
-
-## How this differs from related integrations
-
-- **traceAI instrumentors** such as LiteLLM or OpenAI wrap a client library. Cognee already traces its own LLM calls, so adding one of them on top doubles the LLM spans. Their privacy switches (`FI_HIDE_*`) do not apply to Cognee's spans; the export filter's switch does.
-- **EverOS** is another memory engine that exports its own spans; its page covers EverOS only.
-- **Langfuse cookbooks** for Cognee use `get_observe()` decorators on your functions. That is a different integration; this recipe uses Cognee's OpenTelemetry spans.
+- **No Cognee spans:** set `COGNEE_TRACING_ENABLED=true` before the first Cognee operation and configure the adapter before that operation.
+- **Spans missing at exit:** end application spans and call `handle.force_flush()` before `handle.shutdown()`. Spans still open at shutdown are not exported.
+- **Tracing stops in other parts of your app:** avoid `cognee.disable_tracing()` and `cognee.shutdown_tracing()` while application tracing is active; they shut down the shared provider.
+- **Missing-collection errors:** the adapter preserves Cognee's native error statuses, including vector-search probes for collections that do not exist yet.

@@ -58,6 +58,21 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Cognee uses the maintained adapter with native tracing and safe lifecycle', () => {
+  const page = read('src/pages/docs/integrations/traceai/cognee.mdx');
+  assert.match(page, /pip install "cognee\[tracing\]==1\.6\.5" "traceai-cognee==0\.1\.0"/);
+  assert.match(page, /from traceai_cognee import configure/);
+  assert.match(page, /COGNEE_TRACING_ENABLED=true/);
+  assert.ok(page.indexOf('handle = configure(') < page.indexOf('import cognee'));
+  assert.match(page, /handle\.force_flush\(\)[\s\S]*finally:[\s\S]*handle\.shutdown\(\)/);
+  assert.match(page, /capture_content=True/);
+  assert.match(page, /free text is not scanned for secrets/);
+  assert.match(page, /Error descriptions and stack traces remain excluded/);
+  assert.match(page, /other exporters/);
+  assert.match(page, /cognee\.disable_tracing\(\)/);
+  assert.doesNotMatch(page, /CogneeExportFilter|cognee_filter|Live vendor verification|PASS\/FAIL|There is no .*package/);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
