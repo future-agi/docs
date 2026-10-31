@@ -58,6 +58,39 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('MongoDB Java setup uses matching pinned Maven Central dependencies in both build tools', () => {
+  const section = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx')
+    .split('## MongoDB Atlas Vector Search\n')[1]?.split('\n## Redis')[0];
+  assert.ok(section, 'MongoDB setup section must exist');
+  const maven = section.match(/```xml Maven\n([\s\S]*?)```/)?.[1];
+  const gradle = section.match(/```groovy Gradle\n([\s\S]*?)```/)?.[1];
+  assert.ok(maven && gradle, 'Both build tools need installation snippets');
+  const dependencies = [...maven.matchAll(/<dependency>([\s\S]*?)<\/dependency>/g)]
+    .map(([, block]) => ['groupId', 'artifactId', 'version']
+      .map(tag => block.match(new RegExp(`<${tag}>([^<]+)</${tag}>`))?.[1]).join(':'));
+  assert.deepEqual(dependencies, [
+    'com.futureagi:traceai-java-core:1.0.0',
+    'com.futureagi:traceai-java-mongodb:1.0.0',
+    'org.mongodb:mongodb-driver-sync:5.14.0',
+  ]);
+  assert.deepEqual([...gradle.matchAll(/implementation '([^']+)'/g)].map(([, coordinate]) => coordinate), dependencies);
+  assert.match(gradle, /mavenCentral\(\)/);
+  assert.doesNotMatch(maven + gradle, /main-SNAPSHOT|com\.github\.future-agi/);
+});
+
+test('MongoDB Java setup keeps initialization and explicit vector-search scope clear', () => {
+  const section = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx')
+    .split('## MongoDB Atlas Vector Search\n')[1]?.split('\n## Redis')[0];
+  assert.ok(section, 'MongoDB setup section must exist');
+  assert.match(section, /Replace any JitPack core or MongoDB dependencies/);
+  assert.match(section, /\/docs\/integrations\/traceai\/java#initialization/);
+  assert.match(section, /only operations called through the wrapper/);
+  assert.match(section, /import java\.util\.List;/);
+  assert.match(section, /List<Double> queryVector/);
+  assert.match(section, /collection\.getNamespace\(\)\.getCollectionName\(\)/);
+  assert.doesNotMatch(section, /\/\* your MongoDB collection \*\//);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
