@@ -47,6 +47,22 @@ test('all logo references have provenance, existing files, matching hashes and p
   const manifest = JSON.parse(read('public/images/integrations/manifest.json'));
   for (const i of integrations) assert.ok(manifest.assets[i.logo],`Missing logo record: ${i.logo}`);
 });
+test('Qdrant Java uses released Central coordinates and a complete blocking example', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## Qdrant\n')[1].split('\n## Milvus')[0];
+  assert.match(section, /<groupId>com\.futureagi<\/groupId>/);
+  assert.match(section, /<artifactId>traceai-java-qdrant<\/artifactId>\s*<version>1\.0\.0<\/version>/);
+  assert.match(section, /implementation 'com\.futureagi:traceai-java-qdrant:1\.0\.0'/);
+  assert.match(section, /implementation 'io\.qdrant:client:1\.16\.2'/);
+  assert.doesNotMatch(section, /main-SNAPSHOT|com\.github\.future-agi/);
+  assert.match(section, /blocking methods/);
+  assert.match(section, /unwrap\(\).*bypass/);
+  assert.match(section, /public class QdrantExample/);
+  assert.match(section, /import io\.qdrant\.client\.grpc\.Collections\.Distance;/);
+  assert.match(section, /TraceAI\.shutdown\(\)/);
+  assert.doesNotMatch(section, /queryVector|pointsList|queryAsync\(/);
+});
+
 test('machine-readable overview serializes every catalog entry and setup aid', () => {
   const text = integrationDirectoryMarkdown();
   for (const entry of integrations) {
