@@ -232,14 +232,46 @@ class CollectorConfigTest(CollectorCase):
         spans = self.send(body)
         self.assertNotIn("dev@example.com", json.dumps([[r, a] for r, _, a in spans]))
 
-    def test_input_tokens_without_cache_counts(self):
+    def test_independently_optional_cache_counts(self):
+        # One request covers read-only, write-only, both and neither. Also
+        # seed a stale derived total: recomputing must not double-count it.
         body = json.loads(DEFAULT_FIXTURE.read_text())
+        expected = {}
         for rs in body["resourceSpans"]:
             for ss in rs["scopeSpans"]:
-                for s in ss["spans"]:
-                    s["attributes"] = [a for a in s["attributes"] if a["key"] != "cache_creation_tokens"]
-        for _, _, a in self.by_name(self.send(body), "claude_code.llm_request"):
-            self.assertEqual(a["gen_ai.usage.input_tokens"], a["input_tokens"])
+                model = next(s for s in ss["spans"] if s["name"] == "claude_code.llm_request")
+                ss["spans"] = []
+                for index, cache in enumerate((
+                    {"cache_read_tokens": 90}, {"cache_creation_tokens": 40},
+                    {"cache_read_tokens": 90, "cache_creation_tokens": 40}, {},
+                    {"cache_read_tokens": 90},  # with a stale derived total
+                ), start=1):
+                    span = copy.deepcopy(model)
+                    span["spanId"] = f"{index:016x}"
+                    span["attributes"] = [a for a in span["attributes"] if a["key"] not in (
+                        "input_tokens", "cache_read_tokens", "cache_creation_tokens",
+                        "gen_ai.usage.input_tokens",
+                    )]
+                    usage = {"input_tokens": 10, **cache}
+                    if index == 5:
+                        usage["gen_ai.usage.input_tokens"] = 999
+                    span["attributes"] += [
+                        {"key": key, "value": {"intValue": str(count)}}
+                        for key, count in usage.items()
+                    ]
+                    ss["spans"].append(span)
+                    expected[span["spanId"]] = (10 + sum(cache.values()), cache)
+        spans = self.by_name(self.send(body), "claude_code.llm_request")
+        self.assertEqual(len(spans), 5)
+        for _, span, attributes in spans:
+            total, cache = expected[span["spanId"]]
+            self.assertEqual(attributes["gen_ai.usage.input_tokens"], total)
+            for source, mapped in (("cache_read_tokens", "gen_ai.usage.cache_read_tokens"),
+                                   ("cache_creation_tokens", "gen_ai.usage.cache_write_tokens")):
+                if source in cache:
+                    self.assertEqual(attributes[mapped], cache[source])
+                else:
+                    self.assertNotIn(mapped, attributes)
 
     def test_mcp_names_replaced_by_default(self):
         spans = self.send(json.loads(MCP_FIXTURE.read_text()))
