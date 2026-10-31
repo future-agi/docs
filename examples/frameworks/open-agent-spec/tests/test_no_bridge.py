@@ -50,5 +50,5 @@ def test_adapter_emits_on_the_bus_only():
 
 def test_tested_versions():
     assert importlib.metadata.version("pyagentspec") == "26.3.1"
-    assert importlib.metadata.version("traceai-langchain") == "0.2.0"
-    assert importlib.metadata.version("fi-instrumentation-otel") == "1.1.0"
+    assert importlib.metadata.version("traceai-langchain") == "0.2.1"
+    assert importlib.metadata.version("fi-instrumentation-otel") == "1.2.2"
