@@ -58,6 +58,23 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Java pgvector uses released Central packages and connection-local type registration', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## pgvector\n')[1].split('## Azure AI Search')[0];
+  assert.match(section, /com\.futureagi:traceai-java-pgvector:1\.0\.0/);
+  assert.match(section, /com\.pgvector:pgvector:0\.1\.6/);
+  assert.match(section, /org\.postgresql:postgresql:42\.7\.14/);
+  assert.doesNotMatch(section, /main-SNAPSHOT|com\.github\.future-agi/);
+  assert.match(section, /try \(Connection connection = ds\.getConnection\(\)\)/);
+  assert.match(section, /new TracedPgVectorStore\(connection\)/);
+  assert.match(section, /PGvector\.registerTypes\(connection\)/);
+  assert.ok(section.indexOf('PGvector.registerTypes(connection)') < section.indexOf('traced.search('));
+  assert.match(section, /each connection/);
+  assert.match(section, /arbitrary SQL/);
+  assert.match(section, /never concatenate untrusted input/);
+  assert.match(section, /float\[\] vector = \{1\.0f, 2\.0f, 3\.0f\}/);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
