@@ -58,6 +58,15 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Cloudflare AI Chat distinguishes span identity from trace-level session grouping', () => {
+  const page = read('src/pages/docs/integrations/frameworks/cloudflare-ai-chat.mdx');
+  assert.doesNotMatch(page, /use the session to see it whole/i);
+  assert.match(page, /span-level correlation/i);
+  assert.match(page, /trace-level session grouping requires[^.]*root span/i);
+  assert.match(page, /does not propagate[^.]*runtime roots/i);
+  assert.match(page, /open each message trace/i);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
