@@ -108,23 +108,23 @@ def test_success_span_has_model_tokens_and_provider(traced):
     # The id the client sent, `provider_account/model_name`, stays in the request parameters.
     assert json.loads(attrs["gen_ai.request.parameters"])["model"] == MODEL
     assert (attrs["gen_ai.usage.input_tokens"], attrs["gen_ai.usage.output_tokens"], attrs["gen_ai.usage.total_tokens"]) == (11, 5, 16)
-    # traceai-openai 0.1.10 recognises api.openai.com, openai.azure.com and googleapis.com by host.
-    # Any other host, including gateway.truefoundry.ai, gets the fallback label.
+    # Unknown gateway hosts use the OpenAI-compatible client's fallback label;
+    # this does not identify TrueFoundry's resolved upstream provider.
     assert attrs["gen_ai.provider.name"] == "openai"
 
 
-def test_gateway_403_is_an_error_span_without_a_model_attribute(traced):
+def test_gateway_403_keeps_requested_model(traced):
     client, exporter = traced
     with pytest.raises(Exception) as err:
         _ask(client, "openai-main/forbidden")
     assert type(err.value).__name__ == "PermissionDeniedError"
     (span,) = exporter.get_finished_spans()
     assert span.status.status_code == StatusCode.ERROR
-    assert "PermissionDeniedError" in span.status.description
+    assert "not authorized" in span.status.description
     assert [e.name for e in span.events] == ["exception"]
     attrs = dict(span.attributes)
-    # traceai-openai 0.1.10 sets no model attribute on a failed call; the id is only in the parameters.
-    assert "gen_ai.request.model" not in attrs
+    # Failed calls have no response model, so retain the requested gateway model id.
+    assert attrs["gen_ai.request.model"] == "openai-main/forbidden"
     assert json.loads(attrs["gen_ai.request.parameters"])["model"] == "openai-main/forbidden"
 
 
@@ -155,24 +155,22 @@ def test_hide_switches_remove_prompt_and_response_but_keep_usage(traced):
     [TraceConfig(hide_inputs=True, hide_outputs=True, hide_input_messages=True, hide_output_messages=True)],
     indirect=True,
 )
-def test_hide_switches_do_not_cover_error_text(traced):
-    """Known limitation, pinned so a fix upstream shows up here: the failure path keeps the error text."""
+def test_content_hiding_also_redacts_error_details(traced):
     client, exporter = traced
     with pytest.raises(Exception):
         _ask(client, "openai-main/forbidden")
     (span,) = exporter.get_finished_spans()
-    assert "not authorized" in span.status.description
-    # The real gateway puts the caller's e-mail in that text (seen live on 2026-10-20), so it is stored.
-    assert "dev@example.test" in span.status.description
+    assert span.status.status_code == StatusCode.ERROR
+    assert span.status.description is None
     (event,) = span.events
-    assert "exception.stacktrace" in event.attributes
+    assert event.attributes["exception.type"].endswith("PermissionDeniedError")
+    assert "exception.message" not in event.attributes
+    assert "exception.stacktrace" not in event.attributes
+    assert "dev@example.test" not in span.to_json()
 
 
-def test_stream_span_has_tokens_but_no_model_on_traceai_openai_0_1_10(traced):
-    """Seen against the real gateway on 2026-10-20: a streamed call records usage but no model attribute.
-
-    Fixed in unreleased traceAI PR #249; this test is meant to go red on a build that has it.
-    """
+def test_stream_span_keeps_requested_model_and_tokens(traced):
+    """A fully consumed stream retains the requested gateway model and reported usage."""
     from client_example import run_stream
 
     client, exporter = traced
@@ -181,4 +179,4 @@ def test_stream_span_has_tokens_but_no_model_on_traceai_openai_0_1_10(traced):
     attrs = dict(span.attributes)
     assert span.status.status_code != StatusCode.ERROR
     assert attrs["gen_ai.usage.total_tokens"] == 16
-    assert "gen_ai.request.model" not in attrs
+    assert attrs["gen_ai.request.model"] == MODEL
