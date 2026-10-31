@@ -58,6 +58,14 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Together OpenAI guide requires the released provider mapping without claiming native SDK coverage', () => {
+  const page = read('src/pages/docs/integrations/traceai/togetherai.mdx');
+  assert.match(page, /pip install --upgrade "traceAI-openai>=0\.1\.11"/);
+  assert.match(page, /base_url="https:\/\/api\.together\.ai\/v1"/);
+  assert.match(page, /gen_ai\.provider\.name=together/);
+  assert.match(page, /does not instrument an existing `together\.Together` client/);
+  assert.doesNotMatch(page, /can be labeled \*\*OpenAI\*\*|Do not rely on that field/);
+});
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
