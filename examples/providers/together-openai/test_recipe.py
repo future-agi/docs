@@ -20,11 +20,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from traceai_openai import OpenAIInstrumentor
 
-# OpenAI 3.x uses httpx2; the supported 1.x floor uses httpx.
+# Use the module imported by the SDK itself, even if both HTTP packages exist.
 try:
-    import httpx2 as httpx
+    from openai._base_client import httpx2 as httpx
 except ImportError:
-    import httpx
+    from openai._base_client import httpx
 
 PAGE = (
     Path(__file__).resolve().parents[3]
@@ -190,6 +190,7 @@ def test_page_matches_released_provider_behavior(traced):
         "The guide contradicts the released instrumentor"
     )
     assert '"traceAI-openai>=0.1.11"' in page
+    assert '"fi-instrumentation-otel>=1.2.2"' in page
     assert "gen_ai.provider.name=together" in page
 
 
