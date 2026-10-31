@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Drive the real bridge with Cowork log exports shaped as Anthropic documents
+# them, into a Future AGI collector. No model is called.
+#
+#   FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=cowork-e2e ./run_e2e.sh [fixture.jsonl]
+#
+# The bridge runs on loopback with a bearer token, the way the admin form
+# would call it, and each replay gets fresh session and prompt ids.
+# For a self-hosted Future AGI set FI_BASE_URL (traces go to
+# $FI_BASE_URL/tracer/v1/traces) or FI_OTLP_ENDPOINT (the full traces URL).
+# FI_BRIDGE_PORT picks the bridge's loopback port (default 4320).
+# CONTENT=1 turns on FI_BRIDGE_CAPTURE_CONTENT.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+FIXTURE="${1:-$HERE/tests/fixtures/cowork-documented-session.jsonl}"
+: "${FI_API_KEY:?set FI_API_KEY}" "${FI_SECRET_KEY:?set FI_SECRET_KEY}"
+PORT="${FI_BRIDGE_PORT:-4320}"
+export FI_BRIDGE_LISTEN="127.0.0.1:$PORT" FI_BRIDGE_IDLE_SECONDS="${FI_BRIDGE_IDLE_SECONDS:-3}"
+export FI_BRIDGE_TOKEN="${FI_BRIDGE_TOKEN:-$(python3 -c 'import secrets; print(secrets.token_hex(16))')}"
+[ "${CONTENT:-0}" = "1" ] && export FI_BRIDGE_CAPTURE_CONTENT=1
+
+LOG="$(mktemp)"
+python3 "$HERE/bridge.py" 2>"$LOG" &
+BRIDGE=$!
+trap 'kill "$BRIDGE" 2>/dev/null || true; rm -f "$LOG"' EXIT
+for _ in $(seq 1 50); do
+  grep -q "listening" "$LOG" && break
+  kill -0 "$BRIDGE" 2>/dev/null || { cat "$LOG" >&2; exit 1; }
+  sleep 0.1
+done
+
+python3 "$HERE/replay.py" "$FIXTURE" --url "http://127.0.0.1:$PORT/v1/logs" --token "$FI_BRIDGE_TOKEN" --sleep "${REPLAY_SLEEP:-1}"
+# Wait for the idle timer (the value may be fractional) plus a margin.
+sleep "$(awk -v s="$FI_BRIDGE_IDLE_SECONDS" 'BEGIN { print s + 2 }')"
+kill "$BRIDGE"; wait "$BRIDGE" 2>/dev/null || true
+cat "$LOG"
+grep -q "http=200" "$LOG" || { echo "nothing exported" >&2; exit 1; }
