@@ -86,47 +86,79 @@ All languages share the same span kinds:
     ```
   </Tab>
   <Tab title="TypeScript">
-    TypeScript uses OpenTelemetry's standard `startActiveSpan` pattern:
+    Wrap your provider's tracer with `FITracer` to apply context attributes and privacy settings to custom spans. `startActiveSpan` uses OpenTelemetry's callback pattern; await your work and end the span in `finally`, including when the work fails.
 
-    ```typescript
-    import { trace } from "@opentelemetry/api";
+    For a Node.js application, install the packages below and set `FI_API_KEY` and `FI_SECRET_KEY` as described in [Set up tracing](/docs/sdk/tracing/set-up-tracing). This example uses `@traceai/fi-core` 1.1.0 or later and OpenTelemetry 2.x.
 
-    const tracer = trace.getTracer("my-app");
-
-    // Manual span creation
-    tracer.startActiveSpan("rag-pipeline", (span) => {
-      span.setAttribute("gen_ai.span.kind", "CHAIN");
-      span.setAttribute("input.value", question);
-
-      const docs = retrieve(question);
-      const result = generate(question, docs);
-
-      span.setAttribute("output.value", result);
-      span.end();
-      return result;
-    });
+    ```bash
+    npm install "@traceai/fi-core@^1.1.0" "@opentelemetry/api@^1.9.0" "@opentelemetry/context-async-hooks@^2.0.1"
     ```
 
-    Context management functions let you set session, user, and metadata:
-
     ```typescript
-    import {
-      setSession, setUser, setMetadata, setTags,
-      getAttributesFromContext
-    } from "@traceai/fi-core";
-    import { context } from "@opentelemetry/api";
+    import { context, SpanStatusCode } from "@opentelemetry/api";
+    import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+    import { FITracer, ProjectType, register, setSession, setUser } from "@traceai/fi-core";
 
-    const ctx = setSession(context.active(), { sessionId: "sess-123" });
-    const ctx2 = setUser(ctx, { userId: "user-456" });
+    // Initialize once at application startup, before handling requests.
+    const contextManager = new AsyncLocalStorageContextManager().enable();
+    context.setGlobalContextManager(contextManager);
+    const provider = register({
+      projectName: "my-project",
+      projectType: ProjectType.OBSERVE,
+    });
+    const tracer = new FITracer({
+      tracer: provider.getTracer("my-app"),
+      traceConfig: { hideInputs: true, hideOutputs: true, hideErrorDetails: true },
+    });
 
-    context.with(ctx2, () => {
-      // All spans created here inherit session and user
-      tracer.startActiveSpan("operation", (span) => {
-        // span automatically gets session.id and user.id
-        span.end();
+    async function getPolicy(topic: string): Promise<string> {
+      return tracer.startActiveSpan("get-policy", async (span) => {
+        try {
+          span.setAttribute("gen_ai.span.kind", "TOOL");
+          span.setAttribute("input.value", topic);
+
+          const policies = new Map([["returns", "Returns are accepted within 30 days."]]);
+          const policy = await Promise.resolve(policies.get(topic));
+          if (!policy) throw new Error("Unknown policy topic");
+
+          span.setAttribute("output.value", policy);
+          span.setStatus({ code: SpanStatusCode.OK });
+          return policy;
+        } catch (error) {
+          span.recordException(error instanceof Error ? error : String(error));
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          throw error;
+        } finally {
+          span.end();
+        }
       });
-    });
+    }
+
+    async function main() {
+      const requestContext = setUser(
+        setSession(context.active(), { sessionId: "sess-123" }),
+        { userId: "user-456" },
+      );
+      try {
+        const policy = await context.with(requestContext, () => getPolicy("returns"));
+        console.log(policy);
+      } finally {
+        // Flush and close the exporter when this short-lived script finishes.
+        await provider.shutdown();
+        contextManager.disable();
+      }
+    }
+
+    void main();
     ```
+
+    In Future AGI, open **my-project** and inspect the `get-policy` span. It has `session.id` and `user.id`, while input, output, and error text are hidden by the example's privacy settings. Change those settings only for content you intend to collect. If the lookup fails, the span records the failure and the caller still receives the error.
+
+    `setSession`, `setUser`, `setMetadata`, and `setTags` return a context containing the values you supply. Activate that context with `context.with`. **Spans created through `FITracer.startActiveSpan`** copy those values into span attributes, including across awaited work when a context manager is enabled. Raw OpenTelemetry spans do not automatically copy these attributes or apply `FITracer` masking.
+
+    <Note>
+      If your application already has an OpenTelemetry provider and context manager, reuse them instead of initializing another pair. Wrap the existing provider's tracer with `FITracer`. In a server, shut down the provider only when the application exits, not after each request.
+    </Note>
   </Tab>
   <Tab title="Java">
     Java offers both lambda-based and manual span creation:
