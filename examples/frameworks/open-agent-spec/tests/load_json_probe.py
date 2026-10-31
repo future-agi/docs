@@ -1,5 +1,5 @@
 """Probe for test_load_json.py: the same agent, serialized to Agent Spec JSON and loaded back
-with ``AgentSpecLoader.load_json``, traced with ``setup_tracing()``. Prints the JSON's facts."""
+with ``AgentSpecLoader.load_json``, traced with the maintained APIs. Prints the JSON's facts."""
 
 import json
 import os
@@ -8,9 +8,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from futureagi_tracing import setup_tracing  # noqa: E402
+from fi_instrumentation import TraceConfig, register  # noqa: E402
+from fi_instrumentation.fi_types import ProjectType  # noqa: E402
+from traceai_langchain import LangChainInstrumentor  # noqa: E402
 
-tracer_provider = setup_tracing()
+tracer_provider = register(project_type=ProjectType.OBSERVE, verbose=False)
+LangChainInstrumentor().instrument(
+    tracer_provider=tracer_provider,
+    config=TraceConfig(hide_error_details=True),
+)
 
 import weather_agent  # noqa: E402
 from pyagentspec.adapters.langgraph import AgentSpecLoader  # noqa: E402
