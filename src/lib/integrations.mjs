@@ -51,6 +51,7 @@ export const integrations = [
   { id: 'gradio', name: 'Gradio', href: '/docs/integrations/traceai/gradio', category: 'frameworks', summary: 'Trace synchronous chat callbacks through their model client.', method: 'OpenAI client', logo: 'generic-framework' },
   { id: 'z-ai', name: 'Z.ai', href: '/docs/integrations/providers/z-ai', category: 'providers', summary: 'Trace Python chat completions on the general-platform endpoint.', method: 'OpenAI client', logo: 'generic-model' },
   { id: 'cursor', name: 'Cursor IDE', href: '/docs/integrations/coding-agents/cursor', category: 'coding', summary: 'Trace macOS IDE agent sessions through observation hooks.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
+  { id: 'kiro-ide', name: 'Kiro IDE', href: '/docs/integrations/coding-agents/kiro-ide', category: 'coding', summary: 'Map documented IDE hooks with the local event adapter.', method: 'Hook-to-OTLP', logo: 'generic-framework' },
   { id: 'langsmith', name: 'LangSmith', href: '/docs/integrations/langsmith', category: 'frameworks', summary: 'Forward supported LangSmith SDK traces over OTLP.', method: 'Native OTLP', logo: 'generic-framework' },
   {"id": "mlflow", "name": "MLflow", "href": "/docs/integrations/mlflow", "category": "frameworks", "summary": "Export current MLflow traces with OTLP/HTTP.", "method": "Native OTLP", "logo": "generic-framework"},
   { id: 'openai', name: 'OpenAI', href: '/docs/integrations/traceai/openai', category: 'providers', summary: 'Instrument OpenAI client calls in your application.', method: 'traceAI SDK', logo: 'openai' },
