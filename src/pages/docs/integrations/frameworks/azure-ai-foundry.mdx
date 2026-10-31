@@ -1,0 +1,192 @@
+---
+title: "Azure AI Foundry"
+description: "Send Foundry project and Responses API traces to Future AGI with Microsoft's native Python instrumentation, one OpenTelemetry provider, and content capture off."
+---
+
+Trace Foundry agent creation and Responses API calls from your Python application in Future AGI, using Microsoft's native `AIProjectInstrumentor`.
+
+## Prerequisites
+
+- Python 3.10–3.13.
+- A Foundry project endpoint, a deployed model, and an Azure identity allowed to create and invoke agents in that project. The example uses `DefaultAzureCredential`; for local development, sign in with `az login`.
+- [Future AGI API keys](/docs/admin-settings/api-keys).
+- [OpenTelemetry Collector Contrib 0.162.0](https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.162.0), running alongside your Python application.
+
+This guide uses the `azure-ai-projects` 2.x client. For model inference through an Azure resource's `/openai/v1/` endpoint without Foundry agents, use the existing [Azure OpenAI inference example](https://github.com/future-agi/traceAI/tree/dev/python/examples/azure-ai-foundry) with `traceai-openai` instead.
+
+## Install
+
+```bash
+pip install "azure-ai-projects>=2.0.0,<3" "azure-core-tracing-opentelemetry==1.0.0b13" "fi-instrumentation-otel==1.2.2"
+```
+
+No separate Foundry instrumentation package or copied tracing helper is needed. Microsoft maintains the agent and Responses instrumentation. A trace-only collector pipeline labels the native agent operations for Future AGI without modifying your application or creating extra spans.
+
+## Configure
+
+Set your credentials in your environment or secret manager. Keep Azure credentials separate from your Future AGI keys.
+
+```bash
+export FI_API_KEY="YOUR_FI_API_KEY"
+export FI_SECRET_KEY="YOUR_FI_SECRET_KEY"
+export FI_PROJECT_NAME="foundry-agent-app"
+export FI_BASE_URL="http://127.0.0.1:4318"
+export FOUNDRY_PROJECT_ENDPOINT="https://YOUR-RESOURCE.services.ai.azure.com/api/projects/YOUR-PROJECT"
+export FOUNDRY_MODEL_NAME="YOUR-MODEL-DEPLOYMENT"
+
+export AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING=true
+export AZURE_SDK_TRACING_IMPLEMENTATION=opentelemetry
+```
+
+`FOUNDRY_MODEL_NAME` is your deployment name. Use the **project** endpoint here, not the resource-level `/openai/v1/` inference URL. `FI_BASE_URL` points the Python exporter at the local collector. For self-hosted Future AGI, set `FI_TRACE_ENDPOINT` to your deployment's full `/tracer/v1/traces` URL; keep `FI_BASE_URL` pointing at the collector.
+
+## Start the trace collector
+
+Save this as `otelcol.yaml`. It preserves the native model, provider, and usage attributes, and labels `create_agent` and `invoke_agent` operations as agent spans in Observe.
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+        traces_url_path: /tracer/v1/traces
+
+processors:
+  transform/foundry:
+    error_mode: propagate
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "create_agent" or attributes["gen_ai.operation.name"] == "invoke_agent"
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 512
+    timeout: 1s
+
+exporters:
+  otlphttp/future_agi:
+    traces_endpoint: ${env:FI_TRACE_ENDPOINT:-https://api.futureagi.com/tracer/v1/traces}
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/foundry, batch]
+      exporters: [otlphttp/future_agi]
+```
+
+Start the collector in a terminal with the Future AGI key variables set:
+
+```bash
+otelcol-contrib --config otelcol.yaml
+```
+
+The receiver binds only to loopback. Run the Python application on the same host. If you move the collector to another host, configure TLS and receiver authentication before exposing it; do not expose this unauthenticated local receiver publicly.
+
+## Run an agent
+
+Save this as `foundry_agent.py`. It creates a temporary agent version, asks a question, and deletes that version when the call finishes.
+
+```python
+import os
+
+from azure.ai.projects import AIProjectClient
+from azure.ai.projects.models import PromptAgentDefinition
+from azure.ai.projects.telemetry import AIProjectInstrumentor
+from azure.identity import DefaultAzureCredential
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+
+# Set up the global provider before instrumenting or creating clients.
+provider = register(
+    project_name=os.environ["FI_PROJECT_NAME"],
+    project_type=ProjectType.OBSERVE,
+    set_global_tracer_provider=True,
+    verbose=False,
+)
+AIProjectInstrumentor().instrument(
+    enable_content_recording=False,
+    enable_trace_context_propagation=True,
+    enable_baggage_propagation=False,
+)
+
+try:
+    with (
+        DefaultAzureCredential() as credential,
+        AIProjectClient(
+            endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
+            credential=credential,
+        ) as project,
+        provider.get_tracer(__name__).start_as_current_span("foundry-question"),
+    ):
+        agent = project.agents.create_version(
+            agent_name="futureagi-example",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="Answer geography questions in one sentence.",
+            ),
+        )
+        try:
+            with project.get_openai_client() as client:
+                response = client.responses.create(
+                    input="What is the capital of France?",
+                    extra_body={
+                        "agent_reference": {
+                            "type": "agent_reference",
+                            "name": agent.name,
+                            "version": agent.version,
+                        }
+                    },
+                )
+                print(response.output_text)
+        finally:
+            project.agents.delete_version(
+                agent_name=agent.name, agent_version=agent.version
+            )
+finally:
+    provider.force_flush()
+    provider.shutdown()
+```
+
+```bash
+python foundry_agent.py
+```
+
+Keep **one global tracer provider**. If your application already configures that provider, add the Future AGI exporter to it instead of calling `register()` again. Do not also call `configure_azure_monitor()` to set up a competing provider.
+
+Do not enable `OpenAIInstrumentor` from `traceai-openai`, another OpenAI instrumentor, or automatic OpenAI instrumentation in this process. Foundry's instrumentor already instruments Responses calls; stacking instrumentors can create duplicate model spans. Create clients with `project.get_openai_client()` **after** instrumentation so requests carry trace context.
+
+## View your trace
+
+Open **Observe** in Future AGI, select `foundry-agent-app`, and open `foundry-question`.
+
+- The agent-creation span includes the agent name, ID, version, and requested model.
+- The `invoke_agent` Responses span includes the returned model, input and output token counts when Azure supplies usage, and `gen_ai.provider.name=microsoft.foundry`.
+- Azure SDK request spans can appear underneath the client operations. These represent HTTP requests, not additional model calls.
+
+Agent creation records your deployment name. The agent invocation can report the underlying model name in its response; Future AGI uses that when the invocation has no request-model attribute. Automatic cost estimates depend on whether that model is recognized.
+
+## Content and export scope
+
+`enable_content_recording=False` keeps message text, agent instructions, and tool argument content out of the native GenAI attributes. IDs, model names, token counts, request URLs, and diagnostic errors can still be recorded. Do not place secrets in names or error messages. Azure still receives your application input.
+
+To include message content, change that argument to `True` only after reviewing your data policy. The `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS` settings control traceAI instrumentors; they are not a replacement for Microsoft's native content setting.
+
+This setup exports **client-side traces only**, not metrics or logs. It does not collect hosted-agent runtime spans from Azure. Do not point a hosted agent's generic `OTEL_EXPORTER_OTLP_ENDPOINT` directly at Future AGI: that runtime exports multiple signals, while Future AGI accepts traces only. Hosted runtime export needs a separate trace-only configuration.
+
+## Troubleshooting
+
+- **No native spans:** set `AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING=true` before instrumentation and ensure `AZURE_TRACING_GEN_AI_INSTRUMENT_RESPONSES_API` is not set to `false`.
+- **Duplicate Responses spans:** remove the second OpenAI instrumentor or auto-instrumentation layer and restart the process.
+- **Provider override warning:** initialize the global provider once, before Azure tracing. Reuse it throughout the application.
+- **Azure authentication fails:** check your `DefaultAzureCredential` identity, project access, and project endpoint. Future AGI keys do not authenticate Azure requests.
+- **Traces missing after a short script exits:** flush and shut down the provider in `finally`, as above.
+
+See Microsoft's [client-side tracing reference](https://learn.microsoft.com/en-us/azure/foundry/observability/how-to/trace-agent-client-side) for the native tracing settings.
