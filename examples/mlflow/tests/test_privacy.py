@@ -1,137 +1,309 @@
-"""Privacy regression tests with MLflow 3.16.1 and real OpenTelemetry spans.
+"""Native MLflow -> released Collector -> localhost OTLP wire regressions.
 
-Run with unittest discovery after installing the pinned requirements. The
-snippet loader executes only the privacy functions, never the sample app.
+Set OTELCOL_CONTRIB to the 0.164.0 binary. Run under an outbound-deny sandbox
+with loopback allowed. No credentials, provider APIs or Future AGI backend.
 """
-from __future__ import annotations
-
-import ast
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
-from types import SimpleNamespace
-import unittest
-from unittest.mock import patch
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 
-from mlflow.entities import LiveSpan, SpanStatusCode
-from mlflow.tracing.utils.processor import apply_span_processors
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+from opentelemetry.proto.trace.v1.trace_pb2 import Status
+import pytest
+import yaml
 
-
-SOURCE = Path(__file__).resolve().parents[3] / "src/pages/docs/integrations/mlflow.mdx"
-
-
-def processors():
-    text = SOURCE.read_text()
-    if SOURCE.suffix == ".mdx":
-        text = text.split("def _filter_events(", 1)[1]
-        text = "def _filter_events(" + text.split("mlflow.tracing.configure(span_processors=", 1)[0]
-    tree = ast.parse(text)
-    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-                 and node.name in {"_filter_events", "drop_exception_events", "drop_content"}]
-    assert len(functions) == 3
-    namespace = {"SpanStatusCode": SpanStatusCode}
-    exec(compile(ast.Module(body=functions, type_ignores=[]), str(SOURCE), "exec"), namespace)
-    return namespace
+EXAMPLE = Path(__file__).resolve().parents[1]
+PAGE = EXAMPLE.parents[1] / "src/pages/docs/integrations/mlflow.mdx"
+PRIVATE = b"PRIVATE-MLFLOW-CONTENT"
 
 
-class EventPrivacyTest(unittest.TestCase):
-    def setUp(self):
-        self.functions = processors()
-        self.exporter = InMemorySpanExporter()
-        self.provider = TracerProvider()
-        self.provider.add_span_processor(SimpleSpanProcessor(self.exporter))
-        self.otel = self.provider.get_tracer("privacy-regression").start_span("test")
-        self.span = LiveSpan(self.otel, trace_id="tr-privacy-test")
-        self.span.set_inputs({"prompt": "PRIVATE-INPUT"})
-        self.span.set_outputs({"answer": "PRIVATE-OUTPUT"})
-        self.span.set_status("ERROR")
+@contextmanager
+def capture_server():
+    records = []
+    received = threading.Event()
 
-    def tearDown(self):
-        self.provider.shutdown()
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            records.append((self.path, dict(self.headers), body))
+            received.set()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-protobuf")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
-    def add_events(self):
-        self.otel.add_event("checkpoint", {"attempt": 2}, timestamp=123456789)
-        self.otel.add_event("exception", {"exception.message": "PRIVATE-ERROR"})
-        self.otel.add_event("provider_failure", {"exception.stacktrace": "PRIVATE-STACK"})
-        self.otel.add_event("gen_ai.user.message", {"role": "user", "content": "PRIVATE-PROMPT"})
-        self.otel.add_event("custom", {"output": "PRIVATE-RESULT"})
-        self.otel.add_event("gen_ai.client.operation", {"gen_ai.input.messages": "PRIVATE-MESSAGE"})
-        self.otel.add_event("gen_ai.client.operation.details", {"gen_ai.usage.input_tokens": 10})
+        def log_message(self, *args):
+            pass
 
-    def exported(self):
-        self.otel.end()
-        (span,) = self.exporter.get_finished_spans()
-        return span
-
-    def test_exception_filter_preserves_other_events_and_timestamp(self):
-        self.add_events()
-        original = self.otel.events[0]
-        self.functions["drop_exception_events"](self.span)
-        # Later processors may still use the supported add_event API.
-        self.otel.add_event("after_filter", {"attempt": 3})
-        span = self.exported()
-        self.assertEqual([event.name for event in span.events],
-                         ["checkpoint", "gen_ai.user.message", "custom", "gen_ai.client.operation",
-                          "gen_ai.client.operation.details", "after_filter"])
-        self.assertIs(span.events[0], original)
-        self.assertEqual(span.events[0].timestamp, 123456789)
-        self.assertEqual(span.events[0].attributes["attempt"], 2)
-        self.assertEqual(span.status.status_code.name, "ERROR")
-
-    def test_content_filter_removes_only_sensitive_events(self):
-        self.add_events()
-        original = (self.otel.events[0], self.otel.events[-1])
-        self.functions["drop_content"](self.span)
-        # Repeated filtering must preserve the safe event exactly once.
-        self.functions["drop_content"](self.span)
-        self.assertEqual(self.span.inputs, "[REDACTED]")
-        self.assertEqual(self.span.outputs, "[REDACTED]")
-        span = self.exported()
-        self.assertEqual(tuple(span.events), original)
-        self.assertNotIn("PRIVATE-", span.to_json())
-        self.assertEqual(span.status.status_code.name, "ERROR")
-        self.assertFalse(span.status.description)
-
-    def test_empty_and_safe_events_need_no_backing_collection_write(self):
-        self.functions["drop_exception_events"](self.span)
-        self.otel.add_event("checkpoint", {"attempt": 1})
-        before = self.otel._events
-        self.functions["drop_exception_events"](self.span)
-        self.assertIs(self.otel._events, before)
-        self.assertEqual(len(self.exported().events), 1)
-
-    def test_missing_private_events_fails_closed_through_mlflow_hook(self):
-        class UnsupportedSpan:
-            events = (SimpleNamespace(name="exception", attributes={"exception.message": "PRIVATE"}),)
-
-        self.span._span = UnsupportedSpan()
-        config = SimpleNamespace(span_processors=[self.functions["drop_exception_events"]])
-        with patch("mlflow.tracing.config.get_config", return_value=config):
-            # An ordinary Exception would be swallowed by this real MLflow hook.
-            with self.assertRaisesRegex(SystemExit, "refusing to export"):
-                apply_span_processors(self.span)
-                self.otel.end()  # must not be reached
-        self.assertEqual(self.exporter.get_finished_spans(), ())
-
-    def test_unreadable_events_fail_closed_without_sensitive_diagnostic(self):
-        class UnsupportedSpan:
-            @property
-            def events(self):
-                raise RuntimeError("PRIVATE-EVENT-CONTENT")
-
-        with self.assertRaises(SystemExit) as caught:
-            self.functions["drop_exception_events"](SimpleNamespace(_span=UnsupportedSpan()))
-        self.assertNotIn("PRIVATE", str(caught.exception))
-
-    def test_ignored_write_fails_closed(self):
-        class ReadOnlySpan:
-            events = (SimpleNamespace(name="exception", attributes={}),)
-            _events = events
-
-        with self.assertRaisesRegex(SystemExit, "refusing to export"):
-            self.functions["drop_exception_events"](SimpleNamespace(_span=ReadOnlySpan()))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/tracer/v1/traces", records, received
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def decode(records):
+    requests = []
+    for _, _, body in records:
+        request = ExportTraceServiceRequest()
+        request.ParseFromString(body)
+        requests.append(request)
+    return requests
+
+
+def spans(requests):
+    return [span for request in requests for resource in request.resource_spans
+            for scope in resource.scope_spans for span in scope.spans]
+
+
+def attrs(items):
+    return {item.key: getattr(item.value, item.value.WhichOneof("value")) for item in items}
+
+
+def isolated_env(home):
+    # Do not inherit endpoints, tracking destinations, proxies or credentials.
+    return {"PATH": os.defpath, "HOME": str(home), "NO_PROXY": "127.0.0.1,localhost"}
+
+
+@pytest.fixture(scope="module")
+def native(tmp_path_factory):
+    home = tmp_path_factory.mktemp("mlflow-home")
+    with capture_server() as (endpoint, records, received):
+        env = isolated_env(home) | {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": endpoint,
+            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+            "OTEL_RESOURCE_ATTRIBUTES": "private.resource=PRIVATE-MLFLOW-CONTENT",
+            "OTEL_SERVICE_NAME": "PRIVATE-MLFLOW-CONTENT",
+            "MLFLOW_ENABLE_OTEL_GENAI_SEMCONV": "true",
+            "MLFLOW_DISABLE_TELEMETRY": "true",
+            "MLFLOW_MODEL_CATALOG_URI": "",
+            "MLFLOW_TRACE_ENABLE_OTLP_DUAL_EXPORT": "false",
+        }
+        run = subprocess.run([sys.executable, "-I", str(EXAMPLE / "tests/emit_traces.py")],
+                             env=env, cwd=home, capture_output=True, timeout=45)
+        assert run.returncode == 0, run.stderr.decode()
+        assert received.wait(5), run.stderr.decode()
+        requests = decode(records)
+    assert len(spans(requests)) == 4, run.stderr.decode()
+    assert any(PRIVATE in request.SerializeToString() for request in requests)
+    return requests
+
+
+@contextmanager
+def collector(tmp_path, endpoint, *, broken=False):
+    binary = os.environ.get("OTELCOL_CONTRIB")
+    if not binary:
+        pytest.fail("Set OTELCOL_CONTRIB to the released 0.164.0 collector binary")
+    version = subprocess.check_output([binary, "--version"], text=True)
+    assert "0.164.0" in version
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = yaml.safe_load((EXAMPLE / "otelcol.yaml").read_text())
+    config["receivers"]["otlp"]["protocols"]["http"]["endpoint"] = f"127.0.0.1:{port}"
+    if broken:
+        # Valid OTTL syntax with a deterministic runtime error. The complete
+        # batch must be rejected, not forwarded after an ignored error.
+        config["processors"]["transform/privacy"]["trace_statements"][-1]["statements"].insert(
+            0, 'set(span.attributes["forced_failure"], ParseJSON("not-json"))')
+    filename = tmp_path / "collector.yaml"
+    filename.write_text(yaml.safe_dump(config))
+    env = isolated_env(tmp_path) | {
+        "FI_PROJECT_NAME": "mlflow-privacy-test", "FI_TRACES_ENDPOINT": endpoint,
+        "FI_API_KEY": "synthetic-api-key", "FI_SECRET_KEY": "synthetic-secret-key",
+    }
+    subprocess.run([binary, "validate", "--config", str(filename)], env=env,
+                   check=True, capture_output=True, timeout=10)
+    with (tmp_path / "collector.log").open("w+") as log:
+        process = subprocess.Popen([binary, "--config", str(filename)], env=env,
+                                   cwd=tmp_path, stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                assert process.poll() is None, "Collector exited before listening"
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        break
+                except OSError:
+                    assert time.monotonic() < deadline, "Collector did not start"
+                    time.sleep(0.05)
+            yield f"http://127.0.0.1:{port}/v1/traces"
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            log.seek(0)
+            assert PRIVATE.decode() not in log.read(), "Collector logged trace content"
+
+
+def send(endpoint, request):
+    data = urllib.request.Request(endpoint, data=request.SerializeToString(),
+                                  headers={"Content-Type": "application/x-protobuf"})
+    try:
+        with urllib.request.urlopen(data, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def test_page_has_no_customer_maintained_privacy_code():
+    text = PAGE.read_text()
+    assert "._span" not in text
+    assert "._events" not in text
+    assert "span_processors=" not in text
+    assert "application process" in text
+    assert "127.0.0.1:4318" in text
+
+
+def test_config_is_traces_only_fail_closed_and_loopback():
+    config = yaml.safe_load((EXAMPLE / "otelcol.yaml").read_text())
+    assert config["receivers"]["otlp"]["protocols"] == {"http": {"endpoint": "127.0.0.1:4318"}}
+    assert config["processors"]["transform/privacy"]["error_mode"] == "propagate"
+    assert config["service"]["pipelines"] == {"traces": {
+        "receivers": ["otlp"], "processors": ["filter/privacy", "transform/privacy", "batch"],
+        "exporters": ["otlp_http/futureagi"],
+    }}
+    assert set(config["exporters"]) == {"otlp_http/futureagi"}
+    assert config["service"]["telemetry"]["logs"]["level"] == "warn"
+
+
+def test_native_export_contains_content_before_trusted_local_filter(native):
+    before = spans(native)
+    model = next(span for span in before if attrs(span.attributes).get("gen_ai.operation.name") == "chat")
+    assert attrs(model.attributes)["gen_ai.request.model"] == "gpt-4o-mini"
+    assert attrs(model.attributes)["gen_ai.usage.input_tokens"] == 11
+    assert attrs(model.attributes)["gen_ai.usage.output_tokens"] == 4
+    assert any(span.events for span in before)
+    assert any(span.status.code == Status.STATUS_CODE_ERROR for span in before)
+
+
+def test_collector_wire_privacy_model_tokens_and_hierarchy(native, tmp_path):
+    request = ExportTraceServiceRequest()
+    for part in native:
+        request.resource_spans.extend(part.resource_spans)
+    # Exercise additional public OTLP fields, not MLflow/SDK private storage.
+    for resource in request.resource_spans:
+        for scope in resource.scope_spans:
+            scope.scope.name = PRIVATE.decode()
+            scope.scope.version = PRIVATE.decode()
+            scope.scope.attributes.add(key="private.scope").value.string_value = PRIVATE.decode()
+            for span in scope.spans:
+                span.trace_state = "private=" + PRIVATE.decode()
+    # Provider is optional in native MLflow output; preserve it when supplied.
+    for span in spans([request]):
+        if attrs(span.attributes).get("gen_ai.operation.name") == "chat":
+            span.attributes.add(key="gen_ai.provider.name").value.string_value = "openai"
+    before = {span.span_id: span for span in spans([request])}
+    with capture_server() as (sink, records, received):
+        with collector(tmp_path, sink) as endpoint:
+            assert send(endpoint, request) == 200
+            assert received.wait(5)
+        after_requests = decode(records)
+        for path, headers, body in records:
+            assert path == "/tracer/v1/traces"
+            assert {key.lower(): value for key, value in headers.items()}["x-api-key"] == "synthetic-api-key"
+            assert {key.lower(): value for key, value in headers.items()}["x-secret-key"] == "synthetic-secret-key"
+            assert PRIVATE not in body
+    after = spans(after_requests)
+    assert len(after) == len(before) == 4  # no duplicate instrumentation
+    assert {span.span_id for span in after} == set(before)
+    for resource in (r for req in after_requests for r in req.resource_spans):
+        assert attrs(resource.resource.attributes) == {
+            "project_name": "mlflow-privacy-test", "project_type": "observe",
+            "service.name": "mlflow-privacy-test",
+        }
+        for scope in resource.scope_spans:
+            assert scope.scope.name == "mlflow"
+            assert not scope.scope.version and not scope.scope.attributes
+    for span in after:
+        original = before[span.span_id]
+        assert (span.trace_id, span.parent_span_id, span.start_time_unix_nano,
+                span.end_time_unix_nano, span.status.code, span.kind) == (
+                    original.trace_id, original.parent_span_id, original.start_time_unix_nano,
+                    original.end_time_unix_nano, original.status.code, original.kind)
+        assert not span.events and not span.links and not span.status.message and not span.trace_state
+        assert set(attrs(span.attributes)) <= {
+            "gen_ai.operation.name", "gen_ai.request.model", "gen_ai.response.model",
+            "gen_ai.provider.name", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens",
+        }
+        assert span.name == attrs(span.attributes).get("gen_ai.operation.name", "mlflow")
+    model = next(span for span in after if span.name == "chat")
+    assert attrs(model.attributes)["gen_ai.request.model"] == "gpt-4o-mini"
+    assert attrs(model.attributes)["gen_ai.provider.name"] == "openai"
+    assert attrs(model.attributes)["gen_ai.usage.input_tokens"] == 11
+    assert attrs(model.attributes)["gen_ai.usage.output_tokens"] == 4
+
+
+def test_documented_example_exports_nested_spans(tmp_path):
+    source = PAGE.read_text().split("```python\n", 1)[1].split("```", 1)[0]
+    with capture_server() as (sink, records, received):
+        with collector(tmp_path, sink) as endpoint:
+            env = isolated_env(tmp_path) | {
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": endpoint,
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+                "MLFLOW_ENABLE_OTEL_GENAI_SEMCONV": "true",
+                "MLFLOW_DISABLE_TELEMETRY": "true", "MLFLOW_MODEL_CATALOG_URI": "",
+                "MLFLOW_TRACE_ENABLE_OTLP_DUAL_EXPORT": "false",
+            }
+            run = subprocess.run([sys.executable, "-I", "-c", source], env=env,
+                                 cwd=tmp_path, capture_output=True, timeout=45)
+            assert run.returncode == 0, run.stderr.decode()
+            assert received.wait(5)
+        exported = spans(decode(records))
+        assert len(exported) == 2
+        root = next(span for span in exported if not span.parent_span_id)
+        tool = next(span for span in exported if span.parent_span_id)
+        assert root.name == "CHAIN" and tool.name == "execute_tool"
+        assert tool.parent_span_id == root.span_id and tool.trace_id == root.trace_id
+        assert all(b"headphones" not in body for _, _, body in records)
+
+
+def test_transform_error_rejects_payload_without_export(native, tmp_path):
+    with capture_server() as (sink, records, received):
+        with collector(tmp_path, sink, broken=True) as endpoint:
+            assert send(endpoint, native[0]) >= 400
+        assert not records
+
+
+def test_linked_spans_are_excluded_instead_of_leaking_link_attributes(native, tmp_path):
+    request = ExportTraceServiceRequest()
+    request.CopyFrom(native[0])
+    for span in spans([request]):
+        link = span.links.add(trace_id=b"1" * 16, span_id=b"2" * 8)
+        link.attributes.add(key="private.link").value.string_value = PRIVATE.decode()
+    with capture_server() as (sink, records, received):
+        with collector(tmp_path, sink) as endpoint:
+            assert send(endpoint, request) == 200
+        assert not records
+
+
+def test_unknown_operation_cannot_become_content_in_span_name(native, tmp_path):
+    request = ExportTraceServiceRequest()
+    request.CopyFrom(native[0])
+    for span in spans([request]):
+        for attribute in span.attributes:
+            if attribute.key == "gen_ai.operation.name":
+                attribute.value.string_value = PRIVATE.decode()
+    with capture_server() as (sink, records, received):
+        with collector(tmp_path, sink) as endpoint:
+            assert send(endpoint, request) == 200
+            assert received.wait(5)
+        assert all(PRIVATE not in body for _, _, body in records)
+        for span in spans(decode(records)):
+            assert span.name == "mlflow"
+            assert "gen_ai.operation.name" not in attrs(span.attributes)
