@@ -112,8 +112,8 @@ def test_hide_switches_keep_tool_content_out(service_tracer):
     assert span.attributes["gen_ai.tool.name"] == "get_weather"
 
 
-def test_sigterm_stops_the_service_and_runs_the_flush(tmp_path):
-    """restate-sdk 1.0.5 replaces the server's SIGTERM handler; the example must still exit on SIGTERM."""
+def test_script_entry_uses_standard_supervisor_and_exits_on_sigterm(tmp_path):
+    """The documented entry point remains a single command and exits through Hypercorn's supervisor."""
     log = tmp_path / "service.log"
     env = {"FI_API_KEY": "a", "FI_SECRET_KEY": "b", "FI_BASE_URL": "http://127.0.0.1:1", "OPENAI_API_KEY": "c",
            "SERVICE_PORT": "19899", "PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
