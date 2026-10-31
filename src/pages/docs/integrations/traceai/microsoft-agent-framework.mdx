@@ -1,0 +1,129 @@
+---
+title: "Microsoft Agent Framework Integration with Future AGI for Agent Tracing"
+description: "Trace Microsoft Agent Framework (Python) agents, tools and workflows in Future AGI with traceAI-agent-framework. Not AutoGen, not Semantic Kernel."
+---
+
+## About
+
+This page covers the Python package of Microsoft Agent Framework (PyPI `agent-framework`). It is not Microsoft AutoGen ([AutoGen](/docs/integrations/traceai/autogen)), not Semantic Kernel, and not AG2. The .NET SDK is not covered.
+
+Agent Framework already emits OpenTelemetry spans (GenAI semantic conventions) on the `agent_framework` tracer. `traceAI-agent-framework` does not wrap the framework. It adds one span processor that gives those native spans the Future AGI span kind, input/output, session id and token total, so they render as agent, LLM and tool spans.
+
+## 1. Installation
+
+```bash
+pip install traceAI-agent-framework agent-framework
+```
+
+## 2. Set environment variables
+
+```python
+import os
+
+os.environ["FI_API_KEY"] = "your-futureagi-api-key"
+os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+os.environ["OPENAI_API_KEY"] = "your-openai-api-key"
+```
+
+## 3. Register the tracer provider
+
+Agent Framework emits on the global tracer provider only, so register with `set_global_tracer_provider=True`.
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="agent_framework_app",
+    set_global_tracer_provider=True,
+)
+```
+
+## 4. Turn on the mapping
+
+```python
+from agent_framework.observability import enable_instrumentation
+from traceai_agent_framework import enable_fi_attribute_mapping
+
+enable_instrumentation(enable_sensitive_data=True)
+enable_fi_attribute_mapping()
+```
+
+`enable_sensitive_data=True` is the framework's own switch for putting prompts, completions and tool arguments on its spans. Without it the framework does not emit them and Future AGI has nothing to show. `enable_fi_attribute_mapping()` is idempotent.
+
+## 5. Run an agent
+
+```python
+import asyncio
+from agent_framework import Agent
+from agent_framework.openai import OpenAIChatCompletionClient
+
+def get_weather(city: str) -> str:
+    """Get the current weather for a city."""
+    return f"Sunny, 21C in {city}"
+
+agent = Agent(
+    OpenAIChatCompletionClient(model="gpt-4o-mini"),
+    name="weather_agent",
+    instructions="You are a concise weather assistant. Always call get_weather.",
+    tools=[get_weather],
+)
+
+async def main():
+    print(await agent.run("What's the weather in Paris?"))
+
+asyncio.run(main())
+trace_provider.force_flush()
+```
+
+Short scripts must flush the provider before exit.
+
+## What is captured
+
+| Span | Future AGI type | Notes |
+|---|---|---|
+| `invoke_agent <name>` | agent | Whole run, summed token usage, agent name |
+| `chat <model>` | llm | Model, provider, input/output tokens, request parameters, messages |
+| `execute_tool <name>` | tool | Tool name, arguments, result |
+| workflow / executor / edge-group spans | chain | Input/output bubbled up from child spans |
+
+- Every span of one run carries the same `session.id`. It comes from `using_session(...)` when you set it, otherwise from the run's `gen_ai.conversation.id`.
+- A failing tool or model call is recorded with ERROR status and the exception class name.
+- Cost is not emitted by the framework. Retrieval spans are not emitted.
+
+## Privacy
+
+- **Content is captured by default** (like every traceAI integration) once the framework's `enable_sensitive_data` is on. Hide it with the standard traceAI switches: `FI_HIDE_INPUTS=true`, `FI_HIDE_OUTPUTS=true`, `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT`, or pass a `TraceConfig` to `enable_fi_attribute_mapping(config=...)`.
+- With `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS` set, prompts, responses, system instructions, tool arguments and tool results are removed or redacted. Model, token counts, timings, span structure and tool names stay.
+- To keep content out entirely, leave `enable_sensitive_data` off (the framework then never emits it).
+- Raw exception text and stack traces are never exported. A failed span keeps ERROR status with only the exception class name.
+
+## Tested versions
+
+| Component | Version |
+|---|---|
+| agent-framework | 1.19.0 (latest stable on 2026-10-16, end to end), 1.22.0 (unit tests, 2026-10-21), 1.0.0 (package floor) |
+| fi-instrumentation-otel | 1.1.0 |
+| Python | 3.12 (end to end), 3.11 (unit tests). The package installs on Python 3.10 to 3.13. |
+
+Verified end to end against a local Future AGI: agent, two LLM calls and one tool call (hierarchy, model, tokens, session), a failing tool, a failing model call, and a hide-flags run in which a unique marker was absent from every stored column.
+
+## Troubleshooting
+
+- **No spans.** `register(..., set_global_tracer_provider=True)` is required. `enable_fi_attribute_mapping()` logs a warning if the provider is not the global one.
+- **No prompts or answers in the trace.** Call `enable_instrumentation(enable_sensitive_data=True)` and check that no `FI_HIDE_*` variable is set.
+- **One session per turn on the Responses API.** Wrap the turns in `using_session("my-session")`.
+- **Duplicate LLM spans.** Do not also enable `traceAI-openai` under Agent Framework; the framework already emits the model span.
+- **Spans missing in a short script.** Call `trace_provider.force_flush()` before exit.
+
+## Limitations
+
+- Python only. No .NET.
+- Do not call `configure_otel_providers()`; it can install a second exporter.
+- Traces only (no metrics or logs).
+
+## Difference from related integrations
+
+- [AutoGen](/docs/integrations/traceai/autogen) is a different framework with its own package.
+- Provider instrumentors such as `traceAI-openai` patch the provider SDK. Agent Framework uses its own native spans, so only this package is needed.
