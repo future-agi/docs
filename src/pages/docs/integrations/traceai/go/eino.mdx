@@ -1,0 +1,297 @@
+---
+title: "CloudWeGo Eino tracing with Future AGI"
+description: "Trace Go applications built with CloudWeGo Eino: one callback handler turns every graph, node, chat model, tool and ADK agent run into OpenTelemetry spans exported to Future AGI over OTLP/HTTP."
+---
+
+## About
+
+`traceaieino` (module `github.com/future-agi/traceAI/go/eino`) traces Go services built with [CloudWeGo Eino](https://github.com/cloudwego/eino). It is an Eino `callbacks.Handler`, the framework's own extension point: you register it once at start-up, and every component run Eino reports becomes one span. That covers graphs, chains and workflows and their nodes, chat models (model name, token usage, messages, tool calls), tools, retrievers, embedders, prompts, lambdas and ADK agents. A span's parent is the span of the enclosing run, so one question to your agent is one trace.
+
+A run of the example on this page is one trace:
+
+```
+trip_request                     your request span (CHAIN)
+└── trip_assistant               the ADK agent (AGENT)
+    └── trip_assistant           the agent's graph, as Eino reports it (CHAIN)
+        └── ReAct                Eino's ReAct loop (CHAIN), with Init, CancelCheck, ... nodes
+            ├── ChatModel        first model call: asks for the tool (LLM, model + tokens)
+            ├── ToolNode         (CHAIN)
+            │   └── get_weather  the tool call (TOOL)
+            └── ChatModel        second model call: the answer (LLM, model + tokens)
+```
+
+This is not the same as:
+
+- **The OpenAI, Anthropic and Gemini Go modules** (traceAI `go/openai`, `go/anthropic`, `go/genai`). Those wrap one provider SDK's HTTP calls and see nothing of Eino. This module reads Eino's callbacks, so it traces whatever model provider an Eino component uses, plus the graph, tool and agent structure around it.
+- **Eino's own callback handlers for other vendors** (`eino-ext/callbacks/langfuse`, APMPlus, CozeLoop). They export another product's attributes and headers; pointing one at Future AGI does not work. This module does not use or replace them, and they can stay registered next to it.
+- **The Python framework integrations** ([LangGraph](/docs/integrations/traceai/langgraph), [Google ADK](/docs/integrations/traceai/google_adk), ...). Eino is a Go framework; this module writes the same traceAI attribute names, so its spans read the same in Future AGI.
+
+| | |
+| --- | --- |
+| Tested with | Eino **v0.9.21** (latest stable on 2026-10-16) and v0.9.19; eino-ext OpenAI chat model v0.1.13; Go 1.27.2 and 1.26.9; OpenTelemetry Go v1.47.0 |
+| Supported | Eino v0.9.19 or later (the module's minimum), Go 1.26 or later |
+| Tested surface | ADK `ChatModelAgent` through `adk.Runner`, streamed and not; `compose` graphs and chains with chat model, `ToolsNode` and lambda nodes (invoke, stream, collect); tool, retriever, embedding and prompt callbacks; model and tool failures |
+| Source | [traceAI `go/eino`](https://github.com/future-agi/traceAI/tree/main/go/eino) |
+
+<Note>
+The end-to-end test ran the example with the eino-ext OpenAI chat model pointed at an OpenAI-compatible endpoint (a local proxy in front of a GPT model, not api.openai.com) and exported to a local Future AGI. The module's own tests run real Eino graphs and agents with a scripted model.
+</Note>
+
+## 1. Install
+
+```bash
+go get github.com/future-agi/traceAI/go/eino@latest github.com/cloudwego/eino@v0.9.21
+go get go.opentelemetry.io/otel/sdk go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+```
+
+The example also uses the eino-ext OpenAI chat model: `go get github.com/cloudwego/eino-ext/components/model/openai@v0.1.13`.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-service"
+```
+
+`FI_BASE_URL` is optional (default `https://api.futureagi.com`; set it to your own collector when you self-host). These keys are for the exporter only: they never go to the model provider.
+
+## 3. Create the tracer provider
+
+The module does not build an exporter. Use the stock OpenTelemetry OTLP/HTTP exporter with the three things Future AGI needs: both auth headers, the `project_name` resource attribute, and an uncompressed body (the collector rejects gzip).
+
+```go
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/components/tool/utils"
+	"github.com/cloudwego/eino/compose"
+	traceaieino "github.com/future-agi/traceAI/go/eino"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+)
+```
+
+```go
+func newTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
+	apiKey, secretKey := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY")
+	project := os.Getenv("FI_PROJECT_NAME")
+	if apiKey == "" || secretKey == "" || project == "" {
+		return nil, errors.New("set FI_API_KEY, FI_SECRET_KEY and FI_PROJECT_NAME")
+	}
+	base := strings.TrimRight(envOr("FI_BASE_URL", "https://api.futureagi.com"), "/")
+
+	exp, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			"X-Api-Key":    apiKey,
+			"X-Secret-Key": secretKey,
+		}),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+	)
+	if err != nil {
+		return nil, err
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(
+		attribute.String("project_name", project),
+		attribute.String("project_type", "observe"),
+		attribute.String("service.name", project),
+	))
+	if err != nil {
+		return nil, err
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+		sdktrace.WithBatcher(exp),
+	), nil
+}
+```
+
+`resource.Default()` adds only the SDK name and version and `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` if you set them. No host, process or OS detector is added, so no host name, user name or local path is exported.
+
+## 4. Register the handler and flush on exit
+
+```go
+	tp, err := newTracerProvider(ctx)
+	if err != nil {
+		return err
+	}
+	h := traceaieino.NewHandler(traceaieino.WithTracerProvider(tp))
+	callbacks.AppendGlobalHandlers(h) // once, before any graph or agent runs
+	defer shutdown(h, tp)             // flush before exit
+```
+
+```go
+func shutdown(h *traceaieino.Handler, tp *sdktrace.TracerProvider) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.Shutdown(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "trace handler:", err)
+	}
+	if err := tp.Shutdown(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "trace export:", err)
+	}
+}
+```
+
+- Register once. Eino's `AppendGlobalHandlers` is not thread-safe: call it at start-up, before any graph or agent runs. Registering the handler twice gives two spans for every component.
+- To trace one run instead of all of them, pass the handler to that run: `compose.WithCallbacks(h)` for a graph or chain, `adk.WithCallbacks(h)` for an agent.
+- `h.Shutdown` stops the handler (later callbacks start no span and never panic) and waits for spans that are still being finished in the background, such as a streamed reply the handler is still reading. `tp.Shutdown` then exports the last batch. Spans still queued when the process exits are lost, so a long-running service must call both on SIGTERM too; nothing is flushed on SIGKILL.
+- Without `WithTracerProvider` the handler uses the OpenTelemetry global provider (`otel.SetTracerProvider`).
+
+Build your graphs and agents as usual; nothing else changes. The example's agent:
+
+```go
+	chat, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		APIKey:  os.Getenv("OPENAI_API_KEY"),
+		BaseURL: os.Getenv("OPENAI_BASE_URL"), // empty: api.openai.com
+		Model:   modelName,
+		Timeout: 2 * time.Minute,
+	})
+	if err != nil {
+		return nil, err
+	}
+	weather, err := utils.InferTool("get_weather", "Get tomorrow's weather forecast for a city.", getWeather)
+	if err != nil {
+		return nil, err
+	}
+	return adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "trip_assistant",
+		Description: "Plans what to pack for a trip.",
+		Instruction: "Call get_weather for the city first, then answer in two short sentences.",
+		Model:       chat,
+		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
+			Tools: []tool.BaseTool{weather},
+		}},
+	})
+```
+
+## 5. Sessions and your own spans
+
+Put a session id on the context you pass to the run; every span the handler starts from it, for the whole graph or agent run, carries `session.id`, and Future AGI groups those traces into one session. `ContextWithUserID` does the same for `user.id` (use an opaque id, not an email address).
+
+```go
+	ctx = traceaieino.ContextWithSessionID(ctx, sessionID)
+```
+
+A span you start yourself becomes the parent of the Eino run you start under it. The example wraps each question in a request span, the way an HTTP server span would:
+
+```go
+	ctx, span := tp.Tracer("eino-example").Start(ctx, "trip_request",
+		trace.WithAttributes(append(traceaieino.ContextAttributes(ctx),
+			attribute.String(traceaieino.GenAISpanKind, traceaieino.SpanKindChain))...))
+	defer span.End()
+	fmt.Println("trace_id=" + span.SpanContext().TraceID().String())
+	tc := traceaieino.TraceConfigFromEnv()
+	tc.SetAttributes(span, attribute.String(traceaieino.InputValue, q))
+```
+
+`TraceConfig.SetAttributes` applies the same privacy switches to values you add yourself: the question and, at the end, the answer on the request span are what the Future AGI trace list shows, and they become `__REDACTED__` when content is hidden. The handler also puts its own span on the context it hands to your code, so a span you start inside a tool or a lambda nests under that node.
+
+## 6. Streams and agents
+
+```go
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent, EnableStreaming: *stream})
+	events := runner.Query(ctx, q)
+```
+
+- A streamed run (`Stream`, `Transform`) is one span. Eino hands the handler its own copy of the stream; the span ends when the handler has read that copy to the end. Chunks are not spans. The reply text is joined, and token usage comes from the chunk that reports it (the eino-ext OpenAI model asks for usage in the last chunk). Chunks are never summed.
+- An ADK agent's span ends when the agent's event stream ends, so it covers the whole run, and is ERROR when an event carries an error.
+- An ADK `ChatModelAgent` also shows Eino's internal ReAct graph (`ReAct`, `Init`, `ChatModel`, `ToolNode`, `CancelCheck`, `AfterToolCalls`, ...) as `CHAIN` spans, because Eino reports each of them as a component run.
+
+## 7. Run the example
+
+The complete program (request span, agent with a tool, streamed reply, and a failing run) is [`examples/traceai/eino-go/main.go`](https://github.com/future-agi/docs/tree/main/examples/traceai/eino-go) in this docs repo and `go/eino/example` in traceAI.
+
+```bash
+export OPENAI_API_KEY=... MODEL=gpt-4.1-mini   # OPENAI_BASE_URL for any OpenAI-compatible endpoint
+go run . -stream -fail
+```
+
+It prints a trace id per question. `-fail` asks a second agent whose model does not exist. Open **Observe → your project → Tracing**: the first trace shows the agent, both model calls with model name and token counts, and the tool call with its arguments and result; the second shows the model call and everything above it as ERROR with `error.type` `*openai.APIError`.
+
+## What is captured
+
+| Eino component (`RunInfo.Component`) | `gen_ai.span.kind` |
+| --- | --- |
+| `ChatModel`, `AgenticModel` | `LLM` (`gen_ai.operation.name=chat`) |
+| `Tool` | `TOOL` (`execute_tool`) |
+| `Agent`, `AgenticAgent` (ADK) | `AGENT` (`invoke_agent`) |
+| `Retriever` | `RETRIEVER` |
+| `Embedding` | `EMBEDDING` (`embeddings`) |
+| `Graph`, `Chain`, `Workflow`, `Lambda`, `Passthrough`, `ToolsNode`, `ChatTemplate`, `Indexer`, `Loader`, `DocumentTransformer` | `CHAIN` |
+| any other (custom) component | `UNKNOWN`, kept with its name |
+
+The span name is the node, tool or agent name (`compose.WithNodeName`, the tool name, the agent name), otherwise Eino's display name, for example `OpenAIChatModel`.
+
+| Attribute | When |
+| --- | --- |
+| `gen_ai.span.kind`, `gen_ai.operation.name`, `eino.component`, `eino.type`, `eino.name` | always |
+| `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature`, `gen_ai.request.top_p`, `gen_ai.request.stop_sequences`, `gen_ai.request.parameters` | when the chat model reports its config in the callback (the eino-ext models do; a model that fires no callbacks itself, wrapped by the graph, reports only the messages). Zero values are not written |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens`, `gen_ai.usage.cache_read_tokens`, `gen_ai.usage.output_tokens.reasoning` | only when the component reports a non-zero count; never a placeholder 0, never a sum of chunks |
+| `gen_ai.response.finish_reasons`, `gen_ai.tool.definitions.*` | chat model spans |
+| `gen_ai.input.messages.*`, `gen_ai.output.messages.*` (role, text, image URLs, tool calls) | chat model spans (content) |
+| `gen_ai.tool.name`, `gen_ai.tool.call.id`; `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` (content) | tool spans |
+| `gen_ai.agent.name` | agent spans |
+| `gen_ai.retrieval.query` (content), `gen_ai.retrieval.top_k`, `retrieval.documents.{i}.document.id` / `.score` / `.content` (content) | retriever spans |
+| `gen_ai.embeddings.dimension.count` | embedding spans; the vectors are never written |
+| `input.value`, `output.value` (content) | every span whose input or output can be encoded |
+| `session.id`, `user.id` | from `ContextWithSessionID` / `ContextWithUserID` |
+| `error.type`, `error.message` | on errors, see below |
+
+`gen_ai.provider.name` is not written: Eino reports the component (`OpenAI`), not the endpoint behind it. Cost is not computed by the module; Future AGI derives it from the model name and token counts when it knows the model.
+
+## Privacy
+
+Content is captured by default, as in every traceAI instrumentor. The traceAI switches, with the same names and defaults as the Python package, turn it off. Set them in the environment before `NewHandler` runs (they are read once), or pass `traceaieino.WithTraceConfig(traceaieino.TraceConfig{...})`.
+
+| Variable | Effect |
+| --- | --- |
+| `FI_HIDE_INPUTS=true` | `input.value` becomes `__REDACTED__`; input messages, tool-call arguments, the retriever query and `error.message` are dropped |
+| `FI_HIDE_OUTPUTS=true` | `output.value` becomes `__REDACTED__`; output messages, tool-call results, retrieved text and `error.message` are dropped |
+| `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES` | drop `gen_ai.input.messages.*` / `gen_ai.output.messages.*` only |
+| `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT` | redact message text, keep roles and tool calls |
+| `FI_HIDE_INPUT_IMAGES`, `FI_BASE64_IMAGE_MAX_LENGTH` | drop input images; redact inline images longer than the limit (default 32 000) |
+| `FI_HIDE_LLM_INVOCATION_PARAMETERS` | drop `gen_ai.request.parameters` |
+
+A value counts only when it is `true` (any case). With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` the span tree, model names, token counts, tool and agent names and error types are still exported; the conversation, tool arguments and results are not. In our end-to-end test a unique marker placed in the question (with an email address and a file path) was absent from every stored column of the project with both switches on, and present in the inputs and outputs with the defaults.
+
+In every mode: audio, video and file bytes and embedding vectors are never copied, credentials and component configuration are never copied, values are cut at 32 000 bytes, and the module adds no resource attributes.
+
+## Errors
+
+- A failed run ends its span with status ERROR and `error.type`: `canceled` or `timeout` for the context, otherwise the Go type of the innermost error (for example `*openai.APIError`), or `error` for a plain Go error. The enclosing graph and agent spans are ERROR too, because Eino reports the error at each level.
+- `error.message` is the first line of the error with URLs, email addresses, file paths, IP addresses and `host:port` pairs (and this machine's host name, user name and home directory) replaced by placeholders. It is dropped when inputs or outputs are hidden. No stack trace and no exception event are recorded.
+- A stream that fails part-way ends its span ERROR. A later `OnEnd` for a run that already failed changes nothing.
+- The handler never changes an input, an output or an error, never returns an error to Eino, and recovers from its own panics.
+
+## Not supported
+
+- Components that fire no Eino callbacks and are called outside a graph produce no span. Inside a graph, Eino reports every node itself.
+- ADK interrupt/resume and checkpoints, DeepAgent, multi-agent transfer and workflow agents are not tested. They go through the same callbacks; an agent span is marked `eino.agent.interrupted` / `eino.agent.resumed`, but no test covers these paths.
+- `AgenticModel` / `AgenticAgent` content (`*schema.AgenticMessage`) is written only as JSON in `input.value` / `output.value`, not as message attributes. Not tested.
+- `gen_ai.usage.cache_write_tokens`: the field is new in Eino v0.9.21 and the module supports v0.9.19.
+- The Eino DevOps UI, evaluators and prompt tools are separate projects and are not traced.
+
+## Troubleshooting
+
+- **No traces.** Check that the process calls `h.Shutdown` and `tp.Shutdown` before it exits, that the handler was registered before the first run, and that `FI_API_KEY`, `FI_SECRET_KEY` and `FI_PROJECT_NAME` are set. The exporter URL must be the full traces URL, `{FI_BASE_URL}/tracer/v1/traces`.
+- **Export errors about the body.** Keep `otlptracehttp.WithCompression(otlptracehttp.NoCompression)`; the collector rejects gzip.
+- **Spans in the wrong project or none at all.** `project_name` must be a resource attribute on the tracer provider, not a span attribute.
+- **Two spans for every node.** The handler is registered twice: `AppendGlobalHandlers` ran twice, or the handler is global and also passed with `compose.WithCallbacks` / `adk.WithCallbacks`.
+- **No model name or token counts on a model span.** The chat model fires no callbacks itself, so the graph reports only its messages. The eino-ext models report both; for your own model, fire `callbacks.OnStart` / `OnEnd` with `*model.CallbackInput` / `*model.CallbackOutput`.
+- **A streamed model span ends late or never.** Read the stream to the end or close it; the span ends when the handler's copy is read to the end.
+- **Spans from another tracing handler (Langfuse, APMPlus) in the same process.** They stay separate; this module never makes another handler's span the parent of its own.
