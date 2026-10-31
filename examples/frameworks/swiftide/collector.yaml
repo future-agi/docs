@@ -1,0 +1,105 @@
+# Run on the same host as the agent. The agent sends raw Swiftide fields to this receiver.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  # Only spans from the swiftide-agent tracer are forwarded. Spans with links are dropped.
+  filter/scope:
+    error_mode: propagate
+    traces:
+      span:
+        - 'instrumentation_scope.name != "swiftide-agent"'
+        - 'Len(span.links) > 0'
+
+  # Map Swiftide's structured fields to Future AGI attributes and drop everything else.
+  transform/swiftide:
+    error_mode: propagate
+    trace_statements:
+      # Span types.
+      - context: span
+        statements:
+          - keep_keys(span.attributes, ["langfuse.type", "step_count"])
+          - set(span.attributes["fi.span.kind"], "CHAIN")
+          - set(span.attributes["fi.span.kind"], "AGENT") where IsMatch(span.name, "^agent\\.")
+          - set(span.attributes["fi.span.kind"], "TOOL") where IsMatch(span.name, "^tool\\.")
+          - set(span.attributes["fi.span.kind"], "LLM")
+            where span.attributes["langfuse.type"] == "GENERATION"
+      # Model name and token counts of each model call.
+      - context: spanevent
+        conditions:
+          - span.attributes["fi.span.kind"] == "LLM"
+        statements:
+          - set(span.attributes["llm.model_name"], spanevent.attributes["langfuse.model"])
+            where spanevent.attributes["langfuse.model"] != nil
+          - set(spanevent.cache["usage"], ParseJSON(spanevent.attributes["langfuse.usage"]))
+            where IsString(spanevent.attributes["langfuse.usage"])
+            and spanevent.attributes["langfuse.usage"] != ""
+          - set(span.attributes["llm.token_count.prompt"],
+              Int(spanevent.cache["usage"]["prompt_tokens"]))
+            where spanevent.cache["usage"]["prompt_tokens"] != nil
+          - set(span.attributes["llm.token_count.completion"],
+              Int(spanevent.cache["usage"]["completion_tokens"]))
+            where spanevent.cache["usage"]["completion_tokens"] != nil
+          - set(span.attributes["llm.token_count.total"],
+              Int(spanevent.cache["usage"]["total_tokens"]))
+            where spanevent.cache["usage"]["total_tokens"] != nil
+      # Inputs and outputs, only when FI_CAPTURE_CONTENT=true.
+      - context: spanevent
+        conditions:
+          - '"${env:FI_CAPTURE_CONTENT:-false}" == "true"'
+        statements:
+          - set(span.attributes["input.value"], spanevent.attributes["langfuse.input"])
+            where IsString(spanevent.attributes["langfuse.input"])
+            and spanevent.attributes["langfuse.input"] != ""
+          - set(span.attributes["output.value"], spanevent.attributes["langfuse.output"])
+            where IsString(spanevent.attributes["langfuse.output"])
+            and spanevent.attributes["langfuse.output"] != ""
+      # Keep only the mapped attributes, never error text or backtraces.
+      - context: span
+        statements:
+          - keep_keys(span.attributes, ["fi.span.kind", "step_count", "llm.model_name",
+              "llm.token_count.prompt", "llm.token_count.completion",
+              "llm.token_count.total", "input.value", "output.value"])
+          - replace_pattern(span.attributes["input.value"], "(?s)Stack backtrace:.*", "")
+            where span.attributes["input.value"] != nil
+          - replace_pattern(span.attributes["output.value"], "(?s)Stack backtrace:.*", "")
+            where span.attributes["output.value"] != nil
+          - set(span.status.message, "")
+          - set(span.trace_state, "")
+          - keep_keys(instrumentation_scope.attributes, [])
+          - keep_keys(resource.attributes, ["service.name"])
+          - set(resource.attributes["project_name"], "${env:FI_PROJECT_NAME}")
+          - set(resource.attributes["project_type"], "observe")
+
+  # Swiftide's log events carry message text, so none are forwarded.
+  filter/events:
+    error_mode: propagate
+    traces:
+      spanevent:
+        - 'true'
+
+  batch:
+    timeout: 1s
+
+exporters:
+  otlp_http/futureagi:
+    traces_endpoint: ${env:FI_TRACES_ENDPOINT:-https://api.futureagi.com/tracer/v1/traces}
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+    compression: none
+
+service:
+  telemetry:
+    logs:
+      level: error
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/scope, transform/swiftide, filter/events, batch]
+      exporters: [otlp_http/futureagi]
