@@ -1,0 +1,212 @@
+---
+title: "Gemini Live tracing with Future AGI"
+description: "Trace Gemini Live sessions you open with the google-genai Python SDK (client.aio.live.connect) in Future AGI: one trace per session with turns, tool calls, interruptions, usage and resume. Audio sessions are listed as calls. Audio bytes, API keys and resumption handles never leave your process."
+---
+
+## About
+
+[Gemini Live](https://ai.google.dev/gemini-api/docs/live) is a stateful WebSocket (`BidiGenerateContent`) for low-latency voice and text conversations with Gemini. The `traceAI-google-genai-live` package instruments the official Python SDK, so every session your code opens with `client.aio.live.connect(...)` becomes one Future AGI trace:
+
+```
+gemini.live.session        the whole session; a call for audio sessions
+├── gemini.live.setup      setup until setupComplete (ERROR when the server rejects it)
+├── gemini.live.user_turn  what the user said or typed (transcription when enabled)
+├── gemini.live.model_turn LLM span: model, token counts, what the model said
+│   └── gemini.live.tool   one function call: name, call id, arguments, result
+├── gemini.live.model_turn the answer after the tool result
+└── gemini.live.reconnect  only when you resume a dropped session with its handle
+```
+
+This is not the same as:
+
+- **[Google GenAI](/docs/integrations/traceai/google_genai)** (`traceAI-google-genai`), which traces `generate_content` and `generate_content_stream`. Live sessions are a different protocol and are not traced there. Both packages can be instrumented in the same process.
+- **[LiveKit](/docs/integrations/traceai/livekit)** and **[Pipecat](/docs/integrations/traceai/pipecat)**, which trace their own pipelines, including when they use a Gemini Live model. Use this page only when your code calls `client.aio.live.connect` itself.
+
+<Warning>
+Alpha. Gemini Live is a preview API and its model list changes. This page was verified on 2026-10-15 with real `gemini-3.8-live` sessions on the Gemini Developer API. Re-check the [model list](https://ai.google.dev/gemini-api/docs/live-api/capabilities) before you pick a model.
+</Warning>
+
+| | |
+| --- | --- |
+| Tested with | `google-genai` 2.31.0 (latest) and 2.28.0 (lowest supported), Python 3.13, model `gemini-3.8-live`. Real sessions: spoken question in, spoken answer out, one tool call, a dropped and resumed connection, a rejected setup, and a refused response modality. |
+| Package | [`traceAI-google-genai-live`](https://pypi.org/project/traceAI-google-genai-live/) 0.1.0 or later. Source: [traceAI `python/frameworks/google-genai-live`](https://github.com/future-agi/traceAI/tree/main/python/frameworks/google-genai-live) |
+| Gemini docs used | [Live API](https://ai.google.dev/gemini-api/docs/live), [capabilities](https://ai.google.dev/gemini-api/docs/live-api/capabilities), [session management](https://ai.google.dev/gemini-api/docs/live-session), [tool use](https://ai.google.dev/gemini-api/docs/live-tools), read 2026-10-15 |
+| Requires | Python 3.10 to 3.13, `google-genai>=2.28,<3`, a Gemini Developer API key |
+
+## 1. Install
+
+```bash
+pip install traceAI-google-genai-live "google-genai>=2.28,<3"
+```
+
+## 2. Set your keys
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
+## 3. Register and instrument
+
+Call `register()` first, then `instrument()`, before you open a Live session.
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_google_genai_live import instrument
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-voice-agent",
+)
+instrument(tracer_provider=trace_provider)
+```
+
+`GoogleGenAILiveInstrumentor().instrument(tracer_provider=trace_provider)` does the same thing.
+
+## 4. Run a session
+
+Use the Live API as you normally would. This example asks a question, answers the model's tool call, and receives the spoken answer:
+
+```python
+import asyncio
+import os
+
+from google import genai
+from google.genai import types
+
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+config = {
+    "response_modalities": ["AUDIO"],
+    "input_audio_transcription": {},   # optional: the user's words on the user turn
+    "output_audio_transcription": {},  # optional: the model's words on the model turn
+    "tools": [{"function_declarations": [{
+        "name": "get_weather",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    }]}],
+}
+
+async def main():
+    async with client.aio.live.connect(model="gemini-3.8-live", config=config) as session:
+        await session.send_client_content(
+            turns={"role": "user", "parts": [{"text": "What is the weather in Paris?"}]})
+        for _ in range(2):  # the tool-call turn, then the spoken answer
+            async for msg in session.receive():
+                if msg.tool_call:
+                    await session.send_tool_response(function_responses=[
+                        types.FunctionResponse(id=fc.id, name=fc.name,
+                                               response={"forecast": "18C and sunny"})
+                        for fc in msg.tool_call.function_calls])
+
+asyncio.run(main())
+trace_provider.force_flush()
+```
+
+To stream audio instead, send 16 kHz 16-bit mono PCM with `session.send_realtime_input(audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))`. A full runnable example, including a spoken question and a resumed connection, is in the package's [`examples/voice_tool.py`](https://github.com/future-agi/traceAI/tree/main/python/frameworks/google-genai-live/examples).
+
+## 5. See it in Future AGI
+
+Open your project in **Observe**. Each session is one `gemini.live.session` trace. An audio session (the default when you request no modality) is typed as a conversation with no parent, and carries the call fields the voice views read: `call.duration`, `call.total_turns`, `call.talk_ratio`, and the transcript. A text-only session is typed `CHAIN` and stays in Traces.
+
+To check that a session is shaped as a call, run [`fi_verify_voice.py`](/docs/cookbook/quickstart/instrument-and-verify-voice) against it. On 2026-10-15 a real `gemini-3.8-live` session with a spoken question, one tool call and a user id passed all twelve gates (no recording attached, `FI_VOICE_NO_RECORDING=1`).
+
+## What is captured
+
+| Where | What | Content? |
+| --- | --- | --- |
+| Session (root) | `gen_ai.system=google_genai`, `gen_ai.request.model`, `session.id` (yours, else a generated id, see below), `user.id` only if you set one, response modalities, voice name, declared tool names, number of realtime inputs sent, `gemini.go_away` and `gemini.time_left`, reconnect count, close reason and WebSocket close code | No |
+| Session, audio only | `call.duration`, `call.total_turns` (omitted rather than 0 when no turn closed), `call.talk_ratio` (model speech seconds / user speech seconds, only when both were measured) | No |
+| Session, audio only | `conversation.transcript`, `fi.conversation.transcript`, `conversation.transcript.{i}.message.role` / `.content` | Yes |
+| Setup | WebSocket path (never the host or query string), system instruction | Instruction only |
+| User turn | how it started (`gemini.turn_start`) and ended (`gemini.turn_boundary`), the user's text or input transcription | Text only |
+| Model turn (LLM) | model, `llm.token_count.prompt` / `.completion` / `.total` and the server's raw `usageMetadata` fields, `generationComplete` / `turnComplete` / `interrupted` flags, seconds of audio produced, the prompt (user text or tool result) and the model's words | Prompt and words only |
+| Tool | tool name, call id, arguments and result, `gemini.cancelled` when the server cancelled the call | Arguments and result only |
+
+How Gemini's events become spans:
+
+- A user turn starts on the server's voice-activity start (or your `activity_start`, a realtime `text=` input, or the first input transcription) and ends on voice-activity end. If the server sends no activity end, it ends at the model's `turnComplete` and says so in `gemini.turn_boundary`. Each `send_client_content` call is its own user turn.
+- `generationComplete` does not end the model turn; `turnComplete` does. `interrupted` ends it at once with `gemini.interrupted=true`. A `send_client_content` while the model is speaking ends that turn with `gemini.close_reason=client_content`.
+- A tool call opens a model turn when none is open (Gemini sends the call before any speech, then usage for that generation). The tool span closes when you answer with the same id. A response for a cancelled id is recorded separately with `gemini.ignored=true`; one for an unknown id is an ERROR span with `gemini.unmatched=true`.
+- `usageMetadata` is copied onto the model turn it arrived with and never summed. In the tested sessions each message covered one generation.
+- Audio chunks you send are counted, not traced one by one.
+
+`session.id`: pass your own with `fi_instrumentation`'s `using_session("call-42")` around `connect` (or `instrument(session_id=...)`). Otherwise the package uses the id the server sends at setup if there is one, else a generated id, and records which in `gemini.session_id_source`. The Gemini Developer API sent no session id in the tested sessions. `user.id` works the same way with `using_user(...)`; Gemini never sends one, and the package never invents one.
+
+## Privacy
+
+Like every traceAI instrumentor, the package captures text content by default and turns it off with the standard traceAI switches. There is no Gemini-specific switch.
+
+| | Default | `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` |
+| --- | --- | --- |
+| System instruction, user text, transcriptions, model text, tool arguments and results | Captured | Not captured |
+| WebSocket error text from Gemini | Captured | Not captured (exception type and close code only) |
+| Model, voice name, timings, tool names, flags, token counts, close codes | Captured | Captured |
+| Audio bytes (sent or received) | Never | Never |
+| API key, WebSocket host and query string | Never | Never |
+| Session resumption handle | Never | Never |
+| Stack traces | Never | Never |
+
+Set the variables before your process calls `instrument()`:
+
+```bash
+export FI_HIDE_INPUTS=true    # system instruction, user text and transcription, tool arguments
+export FI_HIDE_OUTPUTS=true   # model text and transcription, tool results
+```
+
+Or pass the same settings in code:
+
+```python
+from fi_instrumentation import TraceConfig
+
+instrument(
+    tracer_provider=trace_provider,
+    config=TraceConfig(hide_inputs=True, hide_outputs=True),
+)
+```
+
+Set only one of them to drop one direction. `FI_HIDE_INPUT_MESSAGES` / `FI_HIDE_INPUT_TEXT` (and the `OUTPUT` pair) have the same effect as `FI_HIDE_INPUTS` / `FI_HIDE_OUTPUTS` here, because everything a Live session carries is message text. The conversation transcript and Gemini's error text are recorded only when both directions are on.
+
+Verified on 2026-10-15 with real `gemini-3.8-live` sessions: with `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`, a unique marker placed in the system instruction, the question and the tool result, plus the question text, the tool result, the model's answer, Gemini's error text, local paths, the user name, the host name and the API keys, were found in none of the stored columns of the project (span attributes, input and output, resource attributes, span events, sessions). With the default, the same kind of marker was stored as expected.
+
+## Dropped connections and session resumption
+
+Gemini closes a connection after about ten minutes and sends `goAway` first. If you enable `session_resumption` and reconnect with the last `newHandle`, the package keeps the session in the same trace and adds a `gemini.live.reconnect` span for the gap:
+
+- The handle stays in memory in your process. It is never written to a span or a log, because anyone holding it can resume the conversation.
+- After a `goAway`, or after the connection dies, the session waits up to `resume_window_seconds` (default 30) for a `connect` that passes the stored handle. Without one, it closes with the time the connection ended. A clean exit without `goAway` closes the session at once.
+- A `connect` with a handle this process did not store starts a new trace.
+- The package never reconnects for you.
+
+## Failures
+
+| What happened | What you see |
+| --- | --- |
+| Setup rejected (unknown model, bad key) | One ERROR session, `setup_rejected`, with its setup span. The SDK's `APIError` reaches your code unchanged. |
+| Connection dropped mid-session | Open turns and tools close ERROR `socket_closed`; `gemini.close_code` on the session. |
+| Model refuses the requested modality (for example `TEXT` on a native-audio model) | Setup succeeds, the first `receive()` raises `APIError` 1007, the session closes ERROR `socket_closed`. |
+| Your task was cancelled | Everything open closes ERROR `task_cancelled`. |
+| Resume rejected | The session closes ERROR `resume_failed`; the reconnect span is ERROR. |
+
+## Not supported
+
+- Vertex AI Live (`genai.Client(vertexai=True)`): one warning, the session is not traced.
+- Ephemeral tokens (`auth_tokens/...` keys, browser clients): one warning, not traced.
+- The deprecated `session.send()` and `session.start_stream()`: not traced. Use `send_client_content`, `send_realtime_input`, `send_tool_response` and `receive`. google-genai 3.0 removes them.
+- Node.js `@google/genai`.
+- Attaching the audio recording to the call. Audio evals that need a recording cannot bind to these calls.
+- Cost in currency. Future AGI estimates cost from model and token counts where it has a price for the model.
+
+## Troubleshooting
+
+| What you see | Why |
+| --- | --- |
+| No spans, one warning in your logs | The client is Vertex AI or uses an ephemeral token. Only the Gemini Developer API is traced. |
+| Nothing in the project | `register()` must run before `instrument()`, and both before `connect`. Call `trace_provider.force_flush()` before a short script exits. |
+| The session is in Traces but is not a call | It was text-only (`response_modalities: ["TEXT"]`), so it is typed `CHAIN`. |
+| No transcript on the call | Enable `input_audio_transcription` / `output_audio_transcription` in the Live config, and leave `FI_HIDE_INPUTS` / `FI_HIDE_OUTPUTS` (and the `*_MESSAGES` / `*_TEXT` variants) unset. |
+| `call.talk_ratio` missing | The user side is measured from Gemini's voice-activity events and the model side from raw PCM audio. A typed question has no user speech, so there is no ratio. |
+| Two traces after a reconnect | The second `connect` did not pass the handle this process received, or it came after `resume_window_seconds`. |
+| The session span appears late | It is waiting for a possible resume after `goAway` or a dropped connection. Lower `resume_window_seconds` if you never resume. |
+| `user.id` empty | Gemini does not send one. Wrap `connect` in `using_user("...")`. |
