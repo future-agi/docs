@@ -1,0 +1,60 @@
+---
+title: "OTel GenAI conformance fixtures for Future AGI ingestion"
+description: "Three OTLP fixtures (old keys, new keys, dual-emit) show how Future AGI stores OpenTelemetry GenAI attributes: model, provider, tokens, no double counting."
+---
+
+## About
+
+Future AGI accepts OpenTelemetry GenAI (`gen_ai.*`) attributes over OTLP/HTTP. The OpenTelemetry GenAI keys were renamed over time, and some tools send both names. This page documents three fixtures in traceAI that pin how the collector stores them, and what was observed on a real local Future AGI stack.
+
+These are fixtures of these keys. They are not a claim that Future AGI implements a named OpenTelemetry spec version.
+
+Fixtures live in `python/tests/fixtures/otel_genai/` in [traceAI](https://github.com/future-agi/traceAI). Each file is one OTLP/JSON export request with `project_name` on the resource and a fake model name, `gpt-test`. They carry no keys and no message content.
+
+## What is stored
+
+| Fixture | Keys on the span | Stored columns |
+| --- | --- | --- |
+| `era_a.json` | `gen_ai.system`, `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens` | Provider `openai`. Tokens are **0**: the old token names are not read as token columns. The raw keys stay in the span attributes. |
+| `era_b.json` | `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | Model `gpt-test` (the request model wins over the response model `gpt-test-actual`), provider `openai`, tokens 3 / 4 / 7. |
+| `dual_emit.json` | A Future AGI name and an OTel GenAI name for the same count (`llm.token_count.prompt` + `gen_ai.usage.input_tokens`) | Tokens 3 / 4 / 7. The first alias present wins; counts are never added, so you do not get 6 / 8 / 14. |
+
+`era_b.json` also holds an `invoke_agent` span that is the parent of a `retrieval` span and a chat span. Both operation names are stored and shown in the trace tree with type `unknown`. They are not mapped to agent or retriever types, so do not expect those types for spans that only carry `gen_ai.operation.name`.
+
+If your tool still emits `gen_ai.usage.prompt_tokens` / `completion_tokens` only, token counts will show as 0. Emit `gen_ai.usage.input_tokens` / `output_tokens` (or the `llm.token_count.*` names).
+
+## Tested versions
+
+Verified 2026-10-16 against a local Future AGI stack built from `dev`, uncompressed OTLP/HTTP to `/v1/traces` with `X-Api-Key` and `X-Secret-Key`:
+
+- The three fixtures: all stored columns match the golden file. A span with error status is stored with status `ERROR`. A wrong key is answered with 401.
+- A real upstream run: `openai` 3.33.0, `opentelemetry-sdk` 1.45.1, `opentelemetry-instrumentation-openai-v2` 2.3b0 with `OTEL_SEMCONV_STABILITY_OPT_IN` unset and `gen_ai_latest_experimental`. Model, provider and token counts were stored and the failed request (unknown model) was stored as `ERROR`. Prompt and response text are not exported by this instrumentor unless you enable its own content capture, and none was stored.
+- `opentelemetry-instrumentation-openai-v2` 2.4b0 (latest at the time) did not import together with `opentelemetry-util-genai` 1.2b0 (`ModuleNotFoundError: opentelemetry.util.genai.instruments`). With `wrapt` 2.x the 2.3b0 instrumentor also fails at `instrument()`; pin `wrapt<2`. These are upstream packaging problems, not Future AGI behaviour.
+
+## Run the fixture tests
+
+```bash
+env -u PYTHONPATH PYTHONPATH="python/tests" \
+  uv run --no-project --python 3.11 --with 'pytest==9.1.1' \
+  pytest python/tests/fixtures/otel_genai/test_fixtures.py -v \
+  -p no:cacheprovider --noconftest -o addopts= -rfEs
+```
+
+To check a running stack, post the three files (set the resource `project_name` to a scratch project), export the stored rows and run `python live_check.py spans.json` from the fixture folder. See the fixture README for details.
+
+## Privacy
+
+The fixtures contain no prompts, responses or keys. When you send your own GenAI spans, content is only present if your instrumentor emits it. Check what your tool sends before pointing it at a shared project.
+
+## Troubleshooting
+
+- Token columns are 0: the span uses `gen_ai.usage.prompt_tokens` / `completion_tokens`. Use the `input_tokens` / `output_tokens` names.
+- Model shows the request model, not the response model: expected, the request model comes first.
+- `retrieval` or `invoke_agent` show type `unknown`: expected, see above.
+- 400 on export: the resource has no `project_name`, or ids are not lowercase hex of the right length. 401: wrong keys. gzip bodies are rejected; send uncompressed.
+
+## Limitations
+
+- Fixture-based. The unit tests derive columns from the recorded alias order and only compare it to the collector source when `FI_COLLECTOR_ADAPTER_GO` is set. The live check needs a running stack.
+- Mapping `invoke_agent` and `retrieval` to display types, and reading the old token names, are open collector work and are not part of this page.
+- The Python backend adapter and the collector disagree on model and provider order; the collector is what ingestion uses.
