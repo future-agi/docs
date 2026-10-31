@@ -1,0 +1,265 @@
+---
+title: "A2A Go tracing with Future AGI"
+description: "Trace Agent2Agent (A2A) protocol clients built with the official Go SDK (a2a-go v2): one agent span per call to a remote agent, streams included, with trace context sent to the remote agent and spans exported to Future AGI over OTLP/HTTP."
+---
+
+## About
+
+`traceaia2a` (module `github.com/future-agi/traceAI/go/a2a`) traces Go services that call other agents over the [A2A protocol](https://a2a-protocol.org) with the official Go SDK, [`github.com/a2aproject/a2a-go/v2`](https://github.com/a2aproject/a2a-go). It is an `a2aclient.CallInterceptor`, the SDK's own extension point: you add one option when you create the client, and every call to the remote agent becomes one span. The interceptor also sends the W3C `traceparent` to the remote agent, so an agent that reads it adds its own spans to the same trace.
+
+A run of the example on this page is one trace:
+
+```
+trip-planner                    your agent span (AGENT)
+├── a2a.SendStreamingMessage    the interceptor: the call to the remote agent (AGENT)
+│   └── trip-helper             the remote agent's own span, joined through traceparent (AGENT)
+│       └── chat gpt-4.1-mini   the remote agent's model call (LLM)
+└── a2a.SendStreamingMessage    a call the agent answers with a failed task (AGENT, ERROR)
+    └── trip-helper
+```
+
+The two `trip-helper` branches come from the demo agent in the example, which spans its own work. The interceptor only creates the `a2a.*` spans. Against an agent that does not trace, you get your spans and the `a2a.*` spans, and nothing below them.
+
+This is not the same as:
+
+- **The Python `traceAI-a2a` package** ([traceAI `python/frameworks/a2a`](https://github.com/future-agi/traceAI/tree/main/python/frameworks/a2a)). It is unchanged and does not cover Go. The Go module writes the same `gen_ai.a2a.*` attribute names where a2a-go reports the same fact; the differences are listed under [What is captured](#what-is-captured).
+- **[MCP & A2A in the Agent Command Center](/docs/command-center/features/mcp-a2a)**. That is the gateway routing A2A traffic. This page traces your own Go A2A client.
+
+| | |
+| --- | --- |
+| Tested with | a2a-go **v2.6.0** (latest on 2026-10-16) and v2.5.0; Go 1.27.2 and 1.26.9; OpenTelemetry Go v1.47.0 |
+| Supported | a2a-go v2.5.0 or later (the module's minimum), Go 1.26 or later |
+| Tested surface | Client `SendMessage`, `SendStreamingMessage`, `GetTask`, `CancelTask`, `SubscribeToTask` over JSON-RPC, HTTP+JSON (REST) and gRPC; completed, failed, rejected, canceled and input-required tasks, direct message replies, protocol errors, transport errors, cancellation and timeouts |
+| Source | [traceAI `go/a2a`](https://github.com/future-agi/traceAI/tree/main/go/a2a) |
+
+<Note>
+The end-to-end test ran the example against a remote agent built with a2a-go's own server package on 127.0.0.1 (JSON-RPC), with its model calls sent to an OpenAI-compatible endpoint, and exported to a local Future AGI. REST and gRPC are covered by the module's tests against a2a-go's REST and gRPC servers. No public third-party A2A agent was called.
+</Note>
+
+## 1. Install
+
+```bash
+go get github.com/future-agi/traceAI/go/a2a@latest github.com/a2aproject/a2a-go/v2@latest
+go get go.opentelemetry.io/otel/sdk go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+```
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-service"
+```
+
+`FI_BASE_URL` is optional (default `https://api.futureagi.com`; set it to your own collector when you self-host). These keys are for the exporter only: they never go to the remote agent.
+
+## 3. Create the tracer provider
+
+The module does not build an exporter. Use the stock OpenTelemetry OTLP/HTTP exporter with the three things Future AGI needs: both auth headers, the `project_name` resource attribute, and an uncompressed body (the collector rejects gzip).
+
+```go
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
+	traceaia2a "github.com/future-agi/traceAI/go/a2a"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+)
+```
+
+```go
+func newTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
+	apiKey, secretKey := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY")
+	project := os.Getenv("FI_PROJECT_NAME")
+	if apiKey == "" || secretKey == "" || project == "" {
+		return nil, errors.New("set FI_API_KEY, FI_SECRET_KEY and FI_PROJECT_NAME")
+	}
+	base := strings.TrimRight(envOr("FI_BASE_URL", "https://api.futureagi.com"), "/")
+
+	exp, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			"X-Api-Key":    apiKey,
+			"X-Secret-Key": secretKey,
+		}),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+	)
+	if err != nil {
+		return nil, err
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(
+		attribute.String("project_name", project),
+		attribute.String("project_type", "observe"),
+		attribute.String("service.name", project),
+	))
+	if err != nil {
+		return nil, err
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+		sdktrace.WithBatcher(exp),
+	), nil
+}
+
+func shutdown(tp *sdktrace.TracerProvider) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := tp.Shutdown(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "trace export:", err)
+	}
+}
+```
+
+`resource.Default()` adds only the SDK name and version and `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` if you set them. No host, process or OS detector is added, so no host name, user name or local path is exported.
+
+## 4. Add the interceptor and flush on exit
+
+```go
+	tp, err := newTracerProvider(ctx)
+	if err != nil {
+		return err
+	}
+	defer shutdown(tp) // flush before exit
+
+	card, err := agentcard.DefaultResolver.Resolve(ctx, url)
+	if err != nil {
+		return fmt.Errorf("resolve agent card: %w", err)
+	}
+	client, err := a2aclient.NewFromCard(ctx, card,
+		a2aclient.WithCallInterceptors(traceaia2a.NewInterceptor(traceaia2a.WithTracerProvider(tp))))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Destroy() }()
+```
+
+`url` is the address your agent card is served from. Call the client as usual. `defer shutdown(tp)` matters: the batch exporter sends spans in the background, and spans still queued when the process exits are lost. A long-running service must call it on SIGTERM too; nothing is flushed on SIGKILL. Without `WithTracerProvider` the interceptor uses the OpenTelemetry global provider (`otel.SetTracerProvider`). If you attach other interceptors as well, put this one first so its span covers theirs.
+
+## 5. Sessions and your own spans
+
+Put a session id on the context; every A2A span started from it carries `session.id`, and Future AGI groups those traces into one session. Without one, the A2A context id becomes `session.id`, so each A2A conversation is a session. `ContextWithUserID` does the same for `user.id` (use an opaque id, not an email address).
+
+```go
+	sessionCtx := traceaia2a.ContextWithSessionID(ctx, *session)
+	tracer := tp.Tracer("a2a-go-example")
+	ctx, root := tracer.Start(sessionCtx, "trip-planner", trace.WithAttributes(
+		attribute.String(traceaia2a.GenAISpanKind, traceaia2a.SpanKindAgent),
+		attribute.String(traceaia2a.GenAIOperationName, "invoke_agent"),
+		attribute.String("gen_ai.agent.name", "trip-planner"),
+	), trace.WithAttributes(traceaia2a.ContextAttributes(sessionCtx)...))
+	defer root.End()
+```
+
+Calls made with `ctx` are children of `trip-planner`, so one run of your agent is one trace. `TraceConfig.SetAttributes` applies the same privacy switches to the values you add yourself:
+
+```go
+	traceaia2a.TraceConfigFromEnv().SetAttributes(root, attribute.String(traceaia2a.InputValue, *question))
+```
+
+## 6. Streams
+
+```go
+		for ev, err := range client.SendStreamingMessage(ctx, req) {
+			if err != nil {
+				return err
+			}
+			printEvent(ev)
+		}
+```
+
+A stream is one span. Each streamed event (task, status update, artifact update, message) is recorded as a span event named `a2a.event` and counted in `gen_ai.a2a.stream.event_count`. The span ends at the agent's reply message, or when the task reaches a terminal state (`completed`, `failed`, `canceled`, `rejected`) or an interrupted one (`input-required`, `auth-required`), which is when a2a-go closes the stream.
+
+If you stop reading a stream before that, the span ends when the context you passed is cancelled, as ERROR `canceled`. Pass a context you cancel (`ctx, cancel := context.WithCancel(ctx); defer cancel()`); with `context.Background()` an abandoned stream's span is never exported.
+
+## 7. Run the example
+
+The complete program (agent span, a streamed or plain call, a failed task, and a demo remote agent) is [`examples/traceai/a2a-go/main.go`](https://github.com/future-agi/docs/tree/main/examples/traceai/a2a-go) in this docs repo and `go/a2a/example` in traceAI.
+
+```bash
+go run . -stream -fail
+```
+
+Without `-agent-url` it starts the demo agent on 127.0.0.1. The demo agent answers with a model when `OPENAI_API_KEY` is set (any OpenAI-compatible endpoint through `OPENAI_BASE_URL`, model with `-model`) and echoes otherwise. With `-agent-url https://your-agent.example` it calls your agent instead. It prints the trace id. Open **Observe → your project → Tracing**: the `a2a.*` spans show the task id and state, the agent URL and card, your message as input and the agent's answer as output; the failed task shows status ERROR with `TASK_STATE_FAILED`.
+
+## The remote agent's side
+
+The interceptor writes `traceparent` (and `tracestate` when set) into the request's service parameters: HTTP headers on JSON-RPC and REST, call metadata on gRPC. It never adds the Future AGI keys. A remote agent that continues that context joins your trace. The demo agent does it in its executor:
+
+```go
+		carrier := propagation.MapCarrier{}
+		if v, ok := ec.ServiceParams.Get("traceparent"); ok && len(v) > 0 {
+			carrier.Set("traceparent", v[0])
+		}
+		ctx = propagation.TraceContext{}.Extract(ctx, carrier)
+```
+
+OpenTelemetry server middleware (`otelhttp`, `otelgrpc`) does the same once the W3C Trace Context propagator is installed with `otel.SetTextMapPropagator`. A remote agent that ignores `traceparent` still leaves your client span, with no children. The module does not instrument the server side (`a2asrv`).
+
+## What is captured
+
+| Attribute | When |
+| --- | --- |
+| `gen_ai.span.kind` = `AGENT`, `gen_ai.operation.name` (`a2a.send`, `a2a.get_task`, `a2a.cancel_task`, `a2a.subscribe_to_task`), `gen_ai.a2a.streaming` | always |
+| `gen_ai.a2a.agent.url` | the agent URL from the card, without user info, query string or fragment |
+| `gen_ai.a2a.agent.card.name`, `gen_ai.a2a.agent.card.version` | when the client has a card with them |
+| `gen_ai.a2a.task.id` | only when the request or response carries a task id; a direct message reply has none, and the attribute is then absent, never empty |
+| `gen_ai.a2a.task.state` | only when a2a-go reported a state, spelled as a2a-go spells it (`TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, ...) |
+| `gen_ai.a2a.message.role`, `gen_ai.a2a.message.parts.count` | for the message you send |
+| `gen_ai.a2a.artifact.type` | `text`, `file` or `data` |
+| `gen_ai.a2a.context.id`, `gen_ai.a2a.stream.event_count` | Go only: the A2A context id; the number of streamed events |
+| `session.id`, `user.id` | from the context, or the A2A context id for `session.id` |
+| `input.value` | the text and data parts you send (content; on by default) |
+| `output.value` | artifact text, then the agent's reply or final status message (content; on by default) |
+| `error.type`, `error.message` | on errors, see below |
+
+Differences from the Python `traceAI-a2a` package: Python writes `gen_ai.span.kind` = `A2A_CLIENT` and lower-case v0.3 state names (`completed`). The Go module writes `AGENT`, which Future AGI shows as an agent span, and the a2a-go v2 state names. The A2A span is never an LLM span: the model call, if any, happens inside the remote agent. No token count or cost is invented.
+
+Never captured, in any mode: request headers and service parameters (other than the `traceparent` the interceptor writes), file parts (raw bytes or file URLs), credentials and query strings in the agent URL, and transport error text (it carries URLs and host names; only a class such as `transport`, `canceled` or `timeout` is recorded).
+
+`ListTasks`, the push-notification config methods and `GetExtendedAgentCard` pass through without a span.
+
+## Privacy
+
+Content is captured by default, as in every traceAI instrumentor. The traceAI switches, with the same names and defaults as the Python package, turn it off. Set them in the environment before the client is built, or pass `traceaia2a.WithTraceConfig(traceaia2a.TraceConfig{...})`.
+
+| Variable | Effect |
+| --- | --- |
+| `FI_HIDE_INPUTS=true` | `input.value` becomes `__REDACTED__`; the remote agent's error message is dropped |
+| `FI_HIDE_OUTPUTS=true` | `output.value` becomes `__REDACTED__`; the remote agent's error message is dropped |
+| `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT`, `FI_HIDE_INPUT_IMAGES`, `FI_HIDE_LLM_INVOCATION_PARAMETERS` | accepted for parity with the other traceAI packages; they act on message attributes the A2A spans do not write, and on spans you start yourself through `TraceConfig.SetAttributes` |
+
+A value counts only when it is `true` (any case). With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` the task id and state, the agent URL and card, the session id and the error class are still exported; the messages, artifacts and agent replies are not. In our test a unique marker placed in the message (with an email address and a file path) was absent from every stored column of the project with both switches on, and present in the input and output with the defaults. Values are cut at 32 000 bytes.
+
+## Errors and cancellation
+
+- An error from a2a-go ends the span with status ERROR and `error.type`: the A2A reason for protocol errors (`TASK_NOT_FOUND`, `UNSUPPORTED_OPERATION`, ...), `canceled` or `timeout` when your context ends first, and `transport` for anything else (connection, HTTP status, decoding). The remote agent's own error message is added as `error.message` unless inputs or outputs are hidden. a2a-go still returns its error to you unchanged.
+- A task the agent reports as `failed` or `rejected` ends the span with ERROR and `error.type` set to the state. `canceled`, `input-required` and `auth-required` are recorded in `gen_ai.a2a.task.state` and are not errors.
+- One call is one span. Polling with `GetTask` is one span per poll; start a span around the loop to keep them in one trace.
+- The interceptor never changes a request, a response or an error, and never fails a call.
+
+## Not supported
+
+- Server-side tracing (`a2asrv`). a2a-go's server interceptor is a different interface and is not part of this module; see [The remote agent's side](#the-remote-agents-side).
+- `ListTasks`, push-notification configs, extended agent cards, and the a2a CLI pass through untraced.
+- Span event attributes: Future AGI stores each `a2a.event`'s name and time; the per-event type and state are not shown. The final state is on the span.
+
+## Troubleshooting
+
+- **No traces.** Check that the process calls `shutdown(tp)` (or `tp.Shutdown`) before it exits, and that `FI_API_KEY`, `FI_SECRET_KEY` and `FI_PROJECT_NAME` are set. The exporter URL must be the full traces URL, `{FI_BASE_URL}/tracer/v1/traces`.
+- **Export errors about the body.** Keep `otlptracehttp.WithCompression(otlptracehttp.NoCompression)`; the collector rejects gzip.
+- **Spans in the wrong project or none at all.** `project_name` must be a resource attribute on the tracer provider, not a span attribute.
+- **A stream span never shows up.** You stopped reading before the final event and the context was never cancelled. Pass a context you cancel.
+- **The remote agent's spans are in a separate trace.** The agent does not read `traceparent`. Add OpenTelemetry server middleware there, or extract it as shown above.
+- **The remote agent received `X-Api-Key`.** Not from this module. Check your own interceptors and `a2aclient.AttachServiceParams` calls: Future AGI keys belong on the exporter only.
+- **No span for a call.** Only the five methods above are traced; check that the interceptor is on the client (`a2aclient.WithCallInterceptors`).
