@@ -58,6 +58,28 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guidance', () => {
+  const page = read('src/pages/docs/integrations/traceai/vertexai.mdx');
+  const recommended = page.split('## Migrate an existing Vertex AI SDK app')[0];
+  assert.match(recommended, /pip install traceAI-google-genai google-genai/);
+  assert.match(recommended, /from traceai_google_genai import GoogleGenAIInstrumentor/);
+  assert.match(recommended, /vertexai=True/);
+  assert.match(recommended, /gcloud auth application-default login/);
+  for (const variable of ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_MODEL']) {
+    assert.ok(recommended.includes(`export ${variable}=`));
+    assert.ok(recommended.includes(`os.environ["${variable}"]`));
+  }
+  assert.match(recommended, /trace_provider\.force_flush\(\)/);
+  assert.doesNotMatch(recommended, /from vertexai|import vertexai|traceAI-vertexai/);
+  assert.doesNotMatch(page, /pip install vertexai\b|gemini-1\.5-flash/);
+  assert.match(page, /google-cloud-aiplatform>=1\.61\.0,<=1\.101\.0/);
+  assert.match(page, /pip install traceAI-vertexai 'google-cloud-aiplatform==1\.101\.0'/);
+  assert.match(page, /before importing `vertexai`/);
+  assert.match(page, /does not restore retired models/);
+  assert.match(page, /FI_HIDE_INPUTS=true/);
+  assert.match(page, /FI_HIDE_OUTPUTS=true/);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
