@@ -7,20 +7,20 @@ attempt that ran them.
 
 | File | What it is |
 | --- | --- |
-| `agent_service.py` | A Restate Virtual Object (`WeatherAgent/{key}/ask`) that calls a model and a tool in `ctx.run` steps, traced with traceAI through `restate.ext.tracing.RestateTracerProvider`. Exits and flushes on SIGTERM. |
+| `agent_service.py` | A Restate Virtual Object (`WeatherAgent/{key}/ask`) that calls a model and a tool in `ctx.run` steps, traced with traceAI through `restate.ext.tracing.RestateTracerProvider`. `python agent_service.py` starts Hypercorn's one-worker supervisor, which exits and flushes on SIGTERM. |
 | `restate.toml` | Server config: OTLP/HTTP endpoint (the collector) and the two Future AGI key headers |
 | `otelcol.yaml` | OpenTelemetry Collector config: stamps `project_name`, removes host names, addresses, stack traces, and (unless `KEEP_RESTATE_DETAILS=true`) error text and object keys; passes the senders' key headers through; uncompressed export; no self-metrics |
 | `run_e2e.sh` | End-to-end run against a Future AGI you can read back (self-hosted): collector, privacy, direct, lifecycle and matrix scenarios |
 | `tools/` | `wire_tap.py` (records what was sent: header names, never values), `wire_summary.py`, `check_trace.py` (one trace per invocation, parents, no replay duplicates), `scan_local_stack.py` (privacy scan of every stored column) |
-| `tests/` | Unit tests (no network, no Docker) and `test_collector_replay.py`, which replays a recorded Restate 1.8.0 trace through the real collector container (`RUN_DOCKER_TESTS=1`) |
+| `tests/` | Unit and localhost lifecycle tests (no external network, no Docker), plus `test_collector_replay.py`, which replays a recorded Restate 1.8.0 trace through the real collector container (`RUN_DOCKER_TESTS=1`) |
 
-## Tested versions (2026-10-15)
+## Tested versions
 
 | | |
 | --- | --- |
 | Restate server | 1.8.0 (latest on 2026-10-15, released 2026-10-14) and 1.7.13, release binaries `restate-server-aarch64-apple-darwin` |
-| `restate-sdk` | 1.0.5 (latest on 2026-10-15), Python 3.13.15 and 3.10.17. 1.1.0 (2026-10-21): unit tests only (`pytest tests`), not run end to end |
-| Python packages | `hypercorn` 0.18.0, `fi-instrumentation-otel` 1.1.0, `traceai-openai` 0.1.10, `openai` 3.31.0, `opentelemetry-sdk` 1.45.1 |
+| `restate-sdk` | 1.0.5 (latest on 2026-10-15), Python 3.13.15 and 3.10.17 end to end; offline lifecycle and wire tests on 1.0.5 and 1.2.0 |
+| Python packages | `hypercorn` 0.17.3 and 0.18.0, `fi-instrumentation-otel` 1.1.0 and 1.2.2, `traceai-openai` 0.1.10 and 0.1.11 |
 | Collector | `otel/opentelemetry-collector-contrib:0.162.0` (Docker, 256 MB) |
 | Future AGI | self-hosted (local Docker stack), OTLP/HTTP `/tracer/v1/traces` |
 
@@ -30,6 +30,13 @@ attempt that ran them.
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-test.txt
 pytest tests -q                       # unit tests, no network, no Docker
 RUN_DOCKER_TESTS=1 pytest tests -q    # adds the collector replay (needs Docker Desktop or colima)
+```
+
+To run the real Restate server, the script entry point and a localhost OTLP receiver without a model
+provider or Future AGI:
+
+```bash
+RESTATE_SERVER=/path/to/restate-server pytest tests/test_local_restate_e2e.py -q
 ```
 
 ## Run end to end
