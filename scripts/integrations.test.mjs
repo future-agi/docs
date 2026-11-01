@@ -80,6 +80,25 @@ test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guid
   assert.match(page, /FI_HIDE_OUTPUTS=true/);
 });
 
+test('Anthropic Java recommends one native tracing owner and preserves released legacy usage', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/anthropic.mdx');
+  const native = page.split('## Existing TracedAnthropicClient applications')[0];
+  assert.match(native, /opentelemetry-bom/);
+  assert.match(native, /1\.57\.0/);
+  assert.match(native, /OpenTelemetryContentMode\.METADATA_ONLY/);
+  assert.match(native, /W3CTraceContextPropagator/);
+  assert.match(native, /X-Project-Name/);
+  assert.match(native, /client\.messages\(\)\.create\(/);
+  assert.doesNotMatch(native, /new TracedAnthropicClient/);
+  assert.match(page, /<groupId>com\.futureagi<\/groupId>/);
+  assert.match(page, /\.openTelemetry\(false\)/);
+  assert.doesNotMatch(page, /main-SNAPSHOT|wrapper is incompatible/);
+  assert.equal(integrations.find(i => i.id === 'java-anthropic').method, 'OpenTelemetry');
+  for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
+    assert.ok(exists(route), `Missing guide link: ${route}`);
+  }
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
