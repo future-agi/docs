@@ -138,6 +138,10 @@ test('Anthropic Python recommends native SDK tracing with one owner and keeps th
   assert.match(legacy, /AnthropicInstrumentor\(\)\.instrument\(tracer_provider=trace_provider\)/);
   assert.match(legacy, /anthropic\.Anthropic\(open_telemetry=False\)/);
   assert.match(page, /\(#keep-anthropicinstrumentor-in-python\)/);
+  // The native route says that context helpers don't reach the SDK's spans.
+  const native = page.split('## Keep AnthropicInstrumentor in Python')[0];
+  assert.match(native, /context helpers\]\(\/docs\/sdk\/tracing\/context-helpers\)[^\n]*`using_session`[^\n]*`using_attributes`/);
+  assert.match(native, /session, user, metadata or tags/);
   // The TypeScript route keeps its released SDK range.
   assert.match(page, /npm install @traceai\/anthropic@0\.1\.3 '@anthropic-ai\/sdk@\^0\.27\.3'/);
   for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
