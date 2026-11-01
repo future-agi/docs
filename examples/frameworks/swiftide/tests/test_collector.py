@@ -245,6 +245,23 @@ class Contract(unittest.TestCase):
         tool, = [s for s in spans if s.name == "tool.get_weather"]
         self.assertEqual(tool.status.code, 2)
         self.assertNotIn(MARKER.encode(), raw)
+        self.assertNotIn(b"unknown city: Atlantis", raw)
+
+    def test_tool_error_content_matches_documented_privacy(self):
+        spans, raw = self.run_agent(capture=True, city="Atlantis")
+        error = "unknown city: Atlantis"
+        tool, = [s for s in spans if s.name == "tool.get_weather"]
+        self.assertEqual(tool.status.code, 2)
+        requests = [json.loads(attributes(s.attributes)["input.value"])
+                    for s in spans if s.name == "complete"]
+        self.assertTrue(any(message.get("role") == "tool" and message.get("content") == error
+                            for request in requests for message in request["messages"]))
+        self.assertIn(error.encode(), raw)
+        # Status messages/events are still stripped by assert_wire; conversation content is not.
+        page = (ROOT.parents[2] / "src/pages/docs/integrations/frameworks/swiftide.mdx").read_text()
+        self.assertIn("Tool errors included in captured messages", page)
+        self.assertIn("Leave `FI_CAPTURE_CONTENT` unset", page)
+        self.assertNotIn("| Error text (provider errors, tool errors) |", page)
 
     def test_unmapped_metadata_and_links_are_removed(self):
         kv = lambda key, value: {"key": key, "value": {"stringValue": value}}
