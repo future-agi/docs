@@ -34,7 +34,9 @@ async function record(name, fn) { try {const detail=await fn();results.push({nam
  const search=()=>page.locator('#integration-search');
  async function query(q,n=1) {await search().fill(q);await page.waitForTimeout(450);assert.equal(await page.locator('[data-integration-card]:visible').count(),n,'query: '+q);}
  await record('new names and historical aliases',async()=>{
-  for(const [q,part] of [['LobeChat','LobeHub'],['LobeHub','LobeHub'],['grafi','Graphite'],['Google ADK Java','Google ADK for Java'],['Apollo','Apollo Server'],['Novita','Novita AI'],['watsonx','watsonx Orchestrate ADK']]) {await query(q,q==='watsonx'?2:1);assert.ok((await page.locator('[data-integration-card]:visible').allInnerTexts()).join(' ').includes(part));}
+  for(const [q,part] of [['LobeChat','LobeHub'],['LobeHub','LobeHub'],['grafi','Graphite'],['Google ADK Java','Google ADK for Java'],['Apollo Server','Apollo Server'],['Apollo Router','Apollo Router'],['GraphOS Router','Apollo Router'],['Novita','Novita AI'],['watsonx','watsonx Orchestrate ADK']]) {await query(q,q==='watsonx'?2:1);assert.ok((await page.locator('[data-integration-card]:visible').allInnerTexts()).join(' ').includes(part));}
+  await query('Apollo',2);
+  assert.deepEqual((await page.locator('[data-integration-card]:visible').evaluateAll(cards=>cards.map(card=>card.getAttribute('href')))).sort(),['/docs/integrations/frameworks/apollo-graphql','/docs/integrations/frameworks/apollo-router']);
   await page.screenshot({path:OUT+'/search-alias.png'});
  });
  await record('category intersection, empty state and reset',async()=>{

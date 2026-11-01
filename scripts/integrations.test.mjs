@@ -1,3 +1,4 @@
+import './langsmith-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,6 +16,12 @@ function exists(route, seen = new Set()) { if (routes.has(route)) return true; i
 function flatten(list) { return list.flatMap(item => [item.href, ...(item.items ? flatten(item.items) : [])].filter(Boolean)); }
 // Release labels are prose, not code samples, model names or package versions.
 export function publicProse(text) { return text.replace(/^\s*(```|~~~)[\s\S]*?^\s*\1.*$/gm, '').replace(/`+[^`]*`+/g, ''); }
+
+test('LlamaIndex guide installs the released current-core compatibility fix', () => {
+  const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
+  assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.10'/);
+  assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.10\/json/);
+});
 
 test('catalog validates required fields, unique IDs/categories and route shape', () => {
   assert.equal(validateIntegrations(), true);
@@ -41,6 +48,26 @@ test('frameworks, SDK vs proxy, and searchable historical names remain distinct'
   assert.notEqual(integrations.find(i=>i.id==='litellm-sdk').href,integrations.find(i=>i.id==='litellm-proxy').href);
   for (const [query,id] of [['lobechat','lobechat'],['lobehub','lobechat'],['grafi','graphite'],['graphite','graphite'],['google adk java','java-google-adk']]) assert.ok(query.split(' ').every(t=>integrationSearchText(integrations.find(i=>i.id===id)).includes(t)));
 });
+test('Apollo Router stays distinct from Server and documents the native HTTP trace contract', () => {
+  const router = integrations.find(item => item.id === 'apollo-router');
+  assert.equal(router.method, 'OpenTelemetry');
+  assert.notEqual(router.href, integrations.find(item => item.id === 'apollo-graphql').href);
+  const page = read('src/pages/docs/integrations/frameworks/apollo-router.mdx');
+  const yaml = page.match(/```yaml\n([\s\S]*?)\n```/)?.[1];
+  assert.ok(yaml, 'Native YAML configuration is required');
+  for (const setting of [
+    'mode: spec_compliant', 'default_attribute_requirement_level: none',
+    'protocol: http', 'endpoint: https://api.futureagi.com/tracer/v1/traces',
+    'project_name: ${env.FI_PROJECT_NAME}', 'project_type: observe',
+    'X-Api-Key: ${env.FI_API_KEY}', 'X-Secret-Key: ${env.FI_SECRET_KEY}',
+    'parent_based_sampler: true', 'trace_context: true',
+  ]) assert.ok(yaml.includes(setting), setting);
+  assert.doesNotMatch(yaml, /graphql\.document:\s*true|metrics:|logging:/);
+  assert.match(page, /v2\.19\.0/);
+  assert.match(page, /query RouterCheck \{ __typename \}/);
+  assert.ok(fs.existsSync(path.join(root, 'public/images/product-guides/apollo-router-observe.png')));
+});
+
 test('all logo references have provenance, existing files, matching hashes and passive valid content', () => {
   const result = spawnSync('python3',[path.join(root,'scripts/validate-integration-logos.py')],{encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
@@ -65,6 +92,28 @@ test('Cloudflare AI Chat distinguishes span identity from trace-level session gr
   assert.match(page, /trace-level session grouping requires[^.]*root span/i);
   assert.match(page, /does not propagate[^.]*runtime roots/i);
   assert.match(page, /open each message trace/i);
+});
+
+test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guidance', () => {
+  const page = read('src/pages/docs/integrations/traceai/vertexai.mdx');
+  const recommended = page.split('## Migrate an existing Vertex AI SDK app')[0];
+  assert.match(recommended, /pip install traceAI-google-genai google-genai/);
+  assert.match(recommended, /from traceai_google_genai import GoogleGenAIInstrumentor/);
+  assert.match(recommended, /vertexai=True/);
+  assert.match(recommended, /gcloud auth application-default login/);
+  for (const variable of ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_MODEL']) {
+    assert.ok(recommended.includes(`export ${variable}=`));
+    assert.ok(recommended.includes(`os.environ["${variable}"]`));
+  }
+  assert.match(recommended, /trace_provider\.force_flush\(\)/);
+  assert.doesNotMatch(recommended, /from vertexai|import vertexai|traceAI-vertexai/);
+  assert.doesNotMatch(page, /pip install vertexai\b|gemini-1\.5-flash/);
+  assert.match(page, /google-cloud-aiplatform>=1\.61\.0,<=1\.101\.0/);
+  assert.match(page, /pip install traceAI-vertexai 'google-cloud-aiplatform==1\.101\.0'/);
+  assert.match(page, /before importing `vertexai`/);
+  assert.match(page, /does not restore retired models/);
+  assert.match(page, /FI_HIDE_INPUTS=true/);
+  assert.match(page, /FI_HIDE_OUTPUTS=true/);
 });
 
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
