@@ -3,16 +3,19 @@
 //   - the local workerd fixture turn plus injected content, identities and errors, and
 //   - a sanitized export from a REAL Cloudflare Workers traces destination (2026-10-18, deployed Worker): the
 //     destination's pre-flight span, a WebSocket upgrade, a tool-error turn, a model-error turn, a content-on turn.
-// Needs Docker (skipped otherwise, or with SKIP_DOCKER=1).
+// Needs Docker or OTELCOL_BIN pointing to a local otelcol-contrib binary.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { rowsToOtlp } from "../standin/destination.mjs";
 
 const IMAGE = `otel/opentelemetry-collector-contrib:${process.env.OTELCOL_VERSION || "0.162.0"}`;
-const docker = !process.env.SKIP_DOCKER && spawnSync("docker", ["image", "inspect", IMAGE], { stdio: "ignore" }).status === 0;
+const binary = process.env.OTELCOL_BIN;
+const docker = !binary && !process.env.SKIP_DOCKER && spawnSync("docker", ["image", "inspect", IMAGE], { stdio: "ignore" }).status === 0;
+const collectorAvailable = Boolean(binary || docker);
 const HERE = new URL("..", import.meta.url).pathname;
 const MARK = "ctmark" + Math.random().toString(16).slice(2, 10);
 const TOKEN = "cfd-test-" + Math.random().toString(16).slice(2);
@@ -49,16 +52,28 @@ async function runCollector(capture, body = fixture()) {
   // Under this directory, not the system temp dir: Docker Desktop does not always share the latter.
   const dir = mkdtempSync(join(HERE, ".ctest-"));
   chmodSync(dir, 0o777);
-  writeFileSync(join(dir, "override.yaml"), [
-    "exporters:", "  file/test:", "    path: /out/spans.json", "service:", "  pipelines:", "    traces:", "      exporters: [file/test]", "",
-  ].join("\n"));
   const name = `th8103-rest-cloudflare-ai-chat-ctest-${process.pid}-${capture}`;
   const port = String(14470 + (capture ? 1 : 0));
-  execFileSync("docker", ["run", "-d", "--name", name, "--memory", "256m", "-p", `127.0.0.1:${port}:4318`,
-    "-e", `CF_DESTINATION_TOKEN=${TOKEN}`, "-e", "FI_API_KEY=unused", "-e", "FI_SECRET_KEY=unused",
-    "-e", "FI_TRACES_URL=http://127.0.0.1:9/v1/traces", "-e", "FI_PROJECT_NAME=ctest-project", "-e", `FI_CAPTURE_CONTENT=${capture}`,
-    "-v", `${HERE}otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro`, "-v", `${dir}:/out`,
-    IMAGE, "--config", "/etc/otelcol-contrib/config.yaml", "--config", "/out/override.yaml"], { stdio: "ignore" });
+  writeFileSync(join(dir, "override.yaml"), [
+    "exporters:", "  file/test:", `    path: ${JSON.stringify(binary ? join(dir, "spans.json") : "/out/spans.json")}`,
+    "service:", "  pipelines:", "    traces:", "      exporters: [file/test]",
+    ...(binary ? ["receivers:", "  otlp:", "    protocols:", "      http:", `        endpoint: 127.0.0.1:${port}`] : []), "",
+  ].join("\n"));
+  let child;
+  if (binary) {
+    child = spawn(binary, ["--config", join(HERE, "otelcol.yaml"), "--config", join(dir, "override.yaml")], {
+      env: { PATH: process.env.PATH, CF_DESTINATION_TOKEN: TOKEN, FI_API_KEY: "unused", FI_SECRET_KEY: "unused",
+        FI_TRACES_URL: "http://127.0.0.1:9/v1/traces", FI_PROJECT_NAME: "ctest-project", FI_CAPTURE_CONTENT: String(capture) },
+      stdio: "ignore",
+    });
+    await once(child, "spawn");
+  } else {
+    execFileSync("docker", ["run", "-d", "--name", name, "--memory", "256m", "-p", `127.0.0.1:${port}:4318`,
+      "-e", `CF_DESTINATION_TOKEN=${TOKEN}`, "-e", "FI_API_KEY=unused", "-e", "FI_SECRET_KEY=unused",
+      "-e", "FI_TRACES_URL=http://127.0.0.1:9/v1/traces", "-e", "FI_PROJECT_NAME=ctest-project", "-e", `FI_CAPTURE_CONTENT=${capture}`,
+      "-v", `${HERE}otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro`, "-v", `${dir}:/out`,
+      IMAGE, "--config", "/etc/otelcol-contrib/config.yaml", "--config", "/out/override.yaml"], { stdio: "ignore" });
+  }
   try {
     let ready = false;
     for (let i = 0; i < 40 && !ready; i++) {
@@ -79,7 +94,15 @@ async function runCollector(capture, body = fixture()) {
     const lines = text.trim().split("\n").map((l) => JSON.parse(l));
     return { text, req: lines[0], all: { resourceSpans: lines.flatMap((l) => l.resourceSpans) } };
   } finally {
-    spawnSync("docker", ["rm", "-f", name], { stdio: "ignore" });
+    if (child) {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit");
+        child.kill();
+        await exited;
+      }
+    } else {
+      spawnSync("docker", ["rm", "-f", name], { stdio: "ignore" });
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -87,7 +110,7 @@ async function runCollector(capture, body = fixture()) {
 const spansOf = (req) => req.resourceSpans.flatMap((rs) => rs.scopeSpans.flatMap((ss) => ss.spans));
 const get = (s, k) => { const v = s.attributes?.find((a) => a.key === k)?.value; return v && (v.stringValue ?? v.intValue ?? v.boolValue); };
 
-test("collector, content off (default)", { skip: !docker && "docker or the collector image is not available" }, async () => {
+test("collector, content off (default)", { skip: !collectorAvailable && "set OTELCOL_BIN or install the collector Docker image" }, async () => {
   const { text, req } = await runCollector(false);
   const leaks = text.split(/[{}]/).filter((p) => p.includes(MARK)).map((p) => p.slice(0, 160));
   assert.deepEqual(leaks, [], "marker reached the exporter");
@@ -111,9 +134,11 @@ test("collector, content off (default)", { skip: !docker && "docker or the colle
   assert.deepEqual(tool.events[0].attributes, [{ key: "exception.type", value: { stringValue: "Error" } }]);
   const root = spans.find((s) => s.name === "GET" && !s.parentSpanId);
   assert.equal(get(root, "url.full"), "/agents/support-chat/<email>");
+  assert.equal(get(root, "session.id"), undefined, "child identity does not stamp the runtime root");
+  assert.equal(get(turn, "session.id"), get(agent, "session.id"), "agent spans retain conversation correlation");
 });
 
-test("collector, content on (FI_CAPTURE_CONTENT=true)", { skip: !docker && "docker or the collector image is not available" }, async () => {
+test("collector, content on (FI_CAPTURE_CONTENT=true)", { skip: !collectorAvailable && "set OTELCOL_BIN or install the collector Docker image" }, async () => {
   const { req } = await runCollector(true);
   const spans = spansOf(req);
   const chat = spans.find((s) => s.name.startsWith("chat "));
@@ -155,7 +180,7 @@ test("real Cloudflare export: raw shape the collector relies on", () => {
   assert.equal(Number(get(agent, "gen_ai.usage.input_tokens")), chats.reduce((n, c) => n + Number(get(c, "gen_ai.usage.input_tokens")), 0));
 });
 
-test("collector, real Cloudflare export, content off (default)", { skip: !docker && "docker or the collector image is not available" }, async () => {
+test("collector, real Cloudflare export, content off (default)", { skip: !collectorAvailable && "set OTELCOL_BIN or install the collector Docker image" }, async () => {
   const { text, all } = await runCollector(false, realExport());
   for (const needle of ["fixmarkon", "jane.doe", "Example City", "Example Region"]) {
     assert.ok(!text.includes(needle), `${needle} reached the exporter`);
@@ -170,6 +195,17 @@ test("collector, real Cloudflare export, content off (default)", { skip: !docker
   assert.equal(get(upgrade, "cloudflare.outcome"), "responseStreamDisconnected");
   assert.equal(get(upgrade, "url.full"), "/agents/support-chat/<email>");
   assert.equal(get(upgrade, "url.path"), "/agents/support-chat/<email>");
+  assert.equal(get(upgrade, "session.id"), undefined);
+  for (const traceId of [RT.toolError, RT.modelError, RT.contentOn]) {
+    const trace = inTrace(spans, traceId);
+    const root = trace.find((s) => !s.parentSpanId);
+    assert.equal(root.name, "hibernatableWebSocket");
+    assert.equal(get(root, "session.id"), undefined, "runtime root has no trace-level session identity");
+    const turn = trace.find((s) => s.name === "chat_turn");
+    const agent = trace.find((s) => s.name === "invoke_agent support-chat");
+    assert.ok(get(turn, "session.id"), "native lifecycle span retains session identity");
+    assert.equal(get(turn, "session.id"), get(agent, "session.id"));
+  }
   assert.equal(get(upgrade, "url.query"), undefined);
   assert.equal(get(upgrade, "geo.locality.name"), undefined);
   assert.equal(get(upgrade, "geo.locality.region"), undefined);
@@ -198,7 +234,7 @@ test("collector, real Cloudflare export, content off (default)", { skip: !docker
   assert.equal(inTrace(spans, RT.close).length, 1);
 });
 
-test("collector, real Cloudflare export, content on (FI_CAPTURE_CONTENT=true)", { skip: !docker && "docker or the collector image is not available" }, async () => {
+test("collector, real Cloudflare export, content on (FI_CAPTURE_CONTENT=true)", { skip: !collectorAvailable && "set OTELCOL_BIN or install the collector Docker image" }, async () => {
   const { text, all } = await runCollector(true, realExport());
   for (const needle of ["jane.doe", "Example City", "Example Region"]) {
     assert.ok(!text.includes(needle), `${needle} reached the exporter`);
