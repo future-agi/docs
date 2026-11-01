@@ -48,6 +48,26 @@ test('frameworks, SDK vs proxy, and searchable historical names remain distinct'
   assert.notEqual(integrations.find(i=>i.id==='litellm-sdk').href,integrations.find(i=>i.id==='litellm-proxy').href);
   for (const [query,id] of [['lobechat','lobechat'],['lobehub','lobechat'],['grafi','graphite'],['graphite','graphite'],['google adk java','java-google-adk']]) assert.ok(query.split(' ').every(t=>integrationSearchText(integrations.find(i=>i.id===id)).includes(t)));
 });
+test('Apollo Router stays distinct from Server and documents the native HTTP trace contract', () => {
+  const router = integrations.find(item => item.id === 'apollo-router');
+  assert.equal(router.method, 'OpenTelemetry');
+  assert.notEqual(router.href, integrations.find(item => item.id === 'apollo-graphql').href);
+  const page = read('src/pages/docs/integrations/frameworks/apollo-router.mdx');
+  const yaml = page.match(/```yaml\n([\s\S]*?)\n```/)?.[1];
+  assert.ok(yaml, 'Native YAML configuration is required');
+  for (const setting of [
+    'mode: spec_compliant', 'default_attribute_requirement_level: none',
+    'protocol: http', 'endpoint: https://api.futureagi.com/tracer/v1/traces',
+    'project_name: ${env.FI_PROJECT_NAME}', 'project_type: observe',
+    'X-Api-Key: ${env.FI_API_KEY}', 'X-Secret-Key: ${env.FI_SECRET_KEY}',
+    'parent_based_sampler: true', 'trace_context: true',
+  ]) assert.ok(yaml.includes(setting), setting);
+  assert.doesNotMatch(yaml, /graphql\.document:\s*true|metrics:|logging:/);
+  assert.match(page, /v2\.19\.0/);
+  assert.match(page, /query RouterCheck \{ __typename \}/);
+  assert.ok(fs.existsSync(path.join(root, 'public/images/product-guides/apollo-router-observe.png')));
+});
+
 test('all logo references have provenance, existing files, matching hashes and passive valid content', () => {
   const result = spawnSync('python3',[path.join(root,'scripts/validate-integration-logos.py')],{encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
