@@ -125,6 +125,26 @@ test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guid
   assert.match(page, /FI_HIDE_OUTPUTS=true/);
 });
 
+test('Anthropic Python recommends native SDK tracing with one owner and keeps the instrumentor route', () => {
+  const page = read('src/pages/docs/integrations/traceai/anthropic.mdx');
+  const python = [...page.matchAll(/```(?:bash|python) Python\n([\s\S]*?)```/g)].map(m => m[1]).join('\n');
+  assert.match(python, /pip install "anthropic>=1\.14\.0" fi-instrumentation-otel/);
+  assert.match(python, /"tracer_provider": trace_provider/);
+  assert.match(python, /"content_mode": "metadata_only"/);
+  assert.match(python, /trace_provider\.shutdown\(\)/);
+  assert.doesNotMatch(python, /traceai_anthropic|AnthropicInstrumentor|traceAI-anthropic/);
+  const legacy = page.split('## Keep AnthropicInstrumentor in Python')[1];
+  assert.ok(legacy, 'missing instrumentor section');
+  assert.match(legacy, /AnthropicInstrumentor\(\)\.instrument\(tracer_provider=trace_provider\)/);
+  assert.match(legacy, /anthropic\.Anthropic\(open_telemetry=False\)/);
+  assert.match(page, /\(#keep-anthropicinstrumentor-in-python\)/);
+  // The TypeScript route keeps its released SDK range.
+  assert.match(page, /npm install @traceai\/anthropic@0\.1\.3 '@anthropic-ai\/sdk@\^0\.27\.3'/);
+  for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
+    assert.ok(exists(route), `Missing guide link: ${route}`);
+  }
+});
+
 test('Anthropic Java recommends one native tracing owner and preserves released legacy usage', () => {
   const page = read('src/pages/docs/integrations/traceai/java/anthropic.mdx');
   const native = page.split('## Existing TracedAnthropicClient applications')[0];
