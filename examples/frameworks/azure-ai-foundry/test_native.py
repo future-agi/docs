@@ -33,7 +33,10 @@ import pytest
 PAGE = Path(__file__).resolve().parents[3] / "src/pages/docs/integrations/frameworks/azure-ai-foundry.mdx"
 
 
-@pytest.mark.parametrize("mode", ["native", "content", "missing", "duplicate", "error"])
+@pytest.mark.parametrize("mode", [
+    "native", "content", "missing", "duplicate", "error",
+    "existing", "existing-project",
+])
 def test_guide(mode):
     result = subprocess.run(
         [sys.executable, "-I", str(Path(__file__).resolve()), mode],
@@ -222,7 +225,25 @@ def probe(mode: str) -> dict:
     code = re.findall(r"```python\n(.*?)```", PAGE.read_text(), re.S)
     assert len(code) == 1, "Keep one complete executable application example"
     code = code[0]
-    if mode == "missing":
+    if mode in ("existing", "existing-project"):
+        # Follow the existing-provider route: only add the exporter, not register().
+        # The ordinary application provider has no Future AGI resource defaults.
+        setup = '''from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from fi_instrumentation.otel import HTTPSpanExporter
+
+provider = TracerProvider(resource=Resource.create(RESOURCE_ATTRIBUTES))
+trace.set_tracer_provider(provider)
+provider.add_span_processor(BatchSpanProcessor(HTTPSpanExporter()))'''
+        resource_attributes = {"service.name": "existing-app"}
+        if mode == "existing-project":
+            resource_attributes["project_name"] = "existing-project"
+        setup = setup.replace("RESOURCE_ATTRIBUTES", repr(resource_attributes))
+        code, count = re.subn(r"provider = register\(.*?\n\)", setup, code, count=1, flags=re.S)
+        assert count == 1
+    elif mode == "missing":
         # Reproduce exporter-only setup: no native GenAI instrumentation.
         start = code.index("AIProjectInstrumentor().instrument(")
         end = code.index("\n\ntry:", start)
@@ -265,8 +286,11 @@ def probe(mode: str) -> dict:
     for batch in batches:
         for resource in batch.resource_spans:
             attrs = {a.key: a.value.string_value for a in resource.resource.attributes}
-            assert attrs["project_name"] == "foundry-offline"
+            expected_project = "existing-project" if mode == "existing-project" else "foundry-offline"
+            assert attrs["project_name"] == expected_project
             assert attrs["project_type"] == "observe"
+            if mode in ("existing", "existing-project"):
+                assert attrs["service.name"] == "existing-app"
             for scope in resource.scope_spans:
                 spans.extend(scope.spans)
     parent = next(s for s in spans if s.name == "foundry-question")
@@ -301,7 +325,7 @@ def probe(mode: str) -> dict:
             assert any(s.name == "Response" for s in spans), [s.name for s in spans]
         else:
             assert len(chat) == 1
-        if mode in ("native", "error"):
+        if mode in ("native", "error", "existing", "existing-project"):
             for value in (b"What is the capital of France?", b"Paris.", b"Answer geography questions in one sentence."):
                 assert value not in wire
         elif mode == "content":
