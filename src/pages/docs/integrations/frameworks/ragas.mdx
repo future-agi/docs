@@ -1,0 +1,120 @@
+---
+title: "Ragas"
+description: "Run Ragas evaluations in Python and attach their numeric scores to the original application spans in Future AGI with the published Scores SDK."
+---
+
+## About
+
+Run a Ragas metric on an application response and save the result as an automated annotation on its original Future AGI span. Keep your application's existing tracing setup; scoring does not require a separate Ragas instrumentor.
+
+## Install
+
+Use Python 3.10–3.13 in a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install "ragas==0.4.3" "langchain-community==0.4.1" "futureagi==0.6.13"
+```
+
+<Note>
+  Keep the `langchain-community` pin with Ragas 0.4.3. Version 0.4.2 removes a module that Ragas imports, causing `ModuleNotFoundError` before evaluation starts.
+</Note>
+
+## Choose a span and label
+
+1. Trace your application using its existing [LangChain](/docs/integrations/traceai/langchain), [OpenAI](/docs/integrations/traceai/openai), or other [supported integration](/docs/integrations). Wait until the response's span is visible in **Tracing**.
+2. Copy that span's 16-character hexadecimal **span ID**. Use the application span that produced the response, not a trace ID or an evaluator run ID.
+3. Create a [numeric annotation label](/docs/annotations/guides/create-label) named `ragas_exact_match`, with a range of 0 to 1, in the same workspace. Find its ID with the [List labels API](/docs/api/annotations/labels/list-labels). Use a separate label for each metric.
+4. Set your [Future AGI API credentials](/docs/admin-settings/api-keys) and both IDs:
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_RAGAS_SPAN_ID="YOUR_APPLICATION_SPAN_ID"
+export FI_RAGAS_LABEL_ID="YOUR_NUMERIC_LABEL_ID"
+export RAGAS_DO_NOT_TRACK="true"
+```
+
+The example uses Ragas's local `ExactMatch` metric, so it needs no model-provider key. It returns 1 for identical strings and 0 otherwise, including differences in case or whitespace. Use it for short, fixed-format answers, not semantic equivalence or faithfulness.
+
+## Evaluate and save the score
+
+Save this as `score_ragas.py`. Replace `response` with the output from the selected span and `reference` with the expected answer. The example checks a return-policy answer of `30 days`.
+
+```python
+import asyncio
+import math
+import os
+import re
+
+from fi.queues import AnnotationQueue
+from ragas.metrics.collections import ExactMatch
+
+
+async def score_span(*, span_id, response, reference, label_id):
+    if not re.fullmatch(r"[0-9a-f]{16}", span_id) or int(span_id, 16) == 0:
+        raise ValueError("Use the original application's 16-character span ID")
+
+    result = await ExactMatch().ascore(response=response, reference=reference)
+    value = float(result.value)
+    if not math.isfinite(value):
+        raise ValueError("The metric returned no finite score; do not upload it")
+
+    return AnnotationQueue().create_score(
+        source_type="observation_span",
+        source_id=span_id,
+        label_id=label_id,
+        value={"value": value},
+        score_source="auto",
+        notes="ragas:exact_match",
+        timeout=30,
+    )
+
+
+async def main():
+    score = await score_span(
+        span_id=os.environ["FI_RAGAS_SPAN_ID"],
+        label_id=os.environ["FI_RAGAS_LABEL_ID"],
+        response="30 days",
+        reference="30 days",
+    )
+    print(f"Saved Ragas score {score.value['value']} (score ID: {score.id})")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+```bash
+python score_ragas.py
+```
+
+The SDK sends the numeric value through `/model-hub/scores/`, not the OTLP traces endpoint. The request identifies the original span and marks the score as `auto`; it does not upload the response or reference text. Repeating the same span, label, API user, and queue context updates that score rather than creating a separate evaluation history. Use a new metric label when you need to preserve results from a different metric definition.
+
+## View the result
+
+Open the original trace in **Tracing**, select the response span, and view its **Annotations**. The `ragas_exact_match` label holds `1.0` for the example above. Change the response to `60 days` and rerun to record `0.0`.
+
+These are imported annotation scores, not Future AGI evaluation-template runs. For dataset-level results, the [Scores SDK](/docs/sdk/annotation-queues/scores) also supports `source_type="dataset_row"` with the existing dataset row's ID. Keep each row's source ID paired with its response when evaluating a batch; do not attach an aggregate score to every row.
+
+## Tracing and other metrics
+
+Application tracing and evaluation scoring are separate. Keep one instrumentor for each application framework or model client; do not add another exporter just to upload scores.
+
+For existing code using Ragas `evaluate()` or `aevaluate()`, the [LangChain instrumentor](/docs/integrations/traceai/langchain) captures their official callback lifecycle. The modern `ragas.metrics.collections` API used above does not emit that callback tree. For LLM-based metrics, configure your own evaluator-provider credentials and instrument the provider client if you need its model-call traces. Those evaluator spans are distinct from the application span being scored.
+
+Choose the metric and required inputs from the [Ragas metrics documentation](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/). Keep the original source ID, a metric-specific label, and the finite-score check when replacing `ExactMatch`. LLM-based metrics may send your response, reference, and retrieved context to the chosen model provider.
+
+## Troubleshooting
+
+- **Ragas fails to import:** install the complete pinned command above in a clean environment. Updating only Ragas can leave an incompatible `langchain-community` installed.
+- **Source not found:** wait for application-span ingestion and use the span ID from the same workspace as your API key. Use `observation_span`, not `span`, as the source type.
+- **Label not found or the wrong label appears:** verify the numeric label's ID and workspace. Do not use the label name where the code expects an ID.
+- **The metric fails or returns NaN:** do not convert the failure to zero. Fix the missing inputs or provider error before uploading a score; zero is a legitimate evaluation result.
+
+## Next steps
+
+- [Manage annotation labels](/docs/annotations/guides/create-label)
+- [Use the Scores SDK](/docs/sdk/annotation-queues/scores)
+- [Manage evaluation datasets](/docs/sdk/datasets)

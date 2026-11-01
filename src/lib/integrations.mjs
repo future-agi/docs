@@ -68,6 +68,7 @@ export const integrations = [
   { id: 'novita-ai', name: 'Novita AI', href: '/docs/integrations/providers/novita-ai', category: 'providers', summary: 'Trace Novita chat completions from your Python app.', method: 'OpenAI client', logo: 'novita' },
   { id: 'litellm-sdk', name: 'LiteLLM SDK', href: '/docs/integrations/traceai/litellm', category: 'frameworks', summary: 'Instrument LiteLLM calls in your Python application.', method: 'traceAI SDK', logo: 'litellm', aliases: ['traceAI-litellm', 'client'] },
 
+  { id: 'ragas', name: 'Ragas', href: '/docs/integrations/frameworks/ragas', category: 'frameworks', summary: 'Attach Ragas evaluation scores to original application spans.', method: 'Scores SDK', logo: 'generic-framework', aliases: ['RAG evaluation'] },
   { id: 'langchain', name: 'LangChain', href: '/docs/integrations/traceai/langchain', category: 'frameworks', summary: 'Trace chains, retrievers, tools and model calls.', method: 'traceAI SDK', logo: 'langchain' },
   { id: 'langgraph', name: 'LangGraph', href: '/docs/integrations/traceai/langgraph', category: 'frameworks', summary: 'Follow agent graph execution and tool calls.', method: 'traceAI SDK', logo: 'langgraph' },
   { id: 'llamaindex', name: 'LlamaIndex', href: '/docs/integrations/traceai/llamaindex', category: 'frameworks', summary: 'Trace retrieval and generation in RAG applications.', method: 'traceAI SDK', logo: 'llamaindex', aliases: ['RAG'] },
