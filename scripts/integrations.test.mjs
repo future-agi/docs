@@ -16,6 +16,12 @@ function flatten(list) { return list.flatMap(item => [item.href, ...(item.items 
 // Release labels are prose, not code samples, model names or package versions.
 export function publicProse(text) { return text.replace(/^\s*(```|~~~)[\s\S]*?^\s*\1.*$/gm, '').replace(/`+[^`]*`+/g, ''); }
 
+test('LlamaIndex guide installs the released current-core compatibility fix', () => {
+  const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
+  assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.10'/);
+  assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.10\/json/);
+});
+
 test('catalog validates required fields, unique IDs/categories and route shape', () => {
   assert.equal(validateIntegrations(), true);
   for (const patch of [{id:'BAD'}, {href:'https://example.com'}, {category:'unknown'}, {name:''}, {summary:5}, {method:'Not tested'}, {method:'Alpha'}]) assert.throws(() => validateIntegrations([{...integrations[0],...patch}]));
