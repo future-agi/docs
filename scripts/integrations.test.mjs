@@ -94,6 +94,15 @@ test('Together OpenAI guide requires the released provider mapping without claim
   assert.doesNotMatch(page, /can be labeled \*\*OpenAI\*\*|Do not rely on that field/);
 });
 
+test('Cloudflare AI Chat distinguishes span identity from trace-level session grouping', () => {
+  const page = read('src/pages/docs/integrations/frameworks/cloudflare-ai-chat.mdx');
+  assert.doesNotMatch(page, /use the session to see it whole/i);
+  assert.match(page, /span-level correlation/i);
+  assert.match(page, /trace-level session grouping requires[^.]*root span/i);
+  assert.match(page, /does not propagate[^.]*runtime roots/i);
+  assert.match(page, /open each message trace/i);
+});
+
 test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guidance', () => {
   const page = read('src/pages/docs/integrations/traceai/vertexai.mdx');
   const recommended = page.split('## Migrate an existing Vertex AI SDK app')[0];
