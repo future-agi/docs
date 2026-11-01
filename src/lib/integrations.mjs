@@ -118,7 +118,7 @@ export const integrations = [
 
   { id: 'spring-boot', name: 'Spring Boot & Spring AI', href: '/docs/integrations/traceai/spring-boot', category: 'java', summary: 'Set up tracing with the Spring Boot starter.', method: 'Java starter', logo: 'spring', aliases: ['JVM'] },
   { id: 'java-openai', name: 'OpenAI for Java', href: '/docs/integrations/traceai/java/openai', category: 'java', summary: 'Wrap the OpenAI Java client to capture requests.', method: 'Java wrapper', logo: 'openai' },
-  { id: 'java-anthropic', name: 'Anthropic for Java', href: '/docs/integrations/traceai/java/anthropic', category: 'java', summary: 'Capture Claude calls from your Java application.', method: 'Java wrapper', logo: 'anthropic' },
+  { id: 'java-anthropic', name: 'Anthropic for Java', href: '/docs/integrations/traceai/java/anthropic', category: 'java', summary: 'Export native Claude SDK spans without wrapping the client.', method: 'OpenTelemetry', logo: 'anthropic' },
   { id: 'java-bedrock', name: 'AWS Bedrock for Java', href: '/docs/integrations/traceai/java/bedrock', category: 'java', summary: 'Wrap Bedrock clients to capture model requests.', method: 'Java wrapper', logo: 'bedrock' },
   { id: 'java-cohere', name: 'Cohere for Java', href: '/docs/integrations/traceai/java/cohere', category: 'java', summary: 'Trace Cohere requests from your Java client.', method: 'Java wrapper', logo: 'cohere' },
   { id: 'java-pinecone', name: 'Pinecone for Java', href: '/docs/integrations/traceai/java/pinecone', category: 'java', summary: 'Capture vector queries and upserts in Java.', method: 'Java wrapper', logo: 'pinecone' },
