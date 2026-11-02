@@ -26,13 +26,30 @@ test('native setup does not promise legacy content or session parity', () => {
   assert.match(native, /Do not enable.*third-party.*native/s);
 });
 
-test('existing 1.x users retain their bounded compatibility and privacy reference', () => {
-  assert.match(legacy, /gem "ruby_llm", "1\.16\.0"/);
-  assert.match(legacy, /gem "opentelemetry-instrumentation-ruby_llm", "0\.7\.1"/);
-  assert.match(legacy, /class SanitizingExporter/);
-  assert.match(legacy, /copy.events = nil/);
-  assert.match(legacy, /capture_content: true/);
+test('native error coverage distinguishes cooperative failures from forced interruption', () => {
+  assert.match(native, /StandardError/);
+  for (const mechanism of ['Timeout.timeout', 'Interrupt', 'Thread#kill']) {
+    assert.ok(native.includes(mechanism), `Missing ${mechanism} caveat`);
+  }
+  assert.match(native, /UNSET.*error\.type/s);
+  assert.match(native, /UNSET.*not.*success/s);
+  assert.match(native, /config\.request_timeout = 30/);
+  assert.match(native, /config\.max_retries = 0/);
+  assert.match(native, /not.*wall-clock deadline/s);
+  assert.match(native, /chat\.cancel/);
+  assert.match(native, /RubyLLM::CancelledError/);
+  assert.match(native, /cooperative.*checkpoint/s);
+});
+
+test('legacy export is held without telling users to remove only its safeguard', () => {
+  assert.match(legacy, /Stop exporting.*1\.x/s);
+  assert.match(legacy, /gen_ai\.request\.parameters/);
+  assert.match(legacy, /capture_content: false/);
+  assert.match(legacy, /Do not remove.*SanitizingExporter.*leaving.*instrumentation/s);
+  assert.match(legacy, /stop loading.*futureagi_tracing\.rb/s);
+  assert.match(legacy, /restart/i);
+  assert.match(legacy, /maintained.*package/s);
   assert.match(legacy, /with_otel_attributes/);
   assert.match(legacy, /invoke_agent/);
-  assert.match(legacy, /token counts.*inflated/s);
+  assert.doesNotMatch(page, /class SanitizingExporter|METADATA_PREFIXES|title="futureagi_tracing\.rb"/);
 });
