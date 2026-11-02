@@ -196,13 +196,26 @@ func TestGuideExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocks := regexp.MustCompile("(?s)```go\\n(.*?)\\n```").FindAllSubmatch(page, -1)
+	blocks := regexp.MustCompile("(?s)```go\\n(package main\\n.*?)\\n```").FindAllSubmatch(page, -1)
 	if len(blocks) != 1 {
 		t.Fatalf("guide must provide one runnable Go setup; found %d Go snippets", len(blocks))
 	}
+	spans := runGuide(t, string(blocks[0][1]))
+	checkTree(t, spans, map[string]string{"quote_order": "AGENT", "calculate_total": "TOOL"})
+	for _, span := range spans {
+		for _, kv := range span.Attributes {
+			if strings.HasPrefix(kv.Key, "input.") || strings.HasPrefix(kv.Key, "output.") || strings.HasPrefix(kv.Key, "llm.") {
+				t.Errorf("metadata-only guide unexpectedly records content: %s", kv.Key)
+			}
+		}
+	}
+}
+
+func runGuide(t *testing.T, source string) map[string]*tracepb.Span {
+	t.Helper()
 	r := newReceiver(t, "")
 	file := filepath.Join(t.TempDir(), "main.go")
-	if err := os.WriteFile(file, blocks[0][1], 0600); err != nil {
+	if err := os.WriteFile(file, []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -227,15 +240,7 @@ func TestGuideExample(t *testing.T) {
 	if strings.TrimSpace(string(output)) != "Order total: 30 USD" {
 		t.Fatalf("unexpected example output %q", output)
 	}
-	spans := r.collect(t, 2)
-	checkTree(t, spans, map[string]string{"quote_order": "AGENT", "calculate_total": "TOOL"})
-	for _, span := range spans {
-		for _, kv := range span.Attributes {
-			if strings.HasPrefix(kv.Key, "input.") || strings.HasPrefix(kv.Key, "output.") || strings.HasPrefix(kv.Key, "llm.") {
-				t.Errorf("metadata-only guide unexpectedly records content: %s", kv.Key)
-			}
-		}
-	}
+	return r.collect(t, 2)
 }
 
 func TestNativeContextAndLLMConformance(t *testing.T) {

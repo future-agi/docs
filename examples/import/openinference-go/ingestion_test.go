@@ -55,6 +55,8 @@ func checkProductionConversion(t *testing.T, batch exportBatch) {
 				"prompt_tokens":     float64(attrs["llm.token_count.prompt"].GetIntValue()),
 				"completion_tokens": float64(attrs["llm.token_count.completion"].GetIntValue()),
 				"total_tokens":      float64(attrs["llm.token_count.total"].GetIntValue()),
+				"status":            strings.TrimPrefix(span.GetStatus().GetCode().String(), "STATUS_CODE_"),
+				"status_message":    span.GetStatus().GetMessage(),
 				"input":             "", "output": "",
 			} {
 				if got := row[key]; got != want {
