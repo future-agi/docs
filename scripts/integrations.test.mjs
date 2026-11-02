@@ -181,7 +181,7 @@ test('Genkit Go uses native spans with an export-time privacy boundary', () => {
   assert.equal(entry?.method, 'OpenTelemetry');
   for (const contract of [
     'github.com/firebase/genkit/go@v1.14.0',
-    'github.com/future-agi/traceAI/go/genkit@dev',
+    'github.com/future-agi/traceAI/go/genkit@v0.1.0',
     'FI_HIDE_INPUTS=true', 'FI_HIDE_OUTPUTS=true', 'FI_HIDE_ERROR_DETAILS=true',
     'traceaigenkit.NewExporter(exporter, traceaigenkit.ConfigFromEnv())',
     'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"',
