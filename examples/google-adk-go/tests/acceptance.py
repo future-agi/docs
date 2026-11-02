@@ -120,6 +120,23 @@ def decode(rows):
     return spans
 
 
+def assert_complete_traces(spans):
+    """Check each trace independently; an unrelated root cannot hide an orphan."""
+    by_id = {(s["trace"], s["id"]): s for s in spans}
+    assert len(by_id) == len(spans), "duplicate export"
+    for trace_id in {s["trace"] for s in spans}:
+        roots = [s for s in spans if s["trace"] == trace_id and not s["parent"]]
+        assert len(roots) == 1, "each trace must retain exactly one root"
+    for span in spans:
+        seen = {span["id"]}
+        while span["parent"]:
+            key = (span["trace"], span["parent"])
+            assert key in by_id, "orphaned span or cross-trace parent"
+            assert span["parent"] not in seen, "cyclic span ancestry"
+            seen.add(span["parent"])
+            span = by_id[key]
+
+
 def backend():
     """Execute production mapper unchanged; isolate its database-heavy constant module.
 
@@ -247,14 +264,20 @@ def run_case(major, mode, capture=None, fail=False):
         proc.terminate()
         proc.wait(timeout=12)
         all_raw, final = decode(incoming), decode(outgoing)
+        # Keep actual protobuf for optional unchanged production-converter replay.
+        combined = ExportTraceServiceRequest()
+        for row in outgoing:
+            request = ExportTraceServiceRequest.FromString(row["body"])
+            combined.resource_spans.extend(request.resource_spans)
+        (EVIDENCE / f"{name}.pb").write_bytes(combined.SerializeToString())
         raw = [s for s in all_raw if s["scope"] == "gcp.vertex.agent"]
+        if mode == "parent":
+            assert_complete_traces(final)
         if mode != "unavailable":
             assert any(s["scope"] == "application-owner" for s in all_raw), (
                 "existing provider was shut down"
             )
-            assert all(s["scope"] == "gcp.vertex.agent" for s in final), (
-                "unrelated instrumentation escaped dedicated pipeline"
-            )
+            assert all(s["scope"] in ("gcp.vertex.agent", "application") for s in final)
         if mode == "unavailable":
             assert not incoming and not outgoing and summary["events"] > 0
         elif fail:
@@ -268,8 +291,8 @@ def run_case(major, mode, capture=None, fail=False):
             )
         else:
             assert raw and final, name
-            assert {s["id"] for s in raw} == {s["id"] for s in final}, name
-            assert len({s["id"] for s in raw}) == len(raw), "duplicate export"
+            assert {s["id"] for s in all_raw} == {s["id"] for s in final}, name
+            assert_complete_traces(final)
             assert all(CANARY not in row["body"] for row in outgoing), (
                 "private content leaked"
             )
@@ -279,8 +302,9 @@ def run_case(major, mode, capture=None, fail=False):
                 "execute_tool": "TOOL",
                 "invoke_workflow": "CHAIN",
                 "invoke_node": "CHAIN",
+                "application": "CHAIN",
             }
-            byid = {s["id"]: s for s in raw}
+            byid = {s["id"]: s for s in all_raw}
             for span in final:
                 original = byid[span["id"]]
                 assert (
@@ -293,7 +317,11 @@ def run_case(major, mode, capture=None, fail=False):
                     < span["end_time"]
                     == original["end_time"]
                 )
-                assert span["scope"] == "gcp.vertex.agent"
+                assert span["scope"] == (
+                    "gcp.vertex.agent"
+                    if original["scope"] == "gcp.vertex.agent"
+                    else "application"
+                )
                 assert span["resource"] == {
                     "service.name": "google-adk-go",
                     "project_name": "google-adk-go",
@@ -301,15 +329,29 @@ def run_case(major, mode, capture=None, fail=False):
                 }
                 a = span["attrs"]
                 assert a["gen_ai.span.kind"] == expected[a["gen_ai.operation.name"]]
-                if a.get("gen_ai.conversation.id"):
-                    assert a["session.id"] == original["attrs"].get(
-                        "session.id", a["gen_ai.conversation.id"]
-                    )
+                original_attrs = original["attrs"]
+                expected_session = (
+                    original_attrs.get("session.id")
+                    or original_attrs.get("gen_ai.conversation.id")
+                    or original_attrs.get("adk.session.id")
+                )
+                if original["scope"] == "gcp.vertex.agent":
+                    assert expected_session, "missing invocation session"
+                assert a.get("session.id") == expected_session
+                assert "adk.session.id" not in a
+                if span["scope"] == "application":
+                    assert set(a) <= {
+                        "gen_ai.operation.name",
+                        "gen_ai.span.kind",
+                        "session.id",
+                    }
+                    assert span["name"] == "application"
                 assert not span["events"] and not span["status_message"]
                 if span["parent"]:
                     assert span["parent"] in byid
             if mode in (
                 "normal",
+                "parent",
                 "stream",
                 "privacy",
                 "concurrent",
@@ -359,16 +401,28 @@ def run_case(major, mode, capture=None, fail=False):
                 assert sorted(sessions) == ["session-a", "session-a", "session-b"], (
                     sessions
                 )
+                for agent_span in (
+                    s
+                    for s in final
+                    if s["attrs"].get("gen_ai.operation.name") == "invoke_agent"
+                ):
+                    members = [s for s in final if s["trace"] == agent_span["trace"]]
+                    assert len(members) == (5 if major == "2-latest" else 4)
+                    assert all(
+                        s["attrs"].get("session.id")
+                        == agent_span["attrs"]["session.id"]
+                        for s in members
+                    )
             if mode in ("normal", "stream"):
                 contents = [
                     s["attrs"]
                     for s in raw
                     if s["attrs"].get("gen_ai.operation.name") == "generate_content"
                 ]
-                if major == 2 and capture == "SPAN_ONLY":
+                if str(major).startswith("2") and capture == "SPAN_ONLY":
                     assert all("gen_ai.input.messages" in a for a in contents)
                     assert any(
-                        "Settled " in a.get("gen_ai.output.messages", "")
+                        "Settled " in str(a.get("gen_ai.output.messages", ""))
                         for a in contents
                     )
                 else:
@@ -448,13 +502,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
-    cases = [(1, "normal", None, False), (2, "normal", None, False)]
+    cases = [(major, "normal", None, False) for major in (1, 2, "2-latest")]
     if not args.quick:
         cases = [
             (major, mode, None, False)
-            for major in (1, 2)
+            for major in (1, 2, "2-latest")
             for mode in (
                 "normal",
+                "parent",
                 "nested",
                 "privacy",
                 "concurrent",
@@ -467,13 +522,15 @@ def main():
                 "unavailable",
             )
         ]
-        cases += [(2, "workflow", None, False)]
+        cases += [(major, "workflow", None, False) for major in (2, "2-latest")]
         cases += [
-            (2, "normal", capture, False)
+            (major, "normal", capture, False)
+            for major in (2, "2-latest")
             for capture in ("false", "true", "EVENT_ONLY", "SPAN_ONLY")
         ]
-        cases += [(2, "stream", "SPAN_ONLY", False), (1, "normal", "true", False)]
-        cases += [(major, "malformed", None, True) for major in (1, 2)]
+        cases += [(major, "stream", "SPAN_ONLY", False) for major in (2, "2-latest")]
+        cases += [(1, "normal", "true", False)]
+        cases += [(major, "malformed", None, True) for major in (1, 2, "2-latest")]
     results = []
     for case in cases:
         try:

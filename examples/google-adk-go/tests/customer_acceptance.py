@@ -117,19 +117,33 @@ def test(major):
             )
             proc.terminate()
             proc.wait(timeout=12)
+            combined = a.ExportTraceServiceRequest()
+            for row in outgoing:
+                request = a.ExportTraceServiceRequest.FromString(row["body"])
+                combined.resource_spans.extend(request.resource_spans)
+            (a.EVIDENCE / f"customer-v{major}.pb").write_bytes(
+                combined.SerializeToString()
+            )
             spans = a.decode(outgoing)
-            assert len(spans) == 4
-            assert sorted(s["attrs"]["gen_ai.span.kind"] for s in spans) == [
-                "AGENT",
-                "LLM",
-                "LLM",
-                "TOOL",
-            ]
+            assert len(spans) == (5 if major == "2-latest" else 4)
+            assert len({s["trace"] for s in spans}) == 1
+            a.assert_complete_traces(spans)
+            assert sorted(s["attrs"]["gen_ai.span.kind"] for s in spans) == (
+                ["AGENT", "CHAIN", "LLM", "LLM", "TOOL"]
+                if major == "2-latest" else ["AGENT", "LLM", "LLM", "TOOL"]
+            )
             assert all(b"NOTEBOOK-A5" not in r["body"] for r in outgoing)
             assert all(r["path"] == "/tracer/v1/traces" for r in outgoing)
-            assert any(
+            assert all(
                 s["attrs"].get("session.id") == "inventory-session-1" for s in spans
+            ), "model/tool spans missing session membership"
+            session_tokens = sum(
+                s["attrs"].get("gen_ai.usage.input_tokens", 0)
+                + s["attrs"].get("gen_ai.usage.output_tokens", 0)
+                for s in spans
+                if s["attrs"].get("session.id") == "inventory-session-1"
             )
+            assert session_tokens == 36, "session totals omit model usage"
             for row in outgoing:
                 h = {k.lower(): v for k, v in row["headers"].items()}
                 assert (
@@ -166,5 +180,6 @@ def test(major):
             sink.server_close()
 
 
-for major in (1, 2):
-    test(major)
+if __name__ == "__main__":
+    for major in (1, 2, "2-latest"):
+        test(major)

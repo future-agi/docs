@@ -7,7 +7,9 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/contrib/processors/baggagecopy"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/adk/agent"
@@ -39,7 +41,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter))
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(baggagecopy.NewSpanProcessor(func(m baggage.Member) bool {
+			return m.Key() == "adk.session.id"
+		})),
+		sdktrace.WithBatcher(exporter),
+	)
 	otel.SetTracerProvider(provider)
 	defer func() {
 		// Do not reuse a cancelled request context when flushing completed spans.
@@ -84,7 +91,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	for event, err := range r.Run(ctx, userID, sessionID,
+	// Set this on each invocation's context, not on the shared provider.
+	member, err := baggage.NewMember("adk.session.id", sessionID)
+	if err != nil {
+		return err
+	}
+	bag, err := baggage.FromContext(ctx).SetMember(member)
+	if err != nil {
+		return err
+	}
+	runCtx := baggage.ContextWithBaggage(ctx, bag)
+	for event, err := range r.Run(runCtx, userID, sessionID,
 		genai.NewContentFromText("How many NOTEBOOK-A5 notebooks are available?", genai.RoleUser),
 		agent.RunConfig{}) {
 		if err != nil {

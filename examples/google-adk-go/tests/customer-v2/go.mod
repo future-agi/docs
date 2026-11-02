@@ -3,10 +3,10 @@ module example.com/adk-native-example/v3
 go 1.26.6
 
 require (
+	go.opentelemetry.io/contrib/processors/baggagecopy v0.17.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
-	go.opentelemetry.io/otel/trace v1.47.0
 	google.golang.org/adk/v2 v2.6.0
 	google.golang.org/genai v1.74.0
 )
@@ -34,6 +34,8 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
+	go.opentelemetry.io/otel/sdk/log v1.47.0 // indirect
+	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.59.0 // indirect

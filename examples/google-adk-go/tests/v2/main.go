@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/processors/baggagecopy"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -126,7 +128,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(50*time.Millisecond)), sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", "adk-go-test"), attribute.String("private.resource", canary))))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(baggagecopy.NewSpanProcessor(func(m baggage.Member) bool { return m.Key() == "adk.session.id" })), sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(50*time.Millisecond)), sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", "adk-go-test"), attribute.String("private.resource", canary))))
 	if os.Getenv("TEST_DISABLE_TELEMETRY") != "1" {
 		otel.SetTracerProvider(tp)
 	}
@@ -169,6 +171,34 @@ func run() error {
 			runctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
 			defer cancel()
 		}
+		member, err := baggage.NewMember("adk.session.id", sid)
+		if err != nil {
+			panic(err)
+		}
+		private, err := baggage.NewMember("private", canary)
+		if err != nil {
+			panic(err)
+		}
+		bag, err := baggage.New(member, private)
+		if err != nil {
+			panic(err)
+		}
+		runctx = baggage.ContextWithBaggage(runctx, bag)
+		if mode == "parent" {
+			var outer, inner trace.Span
+			runctx, outer = otel.Tracer(canary+" http-server", trace.WithInstrumentationVersion(canary), trace.WithSchemaURL(canary), trace.WithInstrumentationAttributes(attribute.String("private", canary))).Start(runctx, canary+" request", trace.WithAttributes(attribute.String("http.target", canary), attribute.String("gen_ai.tool.name", canary)), trace.WithLinks(trace.Link{SpanContext: trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}}), Attributes: []attribute.KeyValue{attribute.String("private", canary)}}))
+			defer outer.End()
+			runctx, inner = otel.Tracer("application-request").Start(runctx, canary+" handler")
+			defer inner.End()
+			inner.SetStatus(codes.Error, canary)
+			inner.RecordError(errors.New(canary), trace.WithStackTrace(true))
+			// Ancestors end in a different export batch from their native children.
+			defer func() {
+				if err := tp.ForceFlush(context.Background()); err != nil {
+					panic(err)
+				}
+			}()
+		}
 		cfg := agent.RunConfig{}
 		if mode == "stream" || mode == "early" {
 			cfg.StreamingMode = agent.StreamingModeSSE
@@ -203,7 +233,16 @@ func run() error {
 		invoke("session-a")
 	}
 	if mode == "privacy" || mode == "malformed" {
-		_, s := tp.Tracer("gcp.vertex.agent").Start(ctx, canary+" span name", trace.WithAttributes(attribute.String("gen_ai.operation.name", "invoke_agent"), attribute.String("gen_ai.conversation.id", "native-session"), attribute.String("session.id", "explicit-session"), attribute.String("gen_ai.agent.description", canary), attribute.String("input.value", canary), attribute.String("output.value", canary), attribute.String("gen_ai.input.messages", canary), attribute.String("gen_ai.tool.call.arguments", canary), attribute.String("unknown.future.attribute", canary)))
+		fallback, err := baggage.NewMember("adk.session.id", "fallback-session")
+		if err != nil {
+			return err
+		}
+		bag, err := baggage.New(fallback)
+		if err != nil {
+			return err
+		}
+		privacyCtx := baggage.ContextWithBaggage(ctx, bag)
+		_, s := tp.Tracer("gcp.vertex.agent").Start(privacyCtx, canary+" span name", trace.WithAttributes(attribute.String("gen_ai.operation.name", "invoke_agent"), attribute.String("gen_ai.conversation.id", "native-session"), attribute.String("session.id", "explicit-session"), attribute.String("gen_ai.agent.description", canary), attribute.String("input.value", canary), attribute.String("output.value", canary), attribute.String("gen_ai.input.messages", canary), attribute.String("gen_ai.tool.call.arguments", canary), attribute.String("unknown.future.attribute", canary)))
 		s.SetStatus(codes.Error, canary)
 		s.RecordError(errors.New(canary), trace.WithStackTrace(true))
 		s.AddEvent(canary, trace.WithAttributes(attribute.String("alias", canary)))
