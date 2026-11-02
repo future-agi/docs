@@ -75,4 +75,5 @@ def test_development_collector_is_not_a_customer_setup():
     assert "Python client tracing only" in text
     assert "```yaml" not in text
     assert "### Configure the exporter" not in text
-    assert "deferred to a separate qualification" in text
+    assert "https://www.truefoundry.com/docs/ai-gateway/export-opentelemetry-data" in text
+    assert "this recipe does not join client and gateway traces" in text

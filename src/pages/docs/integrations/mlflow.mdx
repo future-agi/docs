@@ -87,28 +87,65 @@ Two processors, both registered before the first span:
 
 ```python
 import mlflow
-from mlflow.entities import SpanStatusCode
+from mlflow.entities import LiveSpan, SpanStatusCode
 
-def drop_exception_events(span):
-    # MLflow adds an "exception" event with the message and the stack trace
-    # (local file paths, so your user name) to every failed span. Always drop it.
-    otel_span = getattr(span, "_span", None)
-    if getattr(otel_span, "_events", None):
-        otel_span._events = []
+def _filter_events(span: LiveSpan, *, content: bool = False) -> None:
+    # Read through the public OTel events API. MLflow 3.16.1 / OTel 1.45
+    # have no public event-removal API, so replacing the backing collection
+    # is the only compatibility fallback. Never silently skip filtering.
+    def is_sensitive(event) -> bool:
+        if event.name == "exception" or any(
+            key.startswith("exception.") for key in event.attributes or {}
+        ):
+            return True
+        if not content:
+            return False
+        return event.name in {
+            "gen_ai.system.message", "gen_ai.user.message", "gen_ai.assistant.message",
+            "gen_ai.tool.message", "gen_ai.choice", "gen_ai.input.messages",
+            "gen_ai.output.messages", "tool.input", "tool.output",
+        } or event.name.startswith("gen_ai.content.") or any(
+            key in {"body", "content", "input", "output", "prompt", "completion", "messages"}
+            or key.startswith(("gen_ai.input.", "gen_ai.output.", "gen_ai.system_instructions",
+                               "gen_ai.tool.call.arguments", "gen_ai.tool.call.result"))
+            for key in event.attributes or {}
+        )
 
-def drop_content(span):
+    try:
+        otel_span = span._span
+        events = tuple(otel_span.events)
+        kept = tuple(event for event in events if not is_sensitive(event))
+        if len(kept) != len(events):
+            if not hasattr(otel_span, "_events"):
+                raise RuntimeError("Event removal is unavailable")
+            otel_span._events = list(kept)
+            if tuple(otel_span.events) != kept:
+                raise RuntimeError("Event removal did not take effect")
+    except Exception:
+        # MLflow catches Exception from processors and exports the span anyway.
+        # SystemExit deliberately stops finalization before the unsafe span is
+        # queued for export; neither the event nor its text is logged here.
+        raise SystemExit("Cannot safely filter MLflow events; refusing to export this span.") from None
+
+
+def drop_exception_events(span: LiveSpan) -> None:
+    _filter_events(span)
+
+
+def drop_content(span: LiveSpan) -> None:
+    _filter_events(span, content=True)
     if span.inputs is not None:
         span.set_inputs("[REDACTED]")
     if span.outputs is not None:
         span.set_outputs("[REDACTED]")
     if span.status.status_code == SpanStatusCode.ERROR:
-        span.set_status("ERROR")   # keep ERROR, drop the exception text
+        span.set_status("ERROR")
 
 mlflow.tracing.configure(span_processors=[drop_exception_events, drop_content])
 ```
 
-- Use `drop_exception_events` always. Without it MLflow exports stack traces and local paths. MLflow has no public call to remove an event; this clears the underlying OpenTelemetry span's event list and does nothing if that attribute is missing.
-- Add `drop_content` to keep the trace tree, timings, model, tokens and `ERROR` status but remove prompts, responses, tool arguments and results and the error text (a provider often puts request details in it).
+- Use `drop_exception_events` always to remove exception events while preserving unrelated events and their timestamps. Without it MLflow exports stack traces and local paths. The pinned versions have no public event-removal API, so the processor uses a compatibility fallback after reading events through the public API. If it cannot inspect or filter events, it stops the application before exporting the affected span rather than leaving sensitive events untouched.
+- Add `drop_content` to keep the trace tree, timings, model, tokens and `ERROR` status but remove prompts, responses, tool arguments and results and the error text (a provider often puts request details in it). It also removes GenAI message events and events with content-bearing attributes; unrelated operational events stay. Custom attributes with other names are not automatically redacted.
 - Autolog also exports the tool schemas you pass to the model (`tools`, `gen_ai.tool.definitions`). They are your code, not user content, and are not removed.
 
 MLflow itself writes a telemetry file under `~/.config/mlflow`; `MLFLOW_DISABLE_TELEMETRY=true` stops that.
