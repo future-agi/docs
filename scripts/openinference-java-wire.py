@@ -43,6 +43,28 @@ public class ConformanceService {
 '''
 CALL = '''new ConformanceService().run();'''
 
+# Released annotation-agent boundaries, including supported alternatives. These
+# intentionally exercise upstream failures so the guide cannot overpromise.
+EDGE_METHODS = {
+    'string': '@Tool(name = "edge-tool") public String tool(String x) { return x; }',
+    'primitive': '@Tool(name = "edge-tool") public int tool(String x) { return x.length(); }',
+    'void': '@Tool(name = "edge-tool") public void tool(String x) { System.out.println(x); }',
+    'unannotated-void': 'public void tool(String x) { System.out.println(x); }',
+    'excluded': '@Tool(name = "edge-tool") public String tool(@ExcludeFromSpan String secret) { return "safe"; }',
+    'mapped-excluded': '@Tool(name = "edge-tool", mapping = {@SpanMapping(param = "secret", attribute = "input.value")}) public String tool(@ExcludeFromSpan String secret) { return "safe"; }',
+}
+
+
+def edge_service(method):
+    return '''package example;
+import com.arize.instrumentation.annotation.*;
+public class GardenService {
+    @Agent(name = "edge-agent")
+    public String plan(String x) { tool("credential-sentinel"); return "safe"; }
+    %s
+}
+''' % method
+
 
 def command(args, env, log, cwd):
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=180)
@@ -96,7 +118,13 @@ def main():
             continue
         for hidden in [True, False]:
             for compression in ['none', 'gzip']:
-                for scenario in ['page', 'conformance']:
+                scenarios = ['page', 'conformance']
+                if compression == 'none':
+                    # Return-type controls need one content mode; exclusion gets
+                    # both, so the default hidden-input recipe stays covered.
+                    scenarios += ['excluded', 'mapped-excluded'] if hidden else list(EDGE_METHODS)
+                for scenario in scenarios:
+                    edge = scenario in EDGE_METHODS
                     name = f'{label}-{hidden}-{compression}-{scenario}'
                     source = sources[0]
                     if not hidden:
@@ -107,7 +135,7 @@ def main():
                         source = source.replace('System.out.println(new GardenService().plan("rooftop"));', CALL)
                         source = source.replace('} finally {', '} catch (IllegalStateException expected) {\n            if (!"error-sentinel".equals(expected.getMessage())) throw expected;\n        } finally {')
                     (source_dir / 'Main.java').write_text(source)
-                    (source_dir / 'GardenService.java').write_text(sources[1])
+                    (source_dir / 'GardenService.java').write_text(edge_service(EDGE_METHODS[scenario]) if edge else sources[1])
                     (source_dir / 'ConformanceService.java').write_text(CONFORMANCE)
                     command(maven + ['-o', 'package'], env, work / f'{name}-build.log', project)
                     received = []
@@ -144,6 +172,15 @@ def main():
                         server.shutdown()
                         server.server_close()
                         thread.join()
+                    run_log = (work / f'{name}-run.log').read_text()
+                    if scenario == 'void':
+                        assert 'Cannot assign void to class java.lang.Object' in run_log, name
+                        assert not received, (name, 'annotated void method must reproduce class-wide failure')
+                        (work / f'{name}.json').write_text(json.dumps({'resourceSpans': []}))
+                        results.append({'case': name, 'spans': 0, 'passed': True})
+                        print(f'PASS {name}: class-wide transformation failure reproduced', flush=True)
+                        continue
+                    assert '[Byte Buddy] ERROR' not in run_log, name
                     assert len(received) == 1, (name, 'expected exactly one export', len(received))
                     path, headers, body = received[0]
                     headers = {k.lower(): v for k, v in headers.items()}
@@ -164,12 +201,16 @@ def main():
                         assert res['service.name'] == 'java-annotations'
                         spans += [s for scope in resource['scopeSpans'] for s in scope['spans']]
                     expected = {'garden-planner': 'AGENT', 'choose-plant': 'TOOL'} if scenario == 'page' else {'test-agent': 'AGENT', 'test-chain': 'CHAIN', 'test-retriever': 'RETRIEVER', 'test-model': 'LLM', 'test-error': 'TOOL'}
+                    if edge:
+                        expected = {'edge-agent': 'AGENT'}
+                        if scenario != 'unannotated-void':
+                            expected['edge-tool'] = 'TOOL'
                     assert len(spans) == len(expected), (name, len(spans))
                     assert len({s['spanId'] for s in spans}) == len(spans)
                     assert len({s['traceId'] for s in spans}) == 1
                     by_name = {s['name']: s for s in spans}
                     assert set(by_name) == set(expected)
-                    root = 'garden-planner' if scenario == 'page' else 'test-agent'
+                    root = 'edge-agent' if edge else ('garden-planner' if scenario == 'page' else 'test-agent')
                     assert not by_name[root].get('parentSpanId')
                     for span in spans:
                         attrs = attributes(span['attributes'])
@@ -190,6 +231,13 @@ def main():
                             event = next(e for e in span['events'] if e['name'] == 'exception')
                             assert attributes(event['attributes'])['exception.message'] == 'error-sentinel'
                     encoded = json.dumps(decoded)
+                    if edge:
+                        exposes_credential = not hidden and scenario in ['string', 'primitive', 'mapped-excluded']
+                        assert ('credential-sentinel' in encoded) == exposes_credential, name
+                        if scenario == 'mapped-excluded' and not hidden:
+                            assert attributes(by_name['edge-tool']['attributes'])['input.value'] == 'credential-sentinel'
+                        if scenario in ['excluded', 'mapped-excluded'] and not hidden:
+                            assert attributes(by_name['edge-tool']['attributes'])['output.value'] == 'safe'
                     assert 'excluded-sentinel' not in encoded
                     for sentinel in ['input-sentinel', 'output-sentinel', 'retrieved-sentinel']:
                         if scenario == 'conformance':

@@ -24,6 +24,22 @@ test('Java owns one OTLP exporter with project routing and bounded shutdown', ()
   assert.match(java, /Do not add.*second exporter/);
 });
 
+test('Java exclusion applies only to automatic capture, not explicit mappings', () => {
+  assert.match(java, /@ExcludeFromSpan[^\n]*automatic argument capture only/);
+  assert.match(java, /@SpanMapping[^\n]*bypasses[^\n]*exclusion/);
+  assert.match(java, /Never map sensitive or excluded parameters/);
+  assert.doesNotMatch(java, /parameters that must never be captured/);
+});
+
+test('Java restricts annotations to non-void methods and explains class-wide failure', () => {
+  assert.match(java, /synchronous Java methods with non-void return types/);
+  assert.match(java, /annotated `void` method[^\n]*entire class/);
+  assert.match(java, /Leave `void` methods unannotated[^\n]*non-void caller/);
+  const troubleshooting = java.split('### Java troubleshooting')[1];
+  assert.match(troubleshooting, /No spans[^\n]*`void`/);
+  assert.match(troubleshooting, /Cannot assign void to class java.lang.Object/);
+});
+
 test('Java documents synchronous annotations and its distinct privacy controls', () => {
   assert.match(java, /synchronous/);
   assert.match(java, /\.hideInputs\(true\)/);
