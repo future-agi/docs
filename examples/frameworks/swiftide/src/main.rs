@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use swiftide::agents::Agent;
 use swiftide::chat_completion::{ToolOutput, errors::ToolError};
@@ -46,9 +46,15 @@ async fn run_agent(question: String) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    // Raw fields go only to the local Collector, never directly to Future AGI.
+    // Raw fields must stay on loopback, even with inherited proxy settings.
+    let local_client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        .with_http_client(local_client)
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint("http://127.0.0.1:4318/v1/traces")
         .build()?;

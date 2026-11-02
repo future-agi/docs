@@ -3,12 +3,13 @@
 Runnable code for the docs page [Swiftide tracing with Future AGI](../../../src/pages/docs/integrations/frameworks/swiftide.mdx).
 A Swiftide 0.33.0 agent with one tool (`get_weather`). The agent exports Swiftide's own `tracing`
 spans with the Rust OpenTelemetry SDK to a local OpenTelemetry Collector, and `collector.yaml` maps
-them to Future AGI span types, model names and token counts, removes content and forwards them.
+them to Future AGI span types, removes content and forwards them. Successful model calls include
+model names and token counts; failed completions retain their ERROR status without those fields.
 
 | Path | |
 | --- | --- |
 | `Cargo.toml` | Swiftide with its structured span fields enabled, `tracing-opentelemetry` and the OTLP/HTTP exporter |
-| `src/main.rs` | The agent; exports to `127.0.0.1:4318` and shuts the provider down before exit |
+| `src/main.rs` | The agent; exports to `127.0.0.1:4318` without proxies or redirects and shuts the provider down before exit |
 | `collector.yaml` | OpenTelemetry Collector Contrib configuration: field mapping, privacy filtering, Future AGI exporter |
 | `tests/test_collector.py` | The built example and the Collector against a local mock model server and a local OTLP receiver |
 
