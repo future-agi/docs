@@ -140,7 +140,7 @@ def main(argv=None):
     ap.add_argument("--auth", choices=["keys", "bearer", "none"], default="keys")
     ap.add_argument("--kind-style", choices=["int", "enum", "doc-example"], default="int",
                     help="how span kind is written in JSON; doc-example copies Vercel's reference page ('server')")
-    ap.add_argument("--gzip", action="store_true", help="gzip the body (the collector refuses gzip)")
+    ap.add_argument("--gzip", action="store_true", help="gzip the body (accepted from v1.56.0; earlier releases answer HTTP 400)")
     ap.add_argument("--keep-ids", action="store_true", help="do not generate new trace/span ids")
     a = ap.parse_args(argv)
 

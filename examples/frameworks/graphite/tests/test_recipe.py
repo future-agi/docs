@@ -85,7 +85,7 @@ def test_authentication_endpoint_resource_and_no_gzip(run_app, collector):
         assert export["path"] == "/tracer/v1/traces"
         assert export["headers"]["x-api-key"] == FI_API_KEY
         assert export["headers"]["x-secret-key"] == FI_SECRET_KEY
-        assert "content-encoding" not in export["headers"], "the collector rejects gzip bodies"
+        assert "content-encoding" not in export["headers"], "the recipe sends uncompressed bodies"
         assert export["headers"]["content-type"] == "application/x-protobuf"
     for span in collector.spans():
         assert span["_resource"]["project_name"] == "graphite-test"

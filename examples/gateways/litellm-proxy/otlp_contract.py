@@ -6,7 +6,7 @@ Stdlib only. Used by ``tests/test_contract.py`` (on committed captures) and by `
 
 * every ResourceSpans must carry a string resource attribute ``project_name``
   (``fi-collector/pkg/auth/stamp.go``: the batch is rejected otherwise);
-* only the traces signal is served, and bodies must not be compressed;
+* only the traces signal is served, and this recipe sends uncompressed bodies;
 * an LLM call is a span with ``gen_ai.operation.name`` (v2) and, for v1, ``litellm_request``.
 
 CLI:  python3 otlp_contract.py check CAPTURE_DIR --mode v2 --content off --marker MARK_x
