@@ -5,6 +5,19 @@ import { integrations } from '../src/lib/integrations.mjs';
 
 const route = '/docs/integrations/frameworks/fastmcp';
 
+test('native MCP and FastMCP routes remain distinct and discoverable', () => {
+  assert.ok(integrations.some(item => item.id === 'mcp-python' && item.href === '/docs/integrations/traceai/mcp-python'));
+  const generic = readFileSync(new URL('../src/pages/docs/integrations/traceai/mcp.mdx', import.meta.url), 'utf8');
+  assert.ok(generic.includes('](/docs/integrations/traceai/mcp-python)'));
+  assert.ok(generic.includes(`](${route})`));
+});
+
+test('native CI covers the declared floor and current published patch', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/fastmcp-native.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /fastmcp: '4\.1\.0'/);
+  assert.match(workflow, /fastmcp: '4\.1\.5'/);
+});
+
 test('Python FastMCP has its own discoverable native setup', () => {
   assert.ok(integrations.some(item => item.id === 'fastmcp-python' && item.href === route));
   const page = readFileSync(new URL(`../src/pages${route}.mdx`, import.meta.url), 'utf8');
