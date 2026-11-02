@@ -16,11 +16,20 @@ const snippet = title => {
 };
 const attrs = entries => Object.fromEntries((entries ?? []).map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue]));
 const packets = [];
+let rejectedBody;
+let recovered = false;
 const collector = http.createServer(async (req, res) => {
   let body = '';
   for await (const chunk of req) body += chunk;
   try {
-    packets.push({ url: req.url, headers: req.headers, payload: JSON.parse(body) });
+    const payload = JSON.parse(body);
+    if (rejectedBody === undefined) {
+      rejectedBody = body;
+      res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '0' }).end('{}');
+      return;
+    }
+    if (body === rejectedBody) recovered = true;
+    packets.push({ url: req.url, headers: req.headers, payload });
     res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
   } catch {
     res.writeHead(400).end();
@@ -95,6 +104,8 @@ try {
   const hasFailure = () => packets.some(packet => packet.payload.resourceSpans?.some(resource => resource.scopeSpans?.some(scope => scope.spans?.some(span => span.name === 'GET /api/failure'))));
   for (let i = 0; i < 200 && !hasFailure(); i++) await delay(100);
   assert.ok(hasFailure(), 'Missing native failed-request span');
+  for (let i = 0; i < 100 && !recovered; i++) await delay(100);
+  assert.ok(recovered, 'Native registration must recover the rejected batch after collector HTTP 503');
   const spans = [];
   for (const packet of packets) {
     assert.equal(packet.url, '/tracer/v1/traces');
