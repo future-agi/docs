@@ -10,9 +10,11 @@ test('CrewAI leads with the published native lifecycle route', () => {
   assert.match(native, /opentelemetry-exporter-otlp-proto-http/);
   assert.match(native, /from crewai\.telemetry\.tracing import telemetry_session/);
   assert.match(native, /with telemetry_session\(/);
-  assert.match(native, /"https:\/\/api\.futureagi\.com\/tracer\/v1\/traces"/);
-  assert.match(native, /"X-Api-Key": os\.environ\["FI_API_KEY"\]/);
-  assert.match(native, /"X-Secret-Key": os\.environ\["FI_SECRET_KEY"\]/);
+  assert.match(native, /traces_endpoint: https:\/\/api\.futureagi\.com\/tracer\/v1\/traces/);
+  assert.match(native, /X-Api-Key: \$\{env:FI_API_KEY\}/);
+  assert.match(native, /X-Secret-Key: \$\{env:FI_SECRET_KEY\}/);
+  assert.match(native, /OTLPSpanExporter\(endpoint="http:\/\/127\.0\.0\.1:4318\/v1\/traces"\)/);
+  assert.doesNotMatch(native, /endpoint="https:\/\/api\.futureagi\.com/);
   assert.match(native, /"project_name": "crewai_project"/);
   assert.match(native, /"project_type": "observe"/);
   assert.doesNotMatch(native, /CrewAIInstrumentor\(\)|class .*Exporter|def .*export/);
@@ -24,6 +26,20 @@ test('native privacy and duplicate-span boundaries are actionable', () => {
   assert.match(native, /Do not.*instrumentor.*same execution/s);
   assert.match(native, /FI_HIDE_INPUTS.*FI_HIDE_OUTPUTS.*do not apply/s);
   assert.match(native, /state.*error/s);
+});
+
+test('the required Collector filters configuration and assigns lifecycle types', () => {
+  assert.match(native, /Do not export native sessions directly to Future AGI/);
+  assert.match(native, /Collector Contrib 0\.164\.0/);
+  assert.match(native, /otelcol-contrib validate --config=crewai-collector\.yaml/);
+  assert.match(native, /error_mode: propagate/);
+  assert.match(native, /delete_key\(attributes, "crewai\.llm\.available_functions"\)/);
+  assert.match(native, /delete_key\(attributes, "crewai\.llm\.callbacks"\)/);
+  assert.match(native, /set\(attributes\["fi\.span\.kind"\], "agent"\).*"invoke_agent"/s);
+  assert.match(native, /set\(attributes\["fi\.span\.kind"\], "chain"\).*"invoke_workflow".*"execute_task".*"execute_method"/s);
+  assert.match(native, /processors: \[transform\/crewai\]/);
+  assert.match(native, /Keep the local receiver private/);
+  assert.match(native, /FI_HIDE_ERROR_DETAILS/);
 });
 
 test('existing package users retain their supported route and scope', () => {
