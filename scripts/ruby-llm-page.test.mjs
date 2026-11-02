@@ -41,6 +41,17 @@ test('native error coverage distinguishes cooperative failures from forced inter
   assert.match(native, /cooperative.*checkpoint/s);
 });
 
+test('legacy pause removes instrumentation-only application calls before restarting', () => {
+  const pause = legacy.split('Keep your application')[0];
+  assert.match(pause, /Remove.*with_otel_attributes.*before restarting/s);
+  assert.match(pause, /NoMethodError/);
+  assert.match(pause, /```ruby title="legacy-paused.rb"/);
+  assert.match(pause, /session.*grouping.*unavailable/s);
+  const snippet = pause.match(/```ruby title="legacy-paused.rb"\n([\s\S]*?)```/)?.[1];
+  assert.ok(snippet);
+  assert.doesNotMatch(snippet, /with_otel_attributes|FutureAGITracing|futureagi_tracing|OpenTelemetry/);
+});
+
 test('legacy export is held without telling users to remove only its safeguard', () => {
   assert.match(legacy, /Stop exporting.*1\.x/s);
   assert.match(legacy, /gen_ai\.request\.parameters/);
