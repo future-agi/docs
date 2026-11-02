@@ -87,7 +87,7 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
 });
 test('Cognee uses the maintained adapter with native tracing and safe lifecycle', () => {
   const page = read('src/pages/docs/integrations/traceai/cognee.mdx');
-  assert.match(page, /pip install "cognee\[tracing\]==1\.6\.5" "traceai-cognee==0\.1\.0"/);
+  assert.match(page, /pip install "cognee\[tracing\]==1\.6\.6" "traceai-cognee==0\.1\.0"/);
   assert.match(page, /from traceai_cognee import configure/);
   assert.match(page, /COGNEE_TRACING_ENABLED=true/);
   assert.ok(page.indexOf('handle = configure(') < page.indexOf('import cognee'));
