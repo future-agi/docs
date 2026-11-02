@@ -116,10 +116,17 @@ class NativeElasticsearchTest {
         return span.getAttributes().get(AttributeKey.stringKey(key));
     }
 
-    private SpanData assertNativeSpan() {
+    private SpanData assertNativeSpan() throws InterruptedException {
         assertEquals(1, searches.get());
+        // A completed async response can wake its caller before the native
+        // instrumentation's completion callback has finished exporting the span.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         var spans = memory.getFinishedSpanItems();
-        assertEquals(1, spans.size(), "native-only setup must not create a semantic wrapper span");
+        while (spans.isEmpty() && System.nanoTime() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(5);
+            spans = memory.getFinishedSpanItems();
+        }
+        assertEquals(1, spans.size(), "native-only setup must finish exactly one database span");
         var span = spans.get(0);
         assertEquals("search", span.getName());
         assertEquals(SpanKind.CLIENT, span.getKind());
