@@ -24,6 +24,22 @@ test('LlamaIndex guide installs the released current-core compatibility fix', ()
   assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.10\/json/);
 });
 
+test('OpenAI C# guide uses native chat tracing with authenticated traces-only export', () => {
+  const page = read('src/pages/docs/integrations/providers/openai-csharp.mdx');
+  const catalog = integrations.find(i => i.id === 'openai-csharp');
+  assert.equal(catalog?.method, 'Native OTLP');
+  assert.match(page, /AppContext.SetSwitch\("OpenAI.Experimental.EnableOpenTelemetry", true\)/);
+  assert.match(page, /\.AddSource\("OpenAI.ChatClient", "OpenAIChat.Application"\)/);
+  assert.match(page, /OtlpExportProtocol.HttpProtobuf/);
+  assert.match(page, /https:\/\/api.futureagi.com\/tracer\/v1\/traces/);
+  assert.match(page, /X-Api-Key=\{apiKey\},X-Secret-Key=\{secretKey\}/);
+  assert.match(page, /\["project_name"\] = project/);
+  assert.match(page, /\["project_type"\] = "observe"/);
+  assert.match(page, /error descriptions can include text/);
+  assert.match(page, /streaming chat, raw\/protocol calls, Responses, embeddings/);
+  assert.doesNotMatch(page, /TraceAI.Register|AddOtlpMetricExporter|AddOtlpLogExporter/);
+});
+
 test('catalog validates required fields, unique IDs/categories and route shape', () => {
   assert.equal(validateIntegrations(), true);
   for (const patch of [{id:'BAD'}, {href:'https://example.com'}, {category:'unknown'}, {name:''}, {summary:5}, {method:'Not tested'}, {method:'Alpha'}]) assert.throws(() => validateIntegrations([{...integrations[0],...patch}]));
