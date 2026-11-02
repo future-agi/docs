@@ -43,12 +43,12 @@ class Page(unittest.TestCase):
         self.assertEqual(block, RECIPE)
 
     def test_stand_in_is_stated(self):
-        self.assertIn("stand-in", TEXT.lower())
-        self.assertIn("No Anthropic Console destination and no real Managed Agents session", TEXT)
-        self.assertIn("an API key with Managed Agents access and billing", TEXT)
+        self.assertIn("Draft setup: do not use with production data yet", TEXT)
+        self.assertIn("A real Managed Agents session", TEXT)
+        self.assertIn("Managed Agents-enabled, billed API key", TEXT)
 
     def test_draft_gate_and_explicit_content_toggle(self):
-        self.assertIn("Live destination/session qualification is pending", TEXT)
+        self.assertIn("Publication gate:", TEXT)
         self.assertIn('-e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}"', TEXT)
         self.assertIn("docker rm -f cma-otelcol", TEXT)
         self.assertNotRegex(TEXT.lower(), r"not tested|untested|unverified")
@@ -87,13 +87,37 @@ class Recipe(unittest.TestCase):
         for op, kind in (("invoke_agent", "AGENT"), ("chat", "LLM"), ("execute_tool", "TOOL")):
             self.assertRegex(s, rf'"fi.span.kind"\], "{kind}"\) where attributes\["gen_ai.operation.name"\] == "{op}"')
         self.assertIn('attributes["session.id"], attributes["anthropic.session.id"]', s)
+        self.assertIn('name == "anthropic.session.outcome_evaluation"', s)
+        self.assertIn('"EVALUATOR"', s)
+
+    def test_content_off_is_allowlist_not_known_key_denylist(self):
+        s = statements()
+        self.assertIn('keep_keys(attributes,', s)
+        self.assertIn('context: spanevent', RECIPE)
+        self.assertIn('context: resource', RECIPE)
+        self.assertIn('keep_keys(attributes, ["service.name", "project_name", "project_type"])', s)
+        self.assertIn('delete_matching_keys(attributes, ".*")', s)
+        self.assertIn('"gen_ai.usage.input_tokens"', s)
+        self.assertIn('"anthropic.session.id"', s)
+        self.assertIn('"anthropic.session.outcome_evaluation.result"', s)
+
+    def test_full_content_batch_is_bounded_by_span_count(self):
+        batch = CFG["processors"]["batch"]
+        self.assertLessEqual(batch["send_batch_max_size"], 1)
+        self.assertEqual(batch["send_batch_size"], batch["send_batch_max_size"])
+        self.assertIn("single span", TEXT.lower())
+
+    def test_receiver_claims_do_not_assume_gzip_is_unsupported(self):
+        self.assertNotIn("receiver rejects gzip", TEXT)
+        self.assertNotIn("receiver rejects gzip", RECIPE)
+        self.assertNotIn("a gzip body is rejected with 400", TEXT)
 
     def test_every_documented_content_key_is_gated_off_by_default(self):
         s = statements()
-        pats = re.findall(r'delete_matching_keys\(attributes, "([^"]+)"\) where[^\n]*!= "true"', s)
-        self.assertTrue(pats)
-        for key in CONTENT_KEYS:
-            self.assertTrue(any(re.search(p.replace("\\\\", "\\"), key) for p in pats), key)
+        allowed = re.search(r'keep_keys\(attributes, \[([^\]]+)\]\) where[^\n]*!= "true"', s)
+        self.assertIsNotNone(allowed)
+        for key in CONTENT_KEYS + ["gen_ai.input.messages.0", "gen_ai.output.messages.payload"]:
+            self.assertNotIn(f'"{key}"', allowed.group(1), key)
         self.assertIn('set(status.message, "error") where status.message != ""', s)
 
     def test_content_to_panes_only_when_enabled(self):

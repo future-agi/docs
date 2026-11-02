@@ -1,16 +1,16 @@
 # OpenTelemetry Collector (contrib) between a Claude Console telemetry destination and Future AGI.
 #
 # Anthropic's destination takes an endpoint URL and request headers. It has no field for resource attributes,
-# and Future AGI drops any batch whose resource has no `project_name`. Anthropic also gzips the first request
-# of every delivery, which the Future AGI HTTP receiver rejects. This collector:
+# and Future AGI requires `project_name`. Anthropic gzips the first request of every delivery.
+# The hosted receiver's current gzip behavior still needs a live check. This collector:
 #   1. accepts OTLP/HTTP (protobuf, gzip or plain) from Anthropic, only with your bearer token,
 #   2. sets the Observe project,
 #   3. maps Anthropic's gen_ai.* / anthropic.* attributes to what Observe reads,
 #   4. keeps prompts, replies, tool arguments, tool results and error text OUT unless you opt in,
 #   5. forwards plain (uncompressed) OTLP to Future AGI with the two Future AGI key headers.
 #
-# Tested with otel/opentelemetry-collector-contrib 0.162.0. Span and attribute names are from
-# https://platform.claude.com/docs/en/api/opentelemetry/spans (read 2026-10-20).
+# Collector distribution: otel/opentelemetry-collector-contrib 0.162.0.
+# Span reference: https://platform.claude.com/docs/en/api/opentelemetry/spans.
 #
 # Environment:
 #   ANTHROPIC_DEST_TOKEN   secret you invent; the destination sends `Authorization: Bearer <token>`
@@ -49,12 +49,16 @@ processors:
   transform/anthropic:
     error_mode: ignore
     trace_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "project_name", "project_type"]) where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
       - context: span
         statements:
           # Span kinds in Observe, from gen_ai.operation.name.
           - set(attributes["fi.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
           - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "chat"
           - set(attributes["fi.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "execute_tool"
+          - set(attributes["fi.span.kind"], "EVALUATOR") where name == "anthropic.session.outcome_evaluation"
           - set(attributes["fi.span.kind"], "CHAIN") where attributes["fi.span.kind"] == nil
           # Sessions view: group by the Managed Agents session id.
           - set(attributes["session.id"], attributes["anthropic.session.id"]) where attributes["anthropic.session.id"] != nil
@@ -65,30 +69,28 @@ processors:
           - set(attributes["output.value"], attributes["gen_ai.output.messages"]) where attributes["gen_ai.output.messages"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
           - set(attributes["input.value"], attributes["gen_ai.tool.call.arguments"]) where attributes["gen_ai.tool.call.arguments"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
           - set(attributes["output.value"], attributes["anthropic.tool_result.content"]) where attributes["anthropic.tool_result.content"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
-          # Content OFF (the default): every content attribute Anthropic documents, in case a destination
-          # was left on Full content.
-          - delete_key(attributes, "input.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          - delete_key(attributes, "output.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          - delete_matching_keys(attributes, "^gen_ai\\.(system_instructions|input\\.messages|output\\.messages|tool\\.call\\.(arguments|result))(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          - delete_matching_keys(attributes, "^anthropic\\.(tool_result\\.content|session\\.outcome_evaluation\\.explanation)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # Content OFF: allow only known metadata. A denylist misses content carried in new keys,
+          # indexed message keys, or nested OTLP values from other exporters.
+          - keep_keys(attributes, ["fi.span.kind", "session.id", "gen_ai.provider.name", "gen_ai.operation.name", "gen_ai.conversation.id", "gen_ai.agent.id", "gen_ai.agent.name", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_write.input_tokens", "anthropic.organization.id", "anthropic.workspace.id", "anthropic.request.id", "anthropic.session.id", "anthropic.session.outcome.id", "anthropic.session.outcome_evaluation.result", "anthropic.session.outcome_evaluation.iteration", "anthropic.content.truncated", "error.type", "http.request.method", "http.route", "http.response.status_code", "server.address", "server.port"]) where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
           # Error text can echo the request. Keep the fact of the error, not the words.
           - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
       - context: spanevent
         statements:
-          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_matching_keys(attributes, ".*") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
 
-  # Future AGI reads at most 16 MiB per request; Anthropic's default content cap is 0.75 MB per span.
+  # Anthropic caps content per span, not per batch. The downstream receiver limits a request to
+  # 16 MiB; one span per export prevents hundreds of full-content spans from overflowing it.
+  # This count limit is not a general byte-size guarantee for arbitrary/non-native OTLP senders.
   batch:
-    send_batch_size: 256
-    send_batch_max_size: 512
+    send_batch_size: 1
+    send_batch_max_size: 1
     timeout: 2s
 
 exporters:
   otlp_http/future_agi:
     traces_endpoint: ${env:FI_TRACES_URL}
     encoding: proto
-    compression: none          # the Future AGI HTTP receiver rejects gzip bodies
+    compression: none          # avoid relying on an unqualified downstream gzip behavior
     headers:
       X-Api-Key: ${env:FI_API_KEY}
       X-Secret-Key: ${env:FI_SECRET_KEY}
