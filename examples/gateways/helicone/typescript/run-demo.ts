@@ -34,7 +34,7 @@ const tools = [
     type: "function" as const,
     function: {
       name: "get_weather",
-      description: "Get the current weather for a city.",
+      description: process.env.DEMO_TOOL_DESCRIPTION ?? "Get the current weather for a city.",
       parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
     },
   },

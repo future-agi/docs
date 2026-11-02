@@ -114,6 +114,23 @@ def test_failed_call_is_traced(run_ts):
 
 
 def test_hide_settings_mask_content(run_ts):
-    """The published instrumentor masks prompts and responses with FI_HIDE_* flags."""
+    """The published instrumentor masks ordinary chat prompts and responses."""
     _, _, cap = run_ts("gateway", scenarios="chat", env={"FI_HIDE_INPUTS": "true", "FI_HIDE_OUTPUTS": "true"}, expect_spans=1)
     assert MARKER not in json.dumps([s.to_dict() for s in cap.spans])
+
+
+def test_tool_schema_privacy_claim_matches_export(run_ts):
+    """If the installed package exports tool schemas, the guide must warn about it."""
+    from conftest import TOOL_MARKER
+
+    _, _, cap = run_ts(
+        "gateway", scenarios="tools",
+        env={"FI_HIDE_INPUTS": "true", "FI_HIDE_OUTPUTS": "true",
+             "FI_HIDE_LLM_INVOCATION_PARAMETERS": "true", "DEMO_TOOL_DESCRIPTION": TOOL_MARKER},
+        expect_spans=2,
+    )
+    exposed = [s for s in cap.spans if TOOL_MARKER in json.dumps(s.attributes)]
+    if exposed:
+        guide = (ROOT.parents[2] / "src/pages/docs/integrations/gateways/helicone.mdx").read_text()
+        assert "The TypeScript SDK does not mask tool definitions or `gen_ai.request.parameters`" in guide
+    assert len(cap.spans) == 2
