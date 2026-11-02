@@ -1,3 +1,4 @@
+import './prismml-page.test.mjs';
 import './langsmith-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
