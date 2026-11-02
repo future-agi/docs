@@ -174,3 +174,23 @@ test('public prose and catalog labels contain no internal QA label or Alpha rele
   for (const item of [...integrations,...integrationCategories,...integrationAids]) assert.doesNotMatch(JSON.stringify(item),/\bnot\s+tested\b|\balpha\b/i);
   assert.equal(publicProse('Beta. `pkg==1.0.0-alpha`\n```python\nmodel="alpha"\n```\n'),'Beta. \n\n');
 });
+
+test('Genkit Go uses one native trace provider and states raw-content limits', () => {
+  const guide = read('src/pages/docs/integrations/traceai/genkit-go.mdx');
+  const entry = integrations.find(item => item.id === 'genkit-go');
+  assert.equal(entry?.method, 'OpenTelemetry');
+  for (const contract of [
+    'github.com/firebase/genkit/go@v1.14.0',
+    'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"',
+    '"X-Api-Key"', '"X-Secret-Key"',
+    'attribute.String("project_name", os.Getenv("FI_PROJECT_NAME"))',
+    'attribute.String("project_type", "observe")',
+    'ContentCapturingMode: otelgenai.NoContent', 'CaptureActionIO:      false',
+    'DisableMetrics:       true', 'tracing.SetInstrumentation(otelgenai.New(',
+    'genkit.Init(ctx', 'errors.Join(err, tp.Shutdown(shutdownCtx))',
+  ]) assert.ok(guide.includes(contract), contract);
+  assert.match(guide, /does not redact exception messages/);
+  assert.match(guide, /raw action data, including inline media/);
+  assert.match(guide, /Do not combine `otelgenai`/);
+  assert.doesNotMatch(guide, /traceAI-genkit-go|copy.*instrumentation helper/i);
+});

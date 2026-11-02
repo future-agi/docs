@@ -1,0 +1,177 @@
+---
+title: "Genkit Go"
+description: "Send Genkit Go model calls, tool executions, and flow spans to Future AGI with native OpenTelemetry and the standard OTLP HTTP trace exporter."
+---
+
+Send your Genkit Go application's native traces to Future AGI without adding model wrappers or a separate traceAI package.
+
+## Prerequisites
+
+- Go 1.25 or later and Genkit Go 1.14.0.
+- Your Future AGI API key and secret key from [API keys](/docs/admin-settings/api-keys).
+- A Gemini API key for the example. You can keep your existing Genkit model plugin instead.
+
+## Install the packages
+
+In a new application directory, initialize a Go module and install Genkit and the OpenTelemetry trace exporter:
+
+```bash
+go mod init example.com/genkit-menu
+go get github.com/firebase/genkit/go@v1.14.0 \
+  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.46.0
+```
+
+For an existing application, skip `go mod init` and use your existing module.
+
+## Configure authentication
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="genkit-go-app"
+export GEMINI_API_KEY="your-gemini-api-key"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"
+```
+
+Use the **trace-specific** endpoint variable. The generic `OTEL_EXPORTER_OTLP_ENDPOINT` appends `/v1/traces`, so putting the full trace URL there produces the wrong path. Future AGI accepts OTLP traces, not OpenTelemetry logs or metrics.
+
+The example maps your Future AGI variables to `X-Api-Key`, `X-Secret-Key`, and the `project_name` resource attribute. The stock exporter does not read `FI_*` variables automatically.
+
+## Trace a Genkit flow
+
+Save the following as `main.go`. It configures an application-owned trace provider before `genkit.Init`, then runs a flow that suggests a vegetarian menu.
+
+<Warning>
+  This configuration omits model message content and raw action input/output. It does not redact exception messages, span status descriptions, custom metadata, or telemetry labels. Avoid putting sensitive data in those fields. Native Genkit does not honor `FI_HIDE_*` settings, including `FI_HIDE_ERROR_DETAILS`.
+</Warning>
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/core/tracing"
+	"github.com/firebase/genkit/go/genkit"
+	"github.com/firebase/genkit/go/plugins/googlegenai"
+	"github.com/firebase/genkit/go/plugins/otelgenai"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() (err error) {
+	for _, name := range []string{"FI_API_KEY", "FI_SECRET_KEY", "FI_PROJECT_NAME", "GEMINI_API_KEY", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"} {
+		if os.Getenv(name) == "" {
+			return fmt.Errorf("set %s before starting the application", name)
+		}
+	}
+	ctx := context.Background()
+	exporter, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithHeaders(map[string]string{
+			"X-Api-Key":    os.Getenv("FI_API_KEY"),
+			"X-Secret-Key": os.Getenv("FI_SECRET_KEY"),
+		}),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+	)
+	if err != nil {
+		return err
+	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewSchemaless(
+			attribute.String("service.name", "genkit-go-app"),
+			attribute.String("project_name", os.Getenv("FI_PROJECT_NAME")),
+			attribute.String("project_type", "observe"),
+		)),
+	)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, tp.Shutdown(shutdownCtx))
+	}()
+
+	tracing.SetInstrumentation(otelgenai.New(&otelgenai.Options{
+		TracerProvider:       tp,
+		ContentCapturingMode: otelgenai.NoContent,
+		CaptureActionIO:      false,
+		EmitToolSpans:        true,
+		DisableMetrics:       true,
+	}))
+	g := genkit.Init(ctx, genkit.WithPlugins(&googlegenai.GoogleAI{}))
+	flow := genkit.DefineFlow(g, "suggestMenu", func(ctx context.Context, cuisine string) (string, error) {
+		return genkit.GenerateText(ctx, g,
+			ai.WithModelName("googleai/gemini-2.5-flash"),
+			ai.WithPrompt("Suggest three vegetarian dishes for a %s dinner.", cuisine),
+		)
+	})
+	requestCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	menu, err := flow.Run(requestCtx, "Mediterranean")
+	if err != nil {
+		return err
+	}
+	fmt.Println(menu)
+	return nil
+}
+```
+
+```bash
+go mod tidy
+go run .
+```
+
+Shutdown uses a fresh, bounded context so the final spans can flush even when a request fails or is cancelled.
+
+If your application already owns an OpenTelemetry provider, configure the trace exporter on that provider and pass it through `otelgenai.Options.TracerProvider`. Keep one provider lifecycle rather than creating and shutting down a provider for every request.
+
+<Note>
+  Do not combine `otelgenai` with Genkit's Firebase or Google Cloud telemetry plugins, legacy `OTelInstrumentation`, or an additional wrapper around the same model calls. The telemetry plugins use a different attribute encoding; stacking instrumentors can produce duplicate spans. Genkit's Developer UI has a separate telemetry feed and its own content handling.
+</Note>
+
+## Open your traces
+
+Open your project in [Future AGI](https://app.futureagi.com). Find the `suggestMenu` trace and expand its model call to inspect the model name, token counts, timing, and status.
+
+With `EmitToolSpans: true`, tools defined through Genkit emit `execute_tool` spans. Flows, generation orchestration, retrievers, and embedders remain generic action spans. They do not provide dedicated retrieval-document or embedding-vector views through this configuration.
+
+## Capture model messages
+
+To include model messages as trace attributes, change the content option before initializing Genkit:
+
+```go
+ContentCapturingMode: otelgenai.SpanOnly,
+```
+
+This adds JSON `gen_ai.input.messages`, `gen_ai.output.messages`, and `gen_ai.system_instructions` attributes to model spans. Enable it only when you intend to send that content. `EventOnly` sends content through OpenTelemetry logs, which Future AGI does not ingest.
+
+Keep `CaptureActionIO: false`. It is independent of the model content setting and can export raw action data, including inline media and requests embedded in responses. `SpanOnly` does not enable raw tool arguments or results.
+
+## Troubleshooting
+
+### No traces arrive
+
+Check the trace-specific endpoint, both Future AGI credentials, and the `project_name` and `project_type: observe` resources. Install the instrumentation before `genkit.Init`, and let provider shutdown finish before the process exits.
+
+### Messages are absent
+
+The example explicitly uses `NoContent`. Set `SpanOnly` if you want model message attributes. Setting `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` alone does not override the explicit option in this example.
+
+### Token totals differ from your provider's invoice
+
+Native spans report the usage supplied by each model turn. Cache-write and provider-total usage are not exported by this Genkit version. Do not use these spans as a billing ledger.
+
+For native instrumentation options, see [Genkit's OpenTelemetry GenAI guide](https://genkit.dev/docs/go/observability/otel-genai-semantic-conventions/).
