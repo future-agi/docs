@@ -1,11 +1,11 @@
 ---
 title: "Swiftide tracing with Future AGI"
-description: "Trace a Swiftide (Rust) agent in Future AGI Observe with Swiftide's own tracing spans, the Rust OpenTelemetry SDK and a standard OpenTelemetry Collector. Agent, model and tool spans with span types, model names and token counts; message content off by default."
+description: "Trace a Swiftide (Rust) agent in Future AGI Observe with Swiftide's own tracing spans, the Rust OpenTelemetry SDK and a standard OpenTelemetry Collector. Agent, model and tool spans with span types, model names and token counts for successful model calls; message content off by default."
 ---
 
-Trace a [Swiftide](https://swiftide.rs) agent in Future AGI Observe: each `agent.query` call becomes one trace with typed agent, model and tool spans, the model name and the token counts of every model call.
+Trace a [Swiftide](https://swiftide.rs) agent in Future AGI Observe: each `agent.query` call becomes one trace with typed agent, model and tool spans, model names and token counts for successful model calls.
 
-Swiftide instruments itself with Rust `tracing` spans and records the model, token usage, input and output as structured fields. Your agent exports these spans with the Rust OpenTelemetry SDK to an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) on the same host. The Collector maps the fields to Future AGI's span attributes, removes message content and forwards the result to Future AGI. Your Future AGI keys live only in the Collector.
+Swiftide instruments itself with Rust `tracing` spans and records the model, token usage, input and output as structured fields after successful model calls. Your agent exports these spans with the Rust OpenTelemetry SDK to an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) on the same host. The Collector maps the fields to Future AGI's span attributes, removes message content and forwards the result to Future AGI. Your Future AGI keys live only in the Collector.
 
 This guide uses Swiftide 0.33.0 (Rust 1.97 or newer) with an OpenAI-compatible model endpoint, and OpenTelemetry Collector Contrib (`otelcol-contrib`) 0.164.0.
 
@@ -24,6 +24,8 @@ swiftide = { version = "=0.33.0", features = ["swiftide-agents", "openai"] }
 swiftide-agents = { version = "=0.33.0", features = ["langfuse"] }
 swiftide-integrations = { version = "=0.33.0", features = ["langfuse"] }
 async-openai = { version = "=0.41.3", default-features = false }
+# A proxy-free HTTP client for raw telemetry sent only to the loopback Collector.
+reqwest = { version = "=0.13.5", default-features = false, features = ["blocking"] }
 anyhow = "1"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -79,7 +81,7 @@ processors:
           - set(span.attributes["fi.span.kind"], "TOOL") where IsMatch(span.name, "^tool\\.")
           - set(span.attributes["fi.span.kind"], "LLM")
             where span.attributes["langfuse.type"] == "GENERATION"
-      # Model name and token counts of each model call.
+      # Model name and token counts of successful model calls.
       - context: spanevent
         conditions:
           - span.attributes["fi.span.kind"] == "LLM"
@@ -109,16 +111,18 @@ processors:
           - set(span.attributes["output.value"], spanevent.attributes["langfuse.output"])
             where IsString(spanevent.attributes["langfuse.output"])
             and spanevent.attributes["langfuse.output"] != ""
-      # Keep mapped attributes; clear error status messages and strip backtraces.
+      # Keep mapped attributes; omit entire content fields containing backtraces.
       - context: span
         statements:
           - keep_keys(span.attributes, ["fi.span.kind", "step_count", "llm.model_name",
               "llm.token_count.prompt", "llm.token_count.completion",
               "llm.token_count.total", "input.value", "output.value"])
-          - replace_pattern(span.attributes["input.value"], "(?s)Stack backtrace:.*", "")
-            where span.attributes["input.value"] != nil
-          - replace_pattern(span.attributes["output.value"], "(?s)Stack backtrace:.*", "")
-            where span.attributes["output.value"] != nil
+          - delete_key(span.attributes, "input.value")
+            where IsString(span.attributes["input.value"])
+            and IsMatch(span.attributes["input.value"], "Stack backtrace:")
+          - delete_key(span.attributes, "output.value")
+            where IsString(span.attributes["output.value"])
+            and IsMatch(span.attributes["output.value"], "Stack backtrace:")
           - set(span.status.message, "")
           - set(span.trace_state, "")
           - keep_keys(instrumentation_scope.attributes, [])
@@ -180,10 +184,18 @@ Keep the receiver on `127.0.0.1`. The agent sends Swiftide's raw fields, includi
 <CodeBlock title="src/main.rs" language="rust">
 
 ```rust src/main.rs
+use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
+
 fn main() -> Result<()> {
-    // Raw fields go only to the local Collector, never directly to Future AGI.
+    // Raw fields must stay on loopback, even with inherited proxy settings.
+    let local_client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        .with_http_client(local_client)
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint("http://127.0.0.1:4318/v1/traces")
         .build()?;
@@ -225,6 +237,7 @@ fn main() -> Result<()> {
 
 `run_agent` builds an ordinary Swiftide agent (`Agent::builder().llm(&openai).tools(vec![get_weather()])...query(question)`), see the [complete `src/main.rs`](https://github.com/future-agi/docs/tree/main/examples/frameworks/swiftide/src/main.rs).
 
+- **Local transport.** The exporter uses a proxy-free HTTP client and refuses redirects, so raw spans stay on loopback even when `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` is set. This does not change the model client or the Collector's outbound proxy settings. Keep this client and the loopback endpoint together.
 - **Filter.** Swiftide records the model, usage, input and output at DEBUG level, so the filter enables DEBUG for `swiftide_agents` and `swiftide_integrations`. Do not enable TRACE: at that level Swiftide logs whole provider requests and responses.
 - **Tracer name.** The Collector forwards only spans from the `swiftide-agent` tracer. Use the same name in both places.
 - **Source locations.** `with_location(false)` and `with_threads(false)` keep source file paths, which contain your home directory, and thread names off the spans.
@@ -252,11 +265,11 @@ cargo run -- "What is the weather in Paris right now?"
 | --- | --- | --- | --- |
 | `agent.query` (also `agent.query_once`, `agent.run`, `agent.run_once`) | `Agent::query` and friends | Agent | The root of the trace. With content capture on: the question as input and Swiftide's stop reason as output. |
 | `step` | one per model turn | Chain | `step_count` (0-based). |
-| `complete` | the OpenAI integration's chat completion | LLM | Model name and prompt, completion and total token counts. With content capture on: the request and the response as JSON. |
+| `complete` | the OpenAI integration's chat completion | LLM | On successful calls: model name and prompt, completion and total token counts. With content capture on: the request and the response as JSON, unless omitted by the backtrace filter. |
 | `tool.<name>` | each tool call | Tool | With content capture on: the arguments as input and the result as output. |
 | `add_message`, `hook.<type>` | each message added to the history, each hook you register | Chain | Timing only. |
 
-- **Failures.** A provider error makes `complete`, its `step` and `agent.query` ERROR, and that `complete` span has no token counts. Swiftide recovers from a failed tool: it hands the error to the model and carries on, so the `tool.<name>` span is not ERROR by itself. Log at error level inside your tool (`tracing::error!(...)`, as the example's `get_weather` does) to mark it.
+- **Failures.** A provider error makes `complete`, its `step` and `agent.query` ERROR, and that `complete` span has no model name or token counts: Swiftide records those fields only after a successful response. Swiftide recovers from a failed tool: it hands the error to the model and carries on, so the `tool.<name>` span is not ERROR by itself. Log at error level inside your tool (`tracing::error!(...)`, as the example's `get_weather` does) to mark it.
 - **`step`, not `step-1`.** Swiftide renames each step span after it has started, and `tracing-opentelemetry` 0.34.0 keeps the first name. Use `step_count` to tell steps apart.
 - **No sessions or users.** Swiftide sets no session or user id. Each `agent.query` call is its own trace.
 - **Streaming** (the `stream` and `responses_stream` spans), the Responses API and other model providers are not covered by this guide.
@@ -269,7 +282,7 @@ cargo run -- "What is the weather in Paris right now?"
 | Swiftide's log lines (span events) | **Removed** | **Removed** |
 | Error status messages | **Removed**; the ERROR status stays | **Removed**; the ERROR status stays |
 | Tool errors included in captured messages | **Removed** | Sent in tool output and subsequent model input |
-| Rust backtraces (`Stack backtrace:` and everything after) | **Removed** | **Removed** |
+| Content containing `Stack backtrace:` | **Removed** | The entire affected `input.value` or `output.value` is **omitted** |
 | Any other span attribute, trace state, scope attributes | **Removed** | **Removed** |
 | Resource attributes | Only `service.name`, `project_name`, `project_type` | Only `service.name`, `project_name`, `project_type` |
 | Spans from other tracers, spans with links | **Dropped** | **Dropped** |
@@ -277,13 +290,15 @@ cargo run -- "What is the weather in Paris right now?"
 
 Leave `FI_CAPTURE_CONTENT` unset if prompts, answers, tool results or recovered tool errors may contain sensitive data. When you enable it, those messages are exported as content; clearing error status messages does not redact their contents.
 
+The backtrace filter omits the whole content field rather than truncating serialized JSON. If a prompt or answer contains `Stack backtrace:`, you will not see that input or output; the span, its status and any model/usage attributes remain. Other captured fields are unchanged.
+
 Restart the Collector after you change `FI_CAPTURE_CONTENT`. Swiftide truncates inline `data:` image URLs in model requests before they reach the Collector.
 
 ## Troubleshooting
 
 - **No traces in Observe.** Check that the Collector is running and listening on `127.0.0.1:4318`, that both `FI_API_KEY` and `FI_SECRET_KEY` are set in the Collector's environment, and that `FI_PROJECT_NAME` is set. The agent keeps running without a Collector and does not report the lost spans; the Collector logs its own export errors to its console.
 - **`responded with HTTP Status Code 401` in the Collector log.** One of the two keys is missing or wrong.
-- **Model spans show type Chain, or have no model name or token counts.** The `langfuse` feature is missing on `swiftide-integrations`, or the filter does not enable DEBUG for `swiftide_integrations`.
+- **Successful model calls show type Chain, or have no model name or token counts.** Enable the `langfuse` feature on `swiftide-integrations` and DEBUG for `swiftide_integrations` in the filter. Failed completions have no model name or token counts even with those settings; check the ERROR status instead.
 - **`swiftide-langfuse` is in your `Cargo.lock`.** The `swiftide` crate's own `langfuse` feature is enabled somewhere in your dependency tree. Remove it for this setup; enable the feature on `swiftide-agents` and `swiftide-integrations` only.
 - **The Collector does not start because the `transform` or `filter` processor is unknown.** You are running the core Collector. Use the Contrib distribution, `otelcol-contrib`.
 - **The trace is missing its last spans.** `provider.shutdown()` was not called before exit.

@@ -1,6 +1,7 @@
 """Real Swiftide -> released Collector -> OTLP protobuf receiver, localhost only."""
 import argparse
 import contextlib
+import http.client
 import http.server
 import json
 import os
@@ -14,6 +15,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
@@ -27,8 +29,8 @@ def attributes(items):
 
 
 class Server(http.server.ThreadingHTTPServer):
-    def __init__(self, handler):
-        super().__init__(("127.0.0.1", 0), handler)
+    def __init__(self, handler, port=0):
+        super().__init__(("127.0.0.1", port), handler)
         self.items = []
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
@@ -83,7 +85,7 @@ class Model(Handler):
             }]}
             finish = "tool_calls"
         else:
-            message = {"role": "assistant", "content": MARKER + "-answer"}
+            message = {"role": "assistant", "content": getattr(self.server, "answer", MARKER + "-answer")}
             finish = "stop"
         self.reply(200, json.dumps({
             "id": "chatcmpl-local", "object": "chat.completion", "created": 1,
@@ -91,6 +93,27 @@ class Model(Handler):
                                                        "finish_reason": finish}],
             "usage": {"prompt_tokens": 21, "completion_tokens": 7, "total_tokens": 28},
         }).encode())
+
+
+class Proxy(Handler):
+    """Record OTLP leaks; forward model requests only to our synthetic loopback peer."""
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers["Content-Length"]))
+        url = urlparse(self.path)
+        if url.path == "/v1/traces":
+            self.server.items.append(raw)
+            self.reply(200, content_type="application/x-protobuf")
+        elif (url.hostname == "127.0.0.1" and url.port == self.server.model_port
+              and url.path == "/v1/chat/completions"):
+            conn = http.client.HTTPConnection("127.0.0.1", url.port, timeout=5)
+            try:
+                conn.request("POST", url.path, raw, {"Content-Type": "application/json"})
+                response = conn.getresponse()
+                self.reply(response.status, response.read(), response.getheader("Content-Type"))
+            finally:
+                conn.close()
+        else:
+            self.reply(400, b"{}")
 
 
 def model_env(server, model="fixture-model"):
@@ -151,12 +174,14 @@ class Contract(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"Only {len(spans)} spans exported, expected at least {expected}")
 
-    def run_agent(self, capture=False, city="Paris", model="fixture-model"):
+    def run_agent(self, capture=False, city="Paris", model="fixture-model",
+                  question=MARKER + "-question", answer=MARKER + "-answer"):
         with self.pipeline(capture) as sink:
             server = Server(Model)
             server.city = city
+            server.answer = answer
             try:
-                result = subprocess.run([OPTIONS.binary, MARKER + "-question"], timeout=30,
+                result = subprocess.run([OPTIONS.binary, question], timeout=30,
                                         env=model_env(server, model), capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1 if model == "broken-model" else 0, result.stderr)
                 spans = self.wait_spans(sink, 3)
@@ -239,6 +264,95 @@ class Contract(unittest.TestCase):
         # Failed responses do not manufacture model usage or zero-token totals.
         llm, = [s for s in spans if s.name == "complete"]
         self.assertNotIn("llm.token_count.total", attributes(llm.attributes))
+
+    def test_failed_call_model_identity_matches_guide(self):
+        spans, _ = self.run_agent(model="broken-model")
+        llm, = [s for s in spans if s.name == "complete"]
+        self.assertEqual(llm.status.code, 2)
+        attrs = attributes(llm.attributes)
+        # Native Swiftide records identity/usage only after a successful response.
+        self.assertNotIn("llm.model_name", attrs)
+        self.assertFalse(any(key.startswith("llm.token_count.") for key in attrs))
+        page = (ROOT.parents[2] / "src/pages/docs/integrations/frameworks/swiftide.mdx").read_text()
+        self.assertIn("no model name or token counts", page)
+        self.assertIn("successful model calls", page)
+        self.assertNotIn("the token counts of every model call", page)
+
+    def test_inherited_proxies_cannot_receive_raw_telemetry(self):
+        # No NO_PROXY escape hatch: the export client itself must bypass proxies.
+        for variable in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+            with self.subTest(variable=variable):
+                server = Server(Model)
+                server.city = "Paris"
+                proxy = Server(Proxy)
+                proxy.model_port = server.server_port
+                try:
+                    with self.pipeline() as sink:
+                        env = model_env(server)
+                        env[variable] = proxy.url
+                        result = subprocess.run([OPTIONS.binary, MARKER + "-question"],
+                                                timeout=30, env=env, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(len(server.items), 2)
+                        self.assertFalse(proxy.items, "raw OTLP reached an inherited proxy")
+                        self.wait_spans(sink, 3)
+                    self.assert_wire(sink)
+                    self.assertNotIn(MARKER.encode(), b"".join(item[2] for item in sink.items))
+                finally:
+                    proxy.close()
+                    server.close()
+
+    def test_exporter_refuses_redirects(self):
+        class Redirect(Handler):
+            def do_POST(self):
+                self.server.items.append(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(307)
+                self.send_header("Location", destination.url + "/v1/traces")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        destination = Server(Sink)
+        redirect = Server(Redirect, port=4318)
+        server = Server(Model)
+        server.city = "Paris"
+        try:
+            result = subprocess.run([OPTIONS.binary, MARKER + "-question"], timeout=30,
+                                    env=model_env(server), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(redirect.items, "exporter must try the configured loopback endpoint")
+            self.assertFalse(destination.items, "raw OTLP followed an HTTP redirect")
+        finally:
+            server.close()
+            redirect.close()
+            destination.close()
+
+    def test_backtrace_content_is_omitted_without_corrupting_json(self):
+        # Real Swiftide serializes both the request and the model response as JSON.
+        backtrace = "A failure. Stack backtrace:\n0: private::handler at /safe/demo.rs:2\n"
+        for field in ("question", "answer"):
+            with self.subTest(field=field):
+                spans, raw = self.run_agent(capture=True, **{field: backtrace})
+                llms = [s for s in spans if s.name == "complete"]
+                self.assertEqual(len(llms), 2)
+                for span in llms:
+                    attrs = attributes(span.attributes)
+                    for key in ("input.value", "output.value"):
+                        if key in attrs:
+                            value = json.loads(attrs[key])
+                            self.assertIn("messages" if key == "input.value" else "message", value)
+                    self.assertEqual(attrs["llm.token_count.total"], 28)
+                    if field == "question":
+                        self.assertNotIn("input.value", attrs)
+                        self.assertIn("output.value", attrs)
+                    else:
+                        self.assertIn("input.value", attrs)
+                if field == "answer":
+                    # One tool-call response survives; the final text response is omitted.
+                    outputs = [attributes(s.attributes).get("output.value") for s in llms]
+                    self.assertEqual(sum(value is None for value in outputs), 1)
+                    self.assertTrue(json.loads(next(value for value in outputs if value))["tool_calls"])
+                self.assertNotIn(b"Stack backtrace:", raw)
+                self.assertNotIn(b"private::handler", raw)
 
     def test_recoverable_tool_failure(self):
         spans, raw = self.run_agent(city="Atlantis")
