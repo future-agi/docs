@@ -9,7 +9,7 @@ plus an API key with Managed Agents access and billing.
 
 | File | Purpose |
 | --- | --- |
-| `otelcol.yaml` | The recipe the page embeds (a test keeps them identical): bearer auth, gzip accepted, `project_name` stamped, span kinds and session id mapped, content gated off by default. |
+| `otelcol.yaml` | The recipe the page embeds (a test keeps them identical): bearer auth, gzip accepted, `project_name` stamped, evaluator/agent/model/tool kinds and session id mapped, content-off metadata allowlist, one span per downstream request. |
 | `spike/fixture.py` | Builds an OTLP protobuf payload shaped like the Managed Agents API spans in Anthropic's span reference (made-up values). |
 | `spike/deliver.py` | Sends a payload the way Anthropic's delivery rules describe: gzip first, uncompressed resend on 400 or 415, `User-Agent: Claude-Platform`, only the destination's headers. |
 | `spike/run_collector_spike.py` | Delivers one scenario (metadata, content, error, duplicate, badtoken) to the collector. |
