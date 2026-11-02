@@ -43,12 +43,12 @@ class Page(unittest.TestCase):
         self.assertEqual(block, RECIPE)
 
     def test_stand_in_is_stated(self):
-        self.assertIn("Draft setup: do not use with production data yet", TEXT)
-        self.assertIn("A real Managed Agents session", TEXT)
-        self.assertIn("Managed Agents-enabled, billed API key", TEXT)
+        self.assertIn("Beta: do not send production data until you verify delivery and privacy", TEXT)
+        self.assertIn("run a real Managed Agents session", TEXT)
+        self.assertIn("selected workspace", TEXT)
 
     def test_draft_gate_and_explicit_content_toggle(self):
-        self.assertIn("Publication gate:", TEXT)
+        self.assertNotIn("Publication gate:", TEXT)
         self.assertIn('-e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}"', TEXT)
         self.assertIn("docker rm -f cma-otelcol", TEXT)
         self.assertNotRegex(TEXT.lower(), r"not tested|untested|unverified")
