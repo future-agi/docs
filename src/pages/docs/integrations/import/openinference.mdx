@@ -1,11 +1,11 @@
 ---
 title: "Send OpenInference spans to Future AGI"
-description: "Export traces from the Python OpenInference OpenAI instrumentor to Future AGI over OTLP/HTTP."
+description: "Export Python OpenAI traces or Go OpenInference spans to Future AGI with standard OpenTelemetry."
 ---
 
-Send Python OpenAI traces from [OpenInference](https://github.com/Arize-ai/openinference) to **Observe** using a standard OTLP/HTTP exporter. Future AGI reads OpenInference's span kinds, model names, token counts and input/output attributes; no Future AGI instrumentation package is needed.
+Send [OpenInference](https://github.com/Arize-ai/openinference) spans to **Observe** using a standard OTLP/HTTP exporter. Future AGI reads OpenInference's span kinds, model names, token counts and input/output attributes; no Future AGI instrumentation package is needed.
 
-This guide covers OpenAI text calls. It does not configure sessions, users, embeddings, images, cost reporting or evaluations. Other OpenInference instrumentors may emit different attributes.
+Choose the Python OpenAI setup below or the [Go setup](#go). The Python example traces OpenAI text calls; the Go example creates application spans with session and user context. Neither example configures embeddings, images, cost reporting or evaluations.
 
 The old Django OTLP route (`/api/public/otel/...`) is retired. A response from that path is not evidence that spans are ingested. Use the collector endpoint below.
 
@@ -78,6 +78,120 @@ finally:
 
 `shutdown()` sends pending spans before this short-lived process exits. Open **Observe** in Future AGI and select `my-openinference-project` to inspect the trace.
 
+## Go
+
+Use Go 1.26 or later for the dependency versions below. The [OpenInference Go helpers](https://github.com/Arize-ai/openinference/tree/main/go/openinference-instrumentation) carry session and user context; importing them does **not** instrument your application or configure an exporter. Use the standard OpenTelemetry SDK to create manual spans, or keep your existing OpenInference provider instrumentor. Do not wrap an already-instrumented model call in another LLM span.
+
+### Install Go dependencies
+
+In a new example directory, initialize a module and install the published dependencies. Skip `go mod init` in an existing Go module.
+
+```bash
+mkdir openinference-example
+cd openinference-example
+go mod init example.com/openinference-example
+go get github.com/Arize-ai/openinference/go/openinference-instrumentation@v0.1.2 \
+  go.opentelemetry.io/otel@v1.47.0 \
+  go.opentelemetry.io/otel/sdk@v1.47.0 \
+  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0
+```
+
+### Configure and run Go
+
+Set the **full trace endpoint**, including `/tracer/v1/traces` for Cloud. For self-hosted Future AGI, use the trace endpoint on your collector. This example does not call a model and needs no model-provider key.
+
+```bash
+export FI_OTLP_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+```
+
+Save this as `main.go`. It records an order calculation as an agent span with a tool child. It deliberately omits input and output content; use your own non-sensitive session and user identifiers in place of the example IDs.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    instrumentation "github.com/Arize-ai/openinference/go/openinference-instrumentation"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+    "go.opentelemetry.io/otel/sdk/resource"
+    sdktrace "go.opentelemetry.io/otel/sdk/trace"
+    "go.opentelemetry.io/otel/trace"
+)
+
+func main() {
+    for _, name := range []string{"FI_OTLP_ENDPOINT", "FI_API_KEY", "FI_SECRET_KEY"} {
+        if os.Getenv(name) == "" {
+            log.Fatalf("set %s before starting the application", name)
+        }
+    }
+    exporter, err := otlptracehttp.New(context.Background(),
+        otlptracehttp.WithEndpointURL(os.Getenv("FI_OTLP_ENDPOINT")),
+        otlptracehttp.WithHeaders(map[string]string{
+            "X-Api-Key": os.Getenv("FI_API_KEY"),
+            "X-Secret-Key": os.Getenv("FI_SECRET_KEY"),
+        }),
+        otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    provider := sdktrace.NewTracerProvider(
+        sdktrace.WithResource(resource.NewSchemaless(
+            attribute.String("service.name", "go-shop"),
+            attribute.String("project_name", "my-openinference-project"),
+            attribute.String("project_type", "observe"),
+        )),
+        sdktrace.WithBatcher(exporter),
+    )
+    tracer := provider.Tracer("go-shop")
+    ctx := instrumentation.WithSession(context.Background(), "order-123")
+    ctx = instrumentation.WithUser(ctx, "shopper-42")
+
+    ctx, agent := tracer.Start(ctx, "quote_order", trace.WithAttributes(
+        attribute.String("openinference.span.kind", "AGENT"),
+    ))
+    instrumentation.ApplyContextAttributes(ctx, agent)
+    _, tool := tracer.Start(ctx, "calculate_total", trace.WithAttributes(
+        attribute.String("openinference.span.kind", "TOOL"),
+    ))
+    instrumentation.ApplyContextAttributes(ctx, tool)
+    quantity, unitPrice := 3, 10
+    total := quantity * unitPrice
+    tool.End()
+    agent.End()
+    fmt.Printf("Order total: %d USD\n", total)
+
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    if err := provider.Shutdown(shutdownCtx); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+```bash
+go run .
+```
+
+Open **Observe**, select `my-openinference-project`, and open the `quote_order` trace to inspect its `calculate_total` child. Both spans carry `session.id=order-123` and `user.id=shopper-42`.
+
+### Use Go context in your application
+
+- Pass the context returned by `tracer.Start` to child operations to preserve parent links. Span attributes do not automatically inherit: call `ApplyContextAttributes(ctx, span)` for each manual span. OpenInference provider instrumentors apply these context attributes to their own spans.
+- `WithSession`, `WithUser`, `WithMetadata` and `WithTags` store values in the local Go context, not in HTTP baggage. They do not automatically propagate session or user data to another service.
+- If you already configure a tracer provider, add the exporter, batch processor and resource attributes to that provider's setup rather than creating a second tracing pipeline. Keep the same provider for your application and provider instrumentors.
+- For manual LLM spans, use `openinference.span.kind=LLM`, `llm.model_name`, and numeric `llm.token_count.prompt` / `llm.token_count.completion` from the actual response. Do not invent usage for a failed call. Prefer the attributes emitted by your provider instrumentor when it already creates these spans.
+
+**Manual Go spans are not automatically redacted.** `ApplyContextAttributes` only copies context attributes; it does not apply `OPENINFERENCE_HIDE_*` settings to arbitrary `span.SetAttributes` calls, status messages or exceptions. Omit sensitive content from manual spans. OpenInference provider instrumentors have their own `TraceConfig` masking; configure that on the instrumentor before capturing content.
+
 ## What is captured
 
 Future AGI maps OpenInference span attributes as follows:
@@ -86,15 +200,15 @@ Future AGI maps OpenInference span attributes as follows:
 | --- | --- | --- |
 | `openinference.span.kind=AGENT` | agent | Parent of the others; shown in the trace tree and Agent Graph |
 | `RETRIEVER` | retriever | `input.value` is the query. `retrieval.documents.*` attributes are kept in the span's extra attributes, not in the output column |
-| `LLM` (OpenAI instrumentor) | llm | `llm.model_name` becomes the model; `llm.token_count.prompt` / `completion` become prompt and completion tokens; total is their sum |
-| `TOOL` (`tracer.tool` decorator) | tool | Inputs and outputs from `input.value` / `output.value` |
+| `LLM` | llm | `llm.model_name` becomes the model; `llm.token_count.prompt` / `completion` become prompt and completion tokens; total is their sum |
+| `TOOL` | tool | Inputs and outputs from `input.value` / `output.value`, when recorded |
 | Exception in a span | status ERROR | Message appears in the status message |
 
 An unrecognised `openinference.span.kind` value never makes the export fail; the span is stored with type `unknown`. `PROMPT` and `DECISION` are two such values in current OpenInference semantic conventions.
 
 ## Privacy
 
-OpenInference captures content by default (prompts, completions, tool arguments and results, retrieval text). Turn it off with the OpenInference settings, not Future AGI's `FI_HIDE_*`:
+The Python OpenInference OpenAI instrumentor captures content by default. Turn it off with the OpenInference settings, not Future AGI's `FI_HIDE_*`. These settings apply to instrumentor-generated attributes, not arbitrary manual Go spans:
 
 ```bash
 export OPENINFERENCE_HIDE_INPUTS=true
@@ -119,4 +233,4 @@ These settings replace `input.value` and `output.value` with `__REDACTED__` and 
 
 - Display of types follows Future AGI's own mapping of `openinference.span.kind`; there is no OpenInference-specific UI.
 - Retriever documents are not shown in the output column.
-- This recipe supports the Python OpenAI instrumentor only. Other OpenInference instrumentors are outside its supported scope, even when they use the same attribute keys.
+- The examples cover the Python OpenAI instrumentor and manual Go application spans. Other instrumentors may emit different attributes; importing the Go context helpers alone does not create LLM spans.
