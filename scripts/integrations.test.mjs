@@ -68,6 +68,26 @@ test('Apollo Router stays distinct from Server and documents the native HTTP tra
   assert.ok(fs.existsSync(path.join(root, 'public/images/product-guides/apollo-router-observe.png')));
 });
 
+test('Apollo Router warns about native subgraph URL attributes before direct export', () => {
+  const page = read('src/pages/docs/integrations/frameworks/apollo-router.mdx');
+  const prerequisites = page.split('## Configure native tracing')[0];
+  assert.match(prerequisites, /Remove credentials and sensitive values from subgraph endpoint URLs/);
+  assert.match(prerequisites, /authentication headers instead/);
+  const warning = [...page.matchAll(/<Warning>([\s\S]*?)<\/Warning>/g)]
+    .map(match => match[1]).find(text => text.includes('`http.url`'));
+  assert.ok(warning, 'The privacy warning must describe native URL attributes');
+  assert.match(warning, /complete subgraph endpoint URLs, including query strings/);
+  for (const span of ['http_request', 'subgraph_request']) {
+    assert.ok(warning.includes(`\`${span}\``), `Missing native span: ${span}`);
+  }
+  assert.match(warning, /even with `default_attribute_requirement_level: none`/);
+  assert.match(warning, /removing content selectors does not remove these attributes/);
+  assert.match(warning, /OpenTelemetry Collector/);
+  assert.match(warning, /remove or redact sensitive span attributes before forwarding/);
+  assert.match(warning, /do not export directly/);
+  assert.doesNotMatch(page, /structure-only configuration/);
+});
+
 test('all logo references have provenance, existing files, matching hashes and passive valid content', () => {
   const result = spawnSync('python3',[path.join(root,'scripts/validate-integration-logos.py')],{encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
