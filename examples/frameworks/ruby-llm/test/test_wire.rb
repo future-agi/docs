@@ -14,7 +14,11 @@ class WireTest < Minitest::Test
   def test_export_request_shape
     stub = WebMock.stub_request(:post, "https://fi.example.test/tracer/v1/traces").to_return(status: 200, body: "")
     FakeOpenAI.stub_chat(FakeOpenAI.completion(content: "WIREREPLY-MARKER"))
-    new_chat.ask("WIREPROMPT-MARKER")
+    new_chat.with_otel_attributes(
+      "gen_ai.request.parameters" => "SYNTHETIC_PRIVATE_KEY",
+      "gen_ai.response.content" => "SYNTHETIC_PRIVATE_RESPONSE",
+      "gen_ai.usage.details" => "SYNTHETIC_PRIVATE_USAGE"
+    ).ask("WIREPROMPT-MARKER")
     FutureAGITracing.shutdown
     FutureAGITracing.shutdown # second call is a no-op
     assert_requested stub, times: 1
@@ -32,5 +36,6 @@ class WireTest < Minitest::Test
     assert_equal "chat fake-model", span.name
     refute_includes req.body, "WIREPROMPT-MARKER"
     refute_includes req.body, "WIREREPLY-MARKER"
+    refute_includes req.body, "SYNTHETIC_PRIVATE"
   end
 end

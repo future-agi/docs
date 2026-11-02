@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-# Future AGI tracing for ruby_llm. This file is the whole integration: it configures the
-# OpenTelemetry Ruby SDK, enables opentelemetry-instrumentation-ruby_llm, and (by default)
-# keeps only metadata on every span, because that instrumentation exports tool arguments and
-# results even when capture_content is off.
+# Retained legacy regression fixture, not a maintained installation path. See README.md.
+# Configures the OpenTelemetry Ruby SDK and opentelemetry-instrumentation-ruby_llm.
+# By default, restricts span attributes to an exact allowlist and removes events because
+# the instrumentation exports tool arguments and results even when capture_content is off.
 #
 #   require_relative "futureagi_tracing"
 #   FutureAGITracing.setup          # once, at boot
@@ -21,15 +21,23 @@ require "opentelemetry/exporter/otlp"
 require "opentelemetry-instrumentation-ruby_llm"
 
 module FutureAGITracing
-  # Attributes that describe a call without containing what was said or done. Anything not
-  # listed is dropped unless content is opted in, so an attribute added by a later release of
-  # the instrumentation (or one your code sets with with_otel_attributes) stays private until
-  # you add it here. opentelemetry-instrumentation-ruby_llm 0.7.1 writes tool arguments,
-  # tool results and tool descriptions onto execute_tool spans even with capture_content off
-  # (patches/chat.rb, execute_tool), so its own switch is not enough.
+  # Exact span-attribute contract for the retained legacy regression fixture, not an
+  # installable integration. Never trust entire gen_ai namespaces: custom attributes
+  # can put prompts or credentials under otherwise plausible request/response keys.
+  # Values of allowed attributes, span names and resource attributes remain caller-owned;
+  # this is not a secret scanner. The instrumentation's capture switch alone leaves
+  # tool arguments, results, descriptions and exception events enabled.
   METADATA_ATTRIBUTES = %w[
     gen_ai.operation.name
     gen_ai.provider.name
+    gen_ai.request.model
+    gen_ai.request.stream
+    gen_ai.request.temperature
+    gen_ai.response.model
+    gen_ai.usage.input_tokens
+    gen_ai.usage.output_tokens
+    gen_ai.usage.cache_creation.input_tokens
+    gen_ai.usage.cache_read.input_tokens
     gen_ai.tool.name
     gen_ai.tool.call.id
     gen_ai.tool.type
@@ -39,7 +47,6 @@ module FutureAGITracing
     session.id
     user.id
   ].freeze
-  METADATA_PREFIXES = %w[gen_ai.request. gen_ai.response. gen_ai.usage.].freeze
 
   # Wraps an exporter. Always drops span events (the instrumentation records exception
   # messages and stack traces there, which contain local paths and raw provider text). Unless
@@ -62,7 +69,7 @@ module FutureAGITracing
     private
 
     def metadata?(key)
-      METADATA_ATTRIBUTES.include?(key) || METADATA_PREFIXES.any? { |prefix| key.start_with?(prefix) }
+      METADATA_ATTRIBUTES.include?(key)
     end
 
     def sanitize(span_data)
