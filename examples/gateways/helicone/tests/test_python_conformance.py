@@ -4,9 +4,7 @@ Runs python/run_demo.py (the code the docs page shows) against a local stand-in 
 the OpenAI wire format, with `register()` pointed at a local OTLP receiver. Nothing leaves
 the machine and no Helicone or provider key is used.
 
-The assertions hold for traceai-openai 0.1.10 (the latest release when this was written) and for
-the unreleased fix in future-agi/traceAI#249, which records the requested model on streamed and
-failed calls. Where the two differ the test accepts both.
+The assertions cover the published traceai-openai 0.1.12 and the OpenAI SDK floor and latest release.
 """
 import getpass
 import json
@@ -193,22 +191,21 @@ def test_hide_settings_remove_prompt_response_and_tool_io(run_python, surface):
     assert any(s.attributes.get("gen_ai.usage.total_tokens") for s in llm)
 
 
-def test_tool_definitions_are_not_masked_by_the_hide_settings(run_python):
-    """Documented limitation (traceai-openai 0.1.10): tool names, descriptions and schemas are exported even
-    with FI_HIDE_INPUTS=true. If this starts failing the limitation was fixed: update the docs page."""
+def test_tool_definitions_are_masked_by_the_hide_settings(run_python):
+    """The published SDK masks tool definitions when input hiding is enabled."""
     run = run_python(
         "gateway", ["--scenario", "agent"], env={"FI_HIDE_INPUTS": "true", "FI_HIDE_OUTPUTS": "true"}, expect_spans=4
     )
-    assert TOOL_MARKER in run.dump()
+    assert TOOL_MARKER not in run.dump()
 
 
 @pytest.mark.parametrize("surface", SURFACES)
-def test_failed_call_is_an_error_span_with_raw_error_text(run_python, surface):
-    """R-08: a failed call is an ERROR span. Hide settings do not remove the error text or stack trace."""
+def test_failed_call_is_an_error_span_with_raw_error_text_when_opted_in(run_python, surface):
+    """The explicit error-detail override retains the old behavior when requested."""
     run = run_python(
         surface,
         ["--scenario", "error"],
-        env={"FI_HIDE_INPUTS": "true", "FI_HIDE_OUTPUTS": "true"},
+        env={"FI_HIDE_INPUTS": "true", "FI_HIDE_OUTPUTS": "true", "FI_HIDE_ERROR_DETAILS": "false"},
         expect_spans=1,
     )
     assert run.summary["scenarios"]["error"] == "InternalServerError"
@@ -231,8 +228,8 @@ def test_auth_error_is_an_error_span(run_python, surface):
     assert span.resource["project_name"] == PROJECT
 
 
-def test_scrub_exporter_removes_error_details(run_python):
-    """The tested mitigation: RedactErrorDetailsExporter keeps ERROR + the exception class, drops text and stack."""
+def test_native_hide_error_details_removes_error_details(run_python):
+    """The maintained SDK keeps ERROR and the class but drops error content."""
     run = run_python(
         "gateway",
         ["--scenario", "all", "--scrub-errors"],
@@ -277,8 +274,7 @@ def test_streaming(run_python, include_usage):
         assert attrs["gen_ai.usage.input_tokens"] == 63
     else:
         assert "gen_ai.usage.total_tokens" not in attrs
-    # 0.1.10 omits the model on streamed calls; the unreleased #249 records the requested one
-    assert attrs.get("gen_ai.request.model") in (None, "openai/gpt-4o-mini", "gpt-4o-mini")
+    assert attrs["gen_ai.request.model"] == "openai/gpt-4o-mini"
     assert attrs["output.value"].startswith("It is 21C") and MARKER in attrs["output.value"]
 
 
@@ -303,3 +299,14 @@ def test_hosted_base_urls_build_the_documented_requests():
     for surface in ("gateway", "proxy"):
         assert out[surface]["provider_attr"] == "openai"  # neither Helicone host is in the instrumentor's table
         assert out[surface]["model_attr"] == "gpt-4o-mini"
+
+
+def test_env_client_requires_explicit_gateway_url(monkeypatch):
+    """The supported local demo must not silently call Helicone hosted endpoints."""
+    sys.path.insert(0, str(ROOT / "python"))
+    from helicone_tracing import env_client
+
+    monkeypatch.delenv("HELICONE_BASE_URL", raising=False)
+    monkeypatch.setenv("HELICONE_API_KEY", "synthetic-key")
+    with pytest.raises(ValueError, match="HELICONE_BASE_URL"):
+        env_client("gateway")

@@ -20,7 +20,7 @@ const processor = new tracing.BatchSpanProcessor(
         "X-Api-Key": process.env.FI_API_KEY ?? "",
         "X-Secret-Key": process.env.FI_SECRET_KEY ?? "",
       },
-      compression: "none" /* the Future AGI collector rejects gzip bodies */,
+      compression: "none" /* optional: Future AGI cloud and self-hosted v1.56.0+ also accept gzip */,
     }),
     { captureContent: process.env.FI_APOLLO_CAPTURE_CONTENT === "true" },
   ),

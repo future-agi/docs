@@ -1,7 +1,7 @@
 """The TypeScript recipe (@traceai/openai + @traceai/fi-core) behind both Helicone surfaces.
 
 Needs `npm install` in typescript/ and Node 22.18+ (runs the .ts files directly). Skipped otherwise.
-Several tests pin known gaps of @traceai/openai 0.1.13 so the docs page stays true; each says so.
+Tests assert the published @traceai/openai 0.1.15 behavior.
 """
 import json
 import os
@@ -65,11 +65,11 @@ def test_model_usage_project(run_ts, surface):
     assert proc.returncode == 0, proc.stderr[-1500:]
     assert summary["scenarios"]["chat"] and summary["scenarios"]["tools"] and summary["scenarios"]["stream"]
     llm = [s for s in cap.spans if s.attributes.get("fi.span.kind") == "LLM"]
-    nonstream = [s for s in llm if "llm.token_count.total" in s.attributes]
-    assert sorted(s.attributes["llm.token_count.total"] for s in nonstream) == [48, 72, 72]
+    nonstream = [s for s in llm if "gen_ai.usage.total_tokens" in s.attributes]
+    assert sorted(s.attributes["gen_ai.usage.total_tokens"] for s in nonstream) == [48, 72, 72], [s.attributes for s in cap.spans]
     for s in nonstream:
-        assert s.attributes["llm.model_name"] == "gpt-4o-mini"  # the model the gateway reports back
-        assert s.attributes["llm.provider"] == "openai"  # every span, whatever the base URL
+        assert s.attributes["gen_ai.request.model"] == "gpt-4o-mini"  # the model the gateway reports back
+        assert s.attributes["gen_ai.provider.name"] == "openai"  # every span, whatever the base URL
         assert s.status_code == 1
     for s in cap.spans:
         assert s.resource["project_name"] == PROJECT
@@ -96,29 +96,24 @@ def test_helicone_headers_and_keys_stay_out_of_spans(run_ts, mock, surface):
         assert "session.id" not in s.attributes and "user.id" not in s.attributes
 
 
-def test_streamed_call_known_gaps(run_ts):
-    """@traceai/openai 0.1.13: a streamed call is a span with the text, but status stays UNSET, the model is the
-    requested name (with the provider prefix) and token counts are not recorded, even with include_usage."""
+def test_streamed_call(run_ts):
+    """A streamed call carries its output but omits usage when the response has none."""
     _, _, cap = run_ts("gateway", scenarios="stream", expect_spans=1)
     [span] = cap.spans
     assert span.attributes["output.value"].startswith("It is 21C")
-    assert span.attributes["llm.model_name"] == "openai/gpt-4o-mini"
-    assert "llm.token_count.total" not in span.attributes
+    assert span.attributes["gen_ai.request.model"] == "openai/gpt-4o-mini"
+    assert "gen_ai.usage.total_tokens" not in span.attributes
     assert span.status_code == 0
 
 
-def test_failed_call_is_not_traced_known_gap(run_ts):
-    """@traceai/openai 0.1.13: the SDK call rejects asynchronously and the instrumentation only handles a
-    synchronous throw, so the span of a failed request is never ended and never exported. If this fails because
-    an ERROR span appeared, the gap was fixed: update the docs page."""
+def test_failed_call_is_traced(run_ts):
+    """The published instrumentor exports an ERROR span for a rejected SDK call."""
     proc, summary, cap = run_ts("gateway", scenarios="error", expect_spans=1)
     assert summary["scenarios"]["error"] == "InternalServerError"  # the app saw the failure
-    assert cap.spans == []
+    assert len(cap.spans) == 1 and cap.spans[0].status_code == 2, [s.to_dict() for s in cap.spans]
 
 
-def test_hide_settings_do_not_apply_known_gap(run_ts):
-    """@traceai/openai 0.1.13 exports prompts and responses whatever FI_HIDE_* or traceConfig say (the
-    attributes are set when the span starts, which bypasses the masking). If this fails because the marker is
-    gone, content hiding was fixed: update the docs page."""
+def test_hide_settings_mask_content(run_ts):
+    """The published instrumentor masks prompts and responses with FI_HIDE_* flags."""
     _, _, cap = run_ts("gateway", scenarios="chat", env={"FI_HIDE_INPUTS": "true", "FI_HIDE_OUTPUTS": "true"}, expect_spans=1)
-    assert MARKER in json.dumps([s.to_dict() for s in cap.spans])
+    assert MARKER not in json.dumps([s.to_dict() for s in cap.spans])

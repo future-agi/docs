@@ -1,0 +1,108 @@
+---
+title: "EverOS Integration with Future AGI for Memory Tracing"
+description: "Send EverOS (EverMind-AI/EverOS, PyPI everos) memory add, flush and search traces to Future AGI. EverOS exports its own OpenTelemetry spans; no traceAI package is needed."
+---
+
+Send EverOS server memory traces to a self-hosted Future AGI collector using EverOS's OpenTelemetry export. This guide uses `everos` 1.4.2 and the `/api/v2` routes; it does not cover EverMemOS Cloud.
+
+## 1. Installation
+
+```bash
+pip install 'everos[otel]==1.4.2'
+everos init   # creates ~/.everos/everos.toml; add your [llm] and [embedding] keys there as usual
+```
+
+EverOS needs Python 3.12 or newer. Without the `otel` extra nothing is exported.
+
+## 2. Configure the export
+
+Set EverOS's own `[observability]` settings as environment variables (or in `~/.everos/everos.toml`; environment variables win):
+
+```bash
+export FI_API_KEY="YOUR_FI_API_KEY"
+export FI_SECRET_KEY="YOUR_FI_SECRET_KEY"
+
+export EVEROS_OBSERVABILITY__ENABLED=true
+export EVEROS_OBSERVABILITY__ENDPOINT="http://localhost:14338/tracer/v1/traces"
+export EVEROS_OBSERVABILITY__HEADERS="$(python -c 'import json, os; print(json.dumps({"X-Api-Key": os.environ["FI_API_KEY"], "X-Secret-Key": os.environ["FI_SECRET_KEY"]}))')"
+export OTEL_RESOURCE_ATTRIBUTES="project_name=my-everos-app,project_type=observe"
+```
+
+Replace `http://localhost:14338` with the self-hosted Future AGI collector origin reachable from the EverOS process. These setup steps cover that self-hosted route, not hosted export.
+
+Three details matter:
+
+- **The endpoint needs its full path.** EverOS uses the value as given. An endpoint with no path posts to `/` and Future AGI answers 404, so nothing is stored.
+- **The project comes from `OTEL_RESOURCE_ATTRIBUTES`.** EverOS has no setting for resource attributes, and Future AGI rejects a batch without `project_name` (HTTP 400).
+- **Leave the `langfuse_*` settings unset.** Setting all three makes EverOS add a Langfuse `Authorization` header and push scores to Langfuse.
+
+The same keys in `everos.toml`:
+
+```toml
+[observability]
+enabled = true
+endpoint = "http://localhost:14338/tracer/v1/traces"
+capture_content = false
+
+[observability.headers]
+X-Api-Key = "YOUR_FI_API_KEY"
+X-Secret-Key = "YOUR_FI_SECRET_KEY"
+```
+
+## 3. Run EverOS as usual
+
+```bash
+everos server start
+```
+
+Then use it normally, for example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v2/memory/add -H 'Content-Type: application/json' \
+  -d '{"session_id":"s1","messages":[{"sender_id":"user-ada","role":"user","timestamp":1790000000000,"content":"I work on Lighthouse."}]}'
+curl -X POST http://127.0.0.1:8000/api/v2/memory/flush -H 'Content-Type: application/json' -d '{"session_id":"s1"}'
+curl -X POST http://127.0.0.1:8000/api/v2/memory/search -H 'Content-Type: application/json' \
+  -d '{"user_id":"user-ada","query":"What does Ada work on?","method":"hybrid"}'
+```
+
+Spans leave in batches and when the server shuts down cleanly. Stop it with Ctrl+C before looking for the last request.
+
+## What is captured
+
+Open your project in **Observe** to see one trace per API call, with pipeline stages as child spans. For example:
+
+| Trace | Spans |
+|---|---|
+| `add` | `everos.memory.add` > `everos.memcell.boundary` |
+| `flush` | `everos.memory.flush` > `everos.memcell.boundary`, `everos.extract`, `everos.persist.markdown`, `everos.ome.extract_agent_case`, `everos.ome.extract_atomic_facts`, `everos.ome.trigger_profile_clustering` > (`everos.embedding`, `everos.ome.extract_user_profile`) |
+| `search` | `everos.memory.search` > `everos.search.recall` > `everos.embedding`; `everos.search.rank` |
+
+- **Model and tokens** are filled on the spans where EverOS records an LLM or embedding call (`everos.memcell.boundary`, `everos.extract`, `everos.embedding`, and the agent span `everos.ome.extract_atomic_facts`). Embedding spans carry input tokens only when the embedding API reports usage. EverOS sets no provider name, so the provider column stays empty.
+- **Errors** appear as ERROR spans.
+- **Background spans** (`everos.ome.*`) depend on timing and on the conversation; not every run shows all of them.
+- **Cost** is not exported by EverOS. Future AGI may price the tokens itself when it knows the model.
+
+## Privacy
+
+Content capture is **off by default** (`capture_content = false`, or `EVEROS_OBSERVABILITY__CAPTURE_CONTENT`). Error text can still contain message content, as described below.
+
+- **Opt in:** set `EVEROS_OBSERVABILITY__CAPTURE_CONTENT=true`. EverOS then adds the query and returned memory ids (`everos.memory.search`), and the extracted episode text (`everos.extract`). Values are cut at 4096 characters. EverOS's redaction hook does nothing unless your code calls `set_redactor`.
+- **Exported in both settings:** session, user, owner, app, project, memcell, request and run ids; model names; the search's top score.
+- **Error text is not covered by the switch.** When an exception leaves an EverOS span, OpenTelemetry records the message as the ERROR status description and an `exception` event with the stack trace, whatever `capture_content` says. Embedding and model providers often quote the rejected input in their error body, so an error can export your query or messages. If that is not acceptable, keep tracing off.
+- Your Future AGI keys travel only as request headers; the model API key is never exported.
+
+## Troubleshooting
+
+- **Nothing arrives.** Check that `everos[otel]` is installed (not just `everos`), `EVEROS_OBSERVABILITY__ENABLED=true`, and the server was stopped cleanly so the last batch flushed.
+- **404 from the collector.** The endpoint has no `/tracer/v1/traces` path.
+- **400 from the collector.** `OTEL_RESOURCE_ATTRIBUTES` does not include `project_name=...`.
+- **401 from the collector.** Wrong `X-Api-Key` or `X-Secret-Key`; check the JSON in `EVEROS_OBSERVABILITY__HEADERS`.
+- **Header values with `,` or `=`.** The JSON form needs no encoding. If you use OpenTelemetry's `OTEL_EXPORTER_OTLP_HEADERS` instead, percent-encode them.
+- **First `add` fails offline.** EverOS's tokenizer downloads `o200k_base` from `openaipublic.blob.core.windows.net` unless it is cached.
+
+## Limitations
+
+- Every EverOS span is stored with kind `unknown`: Future AGI reads `fi.span.kind` and similar keys, which EverOS does not set. EverOS types its spans in `langfuse.observation.type`, which is not mapped for spans ingested this way.
+- Input and Output columns are empty, even with capture on: EverOS writes content to `langfuse.observation.input` and `.output`, which appear only as raw span attributes.
+- Sessions and Users views do not group EverOS data: EverOS writes `langfuse.session.id` and `langfuse.user.id`, not `session.id` and `user.id`.
+EverOS emits its own spans; its content controls are not the traceAI `FI_HIDE_*` settings.

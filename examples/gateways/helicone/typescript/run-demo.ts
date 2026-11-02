@@ -12,6 +12,7 @@ const marker = process.env.DEMO_MARKER ?? "HELI-MARK-demo";
 const scenarios = (process.env.DEMO_SCENARIOS ?? "chat,tools,stream,error").split(",");
 
 const tracerProvider = setupTracing(project);
+if (!process.env.HELICONE_BASE_URL) throw new Error("Set HELICONE_BASE_URL to your self-hosted gateway URL");
 const client = makeClient(surface, {
   heliconeKey: process.env.HELICONE_API_KEY!,
   providerKey: process.env.OPENAI_API_KEY,

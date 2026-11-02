@@ -91,7 +91,7 @@ snippet), `meta-llama/llama-3.3-70b-instruct` (tools), `openai/gpt-oss-120b` (on
 | The Novita API | when `NOVITA_API_KEY` is set and `NOVITA_BASE_URL` is unset or an `api.novita.ai` URL | `standin/novita_stub.py` in the tests. Reply text and token counts are made up |
 | `api.novita.ai` | the client dials it in `tests/test_base_url.py` | a refusing proxy answers 403; no tunnel opens |
 
-Still unverified: Novita's 403 responses, `separate_reasoning` / `enable_thinking`, other Novita APIs, and
+Not covered yet: Novita's 403 responses, `separate_reasoning` / `enable_thinking`, other Novita APIs, and
 TypeScript.
 
 ## Versions

@@ -133,10 +133,12 @@ def main(argv=None):
     ap.add_argument("--helicone-user-id", default="helicone-user-1", help="value of the Helicone-User-Id header")
     ap.add_argument("--no-helicone-headers", action="store_true")
     ap.add_argument("--no-stream-usage", action="store_true")
-    ap.add_argument("--scrub-errors", action="store_true", help="wrap the exporter with RedactErrorDetailsExporter")
+    ap.add_argument("--scrub-errors", action="store_true", help="set FI_HIDE_ERROR_DETAILS=true before registering")
     args = ap.parse_args(argv)
 
-    provider = setup_tracing(args.project, scrub_error_details=args.scrub_errors)
+    if args.scrub_errors:
+        os.environ["FI_HIDE_ERROR_DETAILS"] = "true"
+    provider = setup_tracing(args.project)
     surface = os.environ.get("HELICONE_SURFACE", "gateway")
     # max_retries=0: one failed call is one ERROR span, not three.
     client = env_client(surface, max_retries=0)

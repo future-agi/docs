@@ -115,7 +115,7 @@ if want 3; then
 fi
 
 if want 4; then
-  echo "== 4. Python recipe, content hidden + error details scrubbed -> project $FI_PROJECT_NAME-private"
+  echo "== 4. Python recipe, content and error details hidden -> project $FI_PROJECT_NAME-private"
   FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true FI_HIDE_LLM_INVOCATION_PARAMETERS=true "$PYTHON" "$HERE/python/run_demo.py" \
     --project "$FI_PROJECT_NAME-private" --marker "$MARKER" --scrub-errors \
     --scenario core --error-model "openai/not-a-model-$ERR_MARKER" 2>&1 | tail -3
