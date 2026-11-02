@@ -18,7 +18,7 @@ from traceai_openai import OpenAIInstrumentor
 PAGE = Path(__file__).resolve().parents[1] / "src/pages/docs/integrations/providers/prismml.mdx"
 
 
-@pytest.mark.parametrize("mode", ["chat", "hidden", "error"])
+@pytest.mark.parametrize("mode", ["chat", "hidden", "error", "cancel"])
 def test_exact_page_code(monkeypatch, capsys, mode):
     for name in list(os.environ):
         if name.startswith(("FI_", "OTEL_", "OPENAI_", "PRISMML_")) or name.lower() in (
@@ -80,8 +80,22 @@ def test_exact_page_code(monkeypatch, capsys, mode):
         monkeypatch.setenv(name, str(mode == "hidden").lower())
     code = re.search(r"```python\n(.*?)```", PAGE.read_text(), re.S).group(1)
     namespace = {}
+    interruption = KeyboardInterrupt("synthetic guide cancellation")
+    if mode == "cancel":
+        # Interrupt the SDK's default HTTP client, not the instrumented method.
+        # This supports both httpx (floor) and httpx2 (latest SDK).
+        # The guide's finally/force_flush must export one ended ERROR span.
+        def interrupted_send(self, request, **kwargs):
+            calls.append((request.url.path, dict(request.headers), json.loads(request.content)))
+            raise interruption
+
+        monkeypatch.setattr(openai.DefaultHttpxClient, "send", interrupted_send)
     try:
-        if mode == "error":
+        if mode == "cancel":
+            with pytest.raises(KeyboardInterrupt) as caught:
+                exec(compile(code, str(PAGE), "exec"), namespace)
+            assert caught.value is interruption
+        elif mode == "error":
             with pytest.raises(openai.BadRequestError):
                 exec(compile(code, str(PAGE), "exec"), namespace)
         else:
@@ -110,9 +124,9 @@ def test_exact_page_code(monkeypatch, capsys, mode):
         attributes = attrs(span["attributes"])
         assert attributes["gen_ai.span.kind"] == "LLM"
         assert attributes["gen_ai.provider.name"] == "openai"
-        assert attributes["gen_ai.request.model"] == ("bonsai" if mode == "error" else "bonsai-loaded")
+        assert attributes["gen_ai.request.model"] == ("bonsai" if mode in ("error", "cancel") else "bonsai-loaded")
         assert "not-needed" not in json.dumps(payload)
-        if mode == "error":
+        if mode in ("error", "cancel"):
             assert span["status"]["code"] == "STATUS_CODE_ERROR"
             assert any(event["name"] == "exception" for event in span["events"])
         else:
