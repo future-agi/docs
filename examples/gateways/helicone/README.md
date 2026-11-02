@@ -1,81 +1,46 @@
 # Trace Helicone gateway calls with Future AGI
 
-Runnable companion to the docs page [Trace Helicone gateway calls in Observe](../../../src/pages/docs/integrations/gateways/helicone.mdx). It traces OpenAI-client calls that go through Helicone with the existing `traceAI-openai` (Python) and `@traceai/openai` (TypeScript) instrumentors. There is no Helicone package and no receiver.
+Run the Python or TypeScript example against a self-hosted Helicone AI Gateway and view the client call in Future AGI **Observe**. The examples use the published traceAI OpenAI instrumentors; you do not need a Helicone tracing package or a separate receiver. See the [Helicone integration guide](../../../src/pages/docs/integrations/gateways/helicone.mdx) for the minimal application snippets.
 
-**Supported setup: self-hosted AI Gateway 0.2.0-beta.30.** Hosted Helicone and classic-proxy delivery are outside the supported recipe. `STANDIN` marks every place a local stand-in replaces a Helicone endpoint.
+This setup uses Helicone AI Gateway 0.2.0-beta.30 at its `/ai` route with an OpenAI-compatible upstream. It does not cover hosted Helicone or the classic proxy.
 
-## What is here
+## Set up the gateway and collector
 
-| Path | What it is |
-| --- | --- |
-| `python/helicone_tracing.py` | The recipe: `register()`, instrument, and a client for each Helicone surface (AI Gateway, classic proxy) |
-| `python/run_demo.py` | Agent with a tool call, a streamed call and a failing call, under an agent span |
-| `typescript/` | The TypeScript recipe and the same demo (`npm install`, then `node run-demo.ts`; Node 22.18+) |
-| `support/mock_helicone.py` | `STANDIN`: an OpenAI-compatible server that enforces each Helicone surface's auth shape |
-| `support/otlp_capture.py` | A local OTLP/HTTP receiver that decodes what `register()` exports |
-| `tests/` | Conformance tests (below) |
-| `run_e2e.sh` | The real self-hosted Helicone AI Gateway in front of an upstream you choose, traced into Future AGI |
+Configure your upstream provider and model using the [Helicone AI Gateway instructions](https://github.com/Helicone/ai-gateway/tree/v0.2.0-beta.30). The commands below assume the gateway listens at `http://localhost:8080/ai`, gateway authentication is disabled **only on your trusted local machine**, and the configured model is `openai/gpt-4o-mini`. Do not expose an unauthenticated gateway to the internet. Keep upstream provider credentials on the gateway.
 
-## Run the tests
-
-No network, no keys. The tests start the stand-in and the OTLP receiver on loopback.
+Set your Future AGI credentials in the application process. For self-hosted Future AGI using the [Helm port-forward setup](../../../src/pages/docs/self-hosting/helm.mdx), set `FI_BASE_URL` to the collector forwarded on port 4318. If you forward it elsewhere, use that collector origin instead. For Future AGI Cloud, leave `FI_BASE_URL` unset. Neither value points at Helicone.
 
 ```bash
-python3.13 -m venv .venv && . .venv/bin/activate     # traceAI-openai supports Python 3.10 to 3.13
-pip install -r requirements.txt
-(cd typescript && npm install)                        # optional; the TypeScript tests skip without it
-python -m pytest tests -q
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_BASE_URL="http://localhost:4318"  # self-hosted Future AGI only
+export HELICONE_SURFACE="gateway"
+export HELICONE_BASE_URL="http://localhost:8080/ai"
+export HELICONE_API_KEY="local-placeholder"  # only for a local gateway with authentication disabled
+export HELICONE_MODEL="openai/gpt-4o-mini"     # replace with a model configured on your gateway
 ```
 
-What the tests assert, with the acceptance criterion from the PRD each one covers:
+If your gateway requires authentication, provide its actual key as `HELICONE_API_KEY` instead. The OpenAI-compatible client's `api_key` is sent to Helicone, not in Future AGI's tracing headers.
 
-- **AC-01** Two surfaces, two auths: the gateway client sends the Helicone key as `Authorization` and no `Helicone-Auth`; the proxy client sends the provider key plus `Helicone-Auth`; each surface's client fails with 401 on the other's URL.
-- **AC-02** Model, usage, `project_name` and `project_type` on the exported span; agent, tool and LLM spans nest correctly; the OTLP request has the Future AGI key headers and is not compressed.
-- **AC-03** `FI_HIDE_INPUTS` / `FI_HIDE_OUTPUTS` mask prompts, responses, tool data, tool definitions, and error details; an explicit `FI_HIDE_ERROR_DETAILS=false` retains the previous error text behavior.
-- **AC-05** `Helicone-Session-Id`, `Helicone-User-Id`, `Helicone-Property-*` reach Helicone and are not on any span; `using_session` / `using_user` are how a Future AGI session and user are set.
-- **AC-06** No Helicone or provider key reaches the collector; no real key is in this directory.
-- Additional hosted URL shapes, built by the OpenAI SDK on an in-process transport (`STANDIN`), give the paths and headers the page describes.
-- TypeScript error spans and ordinary chat input/output masking are covered by the conformance tests. The TypeScript integration does not hide tool schemas or `gen_ai.request.parameters` when FI_HIDE flags are enabled; do not put sensitive tool definitions into TypeScript-traced calls. Use the Python SDK when invocation parameters or tool schemas are sensitive.
-- `run_e2e.sh` step 7 (`tests/test_run_e2e_step7.py`, with a stub gateway and a stub read-back, `STANDIN`): it refuses an `FI_GRPC_ENDPOINT` without `http://`/`https://`, refuses to run without `FI_VERIFY`, stops the gateway before the read-back, and fails unless the read-back finds stored spans.
-- Opt-in, the real gateway (`tests/test_gateway_otlp_real.py`, skipped unless `HELICONE_GATEWAY_BIN` points at the `ai-gateway` binary; step 2 of `run_e2e.sh` writes its path to `$E2E_WORKDIR/gw-bin.path`): with `otlp-endpoint: http://127.0.0.1:PORT` it sends OTLP/gRPC trace exports with the `OTEL_EXPORTER_OTLP_HEADERS` headers and the `OTEL_RESOURCE_ATTRIBUTES` resource attributes, and no `gen_ai.*` or `llm.*` attributes; with `127.0.0.1:PORT` (no scheme) it serves the request and exports nothing. No network: a local upstream stub and a local gRPC receiver.
+## Run a call
 
-The Python assertions cover traceAI-openai 0.1.12 with the supported OpenAI SDK floor (1.69.0) and current release (3.42.1).
-
-## Run it end to end
-
-`run_e2e.sh` installs the Helicone AI Gateway (`@helicone/ai-gateway`, default 0.2.0-beta.30), starts it on `127.0.0.1` in front of an OpenAI-compatible upstream you name, and runs the demos through it into Future AGI. The gateway is the real one; only its upstream is yours to choose. Nothing on `*.helicone.ai` is contacted. The script downloads the gateway from npm at run time and does not vendor it; the gateway repository's `LICENSE` is GPL-3.0 (its README says Apache), so check the terms before you redistribute it.
+Choose Python 3.10–3.13 or Node.js 22.18+:
 
 ```bash
-export E2E_UPSTREAM_URL=http://127.0.0.1:8317    # origin of any OpenAI-compatible server, no /v1
-export E2E_UPSTREAM_KEY=...                       # its key (the gateway sends it; it is never printed)
-export E2E_UPSTREAM_MODEL=...                     # a model it serves
-export FI_API_KEY=... FI_SECRET_KEY=...           # Future AGI keys
-export FI_BASE_URL=http://localhost:8080          # self-hosted Future AGI only
-export FI_PROJECT_NAME=helicone-e2e
-export FI_GRPC_ENDPOINT=http://localhost:14337    # optional: step 7, the gateway's own telemetry (scheme required)
-export FI_VERIFY=/path/to/read_back.py            # required with FI_GRPC_ENDPOINT, see "Step 7" below
-./run_e2e.sh
+# Python, from this directory
+python3 -m venv .venv
+. .venv/bin/activate
+pip install traceAI-openai==0.1.12 fi-instrumentation-otel==1.2.2 openai==3.42.1
+python python/run_demo.py --project helicone-demo --scenario stream
 ```
-
-It creates these Observe projects: `helicone-e2e` (default capture), `helicone-e2e-private` (content and error details hidden), `helicone-e2e-ts` (TypeScript), `helicone-e2e-proxy-standin` (`STANDIN`: the classic-proxy shape) and, with `FI_GRPC_ENDPOINT`, `helicone-e2e-gateway-otlp`. It prints a unique marker; search your Future AGI storage for it to repeat the privacy check (it must be absent from `-private`).
-
-### Step 7: the gateway's own telemetry
-
-Step 7 restarts the gateway with `telemetry.exporter: otlp` pointed at `FI_GRPC_ENDPOINT`, sends two requests through it, stops it (its shutdown sends the spans it still holds) and then runs `$PYTHON $FI_VERIFY --project helicone-e2e-gateway-otlp --wait 120 --min-spans 2`. `FI_VERIFY` is a script you provide that reads the project back from your Future AGI deployment and exits 0 only when it holds at least that many stored spans. Step 7 prints `PASS step 7` only then, and exits non-zero otherwise. Without `FI_GRPC_ENDPOINT` it prints `== 7. skipped`.
-
-Write `FI_GRPC_ENDPOINT` with its scheme. With `localhost:14337` the gateway starts, serves requests and exports nothing, and its log shows no error, so the script refuses that value. The `error shutting down metrics provider` line in `gateway-otlp.log` appears in passing runs too; it is not the cause of a failure.
-
-## Single runs
 
 ```bash
-export HELICONE_SURFACE=gateway
-export HELICONE_BASE_URL=http://localhost:8080/ai   # your self-hosted gateway
-export HELICONE_API_KEY=local-placeholder         # local gateway auth is off
-export HELICONE_MODEL=openai/gpt-4o-mini          # configure this model on the gateway
-python python/run_demo.py --project helicone-demo --scenario core
-# content and error details off:
-FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true FI_HIDE_LLM_INVOCATION_PARAMETERS=true \
-  python python/run_demo.py --project helicone-demo-private --scrub-errors --scenario core
+# TypeScript, from this directory (Node.js 22.18+)
+cd typescript
+npm ci
+DEMO_SCENARIOS=chat FI_PROJECT_NAME=helicone-demo-ts node run-demo.ts
 ```
 
-Hosted Helicone endpoints and the classic proxy are outside this supported setup; the stand-in tests establish only request construction, not hosted delivery.
+Open **Observe** and select `helicone-demo` or `helicone-demo-ts`. The model and token usage appear on the LLM span when the upstream returns them. The Python stream requests usage with `stream_options={"include_usage": True}`. A short-lived process flushes spans before exit.
+
+To exclude prompt and response content from Future AGI spans, set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` **before** starting either example. For Python, also set `FI_HIDE_LLM_INVOCATION_PARAMETERS=true` to hide invocation parameters. **TypeScript does not mask tool definitions or `gen_ai.request.parameters`** with these flags; use Python instead if tool schemas or invocation parameters are sensitive. Helicone still receives the requests because it handles the gateway calls.
