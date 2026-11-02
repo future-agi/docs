@@ -113,7 +113,7 @@ export const integrations = [
 
   { id: 'livekit', name: 'LiveKit', href: '/docs/integrations/traceai/livekit', category: 'voice', summary: 'Trace voice agent sessions and model interactions.', method: 'traceAI SDK', logo: 'livekit' },
   { id: 'pipecat', name: 'Pipecat', href: '/docs/integrations/traceai/pipecat', category: 'voice', summary: 'Capture spans from conversational voice pipelines.', method: 'traceAI SDK', logo: 'pipecat' },
-  { id: 'vapi', name: 'Vapi', href: '/docs/observe/concepts/voice-observability', category: 'voice', summary: 'Connect calls using the shared voice observability guide.', method: 'Voice guide', logo: 'vapi', sharedGuide: true },
+  { id: 'vapi', name: 'Vapi', href: '/docs/integrations/voice/vapi', category: 'voice', summary: 'Import assistant calls with provider credentials, without an SDK.', method: 'Managed ingestion', logo: 'vapi' },
   { id: 'retell', name: 'Retell', href: '/docs/observe/concepts/voice-observability', category: 'voice', summary: 'Connect calls using the shared voice observability guide.', method: 'Voice guide', logo: 'retell', sharedGuide: true },
 
   { id: 'spring-boot', name: 'Spring Boot & Spring AI', href: '/docs/integrations/traceai/spring-boot', category: 'java', summary: 'Set up tracing with the Spring Boot starter.', method: 'Java starter', logo: 'spring', aliases: ['JVM'] },

@@ -1,4 +1,5 @@
 import './langsmith-page.test.mjs';
+import './vapi-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
