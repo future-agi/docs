@@ -68,6 +68,26 @@ test('Apollo Router stays distinct from Server and documents the native HTTP tra
   assert.ok(fs.existsSync(path.join(root, 'public/images/product-guides/apollo-router-observe.png')));
 });
 
+test('Apollo Router warns about native subgraph URL attributes before direct export', () => {
+  const page = read('src/pages/docs/integrations/frameworks/apollo-router.mdx');
+  const prerequisites = page.split('## Configure native tracing')[0];
+  assert.match(prerequisites, /Remove credentials and sensitive values from subgraph endpoint URLs/);
+  assert.match(prerequisites, /authentication headers instead/);
+  const warning = [...page.matchAll(/<Warning>([\s\S]*?)<\/Warning>/g)]
+    .map(match => match[1]).find(text => text.includes('`http.url`'));
+  assert.ok(warning, 'The privacy warning must describe native URL attributes');
+  assert.match(warning, /complete subgraph endpoint URLs, including query strings/);
+  for (const span of ['http_request', 'subgraph_request']) {
+    assert.ok(warning.includes(`\`${span}\``), `Missing native span: ${span}`);
+  }
+  assert.match(warning, /even with `default_attribute_requirement_level: none`/);
+  assert.match(warning, /removing content selectors does not remove these attributes/);
+  assert.match(warning, /OpenTelemetry Collector/);
+  assert.match(warning, /remove or redact sensitive span attributes before forwarding/);
+  assert.match(warning, /do not export directly/);
+  assert.doesNotMatch(page, /structure-only configuration/);
+});
+
 test('all logo references have provenance, existing files, matching hashes and passive valid content', () => {
   const result = spawnSync('python3',[path.join(root,'scripts/validate-integration-logos.py')],{encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
@@ -85,6 +105,15 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Together OpenAI guide requires the released provider mapping without claiming native SDK coverage', () => {
+  const page = read('src/pages/docs/integrations/traceai/togetherai.mdx');
+  assert.match(page, /pip install --upgrade "traceAI-openai>=0\.1\.11" "fi-instrumentation-otel>=1\.2\.2"/);
+  assert.match(page, /base_url="https:\/\/api\.together\.ai\/v1"/);
+  assert.match(page, /gen_ai\.provider\.name=together/);
+  assert.match(page, /does not instrument an existing `together\.Together` client/);
+  assert.doesNotMatch(page, /can be labeled \*\*OpenAI\*\*|Do not rely on that field/);
+});
+
 test('Cloudflare AI Chat distinguishes span identity from trace-level session grouping', () => {
   const page = read('src/pages/docs/integrations/frameworks/cloudflare-ai-chat.mdx');
   assert.doesNotMatch(page, /use the session to see it whole/i);
@@ -114,6 +143,25 @@ test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guid
   assert.match(page, /does not restore retired models/);
   assert.match(page, /FI_HIDE_INPUTS=true/);
   assert.match(page, /FI_HIDE_OUTPUTS=true/);
+});
+
+test('Anthropic Java recommends one native tracing owner and preserves released legacy usage', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/anthropic.mdx');
+  const native = page.split('## Existing TracedAnthropicClient applications')[0];
+  assert.match(native, /opentelemetry-bom/);
+  assert.match(native, /1\.57\.0/);
+  assert.match(native, /OpenTelemetryContentMode\.METADATA_ONLY/);
+  assert.match(native, /W3CTraceContextPropagator/);
+  assert.match(native, /X-Project-Name/);
+  assert.match(native, /client\.messages\(\)\.create\(/);
+  assert.doesNotMatch(native, /new TracedAnthropicClient/);
+  assert.match(page, /<groupId>com\.futureagi<\/groupId>/);
+  assert.match(page, /\.openTelemetry\(false\)/);
+  assert.doesNotMatch(page, /main-SNAPSHOT|wrapper is incompatible/);
+  assert.equal(integrations.find(i => i.id === 'java-anthropic').method, 'OpenTelemetry');
+  for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
+    assert.ok(exists(route), `Missing guide link: ${route}`);
+  }
 });
 
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
