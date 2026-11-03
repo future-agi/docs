@@ -190,3 +190,12 @@ test('public prose and catalog labels contain no internal QA label or Alpha rele
   for (const item of [...integrations,...integrationCategories,...integrationAids]) assert.doesNotMatch(JSON.stringify(item),/\bnot\s+tested\b|\balpha\b/i);
   assert.equal(publicProse('Beta. `pkg==1.0.0-alpha`\n```python\nmodel="alpha"\n```\n'),'Beta. \n\n');
 });
+
+test('Temporal Go uses the official extension and authenticated traces-only OTLP export', () => {
+  const page = read('src/pages/docs/integrations/frameworks/temporal-go.mdx');
+  const catalog = integrations.find(i => i.id === 'temporal-go');
+  assert.equal(catalog?.method, 'OpenTelemetry');
+  for (const term of ['go.temporal.io/sdk/contrib/opentelemetry@v0.8.1', 'v1.46.0', 'otel/exporters/otlp/otlptrace/otlptracehttp@v1.43.0', 'https://api.futureagi.com/tracer/v1/traces', 'X-Api-Key', 'X-Secret-Key', 'project_name', 'NewTracingInterceptor', 'RunActivity', 'provider.Shutdown']) assert.ok(page.includes(term), term);
+  assert.doesNotMatch(page, /AddOtlpMetricExporter|AddOtlpLogExporter|traceai-temporal-go|Live vendor verification/);
+  assert.match(read('src/pages/docs/integrations/frameworks/temporal.mdx'), /frameworks\/temporal-go/);
+});
