@@ -1,0 +1,54 @@
+---
+title: "Trace vLLM server requests"
+description: "Send vLLM's native inference traces directly to Future AGI Observe over OTLP/HTTP, without adding a second instrumentor."
+---
+
+Send vLLM server request spans to an Observe project using vLLM's built-in OpenTelemetry exporter. This route is for the **server**; [the OpenAI-compatible client instrumentor](/docs/integrations/traceai/openai) traces calls from your application instead. Do not instrument the same call twice unless you intentionally want both the client and server sides.
+
+## Configure the server
+
+Use vLLM 0.32.0 or later and a model you can serve. Install the OpenTelemetry dependencies along with vLLM if your deployment does not already include them:
+
+```bash
+pip install 'vllm[otel]>=0.32.0' # or use your existing vLLM image with its OTel dependencies
+```
+
+Both the HTTP and gRPC OTLP exporter packages must be importable: vLLM imports both when it starts tracing, even if you select HTTP. Set the following variables in the **server process** environment (and pass them through to its workers if your deployment strips environment variables):
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_RESOURCE_ATTRIBUTES="project_name=vllm-server,project_type=observe"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="X-Api-Key=$(python -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["FI_API_KEY"],safe=""))'),X-Secret-Key=$(python -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["FI_SECRET_KEY"],safe=""))')"
+```
+
+Keep the keys out of shell history and committed configuration. The OpenTelemetry header parser URL-decodes the values; the encoding above protects special characters such as commas and equals signs. `project_name` must be a **resource** attribute, not a span attribute: Future AGI files the batch under that Observe project. The collector accepts traces over OTLP/HTTP, not the gRPC default. Do not set a general OTLP endpoint that also sends metrics or logs to the traces URL.
+
+Start vLLM with the **full traces endpoint**, including `/tracer/v1/traces`:
+
+```bash
+export VLLM_MODEL="facebook/opt-125m" # replace with a model available to your server
+vllm serve "$VLLM_MODEL" \
+  --otlp-traces-endpoint https://api.futureagi.com/tracer/v1/traces
+```
+
+If you self-host Future AGI, use your self-hosted collector's OTLP/HTTP traces URL instead. The `--otlp-traces-endpoint` value is not a base URL: vLLM passes it directly to the exporter, which does **not** append `/v1/traces`.
+
+Send a sample inference request from another terminal:
+
+```bash
+curl -sS http://localhost:8000/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"facebook/opt-125m","prompt":"Write one sentence about the moon.","max_tokens":24}'
+```
+
+If you changed `VLLM_MODEL`, change the JSON `model` as well. Open **Observe** and select `vllm-server`. The `llm_request` span includes the response model, request ID, token counts and inference timing. vLLM records token counts under `gen_ai.usage.prompt_tokens` and `gen_ai.usage.completion_tokens`; these are upstream's legacy names rather than the newer `input_tokens` and `output_tokens` convention. Its native span has no LLM kind or `gen_ai.operation.name`, so Observe may show the span type as **unknown** and may not populate the token summary, even though the raw span attributes are present. This is server inference timing and usage metadata, not prompt or response text. Use client-side tracing when you need application-level payloads; that produces a separate client span and can join the server trace if your client propagates the W3C `traceparent` header.
+
+Leave `--collect-detailed-traces` off unless you need lower-level vLLM execution spans: enabling it adds tracing overhead. Review any additional attributes it records before enabling it for sensitive traffic.
+
+## Troubleshooting
+
+- **No traces:** Check that `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf` is set before vLLM starts, the endpoint ends in `/tracer/v1/traces`, and both OpenTelemetry exporter packages are installed. vLLM batches spans, so allow a few seconds after the request.
+- **401 or 400 on export:** Check both key headers and `OTEL_RESOURCE_ATTRIBUTES`. A project name on an individual span is not sufficient.
+- **Separate client and server traces:** Pass the W3C `traceparent` header through your client or gateway if you want to correlate them. Do not enable a second server instrumentor to solve context propagation.

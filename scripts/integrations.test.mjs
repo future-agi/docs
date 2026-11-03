@@ -200,3 +200,17 @@ test('Temporal Go uses the official extension and authenticated traces-only OTLP
   assert.doesNotMatch(page, /AddOtlpMetricExporter|AddOtlpLogExporter|traceai-temporal-go|Live vendor verification/);
   assert.match(read('src/pages/docs/integrations/frameworks/temporal.mdx'), /frameworks\/temporal-go/);
 });
+
+test('vLLM server exports native HTTP traces without a duplicate instrumentor', () => {
+  const guide = read('src/pages/docs/integrations/providers/vllm-server.mdx');
+  const catalog = integrations.find(i => i.id === 'vllm-server');
+  assert.equal(catalog?.method, 'Native OTLP');
+  assert.match(guide, /vLLM 0\.32\.0 or later/);
+  assert.match(guide, /OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http\/protobuf"/);
+  assert.match(guide, /OTEL_RESOURCE_ATTRIBUTES="project_name=vllm-server,project_type=observe"/);
+  assert.match(guide, /OTEL_EXPORTER_OTLP_TRACES_HEADERS=/);
+  assert.match(guide, /--otlp-traces-endpoint https:\/\/api\.futureagi\.com\/tracer\/v1\/traces/);
+  assert.match(guide, /gen_ai\.usage\.prompt_tokens/);
+  assert.match(guide, /span type as \*\*unknown\*\*/);
+  assert.doesNotMatch(guide, /traceAI-vllm|--collect-detailed-traces\s+(?:all|model|worker)/);
+});
