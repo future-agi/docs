@@ -1,5 +1,6 @@
 import './langsmith-page.test.mjs';
 import './vercel-platform-page.test.mjs';
+import './scalekit-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
