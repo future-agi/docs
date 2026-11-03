@@ -32,7 +32,7 @@ def test_only_trace_posts_http_protobuf_with_key_headers_and_no_metrics_or_logs(
         reqs = json.loads((FX / f"{name}.json").read_text())
         assert reqs and all(r["path"] == "/v1/traces" for r in reqs)           # no /v1/metrics, no /v1/logs
         assert all(r["content_type"] == "application/x-protobuf" for r in reqs)
-        assert all(not r["content_encoding"] for r in reqs)                      # uncompressed (collector rejects gzip)
+        assert all(not r["content_encoding"] for r in reqs)                      # uncompressed, as the recipe sends them
         assert all({"x-api-key", "x-secret-key"} <= set(r["header_names"]) for r in reqs)
 
 
