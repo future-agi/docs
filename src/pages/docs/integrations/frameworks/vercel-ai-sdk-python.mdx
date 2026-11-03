@@ -1,0 +1,93 @@
+---
+title: "Trace the AI SDK for Python with Future AGI"
+description: "Export native Vercel AI SDK for Python generation, agent and tool spans to Future AGI with OpenTelemetry."
+---
+
+Send the AI SDK for Python's own generation, agent and tool spans to an Observe project. Use its `OtelAdapter` rather than adding another instrumentor to the same calls.
+
+This setup supports `ai` 0.4.0 through 0.8.0 on Python 3.12 or later. The telemetry API is experimental; check [upstream releases](https://github.com/vercel-labs/ai-python/releases) when upgrading beyond this range.
+
+## Install
+
+For an OpenAI model, install the provider and OpenTelemetry extras together:
+
+```bash
+pip install "ai[openai,otel]>=0.4.0,<0.9"
+```
+
+For another model provider, replace `openai` with the appropriate `ai` provider extra. The `otel` extra installs the OpenTelemetry SDK and OTLP/HTTP exporter.
+
+## Configure and run
+
+Set the Observe project and credentials in your application's environment. Your model provider needs its own API key.
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-python-agent"
+export OPENAI_API_KEY="your-model-provider-api-key"
+```
+
+Save this as `app.py`. Register the adapter before calling the model; the exporter sends OTLP/HTTP protobuf to the full traces URL. `project_name` is a **resource** attribute, not a span attribute or an OpenTelemetry service name. For self-hosted Future AGI, replace the URL origin with your own.
+
+```python title="app.py"
+import asyncio
+import os
+
+import ai
+from ai.experimental_telemetry import register
+from ai.experimental_telemetry.otel import OtelAdapter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+    Compression,
+    OTLPSpanExporter,
+)
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+provider = TracerProvider(
+    resource=Resource.create({
+        "service.name": "my-python-agent",
+        "project_name": os.environ["FI_PROJECT_NAME"],
+        "project_type": "observe",
+    })
+)
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
+    endpoint="https://api.futureagi.com/tracer/v1/traces",
+    headers={
+        "x-api-key": os.environ["FI_API_KEY"],
+        "x-secret-key": os.environ["FI_SECRET_KEY"],
+    },
+    compression=Compression.NoCompression,
+)))
+register(OtelAdapter(tracer_provider=provider, capture_content=False))
+
+async def main():
+    model = ai.get_model("openai:gpt-4o-mini")
+    async with ai.stream(model, [ai.user_message("Say hello in one sentence.")]) as response:
+        async for event in response:
+            if isinstance(event, ai.events.TextDelta):
+                print(event.chunk, end="", flush=True)
+    print()
+
+try:
+    asyncio.run(main())
+finally:
+    provider.shutdown()  # Flush pending spans before this short-lived process exits.
+```
+
+```bash
+python app.py
+```
+
+Open **Observe** in Future AGI and select `my-python-agent`. The model span carries `gen_ai.operation.name=chat`, model, provider and token usage when supplied by the model provider. An `ai.Agent` run also produces an `invoke_agent` parent; tool execution produces `execute_tool` child spans. You do not need to install a traceAI instrumentor for these same calls.
+
+## Content and privacy
+
+`capture_content=False` keeps prompts, completions, tool definitions, arguments and results out of the AI SDK's generated span attributes. To send that content deliberately, change it to `capture_content=True` after reviewing your data policy. The adapter can still export exception text in the span's error status and custom span attributes or events you add yourself; do not put secrets there. Captured message text appears in the span attributes, and Observe versions that map `gen_ai.input.messages` and `gen_ai.output.messages` may also show it in Input and Output.
+
+## Troubleshooting
+
+- **No traces:** Confirm the full `/tracer/v1/traces` endpoint, both authentication headers, and the `project_name` resource attribute. Do not use the gRPC exporter or append `/v1/traces` to this full URL.
+- **A model call fails before exporting:** Configure the model provider's own key (`OPENAI_API_KEY` in this example); Future AGI keys only authenticate the trace exporter.
+- **No prompt or response text:** This example intentionally disables content capture. Switch to `capture_content=True` only if you intend to export those payloads.
