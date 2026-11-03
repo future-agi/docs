@@ -20,3 +20,14 @@ test('Scalekit tool boundary has a discoverable, privacy-conscious tracing route
   assert.match(source, /finally\s*\{\s*span\.end\(\)/);
   assert.doesNotMatch(source, /recordException|JSON\.stringify\(response|setAttribute\([^\n]*params/);
 });
+
+test('Scalekit guide links to live setup and does not promise broken batching', () => {
+  const source = readFileSync(page, 'utf8');
+  assert.match(source, /\[Observe project\]\(\/docs\/quickstart\/setup-observability\)/);
+  const example = source.match(/```javascript\n([\s\S]*?)\n```/)?.[1];
+  assert.ok(example);
+  assert.doesNotMatch(example, /batch:\s*true/);
+  assert.match(source, /SimpleSpanProcessor/);
+  assert.match(source, /30 concurrent exports/);
+  assert.match(source, /BatchSpanProcessor/);
+});
