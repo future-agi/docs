@@ -40,6 +40,21 @@ test('OpenAI C# guide uses native chat tracing with authenticated traces-only ex
   assert.doesNotMatch(page, /TraceAI.Register|AddOtlpMetricExporter|AddOtlpLogExporter/);
 });
 
+test('Python AI SDK guide exports native spans with authenticated private-by-default OTLP', () => {
+  const guide = integrations.find(item => item.id === 'vercel-ai-sdk-python');
+  assert.equal(guide?.method, 'OpenTelemetry');
+  assert.notEqual(guide.href, integrations.find(item => item.id === 'vercel-ai-sdk').href);
+  const page = read('src/pages/docs/integrations/frameworks/vercel-ai-sdk-python.mdx');
+  for (const setting of [
+    'ai[openai,otel]>=0.4.0,<0.9', 'register(OtelAdapter(tracer_provider=provider, capture_content=False))',
+    'https://api.futureagi.com/tracer/v1/traces', '"project_name": os.environ["FI_PROJECT_NAME"]',
+    '"project_type": "observe"', '"x-api-key": os.environ["FI_API_KEY"]',
+    '"x-secret-key": os.environ["FI_SECRET_KEY"]', 'provider.shutdown()',
+  ]) assert.ok(page.includes(setting), setting);
+  assert.match(page, /exception text in the span's error status/);
+  assert.doesNotMatch(page, /traceAI-[a-z]+|from traceai_/);
+});
+
 test('catalog validates required fields, unique IDs/categories and route shape', () => {
   assert.equal(validateIntegrations(), true);
   for (const patch of [{id:'BAD'}, {href:'https://example.com'}, {category:'unknown'}, {name:''}, {summary:5}, {method:'Not tested'}, {method:'Alpha'}]) assert.throws(() => validateIntegrations([{...integrations[0],...patch}]));
