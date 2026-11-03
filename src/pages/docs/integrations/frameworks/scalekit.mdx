@@ -1,0 +1,92 @@
+---
+title: "Scalekit tool tracing"
+description: "Trace Scalekit Node.js executeTool calls as tool spans in Future AGI without recording account identifiers or payloads."
+---
+
+Trace each `scalekit.tools.executeTool()` call as a tool span under your application's active agent span in Future AGI. Scalekit's Node SDK does not emit these spans itself; this example instruments the **application boundary**, not a second wrapper around the same call.
+
+## Install
+
+Use Node.js 18.19+ or 20.6+ (not Node 19) and `@scalekit-sdk/node` 2.5.0 or later. The example also works with the current 2.21.0 SDK; earlier 2.x versions did not expose `tools.executeTool()`.
+
+```bash
+npm install @scalekit-sdk/node@^2.5.0 @traceai/fi-core@^1.1.0 @opentelemetry/api@^1.9.0 @opentelemetry/context-async-hooks@^2.0.1
+```
+
+Create an [Observe project](/docs/tracing) and set the keys from [API keys](/docs/admin-settings/api-keys). Keep the Scalekit client secret on the server; never put it in browser code.
+
+```bash
+export FI_API_KEY="your-future-agi-api-key"
+export FI_SECRET_KEY="your-future-agi-secret-key"
+export FI_PROJECT_NAME="scalekit-tools"
+export SCALEKIT_ENV_URL="your-scalekit-environment-url"
+export SCALEKIT_CLIENT_ID="your-scalekit-client-id"
+export SCALEKIT_CLIENT_SECRET="your-scalekit-client-secret"
+```
+
+The Future AGI provider sends OTLP/HTTP traces to `https://api.futureagi.com/tracer/v1/traces` with both Future AGI keys. For self-hosted Future AGI, set `FI_BASE_URL` to its origin (without `/tracer/v1/traces`).
+
+## Trace a tool call
+
+In your server application, register a provider once before running your agent, then trace the call at the place where your code awaits it:
+
+```javascript
+import { Scalekit } from "@scalekit-sdk/node";
+import { register, ProjectType } from "@traceai/fi-core";
+import { context, SpanStatusCode } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+
+// If the app already configured an OpenTelemetry context manager, keep it.
+const manager = new AsyncLocalStorageContextManager().enable();
+if (!context.setGlobalContextManager(manager)) manager.disable();
+
+const provider = register({
+  projectName: process.env.FI_PROJECT_NAME,
+  projectType: ProjectType.OBSERVE,
+  batch: true,
+});
+const tracer = provider.getTracer("scalekit-tool-boundary");
+const scalekit = new Scalekit(
+  process.env.SCALEKIT_ENV_URL,
+  process.env.SCALEKIT_CLIENT_ID,
+  process.env.SCALEKIT_CLIENT_SECRET,
+);
+
+async function executeScalekitTool({ toolName, connectedAccountId, params }) {
+  return tracer.startActiveSpan(`execute_tool ${toolName}`, async (span) => {
+    span.setAttribute("fi.span.kind", "TOOL");
+    span.setAttribute("tool.name", toolName);
+    try {
+      const response = await scalekit.tools.executeTool({
+        toolName, connectedAccountId, params,
+      });
+      // Scalekit returns arbitrary tool-specific data; adapt this predicate to
+      // your tool's response schema. A resolved failure is not an exception.
+      if (response.data?.success === false) {
+        span.setStatus({ code: SpanStatusCode.ERROR });
+      } else {
+        span.setStatus({ code: SpanStatusCode.OK });
+      }
+      return response;
+    } catch (error) {
+      // Do not attach error.message or stack: they may contain user data.
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw error;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+// Call executeScalekitTool() inside your active agent operation with the
+// tool name, connected account ID, and parameters from your tool's schema.
+// For a one-shot process, call await provider.shutdown() after the agent ends.
+```
+
+Use `listTools()` to find the available tool name and its required parameters, then call `executeScalekitTool({ toolName, connectedAccountId, params })` from your agent's existing trace context. Scalekit returns `data` and `executionId`; `data` has **no universal success field**. The `success === false` check illustrates a tool whose payload uses that field: replace it with your tool's documented failure predicate so a resolved business error is marked as an error too. A thrown SDK/transport error is rethrown unchanged after marking the span.
+
+Open **Observe**, choose `scalekit-tools` (or your `FI_PROJECT_NAME`), and open the trace containing the tool call. If you already have an OpenTelemetry provider and async context manager, use that provider's tracer and exporter; do not call `register()` or install a second context manager. Do not wrap `executeTool()` twice.
+
+<Warning>
+The tool span adds only the tool name, kind and error status, not tool arguments, results, connected-account IDs, credentials, execution IDs or exception messages. `register()` can still attach host/process details as resource attributes; use a provider with resource detection disabled or a redacting collector if those details are sensitive. Tool names can still disclose business operations; restrict names or redact them before exporting if needed. Your own agent or HTTP instrumentation can record additional fields independently. Do not assume `FI_HIDE_INPUTS` or `FI_HIDE_ERROR_DETAILS` sanitizes spans created with the standard OpenTelemetry API.
+</Warning>
