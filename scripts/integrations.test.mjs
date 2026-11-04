@@ -1,3 +1,4 @@
+import './ollama-java.test.mjs';
 import './azure-openai-java.test.mjs';
 import './langsmith-page.test.mjs';
 import './vercel-platform-page.test.mjs';
