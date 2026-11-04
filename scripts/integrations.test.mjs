@@ -21,6 +21,17 @@ function flatten(list) { return list.flatMap(item => [item.href, ...(item.items 
 // Release labels are prose, not code samples, model names or package versions.
 export function publicProse(text) { return text.replace(/^\s*(```|~~~)[\s\S]*?^\s*\1.*$/gm, '').replace(/`+[^`]*`+/g, ''); }
 
+test('LlamaIndex distinguishes deprecated TypeScript from the supported Python guide', () => {
+  const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
+  const notice = page.split('## Install')[0];
+  assert.match(notice, /LlamaIndex\.TS is deprecated and no longer maintained upstream/);
+  assert.match(notice, /https:\/\/github\.com\/run-llama\/LlamaIndexTS#deprecation-notice/);
+  assert.match(notice, /`@traceai\/llamaindex` TypeScript integration is deprecated/);
+  assert.match(notice, /Python integration is not deprecated/);
+  assert.match(notice, /not a drop-in replacement/);
+  assert.doesNotMatch(page, /npm install.*@traceai\/llamaindex|@traceai\/llamaindex@0\.2\.0/);
+});
+
 test('LlamaIndex guide installs the released current-core compatibility fix', () => {
   const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
   assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.10'/);
