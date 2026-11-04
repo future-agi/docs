@@ -294,6 +294,37 @@ test('Anthropic Java recommends one native tracing owner and preserves released 
   }
 });
 
+test('Java pgvector uses released Central packages and connection-local type registration', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## pgvector\n')[1].split('## Azure AI Search')[0];
+  assert.match(section, /com\.futureagi:traceai-java-pgvector:1\.0\.0/);
+  assert.match(section, /com\.pgvector:pgvector:0\.1\.6/);
+  assert.match(section, /org\.postgresql:postgresql:42\.7\.14/);
+  assert.doesNotMatch(section, /main-SNAPSHOT|com\.github\.future-agi/);
+  assert.match(section, /try \(Connection connection = ds\.getConnection\(\)\)/);
+  assert.match(section, /new TracedPgVectorStore\(connection\)/);
+  assert.match(section, /PGvector\.registerTypes\(connection\)/);
+  assert.ok(section.indexOf('PGvector.registerTypes(connection)') < section.indexOf('traced.search('));
+  assert.match(section, /each connection/);
+  assert.match(section, /arbitrary SQL/);
+  assert.match(section, /never concatenate untrusted input/);
+  assert.match(section, /float\[\] vector = \{1\.0f, 2\.0f, 3\.0f\}/);
+});
+
+test('Java pgvector qualifies successful-operation privacy and hides database error details before use', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## pgvector\n')[1].split('## Azure AI Search')[0];
+  assert.match(section, /During successful operations, the store does not add embeddings or document metadata as span attributes/);
+  assert.doesNotMatch(section, /Embeddings and document metadata are not added to these spans/);
+  assert.match(section, /PostgreSQL error details can contain row values, including embeddings and document metadata/);
+  assert.match(section, /`FI_HIDE_ERROR_DETAILS=true` before initializing TraceAI/);
+  assert.match(section, /TraceConfig\.builder\(\)\.hideErrorDetails\(true\)\.build\(\)/);
+  assert.match(section, /`TraceAI\.init\(\.\.\.\)`/);
+  assert.match(section, /error messages, stack traces, and status descriptions/);
+  assert.match(section, /preserving ERROR status and exception types/);
+  assert.ok(section.indexOf('FI_HIDE_ERROR_DETAILS=true') < section.indexOf('new TracedPgVectorStore(connection)'));
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
