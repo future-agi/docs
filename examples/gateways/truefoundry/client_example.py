@@ -18,13 +18,14 @@ Content capture is on by default in traceai-openai. To keep prompts, responses,
 and tool arguments or results out of Future AGI, set the documented switches
 before running, for example:
   FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true FI_HIDE_INPUT_MESSAGES=true FI_HIDE_OUTPUT_MESSAGES=true
+  FI_HIDE_LLM_INVOCATION_PARAMETERS=true FI_HIDE_ERROR_DETAILS=true
 """
 import json
 import os
 import sys
 from typing import Callable, Optional
 
-from fi_instrumentation import FITracer, register
+from fi_instrumentation import FITracer, TraceConfig, register
 from fi_instrumentation.fi_types import ProjectType
 from openai import OpenAI
 from traceai_openai import OpenAIInstrumentor
@@ -99,12 +100,13 @@ def build(project_name: Optional[str] = None):
         project_name=project_name or os.environ.get("FI_PROJECT_NAME", "truefoundry-gateway"),
         verbose=False,
     )
-    OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+    config = TraceConfig()
+    OpenAIInstrumentor().instrument(tracer_provider=trace_provider, config=config)
     client = OpenAI(
         base_url=os.environ.get("TFY_BASE_URL", "https://gateway.truefoundry.ai"),
         api_key=os.environ["TFY_API_KEY"],
     )
-    tracer = FITracer(trace_provider.get_tracer("truefoundry-example"))
+    tracer = FITracer(trace_provider.get_tracer("truefoundry-example"), config=config)
     return trace_provider, client, tracer
 
 
