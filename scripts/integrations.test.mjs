@@ -1,3 +1,5 @@
+import './ollama-java.test.mjs';
+import './azure-openai-java.test.mjs';
 import './langsmith-page.test.mjs';
 import './vercel-platform-page.test.mjs';
 import './scalekit-page.test.mjs';
@@ -32,6 +34,17 @@ test('Vitest guide documents native test tracing without an evaluation-import cl
   assert.match(page, /does not turn tests into Future AGI evaluations/);
   assert.match(example, /export default sdk/);
   assert.doesNotMatch(page, /@traceai\/vitest|verified live|test date/i);
+});
+
+test('LlamaIndex distinguishes deprecated TypeScript from the supported Python guide', () => {
+  const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
+  const notice = page.split('## Install')[0];
+  assert.match(notice, /LlamaIndex\.TS is deprecated and no longer maintained upstream/);
+  assert.match(notice, /https:\/\/github\.com\/run-llama\/LlamaIndexTS#deprecation-notice/);
+  assert.match(notice, /`@traceai\/llamaindex` TypeScript integration is deprecated/);
+  assert.match(notice, /Python integration is not deprecated/);
+  assert.match(notice, /not a drop-in replacement/);
+  assert.doesNotMatch(page, /npm install.*@traceai\/llamaindex|@traceai\/llamaindex@0\.2\.0/);
 });
 
 test('LlamaIndex guide installs the released current-core compatibility fix', () => {
@@ -127,6 +140,43 @@ test('all logo references have provenance, existing files, matching hashes and p
   const manifest = JSON.parse(read('public/images/integrations/manifest.json'));
   for (const i of integrations) assert.ok(manifest.assets[i.logo],`Missing logo record: ${i.logo}`);
 });
+test('Qdrant Java uses released Central coordinates and a complete blocking example', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## Qdrant\n')[1].split('\n## Milvus')[0];
+  assert.match(section, /<groupId>com\.futureagi<\/groupId>/);
+  assert.match(section, /<artifactId>traceai-java-qdrant<\/artifactId>\s*<version>1\.0\.0<\/version>/);
+  assert.match(section, /implementation 'com\.futureagi:traceai-java-qdrant:1\.0\.0'/);
+  assert.match(section, /implementation 'io\.qdrant:client:1\.16\.2'/);
+  const gradle = section.match(/```groovy Gradle\n([\s\S]*?)```/)[1];
+  assert.match(gradle, /repositories\s*\{\s*mavenCentral\(\)\s*\}/);
+  assert.match(gradle, /dependencies\s*\{/);
+  assert.doesNotMatch(gradle, /traceai-java-core/);
+  assert.match(page, /For Qdrant, follow the Maven Central installation below \*\*instead of\*\* that page's JitPack installation/);
+  assert.match(section, /Replace any existing JitPack TraceAI core and Qdrant dependencies/);
+  assert.match(section, /com\.futureagi:traceai-java-core:1\.0\.0` transitively/);
+  assert.doesNotMatch(section, /main-SNAPSHOT|com\.github\.future-agi/);
+  assert.match(section, /blocking methods/);
+  assert.match(section, /unwrap\(\).*bypass/);
+  assert.match(section, /public class QdrantExample/);
+  assert.match(section, /import io\.qdrant\.client\.grpc\.Collections\.Distance;/);
+  assert.match(section, /TraceAI\.shutdown\(\)/);
+  assert.doesNotMatch(section, /queryVector|pointsList|queryAsync\(/);
+});
+test('Qdrant Java configures export and discloses the pinned upsert metadata limitation', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## Qdrant\n')[1].split('\n## Milvus')[0];
+  const environment = section.match(/```bash\n([\s\S]*?)```/)[1];
+  assert.match(environment, /^export FI_BASE_URL="https:\/\/api\.futureagi\.com"$/m);
+  assert.match(environment, /^export FI_API_KEY="your-fi-api-key"$/m);
+  assert.match(environment, /^export FI_SECRET_KEY="your-fi-secret-key"$/m);
+  assert.match(section, /credentials alone do not enable span export/);
+  assert.match(section, /<Warning>\s*With `traceai-java-qdrant:1\.0\.0` and Qdrant SDK `1\.16\.2`/);
+  assert.match(section, /"Qdrant Upsert" spans incorrectly report `embedding\.dimensions` as `0`/);
+  assert.match(section, /Do not rely on this upsert field/);
+  assert.match(section, /use your collection configuration instead/);
+  assert.match(page, /\| `embedding\.dimensions` \|[^\n]*\[Qdrant limitation\]\(#qdrant\)/);
+});
+
 test('machine-readable overview serializes every catalog entry and setup aid', () => {
   const text = integrationDirectoryMarkdown();
   for (const entry of integrations) {
@@ -138,6 +188,68 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('MongoDB Java setup uses matching pinned Maven Central dependencies in both build tools', () => {
+  const section = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx')
+    .split('## MongoDB Atlas Vector Search\n')[1]?.split('\n## Redis')[0];
+  assert.ok(section, 'MongoDB setup section must exist');
+  const maven = section.match(/```xml Maven\n([\s\S]*?)```/)?.[1];
+  const gradle = section.match(/```groovy Gradle\n([\s\S]*?)```/)?.[1];
+  assert.ok(maven && gradle, 'Both build tools need installation snippets');
+  const dependencies = [...maven.matchAll(/<dependency>([\s\S]*?)<\/dependency>/g)]
+    .map(([, block]) => ['groupId', 'artifactId', 'version']
+      .map(tag => block.match(new RegExp(`<${tag}>([^<]+)</${tag}>`))?.[1]).join(':'));
+  assert.deepEqual(dependencies, [
+    'com.futureagi:traceai-java-core:1.0.0',
+    'com.futureagi:traceai-java-mongodb:1.0.0',
+    'org.mongodb:mongodb-driver-sync:5.14.0',
+  ]);
+  assert.deepEqual([...gradle.matchAll(/implementation '([^']+)'/g)].map(([, coordinate]) => coordinate), dependencies);
+  assert.match(gradle, /mavenCentral\(\)/);
+  assert.doesNotMatch(maven + gradle, /main-SNAPSHOT|com\.github\.future-agi/);
+});
+
+test('MongoDB Java setup keeps initialization and explicit vector-search scope clear', () => {
+  const section = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx')
+    .split('## MongoDB Atlas Vector Search\n')[1]?.split('\n## Redis')[0];
+  assert.ok(section, 'MongoDB setup section must exist');
+  assert.match(section, /Replace any JitPack core or MongoDB dependencies/);
+  assert.match(section, /\/docs\/integrations\/traceai\/java#initialization/);
+  assert.match(section, /only operations called through the wrapper/);
+  assert.match(section, /import java\.util\.List;/);
+  assert.match(section, /List<Double> queryVector/);
+  assert.match(section, /collection\.getNamespace\(\)\.getCollectionName\(\)/);
+  assert.doesNotMatch(section, /\/\* your MongoDB collection \*\//);
+});
+
+test('Envoy native OTLP endpoints retain the Future AGI receiver prefix', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  const cloud = page.match(/export OTEL_EXPORTER_OTLP_ENDPOINT="([^"]+)"/)?.[1];
+  const selfHosted = page.match(/# self-hosted: (\S+)/)?.[1];
+  assert.equal(cloud, 'https://api.futureagi.com/tracer');
+  assert.equal(selfHosted, 'http://<collector>:4318/tracer');
+  // Generic OTLP HTTP endpoints are base URLs, not full signal endpoints.
+  for (const base of [cloud, selfHosted.replace('<collector>', 'localhost')]) {
+    assert.equal(new URL(`${base}/v1/traces`).pathname, '/tracer/v1/traces');
+  }
+});
+test('Envoy guide distinguishes propagated spans from separate traces', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  assert.doesNotMatch(page, /Running both gives two traces/);
+  assert.match(page, /traceparent/);
+  assert.match(page, /same trace/);
+  assert.match(page, /Without propagated context/);
+});
+test('Envoy guide keeps native tracing and content-safe trace-only defaults', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  assert.match(page, /no Future AGI package/);
+  assert.match(page, /OTEL_EXPORTER_OTLP_PROTOCOL="http\/protobuf"/);
+  for (const signal of ['METRICS', 'LOGS']) assert.ok(page.includes(`OTEL_${signal}_EXPORTER="none"`));
+  for (const field of ['INPUTS', 'OUTPUTS', 'EMBEDDINGS_TEXT', 'EMBEDDINGS_VECTORS']) {
+    assert.ok(page.includes(`OPENINFERENCE_HIDE_${field}=true`));
+  }
+  assert.match(page, /do not hide error status messages/);
+});
+
 test('Together OpenAI guide requires the released provider mapping without claiming native SDK coverage', () => {
   const page = read('src/pages/docs/integrations/traceai/togetherai.mdx');
   assert.match(page, /pip install --upgrade "traceAI-openai>=0\.1\.11" "fi-instrumentation-otel>=1\.2\.2"/);
@@ -178,6 +290,41 @@ test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guid
   assert.match(page, /FI_HIDE_OUTPUTS=true/);
 });
 
+test('Anthropic recommends native SDK tracing in both languages and keeps the Python instrumentor route', () => {
+  const page = read('src/pages/docs/integrations/traceai/anthropic.mdx');
+  const python = [...page.matchAll(/```(?:bash|python) Python\n([\s\S]*?)```/g)].map(m => m[1]).join('\n');
+  assert.match(python, /pip install "anthropic>=1\.14\.0" fi-instrumentation-otel/);
+  assert.match(python, /"tracer_provider": trace_provider/);
+  assert.match(python, /"content_mode": "metadata_only"/);
+  assert.match(python, /trace_provider\.shutdown\(\)/);
+  assert.doesNotMatch(python, /traceai_anthropic|AnthropicInstrumentor|traceAI-anthropic/);
+  const legacy = page.split('## Keep AnthropicInstrumentor in Python')[1];
+  assert.ok(legacy, 'missing instrumentor section');
+  assert.match(legacy, /AnthropicInstrumentor\(\)\.instrument\(tracer_provider=trace_provider\)/);
+  assert.match(legacy, /anthropic\.Anthropic\(open_telemetry=False\)/);
+  assert.match(page, /\(#keep-anthropicinstrumentor-in-python\)/);
+  // The native route says that context helpers don't reach the SDK's spans.
+  const native = page.split('## Keep AnthropicInstrumentor in Python')[0];
+  assert.match(native, /context helpers\]\(\/docs\/sdk\/tracing\/context-helpers\)[^\n]*`using_session`[^\n]*`using_attributes`/);
+  assert.match(native, /session, user, metadata or tags/);
+  // The released SDK's native tracing works without the old adapter's conflicting peer range.
+  const typescriptInstall = page.match(/```bash JS\/TS\n([\s\S]*?)```/)?.[1].trim();
+  assert.equal(typescriptInstall, 'npm install @anthropic-ai/sdk@1.4.0 @traceai/fi-core');
+  const typescript = [...page.matchAll(/```typescript JS\/TS\n([\s\S]*?)```/g)].map(m => m[1]).join('\n');
+  assert.match(typescript, /openTelemetry:\s*\{\s*tracerProvider,/);
+  assert.match(typescript, /traces: \{ contentMode: "metadata_only" \}/);
+  assert.match(typescript, /await tracerProvider\.shutdown\(\)/);
+  assert.doesNotMatch(typescript, /AnthropicInstrumentation|registerInstrumentations|manuallyInstrument/);
+  assert.match(native, /npm uninstall @traceai\/anthropic/);
+  assert.match(native, /`TraceConfig` and `FI_HIDE_\*` settings don't apply/);
+  assert.match(native, /TypeScript's `contentMode`/);
+  assert.doesNotMatch(page, /sdk@\^0\.27\.3|Keep that SDK range/);
+  assert.equal(integrations.find(i => i.id === 'anthropic').method, 'OpenTelemetry');
+  for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
+    assert.ok(exists(route), `Missing guide link: ${route}`);
+  }
+});
+
 test('Anthropic Java recommends one native tracing owner and preserves released legacy usage', () => {
   const page = read('src/pages/docs/integrations/traceai/java/anthropic.mdx');
   const native = page.split('## Existing TracedAnthropicClient applications')[0];
@@ -195,6 +342,37 @@ test('Anthropic Java recommends one native tracing owner and preserves released 
   for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
     assert.ok(exists(route), `Missing guide link: ${route}`);
   }
+});
+
+test('Java pgvector uses released Central packages and connection-local type registration', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## pgvector\n')[1].split('## Azure AI Search')[0];
+  assert.match(section, /com\.futureagi:traceai-java-pgvector:1\.0\.0/);
+  assert.match(section, /com\.pgvector:pgvector:0\.1\.6/);
+  assert.match(section, /org\.postgresql:postgresql:42\.7\.14/);
+  assert.doesNotMatch(section, /main-SNAPSHOT|com\.github\.future-agi/);
+  assert.match(section, /try \(Connection connection = ds\.getConnection\(\)\)/);
+  assert.match(section, /new TracedPgVectorStore\(connection\)/);
+  assert.match(section, /PGvector\.registerTypes\(connection\)/);
+  assert.ok(section.indexOf('PGvector.registerTypes(connection)') < section.indexOf('traced.search('));
+  assert.match(section, /each connection/);
+  assert.match(section, /arbitrary SQL/);
+  assert.match(section, /never concatenate untrusted input/);
+  assert.match(section, /float\[\] vector = \{1\.0f, 2\.0f, 3\.0f\}/);
+});
+
+test('Java pgvector qualifies successful-operation privacy and hides database error details before use', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## pgvector\n')[1].split('## Azure AI Search')[0];
+  assert.match(section, /During successful operations, the store does not add embeddings or document metadata as span attributes/);
+  assert.doesNotMatch(section, /Embeddings and document metadata are not added to these spans/);
+  assert.match(section, /PostgreSQL error details can contain row values, including embeddings and document metadata/);
+  assert.match(section, /`FI_HIDE_ERROR_DETAILS=true` before initializing TraceAI/);
+  assert.match(section, /TraceConfig\.builder\(\)\.hideErrorDetails\(true\)\.build\(\)/);
+  assert.match(section, /`TraceAI\.init\(\.\.\.\)`/);
+  assert.match(section, /error messages, stack traces, and status descriptions/);
+  assert.match(section, /preserving ERROR status and exception types/);
+  assert.ok(section.indexOf('FI_HIDE_ERROR_DETAILS=true') < section.indexOf('new TracedPgVectorStore(connection)'));
 });
 
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
