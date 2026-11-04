@@ -1,5 +1,9 @@
+import './ollama-java.test.mjs';
+import './azure-openai-java.test.mjs';
 import './langsmith-page.test.mjs';
 import './vapi-page.test.mjs';
+import './vercel-platform-page.test.mjs';
+import './scalekit-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -22,6 +26,22 @@ test('LlamaIndex guide installs the released current-core compatibility fix', ()
   const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
   assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.10'/);
   assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.10\/json/);
+});
+
+test('OpenAI C# guide uses native chat tracing with authenticated traces-only export', () => {
+  const page = read('src/pages/docs/integrations/providers/openai-csharp.mdx');
+  const catalog = integrations.find(i => i.id === 'openai-csharp');
+  assert.equal(catalog?.method, 'Native OTLP');
+  assert.match(page, /AppContext.SetSwitch\("OpenAI.Experimental.EnableOpenTelemetry", true\)/);
+  assert.match(page, /\.AddSource\("OpenAI.ChatClient", "OpenAIChat.Application"\)/);
+  assert.match(page, /OtlpExportProtocol.HttpProtobuf/);
+  assert.match(page, /https:\/\/api.futureagi.com\/tracer\/v1\/traces/);
+  assert.match(page, /X-Api-Key=\{apiKey\},X-Secret-Key=\{secretKey\}/);
+  assert.match(page, /\["project_name"\] = project/);
+  assert.match(page, /\["project_type"\] = "observe"/);
+  assert.match(page, /error descriptions can include text/);
+  assert.match(page, /streaming chat, raw\/protocol calls, Responses, embeddings/);
+  assert.doesNotMatch(page, /TraceAI.Register|AddOtlpMetricExporter|AddOtlpLogExporter/);
 });
 
 test('catalog validates required fields, unique IDs/categories and route shape', () => {
@@ -95,6 +115,43 @@ test('all logo references have provenance, existing files, matching hashes and p
   const manifest = JSON.parse(read('public/images/integrations/manifest.json'));
   for (const i of integrations) assert.ok(manifest.assets[i.logo],`Missing logo record: ${i.logo}`);
 });
+test('Qdrant Java uses released Central coordinates and a complete blocking example', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## Qdrant\n')[1].split('\n## Milvus')[0];
+  assert.match(section, /<groupId>com\.futureagi<\/groupId>/);
+  assert.match(section, /<artifactId>traceai-java-qdrant<\/artifactId>\s*<version>1\.0\.0<\/version>/);
+  assert.match(section, /implementation 'com\.futureagi:traceai-java-qdrant:1\.0\.0'/);
+  assert.match(section, /implementation 'io\.qdrant:client:1\.16\.2'/);
+  const gradle = section.match(/```groovy Gradle\n([\s\S]*?)```/)[1];
+  assert.match(gradle, /repositories\s*\{\s*mavenCentral\(\)\s*\}/);
+  assert.match(gradle, /dependencies\s*\{/);
+  assert.doesNotMatch(gradle, /traceai-java-core/);
+  assert.match(page, /For Qdrant, follow the Maven Central installation below \*\*instead of\*\* that page's JitPack installation/);
+  assert.match(section, /Replace any existing JitPack TraceAI core and Qdrant dependencies/);
+  assert.match(section, /com\.futureagi:traceai-java-core:1\.0\.0` transitively/);
+  assert.doesNotMatch(section, /main-SNAPSHOT|com\.github\.future-agi/);
+  assert.match(section, /blocking methods/);
+  assert.match(section, /unwrap\(\).*bypass/);
+  assert.match(section, /public class QdrantExample/);
+  assert.match(section, /import io\.qdrant\.client\.grpc\.Collections\.Distance;/);
+  assert.match(section, /TraceAI\.shutdown\(\)/);
+  assert.doesNotMatch(section, /queryVector|pointsList|queryAsync\(/);
+});
+test('Qdrant Java configures export and discloses the pinned upsert metadata limitation', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## Qdrant\n')[1].split('\n## Milvus')[0];
+  const environment = section.match(/```bash\n([\s\S]*?)```/)[1];
+  assert.match(environment, /^export FI_BASE_URL="https:\/\/api\.futureagi\.com"$/m);
+  assert.match(environment, /^export FI_API_KEY="your-fi-api-key"$/m);
+  assert.match(environment, /^export FI_SECRET_KEY="your-fi-secret-key"$/m);
+  assert.match(section, /credentials alone do not enable span export/);
+  assert.match(section, /<Warning>\s*With `traceai-java-qdrant:1\.0\.0` and Qdrant SDK `1\.16\.2`/);
+  assert.match(section, /"Qdrant Upsert" spans incorrectly report `embedding\.dimensions` as `0`/);
+  assert.match(section, /Do not rely on this upsert field/);
+  assert.match(section, /use your collection configuration instead/);
+  assert.match(page, /\| `embedding\.dimensions` \|[^\n]*\[Qdrant limitation\]\(#qdrant\)/);
+});
+
 test('machine-readable overview serializes every catalog entry and setup aid', () => {
   const text = integrationDirectoryMarkdown();
   for (const entry of integrations) {
@@ -106,6 +163,68 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('MongoDB Java setup uses matching pinned Maven Central dependencies in both build tools', () => {
+  const section = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx')
+    .split('## MongoDB Atlas Vector Search\n')[1]?.split('\n## Redis')[0];
+  assert.ok(section, 'MongoDB setup section must exist');
+  const maven = section.match(/```xml Maven\n([\s\S]*?)```/)?.[1];
+  const gradle = section.match(/```groovy Gradle\n([\s\S]*?)```/)?.[1];
+  assert.ok(maven && gradle, 'Both build tools need installation snippets');
+  const dependencies = [...maven.matchAll(/<dependency>([\s\S]*?)<\/dependency>/g)]
+    .map(([, block]) => ['groupId', 'artifactId', 'version']
+      .map(tag => block.match(new RegExp(`<${tag}>([^<]+)</${tag}>`))?.[1]).join(':'));
+  assert.deepEqual(dependencies, [
+    'com.futureagi:traceai-java-core:1.0.0',
+    'com.futureagi:traceai-java-mongodb:1.0.0',
+    'org.mongodb:mongodb-driver-sync:5.14.0',
+  ]);
+  assert.deepEqual([...gradle.matchAll(/implementation '([^']+)'/g)].map(([, coordinate]) => coordinate), dependencies);
+  assert.match(gradle, /mavenCentral\(\)/);
+  assert.doesNotMatch(maven + gradle, /main-SNAPSHOT|com\.github\.future-agi/);
+});
+
+test('MongoDB Java setup keeps initialization and explicit vector-search scope clear', () => {
+  const section = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx')
+    .split('## MongoDB Atlas Vector Search\n')[1]?.split('\n## Redis')[0];
+  assert.ok(section, 'MongoDB setup section must exist');
+  assert.match(section, /Replace any JitPack core or MongoDB dependencies/);
+  assert.match(section, /\/docs\/integrations\/traceai\/java#initialization/);
+  assert.match(section, /only operations called through the wrapper/);
+  assert.match(section, /import java\.util\.List;/);
+  assert.match(section, /List<Double> queryVector/);
+  assert.match(section, /collection\.getNamespace\(\)\.getCollectionName\(\)/);
+  assert.doesNotMatch(section, /\/\* your MongoDB collection \*\//);
+});
+
+test('Envoy native OTLP endpoints retain the Future AGI receiver prefix', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  const cloud = page.match(/export OTEL_EXPORTER_OTLP_ENDPOINT="([^"]+)"/)?.[1];
+  const selfHosted = page.match(/# self-hosted: (\S+)/)?.[1];
+  assert.equal(cloud, 'https://api.futureagi.com/tracer');
+  assert.equal(selfHosted, 'http://<collector>:4318/tracer');
+  // Generic OTLP HTTP endpoints are base URLs, not full signal endpoints.
+  for (const base of [cloud, selfHosted.replace('<collector>', 'localhost')]) {
+    assert.equal(new URL(`${base}/v1/traces`).pathname, '/tracer/v1/traces');
+  }
+});
+test('Envoy guide distinguishes propagated spans from separate traces', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  assert.doesNotMatch(page, /Running both gives two traces/);
+  assert.match(page, /traceparent/);
+  assert.match(page, /same trace/);
+  assert.match(page, /Without propagated context/);
+});
+test('Envoy guide keeps native tracing and content-safe trace-only defaults', () => {
+  const page = read('src/pages/docs/integrations/gateways/envoy-ai-gateway.mdx');
+  assert.match(page, /no Future AGI package/);
+  assert.match(page, /OTEL_EXPORTER_OTLP_PROTOCOL="http\/protobuf"/);
+  for (const signal of ['METRICS', 'LOGS']) assert.ok(page.includes(`OTEL_${signal}_EXPORTER="none"`));
+  for (const field of ['INPUTS', 'OUTPUTS', 'EMBEDDINGS_TEXT', 'EMBEDDINGS_VECTORS']) {
+    assert.ok(page.includes(`OPENINFERENCE_HIDE_${field}=true`));
+  }
+  assert.match(page, /do not hide error status messages/);
+});
+
 test('Together OpenAI guide requires the released provider mapping without claiming native SDK coverage', () => {
   const page = read('src/pages/docs/integrations/traceai/togetherai.mdx');
   assert.match(page, /pip install --upgrade "traceAI-openai>=0\.1\.11" "fi-instrumentation-otel>=1\.2\.2"/);
@@ -173,4 +292,13 @@ test('public prose and catalog labels contain no internal QA label or Alpha rele
   }
   for (const item of [...integrations,...integrationCategories,...integrationAids]) assert.doesNotMatch(JSON.stringify(item),/\bnot\s+tested\b|\balpha\b/i);
   assert.equal(publicProse('Beta. `pkg==1.0.0-alpha`\n```python\nmodel="alpha"\n```\n'),'Beta. \n\n');
+});
+
+test('Temporal Go uses the official extension and authenticated traces-only OTLP export', () => {
+  const page = read('src/pages/docs/integrations/frameworks/temporal-go.mdx');
+  const catalog = integrations.find(i => i.id === 'temporal-go');
+  assert.equal(catalog?.method, 'OpenTelemetry');
+  for (const term of ['go.temporal.io/sdk/contrib/opentelemetry@v0.8.1', 'v1.46.0', 'otel/exporters/otlp/otlptrace/otlptracehttp@v1.43.0', 'https://api.futureagi.com/tracer/v1/traces', 'X-Api-Key', 'X-Secret-Key', 'project_name', 'NewTracingInterceptor', 'RunActivity', 'provider.Shutdown']) assert.ok(page.includes(term), term);
+  assert.doesNotMatch(page, /AddOtlpMetricExporter|AddOtlpLogExporter|traceai-temporal-go|Live vendor verification/);
+  assert.match(read('src/pages/docs/integrations/frameworks/temporal.mdx'), /frameworks\/temporal-go/);
 });

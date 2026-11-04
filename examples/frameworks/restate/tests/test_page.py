@@ -59,6 +59,20 @@ def test_page_links_complete_service_without_verification_diary():
     assert "Everything on this page was run end to end" not in TEXT
 
 
+def test_standard_serving_replaces_copied_lifecycle_code():
+    source = (EXAMPLE / "agent_service.py").read_text()
+    for obsolete in ("_let_sdk_install_sigterm_handler", "signal.signal", "add_signal_handler", "asyncio.serve"):
+        assert obsolete not in source
+        assert obsolete not in TEXT
+    assert "python -m hypercorn agent_service:app --workers 1" in TEXT
+    assert "--graceful-timeout 30" in TEXT
+    assert "--workers 0" in TEXT
+    assert "SIGKILL" in TEXT
+    entry = re.search(r"os\.execv\(.*?\]\)", source, flags=re.S).group(0)
+    for arg in ('"--workers", "1"', '"--graceful-timeout", "30"'):
+        assert arg in entry
+
+
 def test_page_has_no_local_details():
     for needle in ("/Users/", "localhost:14338", "th8103", "gpt-6"):
         assert needle not in TEXT, needle
