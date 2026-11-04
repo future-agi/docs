@@ -1,27 +1,45 @@
-# Refreshes the platform SDK reference (src/pages/docs/sdk/reference) from the SDK
-# repository's generated pages and opens a PR against main. Run it by hand for a given SDK
-# ref, let the SDK repository dispatch it on a release, or rely on the weekly run.
+# The last link of the chain backend contract → futureagi-sdk → docs: syncs the
+# platform SDK reference (src/pages/docs/sdk/reference) from the generated pages
+# in a futureagi-sdk commit and opens or updates ONE pull request per SDK release.
+#
+#   futureagi-sdk publish.yml      → sdk-release {ref, stage: released}  after PyPI and npm
+#   futureagi-sdk release-please   → sdk-release {ref, stage: candidate} when a version PR is prepared
+#   schedule                       → newest published release (catches a missed dispatch)
+#   workflow_dispatch              → any ref; a preview draft unless `stage` says otherwise
+#
+# scripts/sdk-reference-release.mjs decides the branch (one per Python/TypeScript
+# version pair, so retries update the same PR) and whether the PR may be marked
+# ready: only when BOTH packages at those versions are installable from PyPI and
+# npm. Everything else is a draft. The docs site never documents an SDK that
+# users cannot install. Pages are never edited here; fix the generator in the SDK.
 name: sdk-reference-sync
 
 on:
+  repository_dispatch:
+    types: [sdk-release]   # client_payload: ref (full commit SHA), stage (released|candidate), source (URL)
   workflow_dispatch:
     inputs:
       sdk_ref:
-        description: futureagi-sdk ref to sync from (branch, tag or SHA)
-        default: dev
-  repository_dispatch:
-    types: [sdk-release]   # client_payload.ref: the SDK ref to sync from
+        description: futureagi-sdk commit, tag or branch (empty = newest published release)
+        default: ''
+      stage:
+        description: 'released, candidate or preview (empty = preview for a ref, released otherwise)'
+        default: ''
   schedule:
-    - cron: '0 6 * * 1'    # Mondays 06:00 UTC, from the SDK's dev branch
+    - cron: '0 6 * * 1'    # Mondays 06:00 UTC
 
 permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: sdk-reference-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       # App token (not GITHUB_TOKEN): the org forbids Actions from creating PRs
       # with GITHUB_TOKEN, and App-minted tokens are exempt. Scoped to this repo.
@@ -34,44 +52,95 @@ jobs:
         with:
           ref: main
           token: ${{ steps.app-token.outputs.token }}
-      - name: Resolve the SDK ref
-        id: ref
-        env:
-          INPUT_REF: ${{ inputs.sdk_ref }}
-          DISPATCH_REF: ${{ github.event.client_payload.ref }}
-        run: echo "ref=${INPUT_REF:-${DISPATCH_REF:-dev}}" >> "$GITHUB_OUTPUT"
-      - name: Check out the generated reference from the SDK repository
-        uses: actions/checkout@v4
-        with:
-          repository: future-agi/futureagi-sdk
-          ref: ${{ steps.ref.outputs.ref }}
-          path: .sdk
-          sparse-checkout: docs/sdk-reference
-          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Resolve the SDK release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.sdk_ref || github.event.client_payload.ref }}
+          STAGE: ${{ inputs.stage || github.event.client_payload.stage }}
+        run: |
+          set -eu
+          if [ "$GITHUB_EVENT_NAME" = repository_dispatch ]; then
+            # A sender names the exact commit it published; a branch name could move under us.
+            [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sdk-release needs client_payload.ref as a full commit SHA, got '$REF'"; exit 1; }
+          fi
+          args=()
+          [ -n "$REF" ] && args+=(--ref "$REF")
+          [ -n "$STAGE" ] && args+=(--stage "$STAGE")
+          node scripts/sdk-reference-release.mjs "${args[@]}" | tee -a "$GITHUB_OUTPUT"
+      - name: Check out the generated reference from that SDK commit
+        uses: actions/checkout@v4
+        with:
+          repository: future-agi/futureagi-sdk
+          ref: ${{ steps.release.outputs.sha }}
+          path: .sdk
+          sparse-checkout: docs/sdk-reference
+          persist-credentials: false
       - name: Sync the pages and the sidebar group
         run: node scripts/sync-sdk-reference.mjs --from .sdk
       - name: Check nav and content links
         run: node scripts/audit-links.mjs
-      - name: Open PR
+      - name: Open, update or finish the pull request
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SDK_REF: ${{ steps.ref.outputs.ref }}
+          SHA: ${{ steps.release.outputs.sha }}
+          REF: ${{ steps.release.outputs.ref }}
+          PY: ${{ steps.release.outputs.python }}
+          TS: ${{ steps.release.outputs.typescript }}
+          BACKEND: ${{ steps.release.outputs.backend }}
+          BRANCH: ${{ steps.release.outputs.branch }}
+          STAGE: ${{ steps.release.outputs.stage }}
+          PUBLISH: ${{ steps.release.outputs.publish }}
+          SOURCE: ${{ github.event.client_payload.source || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -eu
+          short=${SHA:0:12}
+          sdk="https://github.com/future-agi/futureagi-sdk"
+          number=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
           if git diff --quiet -- src/pages/docs/sdk/reference src/lib/sdk-reference.mjs; then
-            echo "reference already current"; exit 0
+            if [ -z "$number" ]; then
+              echo "main already carries the reference of futureagi-sdk@$short; nothing to open"
+              exit 0
+            fi
+            gh pr close "$number" --comment "main already carries the reference generated by futureagi-sdk@$short; nothing left to merge." \
+              --delete-branch
+            exit 0
           fi
-          sha=$(git -C .sdk rev-parse --short HEAD)
-          branch="chore/sdk-reference-${sha}"
-          git config user.name "futureagi-release-bot"
-          git config user.email "release-bot@futureagi.com"
-          git switch -c "$branch"
+          git config user.name "futureagi-release-bot[bot]"
+          git config user.email "futureagi-release-bot[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
           git add src/pages/docs/sdk/reference src/lib/sdk-reference.mjs
-          git commit -m "docs(sdk): sync the platform SDK reference from futureagi-sdk@${sha}"
-          git push origin "$branch"
-          gh pr create --base main --head "$branch" \
-            --title "docs(sdk): platform SDK reference from futureagi-sdk@${sha}" \
-            --body "Generated pages from [future-agi/futureagi-sdk@${sha}](https://github.com/future-agi/futureagi-sdk/tree/${sha}/docs/sdk-reference) (ref \`${SDK_REF}\`), copied by \`scripts/sync-sdk-reference.mjs\`. Do not edit the pages here: fix the generator in the SDK repository and re-run the sync."
+          git commit -q -m "docs(sdk): sync the platform SDK reference from futureagi-sdk@$short" \
+            -m "Python $PY, TypeScript $TS, backend contract $BACKEND ($STAGE)."
+          # One branch per release: a retry or the candidate→released transition rewrites it.
+          git push --force origin "$BRANCH"
+          case "$STAGE" in
+            released) title="docs(sdk): platform SDK reference for python-v$PY / typescript-v$TS"
+                      stage_note="**Released.** \`futureagi==$PY\` is on [PyPI](https://pypi.org/project/futureagi/$PY/) and \`@future-agi/sdk@$TS\` on [npm](https://www.npmjs.com/package/@future-agi/sdk/v/$TS); this PR is ready for review." ;;
+            candidate) title="docs(sdk): platform SDK reference for python-v$PY / typescript-v$TS (candidate)"
+                      stage_note="**Candidate (draft).** The SDK release is prepared but \`futureagi==$PY\` and \`@future-agi/sdk@$TS\` are not both installable yet. The publish workflow re-dispatches once they are, and this PR is marked ready then. Do not merge before." ;;
+            *)        title="docs(sdk): platform SDK reference preview of futureagi-sdk@$short"
+                      stage_note="**Preview (draft).** Generated from \`$REF\`, which is not a published release. For looking only; the released PR for these versions is opened by the SDK publish workflow." ;;
+          esac
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          Generated pages from [future-agi/futureagi-sdk@$short]($sdk/tree/$SHA/docs/sdk-reference): Python **$PY**, TypeScript **$TS**, backend contract **$BACKEND** (the SDK [sync PR]($sdk/pulls?q=is%3Apr+%22sync+with+backend+$BACKEND%22) names the backend release).
+
+          $stage_note
+
+          Copied by \`scripts/sync-sdk-reference.mjs\`; decided by \`scripts/sdk-reference-release.mjs\`. Do not edit the pages here: fix the generator in the SDK repository and re-run the sync. Source: $SOURCE
+          EOF
+          if [ -z "$number" ]; then
+            draft=()
+            [ "$PUBLISH" = draft ] && draft+=(--draft)
+            gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md" "${draft[@]}"
+            number=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')
+          else
+            gh pr edit "$number" --title "$title" --body-file "$RUNNER_TEMP/body.md" >/dev/null
+          fi
+          if [ "$PUBLISH" = ready ]; then
+            gh pr ready "$number" 2>/dev/null || true
+          fi
+          echo "future-agi/docs#$number ($STAGE, $PUBLISH)"

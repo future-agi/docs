@@ -9,7 +9,8 @@
  * This script replaces `src/pages/docs/sdk/reference/` with those pages and rewrites
  * `src/lib/sdk-reference.mjs`, the sidebar group `navigation.ts` imports. Never edit the
  * copied pages by hand: fix the generator in the SDK repository and sync again.
- * `.github/workflows/sdk-reference-sync.yml` runs this and opens a PR.
+ * `.github/workflows/sdk-reference-sync.yml` runs this for the SDK commit chosen by
+ * `scripts/sdk-reference-release.mjs` and opens or updates one PR per SDK release.
  */
 import fs from 'node:fs';
 import path from 'node:path';
