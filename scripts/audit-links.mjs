@@ -15,6 +15,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { integrationNavigation } from '../src/lib/integrations.mjs';
+import { sdkReferenceNavigation } from '../src/lib/sdk-reference.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -67,6 +68,7 @@ function addCatalogLinks(items) {
   }
 }
 addCatalogLinks(integrationNavigation);
+addCatalogLinks(sdkReferenceNavigation.items);
 
 // ── 3. Extract all internal links from MDX files ──────────────
 function findMdxFiles(dir) {
