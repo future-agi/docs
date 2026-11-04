@@ -142,8 +142,11 @@ test('Anthropic Python recommends native SDK tracing with one owner and keeps th
   const native = page.split('## Keep AnthropicInstrumentor in Python')[0];
   assert.match(native, /context helpers\]\(\/docs\/sdk\/tracing\/context-helpers\)[^\n]*`using_session`[^\n]*`using_attributes`/);
   assert.match(native, /session, user, metadata or tags/);
-  // The TypeScript route keeps its released SDK range.
-  assert.match(page, /npm install @traceai\/anthropic@0\.1\.3 '@anthropic-ai\/sdk@\^0\.27\.3'/);
+  // The TypeScript route keeps compatible SDK and OpenTelemetry ranges.
+  const typescriptInstall = page.match(/```bash JS\/TS\n([\s\S]*?)```/)?.[1].trim();
+  assert.ok(typescriptInstall, 'missing TypeScript install command');
+  assert.match(typescriptInstall, /^npm install @traceai\/anthropic@0\.1\.3 '@anthropic-ai\/sdk@\^0\.27\.3'/);
+  assert.match(typescriptInstall, / '@opentelemetry\/instrumentation@\^0\.202\.0'$/);
   for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
     assert.ok(exists(route), `Missing guide link: ${route}`);
   }
