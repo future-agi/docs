@@ -18,13 +18,14 @@ Content capture is on by default in traceai-openai. To keep prompts, responses,
 and tool arguments or results out of Future AGI, set the documented switches
 before running, for example:
   FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true FI_HIDE_INPUT_MESSAGES=true FI_HIDE_OUTPUT_MESSAGES=true
+  FI_HIDE_LLM_INVOCATION_PARAMETERS=true FI_HIDE_ERROR_DETAILS=true
 """
 import json
 import os
 import sys
 from typing import Callable, Optional
 
-from fi_instrumentation import FITracer, register
+from fi_instrumentation import FITracer, TraceConfig, register
 from fi_instrumentation.fi_types import ProjectType
 from openai import OpenAI
 from traceai_openai import OpenAIInstrumentor
@@ -79,17 +80,27 @@ def run_agent(
 
 
 def run_stream(client: OpenAI, model: str, prompt: str) -> str:
-    """One streamed completion. The LLM span ends when the stream is fully read."""
+    """Return a complete answer, closing the stream on success or failure."""
     parts = []
-    stream = client.chat.completions.create(
+    finish_reason = None
+    with client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         stream=True,
         stream_options={"include_usage": True},
-    )
-    for chunk in stream:
-        if chunk.choices and chunk.choices[0].delta.content:
-            parts.append(chunk.choices[0].delta.content)
+    ) as stream:
+        for chunk in stream:
+            for choice in chunk.choices:
+                if choice.index != 0:
+                    continue
+                if choice.delta.content:
+                    parts.append(choice.delta.content)
+                if choice.finish_reason is not None:
+                    finish_reason = choice.finish_reason
+        # EOF and [DONE] alone do not prove the model finished its answer.
+        # Token limits and content filtering also produce partial answers.
+        if finish_reason != "stop":
+            raise RuntimeError("The gateway did not return a complete answer")
     return "".join(parts)
 
 
@@ -99,12 +110,13 @@ def build(project_name: Optional[str] = None):
         project_name=project_name or os.environ.get("FI_PROJECT_NAME", "truefoundry-gateway"),
         verbose=False,
     )
-    OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+    config = TraceConfig()
+    OpenAIInstrumentor().instrument(tracer_provider=trace_provider, config=config)
     client = OpenAI(
         base_url=os.environ.get("TFY_BASE_URL", "https://gateway.truefoundry.ai"),
         api_key=os.environ["TFY_API_KEY"],
     )
-    tracer = FITracer(trace_provider.get_tracer("truefoundry-example"))
+    tracer = FITracer(trace_provider.get_tracer("truefoundry-example"), config=config)
     return trace_provider, client, tracer
 
 
@@ -117,7 +129,7 @@ def main(argv: list) -> int:
     code = 0
     try:
         print(run_stream(client, model, prompt) if stream else run_agent(client, tracer, model, prompt))
-    except Exception as exc:  # the failed gateway call is already recorded as an ERROR span
+    except Exception as exc:
         print(f"gateway call failed: {type(exc).__name__}", file=sys.stderr)
         code = 1
     finally:

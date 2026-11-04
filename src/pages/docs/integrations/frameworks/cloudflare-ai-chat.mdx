@@ -3,7 +3,7 @@ title: "Cloudflare AI Chat tracing with Future AGI"
 description: "Send Cloudflare AI Chat agent traces to Future AGI through a Workers OTLP destination and your own OpenTelemetry Collector."
 ---
 
-Send Cloudflare AI Chat (`@cloudflare/ai-chat`) traces to Future AGI using Workers tracing and an OpenTelemetry Collector you run. The collector adds the project, maps spans and sessions, deduplicates usage, and filters content before forwarding traces. Future AGI keys remain on the collector, not in the Worker.
+Send Cloudflare AI Chat (`@cloudflare/ai-chat`) traces to Future AGI using Workers tracing and an OpenTelemetry Collector you run. The collector adds the project, maps span types and session attributes, deduplicates usage, and filters content before forwarding traces. Future AGI keys remain on the collector, not in the Worker.
 
 This example uses `AIChatAgent` with a server-side tool, AI SDK v7, and the pinned packages below. Client-side tools and approvals, resumed or programmatic turns, sub-agents, multiple messages on one socket, sampling below 1, and Workers logs export are outside this recipe's scope. A plain Cloudflare Agent or `@cloudflare/think` uses a different agent setup. Do not add `@traceai/vercel` to this Workers recipe; use Cloudflare's `wrapAISDK` for model and tool spans.
 
@@ -22,7 +22,7 @@ npm install --save-dev --save-exact wrangler@4.151.1
 
 ## 2. Trace the AI SDK inside onChatMessage
 
-Wrap the AI SDK namespace and call the wrapped `streamText`. Give the turn an agent identity, so the spans carry `gen_ai.agent.name`, `gen_ai.agent.id` and `gen_ai.conversation.id`.
+Wrap the AI SDK namespace and call the wrapped `streamText`. Forward `options?.abortSignal` so cancelling a response with `useAgentChat` also stops the model request. Give the turn an agent identity, so the spans carry `gen_ai.agent.name`, `gen_ai.agent.id` and `gen_ai.conversation.id`.
 
 ```ts title="src/index.ts"
 // A Cloudflare AI Chat agent (@cloudflare/ai-chat) whose turns are traced by Workers tracing.
@@ -34,7 +34,7 @@ Wrap the AI SDK namespace and call the wrapped `streamText`. Give the turn an ag
 //   wrapAISDK(ai) (invoke_agent, chat, execute_tool)   emitted by agents/observability/ai
 //
 // Without wrapAISDK you still get the AIChatAgent spans, but no model, token or tool spans.
-import { AIChatAgent } from "@cloudflare/ai-chat";
+import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { routeAgentRequest } from "agents";
 import { wrapAISDK } from "agents/observability/ai";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -53,7 +53,10 @@ type Env = {
 };
 
 export class SupportChat extends AIChatAgent<Env> {
-  async onChatMessage() {
+  async onChatMessage(
+    _onFinish: ai.GenerateTextOnFinishCallback<ai.ToolSet>,
+    options?: OnChatMessageOptions,
+  ) {
     const { streamText } = wrapAISDK(ai, {
       storeMessages: this.env.STORE_MESSAGES === "true",
       storeTools: this.env.STORE_TOOLS === "true",
@@ -61,6 +64,7 @@ export class SupportChat extends AIChatAgent<Env> {
     const openai = createOpenAI({ apiKey: this.env.OPENAI_API_KEY, baseURL: this.env.OPENAI_BASE_URL });
 
     const result = streamText({
+      abortSignal: options?.abortSignal,
       model: openai.chat(this.env.MODEL ?? "gpt-4o-mini"),
       system: "You are a support agent. Use the lookup_order tool for any order id.",
       messages: await ai.convertToModelMessages(this.messages),
@@ -125,7 +129,7 @@ export default {
 
 ## 4. Run the collector
 
-The collector accepts OTLP/HTTP from Cloudflare only with your bearer token, drops the Durable Object storage spans, sets `project_name`, maps span types, errors and sessions, keeps content out unless you opt in, and forwards to Future AGI.
+The collector accepts OTLP/HTTP from Cloudflare only with your bearer token, drops the Durable Object storage spans, sets `project_name`, maps span types, errors and session attributes, keeps content out unless you opt in, and forwards to Future AGI.
 
 ```yaml title="otelcol.yaml"
 # OpenTelemetry Collector (contrib) between a Cloudflare Workers OTLP traces destination and Future AGI.
@@ -205,7 +209,8 @@ processors:
           # invoke_agent repeats the sum of its chat spans' usage. Session and project totals add up every span, so
           # keep usage on the chat spans only. The turn total stays readable as cloudflare.agents.usage.total_tokens.
           - delete_matching_keys(attributes, "^gen_ai\\.usage\\.") where attributes["gen_ai.operation.name"] == "invoke_agent"
-          # Sessions: one Durable Object instance is one conversation.
+          # Session attributes: one Durable Object instance is one conversation.
+          # This maps identity on the same span only; it does not stamp runtime roots.
           - set(attributes["session.id"], attributes["cloudflare.agents.session.id"]) where attributes["cloudflare.agents.session.id"] != nil
           - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["gen_ai.conversation.id"] != nil
           # WebSocket upgrade requests: when the client closes the socket, Cloudflare ends the upgrade with outcome
@@ -330,7 +335,7 @@ Cloudflare says events may take several minutes to reach a destination. Do not c
 
 ## 6. Check it in Future AGI
 
-Send a message to the deployed agent using your `useAgentChat` client. Open the project named in `FI_PROJECT_NAME` under **Observe > Tracing**. Open the `hibernatableWebSocket` trace and expand `chat_interaction > chat_turn > invoke_agent` to see model and tool spans. The connection upgrade is a separate `GET` trace; the turn spans of one Durable Object instance share a `session.id` (see [What is captured](#what-is-captured)).
+Send a message to the deployed agent using your `useAgentChat` client. Open the project named in `FI_PROJECT_NAME` under **Observe > Tracing**. Open the `hibernatableWebSocket` trace and expand `chat_interaction > chat_turn > invoke_agent` to see model and tool spans. The connection upgrade is a separate `GET` trace. Inspect `session.id` on the agent spans for correlation, and open each message trace separately; this recipe does not provide trace-level session grouping (see [What is captured](#what-is-captured)).
 
 ## What is captured
 
@@ -344,7 +349,7 @@ Send a message to the deployed agent using your `useAgentChat` client. Open the 
 | `durable_object_storage_*` | (dropped) | one span per storage call (with its SQL text), removed by the collector's filter |
 | `Hello from Cloudflare 👋 (<destination>)` | (dropped) | the destination's test span, removed by the collector's filter |
 
-Sessions: the collector copies `gen_ai.conversation.id` (else `cloudflare.agents.session.id`, the Durable Object id) to `session.id`. The `AIChatAgent` and `wrapAISDK` spans carry it; the runtime spans (`GET`, `hibernatableWebSocket`, `fetch`) do not.
+Session identity is available for **span-level correlation only**. The collector copies `gen_ai.conversation.id` (else `cloudflare.agents.session.id`, the Durable Object id) to `session.id` on the same span. The `AIChatAgent` and `wrapAISDK` spans carry it; the runtime spans (`GET`, `hibernatableWebSocket`, `fetch`) do not. The transform does not propagate identity from child spans to runtime roots. Future AGI trace-level session grouping requires identity on the root span, so the shared child attribute does not group the whole conversation into a session.
 
 Resource: Cloudflare sends one resource per span with `service.name`, `faas.name` and `cloudflare.script_name` (the Worker name), `faas.version` and `cloudflare.script_version.id` (the deployed version), `cloudflare.entrypoint`, `cloud.provider`, `cloud.platform`, `cloudflare.colo`, `faas.invoked_region` and the `telemetry.sdk.*` fields. The collector adds `project_name`.
 
@@ -375,7 +380,7 @@ Do not put credentials, tokens or user input in `runtimeContext` keys you includ
 ## Limitations
 
 - Keep the collector for project stamping, mapping, token deduplication and privacy. One collector serves one project.
-- A conversation is several traces (one per message, plus the upgrade request); use the session to see it whole.
+- A conversation is several traces (one per message, plus the upgrade request), not a single trace.
 - Spans still open when their invocation ends can be force-closed without attributes, leaving them as chain spans without model or token data. See [cloudflare/agents#2539](https://github.com/cloudflare/agents/issues/2539).
 - This recipe uses the pinned `@cloudflare/ai-chat` and `agents` versions above and AI SDK v7.
 - Workers logs and `console.log` lines are not exported through this traces pipeline.
