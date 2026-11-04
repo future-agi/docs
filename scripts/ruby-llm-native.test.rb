@@ -40,6 +40,7 @@ class RubyLLMNativeTest < Minitest::Test
     end
     @server.mount_proc('/v1') { |req, res| provider_response(req, res) }
     @thread = Thread.new { @server.start }
+    Thread.pass until @server.status == :Running
     @origin = "http://127.0.0.1:#{@server.config[:Port]}"
   end
 
@@ -193,6 +194,132 @@ class RubyLLMNativeTest < Minitest::Test
     assert_empty error.events
   end
 
+  # Characterize released behavior rather than silently treating UNSET as success.
+  # The page-contract test requires the caveat until upstream changes this behavior.
+  def test_outer_timeout_finishes_span_without_error_metadata
+    items = run_app(<<~RUBY)
+      require_relative 'tracing'
+      require 'timeout'
+      chat = RubyLLM.chat(model: 'gpt-4o-mini', protocol: :chat_completions)
+      started = false
+      begin
+        Timeout.timeout(1) do
+          chat.ask('SYNTHETIC_PRIVATE_STREAM') do |_chunk|
+            started = true
+            sleep 10
+          end
+        end
+        raise 'timeout did not fire'
+      rescue Timeout::Error
+        raise 'timed out before stream callback' unless started
+      end
+    RUBY
+    assert_interrupted_span(items)
+  end
+
+  def test_interrupt_finishes_span_without_error_metadata
+    items = run_app(<<~RUBY)
+      require_relative 'tracing'
+      begin
+        RubyLLM.chat(model: 'gpt-4o-mini', protocol: :chat_completions).ask('SYNTHETIC_PRIVATE_STREAM') do |_chunk|
+          raise Interrupt, 'SYNTHETIC_PRIVATE_INTERRUPTED'
+        end
+        raise 'interrupt did not fire'
+      rescue Interrupt
+      end
+    RUBY
+    assert_interrupted_span(items)
+  end
+
+  def test_killed_worker_finishes_span_without_error_metadata
+    items = run_app(<<~RUBY)
+      require_relative 'tracing'
+      ready = Queue.new
+      worker = Thread.new do
+        RubyLLM.chat(model: 'gpt-4o-mini', protocol: :chat_completions).ask('SYNTHETIC_PRIVATE_STREAM') do |_chunk|
+          ready << true
+          sleep 10
+        end
+      end
+      ready.pop
+      worker.kill.join
+    RUBY
+    assert_interrupted_span(items)
+  end
+
+  def assert_interrupted_span(items)
+    assert_envelope(items, 'none')
+    assert_equal 1, spans(items).size
+    span = spans(items).first
+    assert_equal :STATUS_CODE_UNSET, span.status.code
+    refute attributes(span.attributes).key?('error.type')
+    assert_empty span.events
+    assert_empty span.status.message
+  end
+
+  def test_cooperative_stream_cancellation_records_error_without_content
+    items = run_app(<<~RUBY)
+      require_relative 'tracing'
+      chat = RubyLLM.chat(model: 'gpt-4o-mini', protocol: :chat_completions)
+      begin
+        chat.ask('SYNTHETIC_PRIVATE_STREAM') { |_chunk| chat.cancel }
+        raise 'cancellation not raised'
+      rescue RubyLLM::CancelledError
+      end
+    RUBY
+    assert_envelope(items, 'none')
+    assert_equal 1, spans(items).size
+    span = spans(items).first
+    assert_equal :STATUS_CODE_ERROR, span.status.code
+    assert_equal 'RubyLLM::CancelledError', attributes(span.attributes)['error.type']
+    assert_empty span.events
+    assert_empty span.status.message
+  end
+
+  def test_http_timeout_records_error_without_content
+    timeout_config = snippet('timeouts.rb').sub('config.request_timeout = 30', 'config.request_timeout = 0.05')
+    items = run_app(<<~RUBY)
+      require_relative 'tracing'
+      #{timeout_config}
+      begin
+        RubyLLM.chat(model: 'gpt-4o-mini').ask('SYNTHETIC_PRIVATE_HTTP_TIMEOUT')
+        raise 'HTTP timeout not raised'
+      rescue Faraday::TimeoutError
+      end
+    RUBY
+    assert_envelope(items, 'none')
+    assert_equal 1, spans(items).size
+    span = spans(items).first
+    assert_equal :STATUS_CODE_ERROR, span.status.code
+    assert_equal 'Faraday::TimeoutError', attributes(span.attributes)['error.type']
+    assert_empty span.events
+    assert_empty span.status.message
+  end
+
+  def test_tool_exception_records_error_without_content
+    items = run_app(<<~RUBY)
+      require_relative 'tracing'
+      class Lookup < RubyLLM::Tool
+        def execute(value:)
+          raise ArgumentError, 'SYNTHETIC_PRIVATE_TOOL_ERROR'
+        end
+      end
+      begin
+        RubyLLM.chat(model: 'gpt-4o-mini').with_tools(Lookup).ask('SYNTHETIC_PRIVATE_PROMPT')
+        raise 'tool exception not raised'
+      rescue ArgumentError
+      end
+    RUBY
+    assert_envelope(items, 'none')
+    assert_equal 2, spans(items).size
+    tool = spans(items).find { |span| span.name == 'execute_tool lookup' }
+    refute_nil tool
+    assert_equal :STATUS_CODE_ERROR, tool.status.code
+    assert_equal 'ArgumentError', attributes(tool.attributes)['error.type']
+    assert_empty tool.events
+    assert_empty tool.status.message
+  end
+
   def test_exported_payload_round_trips_json_and_protobuf_plain_and_gzip
     # Ruby exports protobuf only. JSON is a wire-codec replay, not a claimed Ruby exporter mode.
     original = run_app.first[:request]
@@ -219,6 +346,7 @@ class RubyLLMNativeTest < Minitest::Test
   def provider_response(req, res)
     data = JSON.parse(req.body)
     @provider_requests << { path: req.path, data: data }
+    sleep 0.2 if req.body.include?('SYNTHETIC_PRIVATE_HTTP_TIMEOUT')
     res['Content-Type'] = 'application/json'
     if req.body.include?('SYNTHETIC_PRIVATE_ERROR')
       res.status = 400

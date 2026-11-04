@@ -3,9 +3,7 @@ title: "Restate tracing with Future AGI"
 description: "Trace Restate durable-execution invocations in Observe: Restate's own invocation and attempt spans, with your model and tool spans inside them. Retries show as attempts, and replayed steps are not traced twice."
 ---
 
-## About
-
-[Restate](https://restate.dev) runs your handlers as durable invocations. It journals every `ctx.run` step, retries a failed attempt, and replays the journal so completed steps are not executed again. This page shows one Restate invocation as one trace in Observe:
+Trace [Restate](https://restate.dev) invocations in Observe, with model and tool spans under the attempt that ran them. Restate journals each `ctx.run` step, so replaying a completed step does not create duplicate spans:
 
 ```text
 ingress WeatherAgent/{key}/ask                      Restate server
@@ -21,13 +19,9 @@ ingress WeatherAgent/{key}/ask                      Restate server
 
 Two exporters build that tree. The Restate server exports its runtime spans, and your Python service exports the model and tool spans it makes. Restate sends the attempt's W3C `traceparent` to your service, and `restate.ext.tracing.RestateTracerProvider` from the Restate Python SDK puts every span you create under that attempt. Both exporters send to an OpenTelemetry Collector you run, which names the Observe project, removes host names and error text, and forwards to Future AGI.
 
-This recipe uses Restate server 1.8.0 or 1.7.13, Python `restate-sdk` 1.0.5 and OpenTelemetry Collector contrib 0.162.0. It covers self-hosted Restate with the Python SDK; Restate Cloud and other language SDKs are outside this guide's coverage. Use the complete [example service and configuration](https://github.com/future-agi/docs/tree/main/examples/frameworks/restate) alongside the steps below.
+This guide uses Restate server 1.8.0 or 1.7.13, Python `restate-sdk` 1.0.5 or later before 2.0, and OpenTelemetry Collector contrib 0.162.0. It covers self-hosted Restate with the Python SDK; Restate Cloud and other language SDKs are outside this guide’s coverage. Use the complete [example service and configuration](https://github.com/future-agi/docs/tree/main/examples/frameworks/restate) alongside the steps below.
 
-### How this differs from other pages
-
-- **Agent frameworks on Restate.** Restate also has integrations for OpenAI Agents, Pydantic AI and Google ADK. Those combinations are **outside this guide’s coverage** here. The pattern is the same (pass `RestateTracerProvider(...)` as the instrumentor's tracer provider), but each framework's own page ([OpenAI Agents](/docs/integrations/traceai/openai_agents), [Google ADK](/docs/integrations/traceai/google_adk)) describes its spans without Restate.
-- **[OpenAI](/docs/integrations/traceai/openai).** That page traces OpenAI calls on their own. Here the same instrumentor is wrapped so its spans join the Restate invocation instead of starting a new trace per call.
-- **Exactly-once is Restate's job, not Future AGI's.** Future AGI does not deduplicate spans. Code inside `ctx.run` that already completed is not run again on replay, so it is not traced again. Code outside `ctx.run` (a log line, an un-journaled HTTP call) runs again on every attempt, and if it creates spans you see them again.
+Restate's integrations for OpenAI Agents, Pydantic AI and Google ADK are outside this guide’s coverage. Future AGI does not deduplicate spans: code outside `ctx.run` runs on every attempt, so its spans can appear more than once.
 
 ## Set up
 
@@ -36,7 +30,7 @@ This recipe uses Restate server 1.8.0 or 1.7.13, Python `restate-sdk` 1.0.5 and 
 <Step title="Install">
 
 ```bash
-pip install 'restate-sdk==1.0.5' hypercorn fi-instrumentation-otel traceai-openai openai
+pip install 'restate-sdk>=1.0.5,<2' 'hypercorn>=0.17' fi-instrumentation-otel traceai-openai openai
 ```
 
 Install Restate server [1.8.0](https://github.com/restatedev/restate/releases/tag/v1.8.0) or [1.7.13](https://github.com/restatedev/restate/releases/tag/v1.7.13) from its release assets. Follow [Restate's quickstart](https://docs.restate.dev/quickstart) for the CLI. Keep the server on one of these versions for this recipe; the collector command below pins OpenTelemetry Collector contrib to 0.162.0.
@@ -275,8 +269,12 @@ Run the service with traceAI pointed at the collector, so the collector can also
 export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=restate-agent
 export FI_BASE_URL=http://localhost:4318      # the collector, not Future AGI
 export OPENAI_API_KEY=...                     # and OPENAI_BASE_URL for an OpenAI-compatible endpoint
-python agent_service.py                       # serves on 127.0.0.1:9080
+python -m hypercorn agent_service:app --workers 1 --bind 127.0.0.1:9080 --graceful-timeout 30
 ```
+
+`python agent_service.py` runs the same command. Use the Hypercorn command in your process manager, with a bind address the Restate server can reach on your private network.
+
+Hypercorn's supervisor handles SIGTERM and SIGINT, waits up to 30 seconds for active requests, and then stops its worker. The worker's normal exit flushes buffered spans. Keep `--workers 1` or more: with `--workers 0`, the Restate SDK's SIGTERM handler replaces Hypercorn's, so the process does not stop or flush. Set your platform's stop timeout above `--graceful-timeout`; SIGKILL loses spans still in the batch.
 </Step>
 
 <Step title="Register the service and invoke it">
@@ -291,33 +289,6 @@ The trace shows up in Observe under the project from `FI_PROJECT_NAME`. To see a
 </Step>
 
 </Steps>
-
-### Flush on shutdown
-
-`register()` batches spans, so the service must shut its tracer provider down when it stops. `restate-sdk` 1.0.5 installs its own asyncio SIGTERM handler the first time the app is called ([`server.py`](https://github.com/restatedev/sdk-python/blob/v1.0.5/python/restate/server.py#L264)). That handler replaces the ASGI server's, so with the [Hypercorn development server from Restate's docs](https://docs.restate.dev/develop/python/serving) a SIGTERM does not stop the process (Ctrl+C still does). The example lets the SDK install its handler first, then adds one on top that stops the server, and flushes after the server returns:
-
-```python
-async def serve() -> None:
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    # restate-sdk 1.0.5 adds its own asyncio SIGTERM handler the first time the app is called. It tells
-    # running invocations to wind down, but it replaces the server's handler, so SIGTERM alone would
-    # never stop the server or flush spans. Let the SDK install it first, then add a Python-level
-    # handler on top: asyncio still runs the SDK's handler, and this one stops the server.
-    await _let_sdk_install_sigterm_handler()
-    signal.signal(signal.SIGTERM, lambda *_: loop.call_soon_threadsafe(stop.set))
-    loop.add_signal_handler(signal.SIGINT, stop.set)
-    config = hypercorn.config.Config()
-    config.bind = [f"127.0.0.1:{os.environ.get('SERVICE_PORT', '9080')}"]
-    await hypercorn.asyncio.serve(app, config, shutdown_trigger=stop.wait)
-
-
-if __name__ == "__main__":
-    asyncio.run(serve())
-    tracer_provider.shutdown()  # flush spans still buffered when SIGTERM arrives
-```
-
-A crash (SIGKILL) loses spans still in the batch. Restate itself is not affected: it retries the attempt on the next healthy deployment.
 
 ## What you see in Observe
 
@@ -374,11 +345,11 @@ and the service with `FI_BASE_URL` left at its default. Use direct export only i
 - **Model spans are separate traces, one per call.** The instrumentor got the plain provider. Pass `RestateTracerProvider(tracer_provider)` to `instrument()`, and do not set `register(set_global_tracer_provider=True)` for a second, unwrapped path.
 - **The same step appears twice.** Either the step is outside `ctx.run` (it runs again on every attempt), it failed and ran again (two attempts, both shown), or two exporters send the same spans.
 - **`Failed to export spans batch` or `OTLP export exhausted retries - telemetry data will be lost` in the logs.** The collector is not reachable. Handlers keep working and answer normally; the spans of that period are lost. Start the collector, and wait until it answers, before the Restate server and the service: a batch exported while the collector is still starting is dropped, which shows up as invocations missing their `ingress` and `invocation-start` spans.
-- **The service does not stop on SIGTERM.** See [Flush on shutdown](#flush-on-shutdown).
+- **The service does not stop on SIGTERM.** Start it with `python -m hypercorn ... --workers 1`, not `--workers 0` or an embedded Hypercorn `serve()` call.
 
 ## Not covered
 
-- Restate Cloud, Kubernetes deployments, AWS Lambda handlers and Hypercorn's multi-worker production mode are outside this guide’s coverage.
+- Restate Cloud, Kubernetes deployments and AWS Lambda handlers are outside this guide’s coverage.
 - The TypeScript and Java/Kotlin SDKs have their own tracing integrations ([TypeScript](https://docs.restate.dev/develop/ts/tracing), [Java](https://docs.restate.dev/develop/java/tracing)); they are not covered here.
 - OpenAI Agents, Pydantic AI and Google ADK on Restate are outside this guide’s coverage.
 - `traceai-openai` 0.1.10 sets no model on a failed call, so the failed `llm` span has no model name.
