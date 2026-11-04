@@ -7,7 +7,7 @@
 //   wrapAISDK(ai) (invoke_agent, chat, execute_tool)   emitted by agents/observability/ai
 //
 // Without wrapAISDK you still get the AIChatAgent spans, but no model, token or tool spans.
-import { AIChatAgent } from "@cloudflare/ai-chat";
+import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { routeAgentRequest } from "agents";
 import { wrapAISDK } from "agents/observability/ai";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -26,7 +26,10 @@ type Env = {
 };
 
 export class SupportChat extends AIChatAgent<Env> {
-  async onChatMessage() {
+  async onChatMessage(
+    _onFinish: ai.GenerateTextOnFinishCallback<ai.ToolSet>,
+    options?: OnChatMessageOptions,
+  ) {
     const { streamText } = wrapAISDK(ai, {
       storeMessages: this.env.STORE_MESSAGES === "true",
       storeTools: this.env.STORE_TOOLS === "true",
@@ -34,6 +37,7 @@ export class SupportChat extends AIChatAgent<Env> {
     const openai = createOpenAI({ apiKey: this.env.OPENAI_API_KEY, baseURL: this.env.OPENAI_BASE_URL });
 
     const result = streamText({
+      abortSignal: options?.abortSignal,
       model: openai.chat(this.env.MODEL ?? "gpt-4o-mini"),
       system: "You are a support agent. Use the lookup_order tool for any order id.",
       messages: await ai.convertToModelMessages(this.messages),
