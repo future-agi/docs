@@ -348,6 +348,25 @@ test('Temporal TypeScript warns about incompatible histories before setup', () =
   assert.match(warning, /Use v2 for new executions/);
 });
 
+test('Temporal TypeScript runs the server, Worker, and starter in separate terminals', () => {
+  const page = read('src/pages/docs/integrations/frameworks/temporal-typescript.mdx');
+  const runStep = page.split('<Step title="Run a workflow and inspect its trace">')[1]?.split('</Step>')[0];
+  assert.ok(runStep, 'The guide must explain how to run the example');
+  assert.deepEqual([...runStep.matchAll(/```bash\n([\s\S]*?)\n```/g)].map(match => match[1].trim()), [
+    'temporal server start-dev',
+    'npm run worker',
+    'npm run start',
+  ]);
+  assert.match(runStep, /three separate terminals/);
+  for (const terminal of ['Terminal 1 — Temporal server', 'Terminal 2 — Worker', 'Terminal 3 — starter']) {
+    assert.ok(runStep.includes(terminal), terminal);
+  }
+  assert.match(runStep, /Set `FI_API_KEY`, `FI_SECRET_KEY`, and `FI_PROJECT_NAME` in both of those terminals/);
+  assert.match(runStep, /exports in one terminal do not apply to another/);
+  assert.match(runStep, /Wait until it reports `RUNNING`/);
+  assert.match(runStep, /stop the Worker with Ctrl\+C/);
+});
+
 test('Temporal TypeScript documents and declares the OpenTelemetry Node.js minimum', () => {
   const example = 'examples/frameworks/temporal-typescript/';
   const page = read('src/pages/docs/integrations/frameworks/temporal-typescript.mdx');
