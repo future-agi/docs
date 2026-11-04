@@ -45,7 +45,7 @@ def auth_headers(mode: str) -> dict:
 
 def to_otlp_json(req) -> bytes:
     """OTLP/JSON, per the spec: trace and span ids are hex strings, not base64."""
-    doc = json.loads(MessageToJson(req))
+    doc = json.loads(MessageToJson(req, use_integers_for_enums=True))
 
     def fix(node):
         if isinstance(node, dict):
