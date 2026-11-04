@@ -114,6 +114,43 @@ test('all logo references have provenance, existing files, matching hashes and p
   const manifest = JSON.parse(read('public/images/integrations/manifest.json'));
   for (const i of integrations) assert.ok(manifest.assets[i.logo],`Missing logo record: ${i.logo}`);
 });
+test('Qdrant Java uses released Central coordinates and a complete blocking example', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## Qdrant\n')[1].split('\n## Milvus')[0];
+  assert.match(section, /<groupId>com\.futureagi<\/groupId>/);
+  assert.match(section, /<artifactId>traceai-java-qdrant<\/artifactId>\s*<version>1\.0\.0<\/version>/);
+  assert.match(section, /implementation 'com\.futureagi:traceai-java-qdrant:1\.0\.0'/);
+  assert.match(section, /implementation 'io\.qdrant:client:1\.16\.2'/);
+  const gradle = section.match(/```groovy Gradle\n([\s\S]*?)```/)[1];
+  assert.match(gradle, /repositories\s*\{\s*mavenCentral\(\)\s*\}/);
+  assert.match(gradle, /dependencies\s*\{/);
+  assert.doesNotMatch(gradle, /traceai-java-core/);
+  assert.match(page, /For Qdrant, follow the Maven Central installation below \*\*instead of\*\* that page's JitPack installation/);
+  assert.match(section, /Replace any existing JitPack TraceAI core and Qdrant dependencies/);
+  assert.match(section, /com\.futureagi:traceai-java-core:1\.0\.0` transitively/);
+  assert.doesNotMatch(section, /main-SNAPSHOT|com\.github\.future-agi/);
+  assert.match(section, /blocking methods/);
+  assert.match(section, /unwrap\(\).*bypass/);
+  assert.match(section, /public class QdrantExample/);
+  assert.match(section, /import io\.qdrant\.client\.grpc\.Collections\.Distance;/);
+  assert.match(section, /TraceAI\.shutdown\(\)/);
+  assert.doesNotMatch(section, /queryVector|pointsList|queryAsync\(/);
+});
+test('Qdrant Java configures export and discloses the pinned upsert metadata limitation', () => {
+  const page = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx');
+  const section = page.split('## Qdrant\n')[1].split('\n## Milvus')[0];
+  const environment = section.match(/```bash\n([\s\S]*?)```/)[1];
+  assert.match(environment, /^export FI_BASE_URL="https:\/\/api\.futureagi\.com"$/m);
+  assert.match(environment, /^export FI_API_KEY="your-fi-api-key"$/m);
+  assert.match(environment, /^export FI_SECRET_KEY="your-fi-secret-key"$/m);
+  assert.match(section, /credentials alone do not enable span export/);
+  assert.match(section, /<Warning>\s*With `traceai-java-qdrant:1\.0\.0` and Qdrant SDK `1\.16\.2`/);
+  assert.match(section, /"Qdrant Upsert" spans incorrectly report `embedding\.dimensions` as `0`/);
+  assert.match(section, /Do not rely on this upsert field/);
+  assert.match(section, /use your collection configuration instead/);
+  assert.match(page, /\| `embedding\.dimensions` \|[^\n]*\[Qdrant limitation\]\(#qdrant\)/);
+});
+
 test('machine-readable overview serializes every catalog entry and setup aid', () => {
   const text = integrationDirectoryMarkdown();
   for (const entry of integrations) {
