@@ -1,3 +1,4 @@
+import './prismml-page.test.mjs';
 import './langsmith-page.test.mjs';
 import './vercel-platform-page.test.mjs';
 import './scalekit-page.test.mjs';
