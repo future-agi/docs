@@ -119,6 +119,8 @@ start_service() { # name project fi_base_url [python] [extra env...]
 }
 stop_service() { # [signal]
   [ -n "$SERVICE_PID" ] || return 0
+  # SIGKILL cannot be forwarded by Hypercorn's supervisor, so kill its worker too.
+  [ "${1:-TERM}" = KILL ] && pkill -KILL -P "$SERVICE_PID" 2>/dev/null || true
   kill "-${1:-TERM}" "$SERVICE_PID" 2>/dev/null || true
   wait "$SERVICE_PID" 2>/dev/null || true
   SERVICE_PID=""

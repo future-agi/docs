@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'helicone', name: 'Helicone', href: '/docs/integrations/gateways/helicone', category: 'gateways', summary: 'Trace OpenAI-client calls through a self-hosted Helicone gateway.', method: 'OpenAI client', logo: 'generic-framework' },
   {"id": "cloudflare-agents", "name": "Cloudflare Agents", "href": "/docs/integrations/frameworks/cloudflare-agents", "category": "frameworks", "summary": "Trace awaited HTTP generateText turns through a collector.", "method": "Workers OTLP", "logo": "generic-framework"},
   { id: 'quarkus-langchain4j', name: 'Quarkus LangChain4j', href: '/docs/integrations/traceai/java/quarkus-langchain4j', category: 'java', summary: 'Export synchronous JVM AI-service spans to a self-hosted collector.', method: 'Native OTLP', logo: 'generic-framework' },
   {"id": "cloudflare-ai-chat", "name": "Cloudflare AI Chat", "href": "/docs/integrations/frameworks/cloudflare-ai-chat", "category": "frameworks", "summary": "Trace deployed AIChatAgent chat turns through a collector.", "method": "Workers OTLP", "logo": "generic-framework"},
@@ -48,6 +49,7 @@ export const integrations = [
   { id: 'pi', name: 'Pi', href: '/docs/integrations/coding-agents/pi', category: 'coding', summary: 'Trace upstream Pi sessions through a local extension.', method: 'Pi extension', logo: 'generic-framework' },
   { id: 'openclaw', name: 'OpenClaw', href: '/docs/integrations/coding-agents/openclaw', category: 'coding', summary: 'Export supported CLI and Gateway agent-turn traces.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'opencode', name: 'OpenCode', href: '/docs/integrations/coding-agents/opencode', category: 'coding', summary: 'Trace terminal agent sessions, model steps and tools.', method: 'OpenCode plugin', logo: 'generic-framework' },
+  { id: 'azure-ai-foundry', name: 'Azure AI Foundry', href: '/docs/integrations/frameworks/azure-ai-foundry', category: 'frameworks', summary: 'Trace Python project and Responses calls with native instrumentation.', method: 'Native OpenTelemetry', logo: 'generic-framework', aliases: ['Microsoft Foundry', 'Azure agents'] },
   { id: 'openllmetry', name: 'OpenLLMetry', href: '/docs/integrations/otel/openllmetry', category: 'frameworks', summary: 'Forward Traceloop SDK traces with OTLP/HTTP.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Traceloop'] },
   {"id": "openlit", "name": "OpenLIT", "href": "/docs/integrations/traceai/openlit", "category": "frameworks", "summary": "Export synchronous Python OpenAI spans with OpenLIT.", "method": "Native OTLP", "logo": "generic-framework"},
   { id: 'gradio', name: 'Gradio', href: '/docs/integrations/traceai/gradio', category: 'frameworks', summary: 'Trace synchronous chat callbacks through their model client.', method: 'OpenAI client', logo: 'generic-framework' },
@@ -89,6 +91,7 @@ export const integrations = [
   { id: 'mastra', name: 'Mastra', href: '/docs/integrations/traceai/mastra', category: 'frameworks', summary: 'Trace TypeScript agents and workflows in Mastra.', method: 'traceAI SDK', logo: 'mastra' },
   { id: 'vercel-ai-sdk', name: 'Vercel AI SDK', href: '/docs/integrations/traceai/vercel', category: 'frameworks', summary: 'Capture model and tool calls from the Vercel AI SDK.', method: 'traceAI SDK', logo: 'vercel' },
   { id: 'vercel-platform', name: 'Vercel / Next.js', href: '/docs/integrations/runtimes/vercel', category: 'frameworks', summary: 'Export native Next.js request spans directly over OTLP/HTTP.', method: 'Native OTLP', logo: 'vercel', aliases: ['Vercel platform', 'Next.js', '@vercel/otel'] },
+  { id: 'scalekit', name: 'Scalekit', href: '/docs/integrations/frameworks/scalekit', category: 'frameworks', summary: 'Trace Node.js executeTool calls as privacy-conscious tool spans.', method: 'OpenTelemetry', logo: 'generic-framework' },
   { id: 'tanstack-ai', name: 'TanStack AI', href: '/docs/integrations/frameworks/tanstack-ai', category: 'frameworks', summary: 'Send otelMiddleware chat, model-call and tool spans from Node.js.', method: 'OpenTelemetry', logo: 'generic-framework', aliases: ['TanStack'] },
   { id: 'agentscope', name: 'AgentScope', href: '/docs/integrations/frameworks/agentscope', category: 'frameworks', summary: 'Export native agent, model and tool spans.', method: 'OpenTelemetry', logo: 'agentscope' },
   { id: 'apollo-graphql', name: 'Apollo Server', href: '/docs/integrations/frameworks/apollo-graphql', category: 'frameworks', summary: 'Trace GraphQL operations and resolvers in Server 4.', method: 'OpenTelemetry', logo: 'apollo', aliases: ['Apollo GraphQL'] },
@@ -105,6 +108,7 @@ export const integrations = [
   { id: 'swiftide', name: 'Swiftide', href: '/docs/integrations/frameworks/swiftide', category: 'frameworks', summary: 'Send typed Rust agent, model and tool spans through an OpenTelemetry Collector.', method: 'OpenTelemetry', logo: 'swiftide', aliases: ['Rust'] },
   { id: 'temporal', name: 'Temporal', href: '/docs/integrations/frameworks/temporal', category: 'frameworks', summary: 'Follow Python workflows, activities and model calls.', method: 'OTel + traceAI', logo: 'temporal' },
   { id: 'temporal-typescript', name: 'Temporal TypeScript', href: '/docs/integrations/frameworks/temporal-typescript', category: 'frameworks', summary: 'Trace TypeScript workflows and activities with the native plugin.', method: 'OpenTelemetry', logo: 'temporal', aliases: ['Temporal JS', 'Temporal Node.js'] },
+  { id: 'temporal-go', name: 'Temporal Go', href: '/docs/integrations/frameworks/temporal-go', category: 'frameworks', summary: 'Trace Go workflows and activities with the official OTel interceptor.', method: 'OpenTelemetry', logo: 'temporal', aliases: ['Go Temporal'] },
   { id: 'watsonx-orchestrate-adk', name: 'watsonx Orchestrate ADK', href: '/docs/integrations/frameworks/watsonx-orchestrate-adk', category: 'frameworks', summary: 'Forward Agentic SDK spans through a collector.', method: 'OTel collector', logo: 'watsonx', aliases: ['IBM', 'Agentic SDK'] },
   { id: 'langfuse-sdk', name: 'Langfuse SDK', href: '/docs/sdk/tracing/langfuse-integration', category: 'frameworks', summary: 'Send new traces with Langfuse SDK instrumentation.', method: 'SDK tracing', logo: 'langfuse', sharedGuide: true },
 
