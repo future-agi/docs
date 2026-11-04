@@ -52,6 +52,7 @@ def _bearer(value):
 class MockHelicone:
     def __init__(self, helicone_key: str, host: str = "127.0.0.1", port: int = 0):
         self.helicone_key = helicone_key
+        self.response_model: str | None = None
         self.requests: list[dict] = []
         self._lock = threading.Lock()
         mock = self
@@ -106,7 +107,7 @@ class MockHelicone:
                     return self._send_json(
                         500, {"error": {"message": f"mock provider failure {ERROR_BODY_MARKER}", "type": "server_error"}}
                     )
-                response_model = model.split("/", 1)[-1]  # the gateway reports the resolved model, no provider prefix
+                response_model = mock.response_model or model.split("/", 1)[-1]  # a resolved model can differ from the request
                 msgs = body.get("messages", [])
                 has_tool_result = any(m.get("role") == "tool" for m in msgs)
                 wants_tool = bool(body.get("tools")) and not has_tool_result

@@ -41,6 +41,8 @@ npm ci
 DEMO_SCENARIOS=chat FI_PROJECT_NAME=helicone-demo-ts node run-demo.ts
 ```
 
-Open **Observe** and select `helicone-demo` or `helicone-demo-ts`. The model and token usage appear on the LLM span when the upstream returns them. The Python stream requests usage with `stream_options={"include_usage": True}`. A short-lived process flushes spans before exit.
+Open **Observe** and select `helicone-demo` or `helicone-demo-ts`. Non-streamed calls use the response model and token usage when supplied by the upstream. Streamed calls in both SDKs retain the requested model, not the response model, in span model attributes; they do not establish which model the gateway ultimately served. Use non-streamed calls when you need the resolved model identity.
+
+The Python stream above requests usage with `stream_options={"include_usage": True}` and records token counts when the upstream sends them. **TypeScript `@traceai/openai` 0.1.15 does not map streamed Chat Completions token usage to span attributes**, even with `stream_options: { include_usage: true }`. Use Python when you need streamed token metrics. A short-lived process flushes spans before exit.
 
 To exclude prompt and response content from Future AGI spans, set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` **before** starting either example. For Python, also set `FI_HIDE_LLM_INVOCATION_PARAMETERS=true` to hide invocation parameters. **TypeScript does not mask tool definitions or `gen_ai.request.parameters`** with these flags; use Python instead if tool schemas or invocation parameters are sensitive. Helicone still receives the requests because it handles the gateway calls.

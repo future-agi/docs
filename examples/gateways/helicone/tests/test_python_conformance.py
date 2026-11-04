@@ -262,19 +262,27 @@ def test_native_hide_error_details_removes_error_details(run_python):
 
 
 @pytest.mark.parametrize("include_usage", [True, False])
-def test_streaming(run_python, include_usage):
-    """R-07: streamed text is captured; usage only when the stream carries it; no usage is not zero."""
+def test_streaming(run_python, mock, include_usage):
+    """Stream usage is optional; the span keeps the requested, not the returned, model."""
+    mock.response_model = "resolved-stream-model"
     args = ["--scenario", "stream"] + ([] if include_usage else ["--no-stream-usage"])
     run = run_python("gateway", args, expect_spans=2)
+    assert run.proc.returncode == 0, run.proc.stderr[-1500:]
+    assert run.summary["scenarios"]["stream"] is True
+    [request] = mock.requests
+    assert request["body"]["model"] == "openai/gpt-4o-mini"
+    assert bool(request["body"].get("stream_options", {}).get("include_usage")) == include_usage
     llm = run.by_kind("LLM")
     assert len(llm) == 1
     attrs = llm[0].attributes
     if include_usage:
         assert attrs["gen_ai.usage.total_tokens"] == 72
         assert attrs["gen_ai.usage.input_tokens"] == 63
+        assert attrs["gen_ai.usage.output_tokens"] == 9
     else:
-        assert "gen_ai.usage.total_tokens" not in attrs
-    assert attrs["gen_ai.request.model"] == "openai/gpt-4o-mini"
+        assert not any(k.startswith("gen_ai.usage.") for k in attrs)
+    assert attrs["gen_ai.request.model"] == request["body"]["model"] != mock.response_model
+    assert "gen_ai.response.model" not in attrs
     assert attrs["output.value"].startswith("It is 21C") and MARKER in attrs["output.value"]
 
 

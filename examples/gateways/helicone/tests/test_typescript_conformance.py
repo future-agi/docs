@@ -96,13 +96,25 @@ def test_helicone_headers_and_keys_stay_out_of_spans(run_ts, mock, surface):
         assert "session.id" not in s.attributes and "user.id" not in s.attributes
 
 
-def test_streamed_call(run_ts):
-    """A streamed call carries its output but omits usage when the response has none."""
-    _, _, cap = run_ts("gateway", scenarios="stream", expect_spans=1)
+def test_streamed_usage_and_model_limits(run_ts, mock):
+    """0.1.15 keeps the request model and omits usage attributes even with a usage chunk."""
+    mock.response_model = "resolved-stream-model"
+    proc, summary, cap = run_ts("gateway", scenarios="stream", expect_spans=1)
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    assert summary["scenarios"]["stream"] is True
+    [request] = mock.requests
+    assert request["body"]["model"] == "openai/gpt-4o-mini"
+    assert request["body"]["stream_options"] == {"include_usage": True}
     [span] = cap.spans
-    assert span.attributes["output.value"].startswith("It is 21C")
-    assert span.attributes["gen_ai.request.model"] == "openai/gpt-4o-mini"
-    assert "gen_ai.usage.total_tokens" not in span.attributes
+    attrs = span.attributes
+    assert attrs["output.value"].startswith("It is 21C")
+    chunks = json.loads(attrs["raw.output"])
+    assert chunks and all(c["model"] == mock.response_model for c in chunks)
+    assert chunks[-1]["choices"] == []
+    assert chunks[-1]["usage"] == {"prompt_tokens": 63, "completion_tokens": 9, "total_tokens": 72}
+    assert attrs["gen_ai.request.model"] == request["body"]["model"] != mock.response_model
+    assert "gen_ai.response.model" not in attrs
+    assert not any(k.startswith("gen_ai.usage.") for k in attrs)
     assert span.status_code == 0
 
 
