@@ -54,6 +54,50 @@ test('OpenAI C# guide uses native chat tracing with authenticated traces-only ex
   assert.doesNotMatch(page, /TraceAI.Register|AddOtlpMetricExporter|AddOtlpLogExporter/);
 });
 
+test('Python AI SDK guide exports authenticated native OTLP spans with content capture disabled', () => {
+  const guide = integrations.find(item => item.id === 'vercel-ai-sdk-python');
+  assert.equal(guide?.method, 'OpenTelemetry');
+  assert.notEqual(guide.href, integrations.find(item => item.id === 'vercel-ai-sdk').href);
+  const page = read('src/pages/docs/integrations/frameworks/vercel-ai-sdk-python.mdx');
+  for (const setting of [
+    'ai[openai,otel]>=0.4.0,<0.9', 'register(OtelAdapter(tracer_provider=provider, capture_content=False))',
+    'https://api.futureagi.com/tracer/v1/traces', '"project_name": os.environ["FI_PROJECT_NAME"]',
+    '"project_type": "observe"', '"x-api-key": os.environ["FI_API_KEY"]',
+    '"x-secret-key": os.environ["FI_SECRET_KEY"]', 'provider.shutdown()',
+  ]) assert.ok(page.includes(setting), setting);
+  assert.match(page, /exception text in the span's error status/);
+  assert.doesNotMatch(page, /traceAI-[a-z]+|from traceai_/);
+});
+
+test('Python AI SDK guide limits the content exclusion guarantee and discloses tool metadata', () => {
+  const page = read('src/pages/docs/integrations/frameworks/vercel-ai-sdk-python.mdx');
+  const privacy = page.split('## Content and privacy')[1]?.split('## Troubleshooting')[0];
+  assert.ok(privacy, 'Keep the native content and privacy guidance');
+  assert.match(privacy, /`capture_content=False` keeps prompt and completion messages, tool arguments and tool results out/);
+  assert.doesNotMatch(privacy, /`capture_content=False` keeps[^.]*tool definitions/);
+  assert.match(privacy, /Tool names and descriptions, including tool docstrings, are exported independently of `capture_content`/);
+  assert.match(privacy, /Remove sensitive text from tool names and descriptions/);
+  assert.match(privacy, /OpenTelemetry Collector configured to redact those attributes before forwarding to Future AGI/);
+  assert.match(privacy, /exception text in the span's error status/);
+  assert.match(privacy, /custom span attributes or events you add yourself/);
+});
+
+test('Python AI SDK guide explains the native masking boundary beside content opt-in', () => {
+  const page = read('src/pages/docs/integrations/frameworks/vercel-ai-sdk-python.mdx');
+  const privacy = page.split('## Content and privacy')[1]?.split('## Troubleshooting')[0];
+  const optIn = privacy?.split(/\n\s*\n/).find(paragraph => paragraph.includes('`capture_content=True`'));
+  assert.ok(optIn, 'Keep the masking boundary beside the content opt-in');
+  for (const setting of ['FI_HIDE_INPUTS', 'FI_HIDE_OUTPUTS', 'FI_HIDE_ERROR_DETAILS']) {
+    assert.ok(optIn.includes(`\`${setting}\``), `Explain the native boundary for ${setting}`);
+  }
+  assert.match(optIn, /other traceAI masking settings do not sanitize this native OpenTelemetry route/);
+  assert.match(optIn, /native content controls and your pre-export redaction policy/);
+  assert.match(optIn, /do not rely on `FI_HIDE_\*` to filter captured payloads/);
+  const troubleshooting = page.split('## Troubleshooting')[1];
+  assert.match(troubleshooting, /\[content and privacy\]\(#content-and-privacy\) before switching to `capture_content=True`/);
+  assert.match(troubleshooting, /`FI_HIDE_\*` settings do not filter this native route/);
+});
+
 test('catalog validates required fields, unique IDs/categories and route shape', () => {
   assert.equal(validateIntegrations(), true);
   for (const patch of [{id:'BAD'}, {href:'https://example.com'}, {category:'unknown'}, {name:''}, {summary:5}, {method:'Not tested'}, {method:'Alpha'}]) assert.throws(() => validateIntegrations([{...integrations[0],...patch}]));
