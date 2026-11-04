@@ -1,0 +1,285 @@
+---
+title: "Runs"
+description: "Start simulation runs from the CLI, wait for a pass rate, read results and trials, and gate CI with --fail-under"
+---
+
+`fi sim run` starts one cloud run of an environment's suite against an agent version, and `fi sim runs` follows it, reads its results and acts on it. A run plays each selected scenario `--trials` times; each play is one call (also called a trial), and every call is graded; [Run a simulation](/docs/environments/guides/run-a-simulation) describes the same run in the dashboard.
+
+## In this page
+
+Preview and start a run, wait for it with a pass-rate gate, then list, follow and read runs, inspect one trial, re-run calls, cancel and ask for Insights. The last sections give the results JSON shape, a GitHub Actions gate and `fi evals test`.
+
+## Start a run
+
+```bash
+futureagi sim run --env ENV_ID --suite SUITE_VERSION_ID --dry-run
+futureagi sim run --env ENV_ID --suite SUITE_VERSION_ID --yes
+```
+
+The run starts in the cloud and the command returns at once with the Run ID (`job_id`), the run's other IDs, the versions it pinned and the server's warnings. Closing the terminal never cancels the run; check on it later with `fi sim runs status RUN_ID`. `ENV_ID` is the `ID` column of `fi sim env list`, `SUITE_VERSION_ID` is the `ID` of the row whose `IS_DEFAULT` is `true` in `fi sim suites list --env ENV_ID`. For `--agent-version` and `--environment-version`, `VERSION_ID` is a row's `ID` column in `fi sim env versions list ENV_ID`; an agent version is also the `version_id` that `fi agents push` prints.
+
+| Flag | What it does |
+|---|---|
+| `--env ENV_ID` | The environment (required) |
+| `--suite SUITE_VERSION_ID` | The suite version to play (required) |
+| `--agent-version VERSION_ID` | Agent version (default: the environment's default agent version; if it has none, the command exits 2 and lists the versions you can pass) |
+| `--environment-version VERSION_ID` | Environment version (default: the environment's default) |
+| `--scenario KEY` | Play only this scenario key of the suite; repeatable. A key not in the suite exits 2 |
+| `--trials N` | Times each scenario plays, 1-20 (default 1) |
+| `--dry-run` | Preview the run without starting it |
+| `--idempotency-key KEY` | Key for the run (default: a new UUID, printed to stderr first) |
+| `--wait`, `--interval N` | Wait until the run and its grading end, polling every N seconds (default 2) |
+| `--fail-under X` | With `--wait`, exit 5 when the pass rate is below X, from 0.0 to 1.0 |
+
+A run is charged, so it asks for confirmation on a terminal. Without a terminal or with `--no-input`, pass `--yes`, or it exits 2 and sends nothing. A version the run cannot use, such as a draft or discarded version, or an agent version that has not passed its test (see [Agents](/docs/cli/agents)), also exits 2 before anything is sent.
+
+### Preview with `--dry-run`
+
+`--dry-run` shows the run a selection would start: the agent, environment and suite versions it would pin, each scenario and its repeats, the server's warnings (for example that the agent version differs from the one the environment was built with) and `blocked`. It creates nothing, uses nothing and is not charged; it is not a cost estimate. It exits 0 whenever the preview is read, even when the selection is blocked, so a script should read `blocked` from `--json`.
+
+The preview's readiness checks always show `unavailable` for now; read `blocked` and the warnings instead.
+
+### Retry safely with the idempotency key
+
+The run request is sent once and never resent on its own. If the command times out or exits 6, rerun it with the same `--idempotency-key`: the server returns the run it already started instead of starting a second one. A different selection needs a new key; reusing a key with other flags exits 2.
+
+```bash
+futureagi sim run --env ENV_ID --suite SUITE_VERSION_ID --idempotency-key release-42 --yes
+```
+
+## Wait and gate on the pass rate
+
+```bash
+futureagi sim run --env ENV_ID --suite SUITE_VERSION_ID --yes --wait --fail-under 0.8 --timeout 45m
+```
+
+`--wait` follows the run as `fi sim runs status --wait` does: it waits for the run to end, then for its grading. The pass rate is passed / (passed + failed) over the whole run.
+
+| Exit | When |
+|---|---|
+| 0 | The run and its grading completed, every scenario was measured, and the pass rate is at least `--fail-under` |
+| 5 | The run completed and was fully measured, but the pass rate is below `--fail-under` |
+| 6 | The run failed, was canceled or is partial (a scenario unmeasured, errored, skipped or not fully graded), there is no valid result, or `--timeout` ended the wait |
+
+`--timeout` bounds the whole wait (without it the wait has no limit) and prints the command to reconnect. Ctrl-C stops the waiting, never the run, and the same is true for every other `--wait` and `--follow` in the CLI. `fi sim runs status RUN_ID --wait --fail-under 0.8` attaches to a run that is already going and applies the same gate.
+
+## Find and follow runs
+
+| Command | What it does |
+|---|---|
+| `fi sim runs list` | Runs in the workspace, newest first, with state and call counts. The `RUN_ID` is the `EXECUTION_METADATA.HARNESS_JOB_ID` column (`execution_metadata.harness_job_id` in JSON), not `ID`, which is the test execution ID. `--env ENV_ID` lists that environment's runs with their pinned versions and outcome counts, but its rows carry no `RUN_ID`; `--status` (`pending`, `running`, `completed`, `failed`, `cancelled`, `cancelling` or `evaluating`) and `--search` filter |
+| `fi sim runs status RUN_ID` | State and stage, pinned versions, per-scenario result counts, failure, consumption, the run's other IDs and `web_url`. `--wait` and `--fail-under` as above |
+| `fi sim runs logs RUN_ID` | The run's events, oldest first: stage changes, scenario starts and retries, log lines from the run. `-f`/`--follow` prints new events until the run ends; `--scenario KEY` and `-n N` filter (see below) |
+
+To find a `RUN_ID`, list without `--env` and narrow with `--search` or a small `--limit`. `SUCCESS_RATE` in the list is the server's share of calls that completed, not the pass rate: a run whose only call failed shows 100.0. Use `fi sim runs status` or `fi sim runs results` for the pass rate.
+
+Without `--env`, each row of `fi sim runs list` carries every call and transcript, so a page of large runs can pass the 8 MiB response limit (exit 1): lower `--limit` or add `--env`. `fi sim runs logs` sees only the latest attempt's newest 100 events. `--scenario KEY` takes the trial key from the `PAYLOAD.SCENARIO_KEY` column, not the suite scenario key; `-n N` prints only the last N events; `--after N --attempt N` prints the events after sequence N of that attempt (sequences restart at 1 on each attempt). `--follow` exits 0 when the run ends, whatever its outcome (6 if `--timeout` stops it first), so gate with `fi sim runs status --wait` instead.
+
+To open a run in the dashboard, build its path from the `environment_id`, `run_test_id` and `test_execution_id` rows of `fi sim runs status`: `/dashboard/simulate/environments/ENV_ID/runs/RUN_TEST_ID/TEST_EXECUTION_ID/call-details`. Open it on your dashboard host: for Cloud, `https://app.futureagi.com` followed by the path. The `web_url` row is a legacy path (`/dashboard/simulate/test/...`) that can show a not-found page.
+
+`RUN_ID` is the `job_id` (also `id` in the results JSON). The `run_id`, `run_test_id` and `test_execution_id` fields are the platform's own IDs, and `fi sim runs` commands do not accept them.
+
+## Read results
+
+```bash
+futureagi sim runs results RUN_ID
+futureagi sim runs results RUN_ID --status failed,error --json
+```
+
+`fi sim runs results` prints the run's pinned versions, scenario count and trials, its outcome counts and consumption, then one page of calls (50 by default, up to 500 with `--limit`). The table shows counts only; the pass rate is `summary.pass_rate` in `--json`. It is read-only and exits 0 whatever the outcome, unless you add `--fail-under`.
+
+| Flag | What it does |
+|---|---|
+| `--status`, `--status-not` | Keep or leave out calls by outcome: `queued`, `in_progress`, `passed`, `failed`, `inconclusive`, `error` |
+| `--goal-outcome` | Keep calls by goal outcome, which also takes `escalated` |
+| `--search TEXT` | Match the goal, scenario name, end reason or error message |
+| `--ordering FIELD` | `started_at`, `duration_seconds`, `latency_ms`, `turn_count`, `tokens`, `cost_cents`, `scenario`, `goal` or `outcome`; a leading `-` sorts descending (default `-started_at`) |
+| `--page`, `--limit` | Page through the calls |
+| `--fail-under X` | Exit 5 when the whole run's pass rate is below X, and 6 when the run is not complete or fully measured. Not with filters |
+
+The header always counts the whole run; `matched` is how many calls the filters kept. Tokens and cost that are not measured yet print `pending`, or `unknown` once the run ended, never 0.
+
+### Verdicts
+
+Each call has the platform's **outcome** and a **result_state** that separates a measured result from one that was never measured.
+
+| result_state | Meaning |
+|---|---|
+| `pass` | The call was measured and passed its checks |
+| `fail` | The call was measured and failed a check |
+| `unmeasured` | No verdict: inconclusive, queued, in progress or skipped |
+| `grader_error` | A passed or inconclusive call whose grading failed or timed out. A failed call stays `fail`, because a failed check already decides it |
+| `errored` | The agent, simulator or environment broke before there was a result |
+
+Only `pass` and `fail` count toward the pass rate, and a run with any call that is not measured cannot pass a `--fail-under` gate: it exits 6. A call's `final` is true once the call has ended and its scoring is done; the run header's `final` is true once the whole run and its grading ended.
+
+### Results JSON
+
+`--json` prints one object with the run header, the page of calls and pagination:
+
+```json
+{
+  "run": {
+    "id": "RUN_ID",
+    "job_id": "RUN_ID",
+    "run_id": "…",
+    "run_test_id": "…",
+    "test_execution_id": "…",
+    "state": "completed",
+    "execution_status": "completed",
+    "final": true,
+    "versions": {
+      "agent": { "id": "…", "label": "v4" },
+      "environment": { "id": "…", "label": "v2" },
+      "suite": { "id": "…", "label": "v2" }
+    },
+    "scenario_count": 12,
+    "trials": 1,
+    "summary": {
+      "total": 12,
+      "measured": 12,
+      "pass_rate": 83.33,
+      "outcomes": { "passed": 10, "failed": 2, "inconclusive": 0, "error": 0, "queued": 0, "in_progress": 0 },
+      "duration": { "average": 41.5, "p50": null, "p95": null }
+    },
+    "consumption": { "tokens": { "value": 184220, "measured": 12, "of": 12 }, "cost_cents": "unknown" },
+    "web_url": "/dashboard/simulate/test/…/call-details"
+  },
+  "results": [
+    {
+      "id": "CALL_ID",
+      "source_scenario_key": "cancel-booking-with-fee",
+      "trial_index": 1,
+      "outcome": "failed",
+      "result_state": "fail",
+      "final": true,
+      "scoring_status": "succeeded",
+      "duration_seconds": 52,
+      "turn_count": 9,
+      "goal": "…",
+      "ended_reason": "…",
+      "sub_goal_results": [],
+      "evaluations": []
+    }
+  ],
+  "count": 12,
+  "next": null
+}
+```
+
+`summary.pass_rate` is a percentage from 0 to 100. The duration percentiles can be `null`. Each `consumption` value is `pending`, `unknown` or an object with the measured `value` and how many calls were `measured` `of` the total. With `--fail-under`, the run header also gets a top-level `pass_rate` as a fraction from 0 to 1, the scale the gate uses.
+
+Each call row also carries the scenario, persona, latency, tokens and cost. `-o jsonl` prints one call per line and the next page on stderr; use `--json` when you need the run header.
+
+## Inspect one trial
+
+```bash
+futureagi sim runs trial show RUN_ID CALL_ID --include checks,transcript
+futureagi sim runs trial show RUN_ID CALL_ID --file trial.json
+```
+
+`CALL_ID` is the `id` column of `fi sim runs results`. The sections are `input` (goal, persona, scenario and sub-goals), `transcript`, `tools` (the recorded tool calls), `state`, `artifacts` (recordings) and `checks` (each sub-goal and evaluation with its verdict and reason). `--include` takes a comma-separated list of these sections and prints only those; the header and `attempts` (earlier attempts of the call) always print. The header's `run_id` row is the `RUN_ID` you passed, not the `run_id` of `fi sim runs status`. A check's verdict is `passed`, `failed`, `unmeasured` or `grader_error`. Evidence the server does not return prints `unavailable`, never an empty value. `--file PATH` also writes the whole trial as JSON.
+
+## Act on a run
+
+| Command | What it does |
+|---|---|
+| `fi sim runs retry RUN_ID` | Re-run the run's interrupted calls (outcome `error`) as a new attempt of the same run; the other calls keep their results. `--call CALL_ID` picks calls instead; `--dry-run` lists them. Charged like a run, so it asks for confirmation |
+| `fi sim runs cancel RUN_ID` | Stop the run. Finished scenarios keep their results. Asks for confirmation; `--wait` waits until it has stopped. A run that already ended is left alone |
+| `fi sim runs insights RUN_ID` | Ask for Insights on a completed run: the platform's analysis of its failures, rolled up into findings. Charged (its investigations run model calls), so it asks for confirmation; pass `--yes` without a terminal; `--wait` exits 0 when it completed and 6 when it failed |
+| `fi sim runs insights show RUN_ID` | Show the Insights state and findings; `not_requested` until you ask |
+
+Retry and Insights take no idempotency key: after exit 6, check `fi sim runs status RUN_ID` before you repeat them. A repeated cancel is harmless.
+
+## Gate a CI build on the pass rate
+
+This GitHub Actions job installs the CLI and fails when fewer than 80% of measured calls pass. It needs a token that can read the private CLI repository, a personal key pair as secrets, and the workspace, environment and suite version IDs as variables. In a non-interactive shell `fi` is a reserved word too, so the steps call `futureagi`.
+
+```yaml
+name: Simulate
+on: [pull_request]
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install the Future AGI CLI
+        env:
+          GH_TOKEN: ${{ secrets.FUTUREAGI_CLI_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          GOPRIVATE='github.com/future-agi/*' GOBIN="$HOME/.local/bin" \
+            go install github.com/future-agi/futureagi-cli/cmd/fi@fi-cli-commands
+          ln -sf "$HOME/.local/bin/fi" "$HOME/.local/bin/futureagi"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run the suite and gate on the pass rate
+        env:
+          FI_API_KEY: ${{ secrets.FI_API_KEY }}
+          FI_SECRET_KEY: ${{ secrets.FI_SECRET_KEY }}
+        run: |
+          futureagi sim run \
+            --workspace "${{ vars.FI_WORKSPACE_ID }}" \
+            --env "${{ vars.FI_ENV_ID }}" \
+            --suite "${{ vars.FI_SUITE_VERSION_ID }}" \
+            --idempotency-key "ci-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --yes --no-input --wait --timeout 45m --fail-under 0.8
+```
+
+The key pair in `FI_API_KEY` and `FI_SECRET_KEY` is used directly, so the job never logs in. If you wrap the command in a retry (for example a retry action or a shell loop), each attempt reuses the key and gets the run already started; re-running the job increments `run_attempt` and starts a new run. Set `--timeout` longer than your run takes; 45m is an example. The step fails on exit 5 (pass rate too low) and on exit 6 (the run did not finish, or was partial). When the step times out or the job is canceled, the run keeps going in the cloud and is charged; cancel it with `futureagi sim runs cancel RUN_ID --yes --no-input`, taking the `RUN_ID` from the `started run` line on stderr. For a self-hosted install, add `FI_BASE_URL`.
+
+## Try an evaluation with fi evals test
+
+`fi evals test` runs one evaluation template once on sample inputs and prints its output and reason, without running a simulation. It is useful before you attach the evaluation to an environment. It uses eval credits and the model's provider key, and saves nothing except the platform's eval log.
+
+```bash
+futureagi evals test TEMPLATE_ID --input-json '{"output": "Your ride is booked for 9:30."}'
+futureagi evals test polite.yaml --input-json @inputs.json --model gemini/gemini-2.5-flash
+```
+
+`TEMPLATE_ID` is a saved template's ID; its exact name works too. A template file needs `schema_version`, `name` and `instructions`, with `{{placeholders}}` for the inputs; `model` and `output_type` are optional:
+
+```yaml
+schema_version: futureagi.eval_template.v1
+name: polite
+instructions: "Is {{output}} polite?"
+```
+
+| Argument or flag | What it does |
+|---|---|
+| `FILE`, `TEMPLATE_ID` or `NAME` | A local template file (JSON or YAML with `schema_version: futureagi.eval_template.v1`, LLM templates only), a saved template's ID, or its exact name |
+| `--input-json` | The template's inputs as a JSON object: inline, `@FILE` or `-` for stdin |
+| `--params` | A saved template's parameters, such as a code eval's `min_words` |
+| `--model` | The model to run with (default: the template's saved model) |
+| `--trace`, `--span`, `--session` | An Observe trace, span or session as context (saved templates only) |
+| `--call CALL_ID --run-test RUN_TEST_ID` | One simulation trial as context: `CALL_ID` is the `id` column of `fi sim runs results`, and `RUN_TEST_ID` is the `run_test_id` that `fi sim runs status` or `fi sim runs results` prints |
+
+Exit 0 when the evaluation returns any output, 2 when the server refuses a field or parameter, 3 when your plan does not include the evaluator's model, 4 when the template, the context trace, span or session, or the call is not found, and 6 when the evaluator errors or times out. There is no pass or fail gate, and the run is not idempotent: check the eval log before you repeat one that timed out.
+
+## Coming next
+
+These are planned and not in the CLI yet:
+
+- `fi sim local`, and `--mode` to run the agent on your machine instead of in the cloud
+- `--budget`, to cap what a run may spend
+
+## Keep exploring
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/docs/cli/quickstart">
+    A first gated run, step by step
+  </Card>
+  <Card title="Environments" icon="layer-group" href="/docs/cli/environments">
+    Suites, scenarios and evaluations a run uses
+  </Card>
+  <Card title="Read run results" icon="chart-mixed" href="/docs/environments/guides/read-run-results">
+    The same results in the dashboard
+  </Card>
+  <Card title="Debug failures" icon="magnifying-glass" href="/docs/environments/guides/debug-failures">
+    What Insights finds in a failing run
+  </Card>
+</CardGroup>
