@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'vitest', name: 'Vitest', href: '/docs/integrations/frameworks/vitest', category: 'frameworks', summary: 'Trace test runs and workers with native OpenTelemetry.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Vitest tests'] },
   { id: 'helicone', name: 'Helicone', href: '/docs/integrations/gateways/helicone', category: 'gateways', summary: 'Trace OpenAI-client calls through a self-hosted Helicone gateway.', method: 'OpenAI client', logo: 'generic-framework' },
   {"id": "cloudflare-agents", "name": "Cloudflare Agents", "href": "/docs/integrations/frameworks/cloudflare-agents", "category": "frameworks", "summary": "Trace awaited HTTP generateText turns through a collector.", "method": "Workers OTLP", "logo": "generic-framework"},
   { id: 'quarkus-langchain4j', name: 'Quarkus LangChain4j', href: '/docs/integrations/traceai/java/quarkus-langchain4j', category: 'java', summary: 'Export synchronous JVM AI-service spans to a self-hosted collector.', method: 'Native OTLP', logo: 'generic-framework' },

@@ -21,6 +21,21 @@ function flatten(list) { return list.flatMap(item => [item.href, ...(item.items 
 // Release labels are prose, not code samples, model names or package versions.
 export function publicProse(text) { return text.replace(/^\s*(```|~~~)[\s\S]*?^\s*\1.*$/gm, '').replace(/`+[^`]*`+/g, ''); }
 
+test('Vitest guide documents native test tracing without an evaluation-import claim', () => {
+  const page = read('src/pages/docs/integrations/frameworks/vitest.mdx');
+  const catalog = integrations.find(i => i.id === 'vitest');
+  const example = read('examples/frameworks/vitest/otel.mjs');
+  assert.equal(catalog?.method, 'Native OTLP');
+  assert.match(page, /5\.0\.5 or later/);
+  assert.match(page, /experimental:\s*\{/);
+  assert.match(page, /sdkPath: '\.\/otel\.mjs'/);
+  assert.match(page, /project_name: process\.env\.FI_PROJECT_NAME/);
+  assert.match(page, /https:\/\/api\.futureagi\.com\/tracer\/v1\/traces/);
+  assert.match(page, /does not turn tests into Future AGI evaluations/);
+  assert.match(example, /export default sdk/);
+  assert.doesNotMatch(page, /@traceai\/vitest|verified live|test date/i);
+});
+
 test('LlamaIndex distinguishes deprecated TypeScript from the supported Python guide', () => {
   const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
   const notice = page.split('## Install')[0];
