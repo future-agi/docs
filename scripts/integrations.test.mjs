@@ -3,6 +3,7 @@ import './azure-openai-java.test.mjs';
 import './langsmith-page.test.mjs';
 import './vercel-platform-page.test.mjs';
 import './scalekit-page.test.mjs';
+import './genkit-go-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -333,6 +334,30 @@ test('public prose and catalog labels contain no internal QA label or Alpha rele
   }
   for (const item of [...integrations,...integrationCategories,...integrationAids]) assert.doesNotMatch(JSON.stringify(item),/\bnot\s+tested\b|\balpha\b/i);
   assert.equal(publicProse('Beta. `pkg==1.0.0-alpha`\n```python\nmodel="alpha"\n```\n'),'Beta. \n\n');
+});
+
+test('Genkit Go uses native spans with an export-time privacy boundary', () => {
+  const guide = read('src/pages/docs/integrations/traceai/genkit-go.mdx');
+  const entry = integrations.find(item => item.id === 'genkit-go');
+  assert.equal(entry?.method, 'OpenTelemetry');
+  for (const contract of [
+    'github.com/firebase/genkit/go@v1.14.0',
+    'github.com/future-agi/traceAI/go/genkit@v0.1.0',
+    'FI_HIDE_INPUTS=true', 'FI_HIDE_OUTPUTS=true', 'FI_HIDE_ERROR_DETAILS=true',
+    'traceaigenkit.NewExporter(exporter, traceaigenkit.ConfigFromEnv())',
+    'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"',
+    '"X-Api-Key"', '"X-Secret-Key"',
+    'attribute.String("project_name", os.Getenv("FI_PROJECT_NAME"))',
+    'attribute.String("project_type", "observe")',
+    'ContentCapturingMode: otelgenai.NoContent', 'CaptureActionIO:      false',
+    'DisableMetrics:       true', 'tracing.SetInstrumentation(otelgenai.New(',
+    'genkit.Init(ctx', 'errors.Join(err, tp.Shutdown(shutdownCtx))',
+  ]) assert.ok(guide.includes(contract), contract);
+  assert.match(guide, /strips input, output, and error details/);
+  assert.match(guide, /unwrapped exporter bypasses privacy controls/);
+  assert.match(guide, /raw action data, including inline media/);
+  assert.match(guide, /Do not combine `otelgenai`/);
+  assert.doesNotMatch(guide, /traceAI-genkit-go|copy.*instrumentation helper/i);
 });
 
 test('Temporal Go uses the official extension and authenticated traces-only OTLP export', () => {
