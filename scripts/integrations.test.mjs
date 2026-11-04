@@ -335,6 +335,37 @@ test('public prose and catalog labels contain no internal QA label or Alpha rele
   assert.equal(publicProse('Beta. `pkg==1.0.0-alpha`\n```python\nmodel="alpha"\n```\n'),'Beta. \n\n');
 });
 
+test('Temporal TypeScript warns about incompatible histories before setup', () => {
+  const page = read('src/pages/docs/integrations/frameworks/temporal-typescript.mdx');
+  const prerequisites = page.split('## Set up tracing')[0];
+  const warning = [...prerequisites.matchAll(/<Warning>([\s\S]*?)<\/Warning>/g)]
+    .map(match => match[1]).find(text => text.includes('existing workflow histories'));
+  assert.ok(warning, 'Migration warning must appear before installation');
+  assert.match(warning, /Do not replace `@temporalio\/interceptors-opentelemetry` with `@temporalio\/interceptors-opentelemetry-v2` in place/);
+  assert.match(warning, /non-determinism errors on replay/);
+  assert.match(warning, /compatible original-interceptor workers until they complete/);
+  assert.match(warning, /Worker Versioning migration that preserves replay compatibility/);
+  assert.match(warning, /Use v2 for new executions/);
+});
+
+test('Temporal TypeScript documents and declares the OpenTelemetry Node.js minimum', () => {
+  const example = 'examples/frameworks/temporal-typescript/';
+  const page = read('src/pages/docs/integrations/frameworks/temporal-typescript.mdx');
+  const readme = read(example + 'README.md');
+  const manifest = JSON.parse(read(example + 'package.json'));
+  const lock = JSON.parse(read(example + 'package-lock.json'));
+  for (const text of [page, readme]) {
+    assert.match(text, /Node\.js 20\.6\.0 or newer/);
+    assert.match(text, /Node\.js 22 is recommended/);
+    assert.doesNotMatch(text, /Node\.js 20\.3/);
+  }
+  assert.equal(manifest.engines.node, '>=20.6.0');
+  assert.deepEqual(lock.packages[''].engines, manifest.engines);
+  for (const name of Object.keys(manifest.dependencies).filter(name => name.startsWith('@opentelemetry/'))) {
+    assert.equal(lock.packages['node_modules/' + name].engines.node, '^18.19.0 || >=20.6.0', name);
+  }
+});
+
 test('Temporal Go uses the official extension and authenticated traces-only OTLP export', () => {
   const page = read('src/pages/docs/integrations/frameworks/temporal-go.mdx');
   const catalog = integrations.find(i => i.id === 'temporal-go');
