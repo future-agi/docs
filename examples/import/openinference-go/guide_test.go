@@ -166,6 +166,32 @@ func checkTree(t *testing.T, spans map[string]*tracepb.Span, kinds map[string]st
 	}
 }
 
+func TestGuideLanguageTabs(t *testing.T) {
+	page, err := os.ReadFile(guidePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for language, marker := range map[string]string{
+		"Python":     "OpenAIInstrumentor().instrument(tracer_provider=provider)",
+		"Go":         "instrumentation.ApplyContextAttributes(ctx, agent)",
+		"TypeScript": "const planGarden = traceAgent(",
+		"Java":       "OpenInferenceAgent.register(new OITracer",
+	} {
+		pattern := `(?s)<Tab title="` + language + `">(.*?)</Tab>`
+		tabs := regexp.MustCompile(pattern).FindAllSubmatch(page, -1)
+		if len(tabs) != 1 {
+			t.Errorf("want one %s tab, got %d", language, len(tabs))
+			continue
+		}
+		if !bytes.Contains(tabs[0][1], []byte(marker)) {
+			t.Errorf("%s setup must remain in its own language tab", language)
+		}
+		if language != "Go" && bytes.Contains(tabs[0][1], []byte("```go\n")) {
+			t.Errorf("Go snippets must not appear in the %s tab", language)
+		}
+	}
+}
+
 func TestGuideInstallContract(t *testing.T) {
 	page, err := os.ReadFile(guidePath)
 	if err != nil {
