@@ -1,37 +1,7 @@
-"""Future AGI tracing for an agent hosted in Amazon Bedrock AgentCore Runtime.
+"""Historical test fixture for the pre-1.2.2 exporter bug, not application code.
 
-Copy this file next to your agent. It is a recipe, not a package. It does three things the
-runtime does not do for you once ADOT is disabled (``DISABLE_ADOT_OBSERVABILITY=true``):
-
-1. ``keep_future_agi_exporter(provider)`` keeps the Future AGI exporter on a provider made by
-   ``fi_instrumentation.register(..., set_global_tracer_provider=True)``. ``BedrockAgentCoreApp``
-   adds its own ``BaggageSpanProcessor`` to the global provider (when the app is built, and again
-   on a request after the global provider changed). ``register()`` marks its exporter as a replaceable default, and the first
-   ``add_span_processor()`` call removes it, so without this line no span is exported. The
-   exporter it adds is wrapped in ``ErrorTextExporter``: no stack trace is ever exported, and
-   when traceAI's ``TraceConfig`` hides content (``FI_HIDE_INPUTS``, ``FI_HIDE_OUTPUTS``, ...)
-   error spans keep the exception type name only. ``traceAI-langchain`` 0.2.0 writes LangChain's
-   formatted traceback (with local file paths) into the status of failing spans whatever the
-   ``FI_HIDE_*`` settings; this wrapper keeps it out of Future AGI.
-2. ``traced_invocation(context, ...)`` opens one root span per invocation and copies the AgentCore
-   session id (header ``X-Amzn-Bedrock-AgentCore-Runtime-Session-Id``, read by the SDK into
-   ``context.session_id``) to ``session.id``: on the root span, in the traceAI context (so
-   traceAI instrumentors stamp it on their spans) and in OpenTelemetry baggage (so a baggage
-   span processor can stamp it on spans of a framework that uses its own OpenTelemetry tracer).
-   When the request carries a W3C ``traceparent``, the root span links to the caller's span by
-   default and starts its own trace. Pass ``join_caller_trace=True`` to make the caller's span the
-   parent instead; do that only when the caller exports its spans to the same Future AGI project,
-   because Future AGI lists a trace by a span that has no parent, and a parent that never reaches
-   Future AGI hides the invocation from the trace list.
-3. It flushes the provider after the root span ends, on success and on error, because the
-   runtime can freeze or recycle the microVM after the response. The flush never raises.
-
-The root span carries no prompt, no response and no error text. On error its status
-description is the exception type name only.
-
-For a framework that exports with its own OpenTelemetry SDK (the Strands example),
-``ErrorTextExporter`` wraps the OTLP exporter the same way: never a stack trace, and with content
-off the exception type name only, never the exception message.
+Never import this fixture into an agent. Current examples use released packages.
+The pinned regression suite keeps the old failure, streaming and privacy evidence.
 """
 
 from __future__ import annotations

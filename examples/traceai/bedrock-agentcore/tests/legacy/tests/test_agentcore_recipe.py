@@ -439,7 +439,8 @@ def test_traceai_langchain_0_2_0_puts_the_traceback_in_the_status(memory_exporte
     Without keep_future_agi_exporter, and with FI_HIDE_INPUTS/FI_HIDE_OUTPUTS on, the failing
     LangChain spans carry LangChain's run.error: repr(error), then the formatted traceback with
     this file's path. If this test fails after a traceAI-langchain upgrade, the release fixed the
-    bug: update the note on the docs page (the wrapper stays harmless).
+    bug. This fixture only runs against the pinned historical releases; its workaround
+    must not be used with current releases because it adds a duplicate exporter.
     """
     monkeypatch.setenv("FI_HIDE_INPUTS", "true")
     monkeypatch.setenv("FI_HIDE_OUTPUTS", "true")

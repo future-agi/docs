@@ -24,7 +24,7 @@ def test_page_and_deployment_file_match():
 @pytest.mark.parametrize("entrypoint", ["agent_langchain.py", "agent_strands.py"])
 def test_required_keys_and_model_config_reach_runtime(monkeypatch, entrypoint):
     # Install requirements-deploy.txt to also verify published API signatures.
-    toolkit = pytest.importorskip("bedrock_agentcore_starter_toolkit")
+    import bedrock_agentcore_starter_toolkit as toolkit
     configure_signature = inspect.signature(toolkit.Runtime.configure)
     launch_signature = inspect.signature(toolkit.Runtime.launch)
     calls = {}
@@ -55,6 +55,7 @@ def test_required_keys_and_model_config_reach_runtime(monkeypatch, entrypoint):
     assert env["AGENT_MODEL"] == "fixture-model-id"
     if entrypoint == "agent_langchain.py":
         assert env["FI_API_KEY"] == "fixture-api" and env["FI_SECRET_KEY"] == "fixture-secret"
+        assert env["FI_HIDE_INPUTS"] == env["FI_HIDE_OUTPUTS"] == env["FI_HIDE_ERROR_DETAILS"] == "true"
     else:
         assert env["OTEL_EXPORTER_OTLP_HEADERS"] == "X-Api-Key=fixture-api,X-Secret-Key=fixture-secret"
         assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "https://api.futureagi.com/tracer/v1/traces"

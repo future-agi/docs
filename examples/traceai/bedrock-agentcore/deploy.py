@@ -5,7 +5,7 @@ from bedrock_agentcore_starter_toolkit import Runtime
 api_key = os.environ["FI_API_KEY"]
 secret_key = os.environ["FI_SECRET_KEY"]
 model_key = os.environ["OPENAI_API_KEY"]
-entrypoint = os.environ.get("AGENT_ENTRYPOINT", "agent_strands.py")
+entrypoint = os.environ.get("AGENT_ENTRYPOINT", "agent_langchain.py")
 if entrypoint not in {"agent_strands.py", "agent_langchain.py"}:
     raise ValueError("Choose agent_strands.py or agent_langchain.py")
 base_url = os.environ.get("FI_BASE_URL", "https://api.futureagi.com").rstrip("/")
@@ -18,10 +18,13 @@ env_vars = {
 }
 if entrypoint == "agent_langchain.py":
     env_vars.update(FI_API_KEY=api_key, FI_SECRET_KEY=secret_key,
-                    FI_BASE_URL=base_url, FI_PROJECT_NAME=project)
+                    FI_BASE_URL=base_url, FI_PROJECT_NAME=project,
+                    FI_HIDE_INPUTS=os.environ.get("FI_HIDE_INPUTS", "true"),
+                    FI_HIDE_OUTPUTS=os.environ.get("FI_HIDE_OUTPUTS", "true"),
+                    FI_HIDE_ERROR_DETAILS=os.environ.get("FI_HIDE_ERROR_DETAILS", "true"))
 else:
     env_vars.update({
-        "OTEL_EXPORTER_OTLP_ENDPOINT": base_url,
+        "OTEL_EXPORTER_OTLP_ENDPOINT": base_url + "/tracer",
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": base_url + "/tracer/v1/traces",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
         "OTEL_EXPORTER_OTLP_HEADERS": f"X-Api-Key={api_key},X-Secret-Key={secret_key}",
