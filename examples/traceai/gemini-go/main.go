@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -116,27 +115,12 @@ func run() error {
 		return err
 	}
 
-	// Spans this program starts itself obey the same FI_HIDE_* switches.
-	tc := traceaigenai.TraceConfigFromEnv()
 	tracer := tp.Tracer("gemini-go-example")
-
 	sessionCtx := traceaigenai.ContextWithSessionID(ctx, *session)
-	ctx, agent := tracer.Start(sessionCtx, "weather-agent", trace.WithAttributes(
-		attribute.String(traceaigenai.GenAISpanKind, traceaigenai.SpanKindAgent),
-		attribute.String(traceaigenai.GenAIOperationName, "invoke_agent"),
-		attribute.String("gen_ai.agent.name", "weather-agent"),
-	), trace.WithAttributes(traceaigenai.ContextAttributes(sessionCtx)...))
-	tc.SetAttributes(agent, attribute.String(traceaigenai.InputValue, *question))
-	fmt.Printf("trace_id=%s session=%s\n", agent.SpanContext().TraceID(), *session)
-
-	answer, err := askWithTool(ctx, client, tracer, tc, *model, *question, *stream)
+	answer, err := runAgent(sessionCtx, client, tracer, *model, *question, *stream)
 	if err != nil {
-		agent.SetStatus(codes.Error, "agent failed")
-		agent.End()
 		return err
 	}
-	tc.SetAttributes(agent, attribute.String(traceaigenai.OutputValue, answer))
-	agent.End()
 	fmt.Println("answer:", answer)
 
 	if *fail {
@@ -152,7 +136,26 @@ func run() error {
 	return nil
 }
 
-func askWithTool(ctx context.Context, client *genai.Client, tracer trace.Tracer, tc traceaigenai.TraceConfig,
+// Custom spans carry identity, session and status metadata only. Content is
+// recorded only by the traced client, which applies its FI_HIDE_* switches.
+func runAgent(sessionCtx context.Context, client *genai.Client, tracer trace.Tracer,
+	model, question string, stream bool) (string, error) {
+	ctx, agent := tracer.Start(sessionCtx, "weather-agent", trace.WithAttributes(
+		attribute.String(traceaigenai.GenAISpanKind, traceaigenai.SpanKindAgent),
+		attribute.String(traceaigenai.GenAIOperationName, "invoke_agent"),
+		attribute.String("gen_ai.agent.name", "weather-agent"),
+	), trace.WithAttributes(traceaigenai.ContextAttributes(sessionCtx)...))
+	defer agent.End()
+	fmt.Printf("trace_id=%s\n", agent.SpanContext().TraceID())
+
+	answer, err := askWithTool(ctx, client, tracer, model, question, stream)
+	if err != nil {
+		agent.SetStatus(codes.Error, "agent failed")
+	}
+	return answer, err
+}
+
+func askWithTool(ctx context.Context, client *genai.Client, tracer trace.Tracer,
 	model, question string, stream bool) (string, error) {
 	config := &genai.GenerateContentConfig{
 		SystemInstruction: genai.NewContentFromText("You are a weather assistant. Always call get_weather before answering.", genai.RoleUser),
@@ -181,7 +184,7 @@ func askWithTool(ctx context.Context, client *genai.Client, tracer trace.Tracer,
 	history = append(history, first.Candidates[0].Content)
 	var results []*genai.Part
 	for _, call := range calls {
-		result := runTool(ctx, tracer, tc, call.ID, call.Name, call.Args)
+		result := runTool(ctx, tracer, call.ID, call.Name, call.Args)
 		part := genai.NewPartFromFunctionResponse(call.Name, result)
 		part.FunctionResponse.ID = call.ID
 		results = append(results, part)
@@ -208,7 +211,7 @@ func askWithTool(ctx context.Context, client *genai.Client, tracer trace.Tracer,
 
 // runTool executes the tool locally inside its own span. The transport spans
 // the model calls; your tool code is yours to span.
-func runTool(ctx context.Context, tracer trace.Tracer, tc traceaigenai.TraceConfig, id, name string, args map[string]any) map[string]any {
+func runTool(ctx context.Context, tracer trace.Tracer, id, name string, args map[string]any) map[string]any {
 	_, span := tracer.Start(ctx, "execute_tool "+name, trace.WithAttributes(
 		attribute.String(traceaigenai.GenAISpanKind, traceaigenai.SpanKindTool),
 		attribute.String(traceaigenai.GenAIOperationName, "execute_tool"),
@@ -216,18 +219,9 @@ func runTool(ctx context.Context, tracer trace.Tracer, tc traceaigenai.TraceConf
 		attribute.String(traceaigenai.GenAIToolCallID, id),
 	), trace.WithAttributes(traceaigenai.ContextAttributes(ctx)...))
 	defer span.End()
-	in, _ := json.Marshal(args)
-	tc.SetAttributes(span,
-		attribute.String(traceaigenai.InputValue, string(in)),
-		attribute.String(traceaigenai.InputMimeType, traceaigenai.MimeTypeJSON))
 
 	city, _ := args["city"].(string)
-	out := map[string]any{"city": city, "temperature_c": 21, "conditions": "sunny"}
-	b, _ := json.Marshal(out)
-	tc.SetAttributes(span,
-		attribute.String(traceaigenai.OutputValue, string(b)),
-		attribute.String(traceaigenai.OutputMimeType, traceaigenai.MimeTypeJSON))
-	return out
+	return map[string]any{"city": city, "temperature_c": 21, "conditions": "sunny"}
 }
 
 func envOr(k, def string) string {

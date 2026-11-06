@@ -44,6 +44,17 @@ test('Gemini Go guide matches released embedding, usage and privacy behavior', (
   assert.doesNotMatch(page, /embeddings[^.\n]*pass through|never written as 0/);
 });
 
+test('Gemini Go custom spans omit content and explain the released privacy boundary', () => {
+  assert.doesNotMatch(example, /traceaigenai\.(?:InputValue|OutputValue|InputMimeType|OutputMimeType)|\.SetAttributes\(/);
+  assert.match(example, /func runAgent\(/);
+  assert.match(example, /func runTool\(/);
+  assert.match(example, /agent\.SetStatus\(codes\.Error, "agent failed"\)/);
+  assert.match(page, /custom agent and tool spans contain only identity, session and status metadata/);
+  assert.match(page, /`TraceConfig\.SetAttributes` does not apply text-only hiding to arbitrary `input\.value` or `output\.value`/);
+  assert.match(page, /transport-generated `input\.value` \/ `output\.value`/);
+  assert.match(page, /Direct OpenTelemetry attribute writes bypass traceAI filtering/);
+});
+
 test('Gemini Go guide and example carry no internal test narration', () => {
   for (const text of [page, read('examples/traceai/gemini-go/README.md'), example]) {
     assert.doesNotMatch(text, /In our test|verified live|Tested surface|latest on 20|trace id[s]? `[0-9a-f]{16}|th8273|MARK_(?:DEFAULT|HIDDEN)|run_e2e/i);
