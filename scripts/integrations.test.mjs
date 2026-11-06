@@ -435,12 +435,26 @@ test('Voyage AI guide installs the package and keeps customer-facing privacy gui
   assert.equal(catalog?.href, '/docs/integrations/traceai/voyage');
   assert.equal(catalog?.method, 'traceAI SDK');
   for (const text of [
-    'pip install "traceAI-voyage>=0.1.2"', 'voyageai>=0.3.7,<1', 'fi-instrumentation-otel>=1.1.0',
+    'pip install "traceAI-voyage>=0.1.2" "fi-instrumentation-otel>=1.2.3"', 'voyageai>=0.3.7,<1',
     'voyage.multimodal_embed', 'voyage.contextualized_embed', '[media omitted]',
     'VoyageInstrumentor().instrument(tracer_provider=trace_provider)', 'trace_provider.force_flush()',
     'capture_content=True', 'FI_HIDE_INPUTS=true', 'FI_HIDE_OUTPUTS=true',
   ]) assert.ok(page.includes(text), text);
   assert.doesNotMatch(page, /Live vendor verification|verified live|Not yet run live|trace [0-9a-f]{8}-/i);
+});
+
+test('Voyage AI privacy guidance requires error suppression and explains explicit overrides', () => {
+  const page = read('src/pages/docs/integrations/traceai/voyage.mdx');
+  const install = page.split('## 1. Installation')[1].split('## 2.')[0];
+  assert.match(install, /```bash\s+pip install "traceAI-voyage>=0\.1\.2" "fi-instrumentation-otel>=1\.2\.3"\s+```/);
+  const privacy = page.split('## Privacy')[1].split('## Hosts')[0];
+  assert.match(privacy, /Set privacy environment variables before calling `register\(\)` and `instrument\(\)`/);
+  assert.match(privacy, /Hides query, texts, documents, scores and error messages; counts, model, tokens and error types remain/);
+  assert.match(privacy, /Error-message suppression requires `fi-instrumentation-otel>=1\.2\.3`/);
+  assert.match(privacy, /Leave `FI_HIDE_ERROR_DETAILS` unset or set it to `true`/);
+  assert.match(privacy, /do not override it with `FI_HIDE_ERROR_DETAILS=false` or `TraceConfig\(hide_error_details=False\)`/);
+  assert.match(privacy, /overrides can expose response content in exception messages and `ERROR` status descriptions/);
+  assert.doesNotMatch(page, /No content at all|fi-instrumentation-otel>=1\.1\.0/);
 });
 
 test('Temporal TypeScript warns about incompatible histories before setup', () => {
