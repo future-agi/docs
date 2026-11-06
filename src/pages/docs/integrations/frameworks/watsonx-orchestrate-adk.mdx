@@ -1,0 +1,319 @@
+---
+title: "IBM watsonx Orchestrate ADK tracing with Future AGI"
+description: "Send the spans of the watsonx Orchestrate Agentic SDK's observability module to Observe through an OpenTelemetry Collector you run: agent, model and tool spans in one trace, with prompts and error text removed unless you opt in."
+---
+
+Send agent, model and tool spans from the [IBM watsonx Orchestrate ADK](https://developer.watson-orchestrate.ibm.com) to **Observe** through an OpenTelemetry Collector you run. The Python Agentic SDK, `ibm-watsonx-orchestrate-sdk`, exports spans from decorated functions over OTLP/HTTP. Without a `Client`, it sends them to `WXO_OTLP_ENDPOINT`.
+
+This page points `WXO_OTLP_ENDPOINT` at an OpenTelemetry Collector you run. The collector names the Observe project, maps the SDK's span kinds, removes content you did not opt in to, adds your Future AGI keys, and forwards to Future AGI. One run of the example agent becomes one trace:
+
+```text
+weather-agent         (chain)   tracer.start_root_span, one per request; session = conversation.id
+├─ agent_node         (agent)   @trace_agent_call
+│  └─ chat_model      (llm)     tracer.start_llm_span: model, provider, prompt/completion tokens
+├─ get_weather        (tool)    @trace_tool_call
+├─ get_weather        (tool)    ERROR: the tool raised; the agent still answered
+└─ agent_node         (agent)
+   └─ chat_model      (llm)
+```
+
+The collector is not optional. The SDK never sets the `project_name` resource attribute that Future AGI needs, it writes span kinds into its own `span.kind` attribute (Future AGI shows every span as "unknown" without the mapping), it records exception stack traces and raw error text on every failed span, and it puts `user.id = "Unknown User"` on every span when no user is known.
+
+This guide uses `ibm-watsonx-orchestrate-sdk` 2.18.2 and OpenTelemetry Collector contrib 0.162.0 for an external Python agent. The example uses synchronous, non-streaming calls on Python 3.12 or 3.13. Get the complete [example files](https://github.com/future-agi/docs/tree/main/examples/frameworks/watsonx-orchestrate-adk) before running the agent; the Python blocks below are excerpts. For SDK details, see [IBM's observability documentation](https://developer.watson-orchestrate.ibm.com/traces/observability-sdk).
+
+For watsonx.ai model calls in Java, use [IBM Watsonx for Java](/docs/integrations/traceai/java/llm-providers#ibm-watsonx) instead. For this Python agent, choose either IBM's decorators or [LangGraph instrumentation](/docs/integrations/traceai/langgraph), not both, to avoid duplicate spans. IBM's trace-viewing CLI and built-in Langfuse configuration are not used for this OTLP export.
+
+## Set up
+
+<Steps>
+
+<Step title="Install">
+
+```bash
+pip install 'ibm-watsonx-orchestrate-sdk==2.18.2' langgraph langchain-openai
+```
+
+You do not need the `ibm-watsonx-orchestrate` CLI package for tracing. The collector runs from the `otel/opentelemetry-collector-contrib` image.
+</Step>
+
+<Step title="Run the collector">
+
+Save this as `otelcol.yaml`:
+
+```yaml
+# OpenTelemetry Collector (contrib) between the watsonx Orchestrate Agentic SDK and Future AGI.
+#
+# Point the SDK's WXO_OTLP_ENDPOINT at this collector (http://<host>:4318/v1/traces). It then
+#   1. names the Observe project (resource attribute project_name), which the SDK never sets,
+#   2. maps the SDK's span.kind (llm, tool, agent, root, general) to Future AGI span kinds,
+#   3. removes host and process details and stack traces, always,
+#   4. removes prompts, outputs, tool arguments and results, error text and user ids,
+#      unless KEEP_WXO_CONTENT=true,
+#   5. forwards plain (uncompressed) OTLP/HTTP with X-Api-Key and X-Secret-Key.
+# The Future AGI keys live only here. Headers that reach this collector (for example a
+# watsonx Orchestrate bearer token from a Client-mode tracer) are never forwarded.
+#
+# Environment:
+#   FI_TRACES_URL     where to forward, e.g. https://api.futureagi.com/tracer/v1/traces
+#   FI_API_KEY        Future AGI API key
+#   FI_SECRET_KEY     Future AGI secret key
+#   FI_PROJECT_NAME   Observe project for spans that arrive without project_name
+#   KEEP_WXO_CONTENT  "true" keeps prompts, outputs, tool data, error text and user ids (default: removed)
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318   # traces arrive on /v1/traces
+
+processors:
+  # `insert` keeps a project_name the app already set with TracerConfig(resource_attributes=...).
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: insert
+      - key: project_type
+        value: observe
+        action: insert
+
+  # The SDK writes its own span.kind attribute and llm.provider; Future AGI reads fi.span.kind
+  # and gen_ai.provider.name. conversation.id becomes the Observe session. The SDK puts
+  # user.id="Unknown User" on every span when no user is known; that placeholder is dropped.
+  transform/map:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["fi.span.kind"], "LLM") where attributes["span.kind"] == "llm" and attributes["fi.span.kind"] == nil
+          - set(attributes["fi.span.kind"], "TOOL") where attributes["span.kind"] == "tool" and attributes["fi.span.kind"] == nil
+          - set(attributes["fi.span.kind"], "AGENT") where attributes["span.kind"] == "agent" and attributes["fi.span.kind"] == nil
+          - set(attributes["fi.span.kind"], "CHAIN") where (attributes["span.kind"] == "root" or attributes["span.kind"] == "general") and attributes["fi.span.kind"] == nil
+          - set(attributes["gen_ai.provider.name"], attributes["llm.provider"]) where attributes["llm.provider"] != nil and attributes["gen_ai.provider.name"] == nil
+          - set(attributes["session.id"], attributes["conversation.id"]) where attributes["conversation.id"] != nil and attributes["session.id"] == nil
+          - delete_key(attributes, "user.id") where attributes["user.id"] == "Unknown User"
+
+  # Always removed. Stack traces carry local paths and user names; host and process
+  # attributes appear when the app enables OpenTelemetry resource detectors.
+  transform/always:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - delete_matching_keys(attributes, "^(host|process)\\.")
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.stacktrace")
+
+  # Removed unless KEEP_WXO_CONTENT=true. The SDK records arguments and return values when a
+  # decorator has capture_input/capture_output=True (IBM's examples set both), and error text
+  # from the exception message.
+  transform/content:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        conditions:
+          - '"${env:KEEP_WXO_CONTENT:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "input.value")
+          - delete_key(attributes, "output.value")
+          - delete_key(attributes, "tool.input")
+          - delete_key(attributes, "tool.output")
+          - delete_key(attributes, "agent.input")
+          - delete_key(attributes, "agent.output")
+          - delete_key(attributes, "user.id")
+          - set(status.message, "error") where status.message != ""
+      - context: spanevent
+        conditions:
+          - '"${env:KEEP_WXO_CONTENT:-false}" != "true"'
+        statements:
+          - delete_key(attributes, "exception.message")
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}
+    encoding: proto
+    compression: none          # optional: Future AGI cloud and self-hosted v1.56.0+ also accept gzip
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  telemetry:
+    metrics:
+      level: none              # no self-metrics endpoint; this collector only carries traces
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/map, transform/always, transform/content]
+      exporters: [otlp_http/future_agi]
+```
+
+Run it next to your agent, with your keys in the environment (`-e FI_API_KEY` copies the value from your shell without writing it on the command line):
+
+```bash
+export FI_API_KEY=... FI_SECRET_KEY=...
+docker run -d --name wxo-otelcol -p 127.0.0.1:4318:4318 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol.yaml:ro" \
+  -e FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces \
+  -e FI_API_KEY -e FI_SECRET_KEY -e FI_PROJECT_NAME=weather-agent \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol.yaml
+```
+
+The collector holds your Future AGI keys: anyone who can reach port 4318 can write to that project, so keep it on `127.0.0.1` or a private network.
+</Step>
+
+<Step title="Point the SDK at the collector">
+
+```bash
+export WXO_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+Use the full URL including `/v1/traces`: the SDK passes it to the OTLP exporter unchanged. Set it before your code creates the `Tracer`, which reads it once. Do not put Future AGI keys in `WXO_OTLP_ENDPOINT` or in `OTEL_EXPORTER_OTLP_HEADERS` for this process; the collector adds them.
+</Step>
+
+<Step title="Instrument the agent">
+
+Create one tracer per process and register it so the decorators use it:
+
+```python
+from ibm_watsonx_orchestrate_sdk.observability import Tracer, TracerConfig, register_tracer
+from ibm_watsonx_orchestrate_sdk.observability.attributes import ATTR_INPUT, ATTR_OUTPUT
+
+# One tracer per process. Without a Client, TracerConfig reads the OTLP endpoint from
+# WXO_OTLP_ENDPOINT and sends no auth header: the collector adds the Future AGI keys.
+tracer = Tracer(TracerConfig(service_name="weather-agent"))
+register_tracer(tracer)
+```
+
+Decorate tools as IBM documents, with `@tool` outermost:
+
+```python
+@tool
+@trace_tool_call(name="get_weather", tool_name="get_weather", capture_input=True, capture_output=True)
+def get_weather(city: str) -> str:
+    """Return the current weather for a city."""
+    report = STATIONS.get(city.strip().lower())
+    if report is None:
+        raise ValueError(f"no weather station for {city}")
+    return f"{city}: {report}"
+```
+
+`@trace_llm_call` records the model and provider but no token counts, so the model call uses the SDK's context-manager form and `record_completion`:
+
+```python
+def call_model(messages):
+    # The LLM span uses the context-manager form: @trace_llm_call records no token counts.
+    with tracer.start_llm_span("chat_model", model=MODEL, provider="openai") as span:
+        span.set_attribute(ATTR_INPUT, json.dumps([m.model_dump(mode="json") for m in messages]))
+        reply = llm.invoke(messages)
+        usage = reply.usage_metadata or {}
+        span.record_completion(
+            prompt_tokens=usage.get("input_tokens"),
+            completion_tokens=usage.get("output_tokens"),
+            response_model=reply.response_metadata.get("model_name"),
+        )
+        span.set_attribute(ATTR_OUTPUT, reply.model_dump_json())
+        return reply
+
+
+@trace_agent_call(name="agent_node", agent_name="weather-agent", framework="langgraph",
+                  capture_input=True, capture_output=True)
+def agent_node(state: MessagesState) -> dict:
+    return {"messages": [call_model(state["messages"])]}
+```
+
+Build the graph in a factory decorated with `@configure_tracing`, as IBM documents:
+
+```python
+@configure_tracing
+def create_agent(config: RunnableConfig):
+    graph = StateGraph(MessagesState)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", ToolNode([get_weather], handle_tool_errors=True))  # a failed tool call goes back to the model
+    graph.add_edge(START, "agent")
+    graph.add_conditional_edges("agent", route, ["tools", END])
+    graph.add_edge("tools", "agent")
+    return graph.compile()
+```
+
+Outside watsonx Orchestrate there is no platform trace to join, so each decorated call would start its own trace. Wrap each request in a root span, and shut the tracer down before the process exits so the last batch is sent:
+
+```python
+    # A root span per request keeps the agent, model and tool spans of one run in one trace.
+    with tracer.start_root_span("weather-agent", attributes={"conversation.id": conversation_id or str(uuid.uuid4())}) as root:
+        root.set_attribute(ATTR_INPUT, question)
+        result = agent.invoke(
+            {"messages": [SystemMessage("Use get_weather for weather questions. Answer in one sentence."),
+                          HumanMessage(question)]},
+            config,
+        )
+        answer = result["messages"][-1].content
+        root.set_attribute(ATTR_OUTPUT, answer)
+    return answer
+```
+
+```python
+        tracer.shutdown()  # flushes the batch processor before the process exits
+```
+
+Pass a stable `conversation_id` (for example your chat thread id) to group a conversation's traces into one Observe session.
+</Step>
+
+<Step title="Run it">
+
+```bash
+export OPENAI_API_KEY=...
+python agent.py "What is the weather in Tokyo?"
+```
+
+The trace appears in the Observe project named by `FI_PROJECT_NAME` within a few seconds.
+</Step>
+
+</Steps>
+
+## What you see in Observe
+
+| Span | Kind | Carries by default | Added with `KEEP_WXO_CONTENT=true` |
+| --- | --- | --- | --- |
+| `weather-agent` (`start_root_span`) | chain | session (from `conversation.id`), status | the question and the answer |
+| `agent_node` (`@trace_agent_call`) | agent | `agent.name`, `agent.framework` | the node's input state and output |
+| `chat_model` (`start_llm_span`) | llm | model, provider, prompt / completion / total tokens, cost when Future AGI has a price for the model | the messages sent and the reply |
+| `get_weather` (`@trace_tool_call`) | tool | `tool.name`, `tool.id` | the arguments and the result |
+
+Spans of a failed step are ERROR with the message `error`; the exception event keeps its name and type. With `KEEP_WXO_CONTENT=true` the real error text is kept. A failed tool call that the agent handles leaves the run OK; a failed model call fails the `chat_model`, `agent_node` and root spans.
+
+The SDK also writes `environment.name` and, with a `Client`, `tenant.id`, `agent.id` and `workspace.id`. They are kept. Only functions you decorate (or wrap with the `Tracer`) produce spans: LangGraph's own steps do not.
+
+## Privacy
+
+The SDK's decorators capture arguments and return values only with `capture_input=True` / `capture_output=True` (both default to `False`, IBM's examples set both), and the SDK replaces values of keys that look like secrets (`token`, `password`, `api_key`, ...) with `[REDACTED]` in what it captures. Whatever the app records, the collector decides what leaves your network:
+
+- **Removed by default:** `input.value`, `output.value`, `tool.input`, `tool.output`, `agent.input`, `agent.output`, `user.id`, the exception message, and the span status text (replaced by `error`).
+- **Always removed:** exception stack traces, `host.*` and `process.*` resource attributes, and the SDK's `user.id = "Unknown User"` placeholder. No incoming request header is forwarded, so a watsonx Orchestrate bearer token that reaches the collector never reaches Future AGI.
+- **Opt in:** start the collector with `-e KEEP_WXO_CONTENT=true` to keep prompts, outputs, tool data, error text and user ids. Stack traces stay removed.
+
+
+## Tracers that use a Client
+
+IBM's [external-agent setup](https://developer.watson-orchestrate.ibm.com/traces/observability-sdk) builds `TracerConfig(client=Client(api_key=..., instance_url=...), agent_id=..., workspace_id=...)`. That tracer sends `Authorization: Bearer <watsonx token>` and exports to `<instance URL>/inject/traces`, not to `WXO_OTLP_ENDPOINT`, so its spans go to watsonx Orchestrate. A process has one registered tracer, so pick where its spans go:
+
+- to watsonx Orchestrate: IBM's setup, unchanged (not covered here), or
+- to Future AGI: keep the `Client` and set `trace_injection_path="http://localhost:4318/v1/traces"`. An absolute URL is used as-is. The collector drops the bearer token, and removes the user id the SDK reads from the token unless you opt in.
+
+## Scope
+
+This guide covers an external Python agent exporting to Future AGI through the collector above. It does not cover agents running inside watsonx Orchestrate or IBM's External Collector. Do not export directly to Future AGI using this SDK setup: without the collector's mapping and filtering, spans appear as unknown and can include raw errors and stack traces. In Client mode, exporter header variables can also be sent to watsonx Orchestrate; keep Future AGI keys in the collector.
+
+## Troubleshooting
+
+- **The SDK prints spans to the console.** `WXO_OTLP_ENDPOINT` was not set when the `Tracer` was created; the SDK logs "WXO_OTLP_ENDPOINT is not set; traces will be logged to the console".
+- **No project in Observe.** The collector did not get `FI_PROJECT_NAME`, or its keys are wrong: `docker logs wxo-otelcol` shows the export error. `service.name` is not a project name.
+- **Every span is its own trace.** The request is not wrapped in `tracer.start_root_span(...)`.
+- **Every span is "unknown".** Spans reached Future AGI without the collector's `transform/map` step.
+- **No token counts.** The model call uses `@trace_llm_call`, which records none. Use `tracer.start_llm_span(...)` and `record_completion(...)`.
+- **The last spans are missing.** The process exited before the batch was sent: call `tracer.shutdown()` on exit.
+- **The collector is down.** The agent still answers and exits normally. The SDK's exporter logs "Transient error ... retrying" and then "Failed to export spans batch", and drops that batch.
+- **`ValueError: Trace injection mode requires ...`.** A tracer with a `Client` needs `agent_id` and `workspace_id`, and `tenant_id` when the token has none (IBM Cloud).
