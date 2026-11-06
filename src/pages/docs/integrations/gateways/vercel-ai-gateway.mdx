@@ -1,0 +1,138 @@
+---
+title: "Vercel AI Gateway tracing with Future AGI"
+description: "Trace OpenAI-client calls to the Vercel AI Gateway in Future AGI with traceAI-openai."
+---
+
+Trace synchronous OpenAI Chat Completions calls to the Vercel AI Gateway from your application with [traceAI-openai](/docs/integrations/traceai/openai). For JavaScript applications using the Vercel AI SDK, use the [Vercel AI SDK integration](/docs/integrations/traceai/vercel) instead.
+
+This guide uses `traceAI-openai` 0.1.10 with Python 3.13; the package requires Python below 3.14. You need a Vercel AI Gateway API key and a Future AGI API and secret key pair.
+
+## 1. Install
+
+```bash
+pip install "traceAI-openai==0.1.10" "fi-instrumentation-otel==1.1.0" "openai==3.35.1"
+```
+
+## 2. Set environment variables
+
+```bash
+export AI_GATEWAY_API_KEY="your-vercel-ai-gateway-key"   # goes to Vercel only
+export FI_API_KEY="your-futureagi-api-key"                # goes to Future AGI only
+export FI_SECRET_KEY="your-futureagi-secret-key"
+# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
+# export FI_BASE_URL="http://localhost:4318"   # your collector's OTLP/HTTP address
+```
+
+The two key sets are not interchangeable. The gateway key is sent as `Authorization: Bearer` to Vercel by the OpenAI client. The Future AGI key pair is sent as `X-Api-Key` and `X-Secret-Key` to the collector by the tracer.
+
+Vercel documents that an AI Gateway API key takes precedence over an OIDC token, even an invalid key. This page uses an API key.
+
+## 3. Trace the gateway client
+
+```python
+import os
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+from openai import OpenAI
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-chatbot",          # the Observe project the spans land in
+)
+OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = OpenAI(
+    base_url="https://ai-gateway.vercel.sh/v1",
+    api_key=os.environ["AI_GATEWAY_API_KEY"],
+)
+
+response = client.chat.completions.create(
+    model="<provider>/<model>",          # copy a current id from Vercel's model list
+    messages=[{"role": "user", "content": "Say hello in five words."}],
+)
+print(response.choices[0].message.content)
+
+trace_provider.force_flush()             # short scripts: send spans before the process exits
+```
+
+`register()` sets the project used to route spans. Replace the model placeholder with an ID from Vercel's model list or `GET https://ai-gateway.vercel.sh/v1/models`. Vercel's free credit covers a subset of models and has per-model rate limits; check the free-tier filter if your team has not bought credits.
+
+### Optional: group calls under one session
+
+```python
+from fi_instrumentation import using_session
+
+with using_session("support-chat-42"):
+    ...  # your OpenAI calls; every span in the block carries session.id
+```
+
+Use `using_session` and `using_user` for session and user. Vercel's own headers for tags or user ids are a gateway feature; this guide sets session and user on the client path with these helpers instead.
+
+## 4. Look at the trace
+
+Open **Observe**, select the project (`my-chatbot` above), and open the `ChatCompletion` trace.
+
+### What the client captures
+
+- `traceAI-openai` 0.1.10 records the response model for non-streaming calls. Streamed and failed calls do not have a model on the span.
+- The provider is `openai` on the client span, not the upstream provider selected by the gateway.
+- Token counts are captured when usage is returned. Missing usage is not zero.
+- Prompts, answers, tool arguments and tool results are captured by default. Failed spans include error text; see [Privacy](#privacy).
+- Gateway cost, routing, retries, provider attempts and request IDs are not captured on successful client calls. Use Vercel's dashboard for spend.
+
+## Privacy
+
+**Default.** `traceAI-openai` captures what the model sees and says. System and user prompts, model answers, tool-call arguments, and tool results are on the span as input and output. Vercel also sees every prompt, because the gateway is on the request path. Hiding content in Future AGI does not hide it from Vercel.
+
+**Switch capture off.** Set these before the process starts, or pass a `TraceConfig` to `instrument(config=...)`:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+export FI_HIDE_LLM_INVOCATION_PARAMETERS=true   # also drops request parameters such as stream and tool_choice
+```
+
+With those set, `input.value` and `output.value` are `__REDACTED__`, and the message and tool-call content is not exported.
+
+**What the hide flags do not remove.** With content hidden, a span still carries:
+
+- the model id, token counts, and timings;
+- `session.id` when you use `using_session`;
+- tool definitions: tool names, descriptions, and JSON schemas you pass in `tools=`;
+- **error text.** A failed call's status message can include the gateway's error body and routing details. The exception event can carry an exception message and stack trace, including local paths. Treat error text as potentially sensitive.
+
+Spans you create yourself carry the attributes you add to them.
+
+## Trace Drains
+
+This guide uses client instrumentation, not a Vercel AI Gateway [Trace Drain](https://vercel.com/docs/ai-gateway/observability-and-spend/trace-drains). The client integration supplies the `project_name` resource attribute through `register()`. Configuring a gateway-generated drain trace and its project routing is outside this recipe.
+
+Trace Drains require a Pro or Enterprise team and incur Vercel delivery and egress charges. See [Vercel pricing](https://vercel.com/docs/ai-gateway/pricing). Drain traces do not contain prompts or completions.
+
+## Troubleshooting
+
+Gateway error text can also appear in the span status message.
+
+<div style={{ overflowX: 'auto' }}>
+
+| What you see | What it means |
+| --- | --- |
+| The call worked but no trace appears | Exporter errors never fail your request. A short script may exit before the batch is sent: call `trace_provider.force_flush()`. Check `FI_BASE_URL` and the key pair. |
+| `401` `authentication_error`, "Authentication failed. Create an API key and set in AI_GATEWAY_API_KEY environment variable: ..." | The gateway key is wrong. Vercel documents that a key you set takes precedence over an OIDC token, even an invalid key. |
+| `401` `authentication_error`, "Missing Authorization header" | No gateway key was sent. |
+| `404` `model_not_found`, "Model '...' not found" | The model id does not exist at the gateway. Copy a current id from Vercel's model list. |
+| `404` with an HTML page as the error text | The base URL has no `/v1`. Use `https://ai-gateway.vercel.sh/v1`. |
+| `404` `not_found_error`, "The requested resource was not found: /v1/v1/chat/completions" | `/v1` is in the base URL twice. |
+| `400` "Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16" | Increase the output-token limit to the minimum in the error, or omit the explicit limit. Token limits depend on the selected model. The error body may include routing details (see [Privacy](#privacy)). |
+| `400` `invalid_request_error`, "Invalid input: expected string, received undefined" | The request had no `model`. |
+| `429` | Rate limit. Vercel documents lower per-model limits on the free tier. |
+| `401` from the collector | The Future AGI key pair is wrong, or the gateway key was sent there. Header names are `X-Api-Key` and `X-Secret-Key`. A Bearer token always gets `401`. |
+| Provider shows `openai` | Expected. See [what the client captures](#what-the-client-captures). |
+| The span's model is not the id you sent | The span shows the response body's model on non-streaming calls. The gateway answers an id without its provider prefix with the full id. |
+| A streamed or failed call has no model | `traceAI-openai` 0.1.10 leaves the model off streamed and failed spans. |
+| Error spans show gateway error text | Expected. See [what the hide flags do not remove](#privacy). |
+| A drain shows nothing in Observe | This recipe configures client tracing, not drain routing. Use the client setup above; see [Trace Drains](#trace-drains). |
+| A drain delivers traces | Vercel bills delivered traces and egress to the team; check Vercel pricing. |
+
+</div>

@@ -8,6 +8,8 @@ Usage (as a hook command):
 ``<app>`` selects ``adapters/<app>.py``. ``<event>`` is the hook name when
 the host does not put it in the payload. The script reads one JSON object
 from stdin, prints what the host expects on stdout, and always exits 0.
+If the adapter cannot be loaded or the script fails, it prints nothing
+(the same as a missing emitter behind the guarded hook command).
 
 One agent session becomes one trace (the trace id is derived from the
 session id). Turns, tools, subagents, and model responses become child
@@ -20,6 +22,8 @@ Python 3.9+.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import functools
 import hashlib
 import importlib
 import json
@@ -64,7 +68,24 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{12,}"),
     re.compile(r"(?i)\b((?:api[_-]?key|secret[_-]?key|access[_-]?token|password|passwd|token)\b[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+"),
 )
+# Opted-in content keeps paths but not the account name inside them: the one
+# directory component after /Users/, /home/ or C:\Users\ (raw, JSON-escaped or
+# with forward slashes). A component stops at whitespace, quotes and characters
+# no macOS, Linux or Windows account name uses (shell and sentence punctuation),
+# and does not end with a dot, so text after the path ("&& ls src/x", "),")
+# stays as it was. Names with spaces are matched only for this machine's own
+# home directory (see _own_home_pattern).
+_HOME_PREFIX = r"(/Users/|/home/|[A-Za-z]:(?:\\\\|\\|/)+Users(?:\\\\|\\|/)+)"
+_NAME_CHAR = r"[^\s/\\\"'`\[\]:;|=,+*?<>(){}&]"
+_NAME = _NAME_CHAR + r"*(?:(?!\.)" + _NAME_CHAR + r")"
+# Own name at a boundary: not followed by more name characters (al vs alice).
+_NAME_END = r"(?!\.*(?:(?!\.)" + _NAME_CHAR + r"))"
+HOME_PATTERNS = (
+    re.compile(_HOME_PREFIX + _NAME),
+    re.compile(r"((?<![\w~])~)[A-Za-z_][A-Za-z0-9._-]*(?=/)"),
+)
 MAX_ENDED_TURNS = 64
+MAX_ENDED_RECS = 8
 
 
 @dataclass
@@ -98,7 +119,9 @@ class Config:
             project_name=env.get("FI_PROJECT_NAME") or app,
             capture_content=_truthy(env.get("FI_HOOK_CAPTURE_CONTENT")),
             max_content_chars=_int(env.get("FI_HOOK_MAX_CONTENT_CHARS"), 4096),
-            timeout=_float(env.get("FI_HOOK_TIMEOUT"), 3.0),
+            # Background send (fork) by default; where there is no fork (Windows)
+            # the send is inline, so keep the host's wait short.
+            timeout=_float(env.get("FI_HOOK_TIMEOUT"), 10.0 if hasattr(os, "fork") else 3.0),
             sync=_truthy(env.get("FI_HOOK_SYNC")),
             state_dir=Path(state_root) / app,
             state_ttl_s=_float(env.get("FI_HOOK_STATE_TTL_HOURS"), 24.0) * 3600,
@@ -165,11 +188,34 @@ def redact(text: str) -> str:
     return text
 
 
+@functools.lru_cache(maxsize=4)
+def _own_home_pattern(home: str) -> Optional["re.Pattern[str]"]:
+    """The basename of this machine's home directory after any home prefix.
+
+    Matched literally, so a name the generic pattern cannot take whole (one
+    with spaces, quotes or parentheses) is still replaced in full.
+    """
+    name = re.split(r"[/\\]", home.rstrip("/\\"))[-1]
+    if not name or name in (".", ".."):
+        return None
+    return re.compile(_HOME_PREFIX + re.escape(name) + _NAME_END)
+
+
+def scrub_home(text: str) -> str:
+    """Replace the user name in home-directory paths with <user>."""
+    own = _own_home_pattern(os.path.expanduser("~"))
+    if own:  # this machine's own name first: it may contain spaces
+        text = own.sub(lambda m: m.group(1) + "<user>", text)
+    for pattern in HOME_PATTERNS:
+        text = pattern.sub(lambda m: m.group(1) + "<user>", text)
+    return text
+
+
 def render_content(value: Any, max_chars: int) -> Optional[str]:
     if value is None:
         return None
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    text = redact(text)
+    text = scrub_home(redact(text))
     if max_chars > 0 and len(text) > max_chars:
         text = text[:max_chars] + f"...[truncated {len(text) - max_chars} chars]"
     return text
@@ -328,6 +374,11 @@ class SpanBuilder:
 
     def _emit(self, scope: str, sid: str, parent: str, start_ns: int, end_ns: int,
               rec: Dict[str, Any], event: str, turn: Optional[str]) -> None:
+        session = self.state["session"]
+        if scope != SESSION and session.get("exported") and start_ns < session["start_ns"]:
+            # The root's start is fixed once exported (it keys the stored row);
+            # keep children inside it.
+            start_ns = session["start_ns"]
         attrs: Dict[str, Any] = dict(rec.get("attrs") or {})
         kind = rec.get("kind") or DEFAULT_KIND.get(scope, "UNKNOWN")
         name = rec.get("name") or self._default_name(scope, rec)
@@ -405,17 +456,52 @@ class SpanBuilder:
         ended = self.state["ended_turns"]
         ended.append(key)
         del ended[:-MAX_ENDED_TURNS]
+        recs = self.state.setdefault("ended_recs", {})
+        recs.pop(key, None)
+        if rec.get("incomplete"):
+            # Kept so a late END can re-send the turn complete; holds the turn's
+            # content only when content capture is on.
+            recs[key] = dict(rec)
+            while len(recs) > MAX_ENDED_RECS:
+                recs.pop(next(iter(recs)))
         if self.state.get("current_turn") == key:
             self.state["current_turn"] = None
+
+    def _resolve_turn_key(self, ev: SpanEvent) -> Optional[str]:
+        """Key for a TURN event that has none (apps without turn ids).
+
+        START mints the next per-session key (turn-1, turn-2, ...); END and
+        UPDATE apply to the currently open turn, if any.
+        """
+        if ev.phase == START:
+            seq = int(self.state.get("turn_seq", 0)) + 1
+            self.state["turn_seq"] = seq
+            return f"turn-{seq}"
+        return self.state.get("current_turn")
+
+    def _oldest_open(self, scope: str, name: Optional[str]) -> Optional[str]:
+        """Key of the oldest open keyless START of ``scope`` with this name (FIFO pairing)."""
+        candidates = [rec for rec in self.state["open"].values()
+                      if rec["scope"] == scope and rec.get("synthetic_key") and rec.get("name") == name]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda rec: rec["start_ns"])["key"]
 
     # -- main entry
 
     def apply(self, ev: SpanEvent, event: str) -> None:
+        if ev.scope == TURN and not ev.key:
+            resolved = self._resolve_turn_key(ev)
+            if not resolved:
+                return
+            ev = dataclasses.replace(ev, key=resolved)
         start_ns = self._start_of(ev)
         session = self._ensure_session(start_ns)
-        if ev.model:
+        if ev.model and ev.scope in (SESSION, TURN, LLM):
             self.state["model"] = ev.model
         parent, turn = self._parent_for(ev, start_ns)
+        # No turn id on the event: it was attached to the open turn.
+        inferred = ev.scope not in (SESSION, TURN) and not ev.turn_id and turn is not None
         if turn:
             turn_rec = self.state["open"].get(f"{TURN}:{turn}")
             if turn_rec is not None and ev.model:
@@ -430,12 +516,16 @@ class SpanBuilder:
 
         key = ev.key
         synthetic = False
+        if not key and ev.phase == END:
+            key = self._oldest_open(ev.scope, ev.name) or ""
         if not key:
             key, synthetic = secrets.token_hex(8), True
         slot = f"{ev.scope}:{key}"
         if ev.phase == START:
             rec = {"scope": ev.scope, "key": key, "start_ns": start_ns, "parent": parent,
                    "turn": turn, "attrs": {}, "synthetic_key": synthetic}
+            if inferred:
+                rec["attrs"]["coding_agent.turn.inferred"] = True
             self._merge(rec, ev)
             self.state["open"][slot] = rec
         elif ev.phase == UPDATE:
@@ -447,6 +537,8 @@ class SpanBuilder:
             if rec is None:
                 rec = {"scope": ev.scope, "key": key, "start_ns": start_ns, "parent": parent,
                        "turn": turn, "attrs": {}, "synthetic_key": synthetic}
+                if inferred:
+                    rec["attrs"]["coding_agent.turn.inferred"] = True
             self._merge(rec, ev)
             sid = span_id(self.cfg.app, self.sid, ev.scope, key)
             self._emit(ev.scope, sid, rec["parent"], rec["start_ns"], self.now, rec, event, rec.get("turn"))
@@ -468,6 +560,13 @@ class SpanBuilder:
             return
         slot = f"{TURN}:{key}"
         if ev.phase == START:
+            # One turn at a time per session: a new turn closes any other open
+            # turn as incomplete (apps that sometimes skip their turn-end hook).
+            for other_slot, other in list(self.state["open"].items()):
+                if other["scope"] == TURN and other["key"] != key:
+                    del self.state["open"][other_slot]
+                    other["incomplete"] = True
+                    self._end_turn(other["key"], other, event)
             if key in self.state["ended_turns"]:
                 self.state["ended_turns"].remove(key)
             rec = self._ensure_turn(key, start_ns)
@@ -481,7 +580,17 @@ class SpanBuilder:
         else:
             rec = self.state["open"].pop(slot, None)
             if rec is None:
-                rec = {"scope": TURN, "key": key, "start_ns": start_ns, "attrs": {}, "parent": self.root}
+                late = self.state.get("ended_recs", {}).pop(key, None)
+                if late is not None:
+                    # The turn was closed as incomplete; re-send it complete with its original start.
+                    rec = late
+                    rec.pop("incomplete", None)
+                    if key in self.state["ended_turns"]:
+                        self.state["ended_turns"].remove(key)
+                elif key in self.state["ended_turns"]:
+                    return  # duplicate end of a turn already sent complete
+                else:
+                    rec = {"scope": TURN, "key": key, "start_ns": start_ns, "attrs": {}, "parent": self.root}
             self._merge(rec, ev)
             self._end_turn(key, rec, event)
 
@@ -544,9 +653,14 @@ def respond(adapter: Any, event: str, payload: Dict[str, Any]) -> str:
     if fn is None:
         return "{}"
     try:
-        return fn(event, payload) or "{}"
+        out = fn(event, payload)
     except Exception:
-        return "{}"
+        # Print nothing, like a missing emitter: "{}" can be invalid output for
+        # a hook that decides something (Cursor blocks permission hooks on it).
+        return ""
+    # None means "use the default"; "" means "print nothing" (hosts that add
+    # hook stdout to the model context).
+    return "{}" if out is None else str(out)
 
 
 def build_spans(adapter: Any, cfg: Config, event: str, payload: Dict[str, Any],
@@ -694,7 +808,9 @@ def run(argv: List[str], stdin_text: str, env: Mapping[str, str]) -> str:
     try:
         adapter = load_adapter(app)
     except Exception:
-        return "{}"
+        # Without the adapter we cannot tell an observation hook from a
+        # permission hook, so print nothing (same as a missing emitter).
+        return ""
     try:
         payload = json.loads(stdin_text) if stdin_text.strip() else {}
     except ValueError:
@@ -737,7 +853,7 @@ def main() -> int:
     try:
         out = run(sys.argv[1:], stdin_text, os.environ)
     except Exception:
-        out = "{}"
+        out = ""
     with contextlib.suppress(Exception):
         _write_stdout(out)
     return 0

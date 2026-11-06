@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { tabNavigation } from '../lib/navigation';
 import type { NavItem } from '../lib/navigation';
+import { integrationDirectoryMarkdown } from '../lib/integrations.mjs';
 
 const SITE = 'https://docs.futureagi.com';
 const DOCS_DIR = path.join(process.cwd(), 'src/pages/docs');
@@ -163,6 +164,10 @@ function stripFrontmatterAndImports(content: string): string {
 
   // Remove MDX import statements
   result = result.replace(/^import\s+.*$/gm, '');
+
+  // The overview is rendered from shared data rather than MDX prose. Preserve
+  // that same catalog before the generic JSX stripping would erase the page.
+  result = result.replace(/<IntegrationDirectory\s*\/>/g, () => integrationDirectoryMarkdown());
 
   // Keep the method and path before ApiPlayground is stripped as self-closing
   result = result.replace(/<ApiPlayground\b([^>]*?)\/>/g, (_m, attrs: string) => {
