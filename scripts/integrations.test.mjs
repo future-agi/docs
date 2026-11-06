@@ -551,6 +551,56 @@ test('Java pgvector qualifies successful-operation privacy and hides database er
   assert.ok(section.indexOf('FI_HIDE_ERROR_DETAILS=true') < section.indexOf('new TracedPgVectorStore(connection)'));
 });
 
+test('OpenAI Go guide is discoverable and bootstraps the released module', () => {
+  const page = read('src/pages/docs/integrations/traceai/go/openai.mdx');
+  const guide = integrations.find(item => item.id === 'openai-go');
+  assert.equal(guide?.href, '/docs/integrations/traceai/go/openai');
+  assert.equal(guide?.category, 'providers');
+  assert.equal(guide?.logo, 'openai');
+  for (const setting of [
+    'Go 1.26 or later', 'openai-go/v3` v3.71.1 or later',
+    'github.com/future-agi/traceAI/go/openai@v0.1.0',
+    'github.com/openai/openai-go/v3@v3.78.0',
+    'go.opentelemetry.io/otel/sdk@v1.47.0',
+    'go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0',
+    'go mod init example.com/openai-go-example', 'go mod tidy', 'go run . -stream -fail',
+  ]) assert.ok(page.includes(setting), setting);
+  assert.doesNotMatch(page, /end-to-end test|In our test|MARK_DEFAULT|trace_id=|latest on 20\d\d-/i);
+});
+
+test('OpenAI Go usage distinguishes missing counts from API-reported zeros', () => {
+  const page = read('src/pages/docs/integrations/traceai/go/openai.mdx');
+  const usageRow = page.split('\n').find(line => line.startsWith('| `gen_ai.usage.input_tokens`'));
+  assert.ok(usageRow, 'The guide must explain token usage capture');
+  assert.match(usageRow, /only when the API returns usage; missing usage is not synthesized as zero/);
+  assert.doesNotMatch(page, /never written as (?:0|zero)/i);
+});
+
+test('OpenAI Go privacy scopes tool data to input and output channels', () => {
+  const page = read('src/pages/docs/integrations/traceai/go/openai.mdx');
+  const privacy = page.split('## Privacy\n')[1]?.split('\n## ')[0];
+  assert.ok(privacy, 'The guide must explain privacy controls');
+  assert.match(privacy, /`FI_HIDE_INPUTS=true` \| `input\.value` becomes `__REDACTED__`; `gen_ai\.input\.messages\.\*`, system instructions, the standalone `gen_ai\.tool\.call\.arguments` attribute and the API error message are dropped/);
+  assert.match(privacy, /`FI_HIDE_OUTPUTS=true` \| `output\.value` becomes `__REDACTED__`; `gen_ai\.output\.messages\.\*`, the standalone `gen_ai\.tool\.call\.result` attribute and the API error message are dropped/);
+  assert.match(privacy, /Model-generated tool-call arguments are outputs \(`output\.value` and `gen_ai\.output\.messages\.\*`\), so `FI_HIDE_INPUTS=true` alone does not hide them/);
+  assert.match(privacy, /Tool results returned to the model are inputs \(`input\.value` and `gen_ai\.input\.messages\.\*`\), so `FI_HIDE_OUTPUTS=true` alone does not hide them/);
+  assert.match(privacy, /standalone tool-attribute rules do not remove every copy of tool data/);
+  assert.match(privacy, /To hide tool data across a conversation, enable both `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`/);
+  assert.doesNotMatch(privacy, /input messages, system instructions, tool-call arguments|output messages, tool-call results/);
+});
+
+test('OpenAI Go privacy distinguishes granular message filtering from content suppression', () => {
+  const page = read('src/pages/docs/integrations/traceai/go/openai.mdx');
+  const privacy = page.split('## Privacy\n')[1]?.split('\n## ')[0];
+  assert.ok(privacy, 'The guide must explain privacy controls');
+  assert.match(privacy, /`FI_HIDE_INPUT_TEXT=true` \| redact text only in `gen_ai\.input\.messages\.\*`/);
+  assert.match(privacy, /`FI_HIDE_OUTPUT_TEXT=true` \| redact text only in `gen_ai\.output\.messages\.\*`/);
+  assert.match(privacy, /`FI_HIDE_INPUT_IMAGES=true` \| drop image URLs only from `gen_ai\.input\.messages\.\*`/);
+  assert.match(privacy, /message, text and image switches alone do not prevent content export/);
+  assert.match(privacy, /`input\.value` retains original prompts and image URLs \(including base64 images up to `FI_BASE64_IMAGE_MAX_LENGTH`\), and `output\.value` retains original answers/);
+  assert.match(privacy, /set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before constructing the middleware/);
+});
+
 test('Tavily uses the released package and is discoverable through the catalog', () => {
   const page = read('src/pages/docs/integrations/traceai/tavily.mdx');
   const entry = integrations.find(item => item.id === 'tavily');
