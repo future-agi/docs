@@ -10,6 +10,7 @@ import './exa-page.test.mjs';
 import './langchain-deep-agents-page.test.mjs';
 import './vercel-platform-page.test.mjs';
 import './scalekit-page.test.mjs';
+import './eino-page.test.mjs';
 import './devin-page.test.mjs';
 import './pi-sdk-page.test.mjs';
 import './cursor-sdk-page.test.mjs';

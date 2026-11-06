@@ -87,6 +87,7 @@ export const integrations = [
   { id: 'novita-ai', name: 'Novita AI', href: '/docs/integrations/providers/novita-ai', category: 'providers', summary: 'Trace Novita chat completions from your Python app.', method: 'OpenAI client', logo: 'novita' },
   { id: 'litellm-sdk', name: 'LiteLLM SDK', href: '/docs/integrations/traceai/litellm', category: 'frameworks', summary: 'Instrument LiteLLM calls in your Python application.', method: 'traceAI SDK', logo: 'litellm', aliases: ['traceAI-litellm', 'client'] },
 
+  { id: 'cloudwego-eino', name: 'CloudWeGo Eino', href: '/docs/integrations/traceai/go/eino', category: 'frameworks', summary: 'Trace Eino graphs, agents, model calls and tools in Go.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'tavily', name: 'Tavily', href: '/docs/integrations/traceai/tavily', category: 'frameworks', summary: 'Trace Python search, extraction, mapping, crawling and research calls.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'parallel', name: 'Parallel', href: '/docs/integrations/traceai/parallel', category: 'frameworks', summary: 'Trace Python Search and Extract calls, result counts and errors.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'langchain', name: 'LangChain', href: '/docs/integrations/traceai/langchain', category: 'frameworks', summary: 'Trace chains, retrievers, tools and model calls.', method: 'traceAI SDK', logo: 'langchain' },
