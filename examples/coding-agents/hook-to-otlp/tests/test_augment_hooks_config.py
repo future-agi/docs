@@ -16,11 +16,13 @@ Augment documents the command as the path to a ``.sh`` script, so the shipped se
 script and the guard lives in it: futureagi-hook.sh runs
 ``(python3 -B emit.py augment 2>/dev/null || true) >/dev/null`` and exits 0. (0.36.0 would also
 run a guarded one-line command through ``bash -c``, see auggie_argv, but that form is not
-documented, so it is not used.) These tests run
-every shipped command the way Auggie does, and also through ``sh -c`` with the payload on stdin
+documented, so it is not used.) These tests run every installed command the way Auggie does.
+Shell-compatible command strings are also run through ``sh -c`` with the payload on stdin
 and as a trailing heredoc, with the emitter installed, with emit.py missing and with python3
-missing. If the whole install folder is deleted, Auggie cannot start the wrapper; 0.36.0 logs
-that as a failed hook and continues (none of the registered events can block).
+missing. Literal Unicode and parentheses-only paths exercise Auggie's direct-spawn branch,
+not an extra shell that Auggie does not use. If the whole install folder is deleted, Auggie
+cannot start the wrapper; 0.36.0 logs that as a failed hook and continues (none of the
+registered events can block).
 """
 from __future__ import annotations
 
@@ -40,8 +42,10 @@ TEMPLATE_COMMAND = "/Users/you/.augment/fi-hook-to-otlp/futureagi-hook.sh"
 OBSERVE_EVENTS = ["SessionStart", "Stop", "SessionEnd"]
 SHELLS = [sh for sh in ("/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash") if os.path.exists(sh)]
 WORKSPACE_FILE = ".augment/settings.local.json"
-# Home directories that break naive quoting: a space, JSON and sed specials, shell specials.
-HOMES = ["home", "my home", "odd &#\"\\$HOME`x`"]
+# These names trigger neither Auggie's word splitter nor its shell dispatcher.
+DIRECT_SPAWN_HOMES = ["José", "name(test)"]
+# Also retain space, JSON/sed-special and shell-metacharacter coverage.
+HOMES = ["home", "my home", "odd &#\"\\$HOME`x`", *DIRECT_SPAWN_HOMES]
 
 _META = re.compile(r"[|&;><$`]")
 _WORDS = re.compile(r'"([^"]*(?:\\.[^"]*)*)"|\'([^\']*(?:\\.[^\']*)*)\'|(\S+)')
@@ -128,21 +132,28 @@ class AugmentHooksConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp, "project")
             project.mkdir()
-            for home_name in HOMES:
+            for home_index, home_name in enumerate(HOMES):
                 home = self.install(tmp, home_name)
                 wrapper = home / ".augment" / "fi-hook-to-otlp" / "futureagi-hook.sh"
                 settings = json.loads((home / ".augment" / "settings.json").read_text())
-                runs = [("auggie", "/bin/sh"), ("stdin", "/bin/sh"), ("heredoc", "/bin/sh")]
+                runs = [("auggie", "/bin/sh")]
+                if home_name not in DIRECT_SPAWN_HOMES:
+                    runs += [("stdin", "/bin/sh"), ("heredoc", "/bin/sh")]
                 if home_name == "home":
                     runs += [(t, sh) for sh in SHELLS for t in ("stdin", "heredoc")]
                 for transport, shell in runs:
                     label = f"{home_name!r} {transport} {shell}"
                     for _event, hook in commands(settings):
                         argv = auggie_argv(hook["command"])
-                        self.assertIn(str(wrapper), argv[-1] if argv[0] == "bash" else argv[0], label)
+                        if home_name in DIRECT_SPAWN_HOMES:
+                            self.assertEqual(hook["command"], str(wrapper), label)
+                        if argv[0] == "bash":
+                            self.assertEqual(argv, ["bash", "-c", f"'{wrapper}'"], label)
+                        else:
+                            self.assertEqual(argv, [str(wrapper)], label)
                     rx = Receiver()
                     try:
-                        sid = f"cfg-{len(home_name)}-{transport}-{Path(shell).name}"
+                        sid = f"cfg-{home_index}-{transport}-{Path(shell).name}"
                         env = self.base_env(home, FI_API_KEY="k", FI_SECRET_KEY="s", FI_HOOK_SYNC="1",
                                             FI_HOOK_CAPTURE_CONTENT="1",
                                             FI_OTLP_ENDPOINT=rx.url + "/tracer/v1/traces",

@@ -57,17 +57,19 @@ ignore_workspace_settings() {
 }
 
 # settings.json with the wrapper path filled in. Built with json.dump, so any
-# character in the home directory gives valid JSON. Auggie splits a command
-# that contains a space, and runs one that contains a shell metacharacter
-# through bash, so such a path is single-quoted (Auggie removes the quotes).
+# character in the home directory gives valid JSON. Auggie 0.36.0 splits a
+# command containing a literal space, or runs one containing |&;><$` through
+# bash, so only those paths need single quotes. Other characters (including
+# Unicode and parentheses) go straight to spawn: quotes would become part of
+# the filename instead of being removed.
 # Built before anything is copied, so a path that cannot be registered leaves
 # no partial install behind.
 HOOKS="$(python3 - "$HERE/settings.json" "$DEST/futureagi-hook.sh" <<'PY'
 import json, re, sys
 template, wrapper = sys.argv[1], sys.argv[2]
-if not re.fullmatch(r"[A-Za-z0-9_./+@:,=%-]+", wrapper):
-    if "'" in wrapper:
-        sys.exit(f"cannot register a hook path that contains a single quote: {wrapper}")
+if "'" in wrapper:
+    sys.exit(f"cannot register a hook path that contains a single quote: {wrapper}")
+if re.search(r"[ |&;><$`]", wrapper):
     wrapper = f"'{wrapper}'"
 with open(template, encoding="utf-8") as f:
     settings = json.load(f)
