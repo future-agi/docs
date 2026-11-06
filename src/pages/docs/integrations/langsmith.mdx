@@ -1,0 +1,276 @@
+---
+title: "LangSmith Trace Forwarding to Future AGI (OpenTelemetry)"
+description: "Forward new runs from a LangSmith-traced LangChain, LangGraph or @traceable app to Future AGI using LangSmith's OpenTelemetry mode."
+---
+
+Send LangSmith runs to Future AGI using LangSmith's OpenTelemetry mode. This forwards new runs as your app runs; it does not import existing LangSmith runs. Create the OpenTelemetry provider before your first traced call.
+
+This recipe targets a self-hosted Future AGI OTLP/HTTP collector that exposes `/v1/traces`. You need its reachable origin (scheme, host and port), your Future AGI keys and an Observe project name.
+
+<Tabs>
+<Tab title="Python">
+
+## 1. Install
+
+```bash
+pip install "langsmith[otel]==0.14.4" opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+```
+
+The `otel` extra installs the OpenTelemetry SDK and OTLP/HTTP exporter that LangSmith needs. For the example below, also install `langchain` and `langchain-openai` and set `OPENAI_API_KEY` to your model-provider key.
+
+## 2. Choose a mode
+
+| Goal | LangSmith variables | LangSmith key |
+|---|---|---|
+| Future AGI only | `LANGSMITH_TRACING=true`, `LANGSMITH_OTEL_ENABLED=true`, `LANGSMITH_OTEL_ONLY=true` | Not needed. LangSmith is not called. |
+| LangSmith and Future AGI (fan-out) | `LANGSMITH_TRACING=true`, `LANGSMITH_OTEL_ENABLED=true` | `LANGSMITH_API_KEY`, for the LangSmith copy |
+
+If set, `LANGSMITH_TRACING_MODE` (`langsmith`, `otel` or `hybrid`) takes precedence over these flags. For Future AGI only, set it to `otel`, or unset it before relying on `LANGSMITH_OTEL_ONLY=true`.
+
+## 3. Set environment variables
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_OTEL_ENABLED=true
+export LANGSMITH_OTEL_ONLY=true   # Future AGI only; remove to fan out
+
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-langsmith-app"
+
+# Clear inherited trace-specific overrides, then set the general OTLP values.
+unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_HEADERS
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"   # replace with your self-hosted collector origin; no path
+export OTEL_EXPORTER_OTLP_HEADERS="$(python -c 'import os; from urllib.parse import quote; print("x-api-key={0},x-secret-key={1}".format(quote(os.environ["FI_API_KEY"], safe=""), quote(os.environ["FI_SECRET_KEY"], safe="")))')"
+export OTEL_EXPORTER_OTLP_COMPRESSION=none
+```
+
+Compression off works on every Future AGI release. Future AGI cloud and self-hosted v1.56.0 and later also accept gzip, so the `OTEL_EXPORTER_OTLP_COMPRESSION=none` line is optional there.
+
+## 4. Install the tracer provider
+
+Create the provider before the first traced call and before `langsmith.Client()`. LangSmith adopts a global provider if one exists.
+
+```python
+import os
+import langsmith
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+provider = TracerProvider(
+    resource=Resource.create(
+        {"project_name": os.environ["FI_PROJECT_NAME"], "project_type": "observe"}
+    )
+)
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+trace.set_tracer_provider(provider)
+
+client = langsmith.Client()
+langsmith.configure(client=client)
+```
+
+Why you need your own provider: LangSmith's built-in provider cannot carry the `project_name` resource attribute that Future AGI requires, and unless `OTEL_EXPORTER_OTLP_HEADERS` is set it sends your LangSmith key as `x-api-key` to whatever OTLP endpoint is configured.
+
+## 5. Run your app
+
+Use LangChain, LangGraph or `@traceable` functions as you normally would, then flush before a short script exits:
+
+```python
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+
+@tool
+def lookup_policy(topic: str) -> str:
+    """Return the refund policy for a topic."""
+    return "Refunds are accepted within 30 days of purchase."
+
+agent = create_agent(ChatOpenAI(model="gpt-4o-mini"), tools=[lookup_policy])
+agent.invoke({"messages": [{"role": "user", "content": "What is the refund window?"}]})
+
+client.flush()
+provider.shutdown()
+```
+
+A complete runnable example, including a `@traceable` app and a failing-tool run, is in the traceAI repository under `python/examples/langsmith/`.
+
+## What is captured
+
+In Future AGI, open **Observe** and select your project to inspect the trace and its spans:
+
+- Hierarchy: the LangGraph run is the root `chain`; each `ChatOpenAI` call is an `llm` span under a `model` node. If the model invokes `lookup_policy`, its `tools` node contains a `tool` span. A direct model answer has no tool span.
+- Model, provider and token counts appear on the `llm` span.
+- A tool that raises produces an `ERROR` status on the tool span and its parent `tools` chain span. The error text is not exported as a message.
+- `langsmith.*` metadata: run tags, trace name, `ls_*` keys, LangGraph node keys, and the `LANGSMITH_*` / `LANGCHAIN_*` variables whose names are not secret-like. This filters names, not values.
+
+Display and mapping depend on your collector release:
+
+- LangSmith exports prompts and completions as the JSON attributes `gen_ai.prompt` and `gen_ai.completion`. Future AGI collectors with GenAI content mapping show them as input and output. On older deployments, look under Attributes if the input and output panels are empty.
+- LangSmith's run-type mapping can produce different span types for retrievers and parsers than you expect.
+- LangSmith supplies no cost value in this example; Future AGI may estimate cost from the model and tokens. This example does not set a session or user id.
+
+## Privacy
+
+LangSmith exports prompts, completions, tool arguments and results by default, and this recipe keeps that default: content appears in Future AGI unless you switch it off.
+
+Turn content off with LangSmith's own switches:
+
+```bash
+export LANGSMITH_HIDE_INPUTS=true
+export LANGSMITH_HIDE_OUTPUTS=true
+```
+
+Hiding outputs can remove token counts that LangSmith derives from those outputs. Metadata can still include usage and values of `LANGSMITH_*` and `LANGCHAIN_*` variables whose names are not secret-like. Review those values, including endpoint URLs, before exporting. Set `LANGSMITH_HIDE_METADATA=true` to omit metadata, including the model name. The `langsmith.metadata.revision_id` attribute can contain the working directory's Git tag or commit hash.
+
+## Troubleshooting
+
+- **HTTP 400 from the collector.** The resource has no `project_name`. Create the provider before `langsmith.Client()`.
+- **No spans arrive.** `LANGSMITH_TRACING` must be exactly `true`. A short script must call `client.flush()` and `provider.shutdown()` before exit.
+- **Spans go to the wrong place or your LangSmith key shows up in an OTLP header.** A trace-specific variable such as `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS` is overriding the general ones. Unset them.
+- **Gzip errors.** Releases before v1.56.0 answered HTTP 400; current releases accept gzip. On an older self-hosted release set `OTEL_EXPORTER_OTLP_COMPRESSION=none`.
+- **`Failed to export spans batch due to timeout, max retries or shutdown.`** A busy collector can take longer than the OTLP exporter's default timeout. Increase `OTEL_EXPORTER_OTLP_TIMEOUT` in seconds, for example to `60`.
+
+</Tab>
+<Tab title="TypeScript">
+
+<Warning>
+Use this native TypeScript route only for non-streaming functions. LangSmith's native OpenTelemetry export does not emit spans for traced async generators, even when fully consumed; early cancellation and generator errors also go unreported. For LangChain streaming, use the maintained [traceAI LangChain](/docs/integrations/traceai/langchain) integration instead of this native export route, and consume streams to completion. Early cancellation can leave spans unfinished there too. It instruments LangChain calls and is not a drop-in replacement for arbitrary `traceable` generators. Do not enable both routes for the same calls.
+</Warning>
+
+## 1. Install
+
+Use Node.js 20 or later. This example traces ordinary functions with LangSmith; it does not need a model-provider key.
+
+```bash
+npm install --save-exact langsmith@0.11.6 @opentelemetry/api@1.9.0 \
+  @opentelemetry/sdk-trace-base@2.0.1 @opentelemetry/resources@2.0.1 \
+  @opentelemetry/context-async-hooks@2.0.1 \
+  @opentelemetry/exporter-trace-otlp-proto@0.202.0
+npm install --save-dev --save-exact tsx@4.20.6
+```
+
+LangSmith's native JavaScript export still requires `initializeOTEL`, an experimental, deprecated bootstrap API. Use the exact dependency versions above and commit your lockfile; registering an OpenTelemetry provider alone does not initialize the LangSmith bridge.
+
+## 2. Configure tracing
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_TRACING_MODE=otel
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-langsmith-app"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://localhost:4318/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=none
+```
+
+Replace the endpoint with your self-hosted collector's full trace URL, including `/v1/traces`. The example passes Future AGI credentials directly to the exporter. Do not put them in `LANGSMITH_API_KEY`.
+
+<Warning>
+JavaScript does not support Python's `hybrid` tracing mode. `otel` sends new run spans to your OpenTelemetry provider, not a second LangSmith trace destination. LangSmith 0.11.6 still requests `/info` from its LangSmith API endpoint when draining runs, including any configured LangSmith API key in that request. A LangSmith key is not required for this example, but this is not a zero-LangSmith-network configuration. If your application must not contact LangSmith, use [traceAI LangChain](/docs/integrations/traceai/langchain) instead.
+</Warning>
+
+## 3. Run your app
+
+Save this as `app.mts`. Initialize once, before creating the client or calling a traced function. Pass the same client to every `traceable` function.
+
+```typescript
+import { Client } from "langsmith/client";
+import { traceable } from "langsmith/traceable";
+import { initializeOTEL } from "langsmith/experimental/otel/setup";
+import { trace } from "@opentelemetry/api";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+
+for (const name of ["FI_API_KEY", "FI_SECRET_KEY", "FI_PROJECT_NAME", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]) {
+  if (!process.env[name]) throw new Error(`Set ${name} before running this example`);
+}
+
+const provider = new BasicTracerProvider({
+  resource: resourceFromAttributes({
+    project_name: process.env.FI_PROJECT_NAME!,
+    project_type: "observe",
+  }),
+  spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({
+    url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT!,
+    headers: {
+      "x-api-key": process.env.FI_API_KEY!,
+      "x-secret-key": process.env.FI_SECRET_KEY!,
+    },
+  }))],
+});
+trace.setGlobalTracerProvider(provider);
+initializeOTEL({ globalTracerProvider: provider });
+
+const client = new Client({
+  tracingMode: "otel",
+  manualFlushMode: true,
+  omitTracedRuntimeInfo: true,
+});
+
+const lookupPolicy = traceable(
+  async (topic: string) => `Refunds for ${topic} are accepted within 30 days of purchase.`,
+  { name: "lookup_policy", run_type: "tool", client },
+);
+const answerQuestion = traceable(
+  async (topic: string) => lookupPolicy(topic),
+  { name: "answer_question", run_type: "chain", client },
+);
+
+try {
+  console.log(await answerQuestion("shoes"));
+} finally {
+  try {
+    await client.flush();
+  } finally {
+    await provider.shutdown();
+  }
+}
+```
+
+```bash
+npx tsx app.mts
+```
+
+The script prints the refund policy. In Future AGI, open **Observe**, select `my-langsmith-app`, and open `answer_question` to inspect its `lookup_policy` child. The provider's `project_name` resource attribute selects the Future AGI project; `LANGSMITH_PROJECT` does not replace it.
+
+This short script uses manual flushing. In a long-running service, omit `manualFlushMode: true` to enable automatic batching, then await `client.awaitPendingTraceBatches()` before shutting down your provider. If your application already has an OpenTelemetry provider, add the exporter to that provider instead of creating a second one, and pass it to `initializeOTEL`.
+
+## What is captured
+
+- Each traced non-streaming function becomes one span with its parent/child relationship and native run type.
+- Inputs and outputs are JSON attributes named `gen_ai.prompt` and `gen_ai.completion`. Collector releases with GenAI content mapping display these in the input and output panels; on older deployments inspect **Attributes**.
+- Failed non-streaming functions have `ERROR` status and exception events. This example has no model call, token counts or cost; those require model runs with usage metadata.
+
+Do not also instrument the same calls with a traceAI LangChain instrumentor: the native route already creates their spans. This forwards new runs, not historical traces, datasets or evaluations.
+
+## Privacy
+
+Inputs, outputs and metadata are included by default. To omit them, add these options to the same `Client` configuration:
+
+```typescript
+hideInputs: true,
+hideOutputs: true,
+hideMetadata: true,
+```
+
+Keep `omitTracedRuntimeInfo: true` to exclude runtime and environment metadata. Hiding content or metadata can also remove model and usage fields. These switches do not hide exception messages and stack traces, run names or tags: do not put sensitive data in those fields or thrown errors.
+
+## Troubleshooting
+
+- **No spans arrive.** Set `LANGSMITH_TRACING=true`, initialize the native bridge before tracing, and flush the same client used by your functions before shutting down its provider.
+- **Missing streaming spans or errors.** Async generators are not supported by this native TypeScript route; extra flushing does not restore their spans. For LangChain streams consumed to completion, switch to [traceAI LangChain](/docs/integrations/traceai/langchain) rather than instrumenting the same calls twice.
+- **HTTP 400 from the collector.** Check the `project_name` resource attribute and the full endpoint path.
+- **LangSmith `/info` warnings or slow shutdown.** Check access to your LangSmith API endpoint. This discovery request is separate from OTLP export; changing the Future AGI exporter URL will not redirect it.
+- **Gzip errors on older self-hosted releases.** Keep compression set to `none`. Self-hosted v1.56.0 and later accept gzip.
+
+</Tab>
+</Tabs>
+
+## How this differs from related integrations
+
+- [traceAI LangChain](/docs/integrations/traceai/langchain) instruments LangChain directly and needs no LangSmith. Use it when you do not need LangSmith at the same time.
+- [Langfuse import](/docs/integrations/import/langfuse) copies historical data. This page forwards live traffic.

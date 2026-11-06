@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Scaffold a new documentation page and add it to navigation.
+ * Scaffold a new documentation page. Ordinary pages are added to navigation;
+ * integration pages print the required shared-catalog registration metadata.
  *
  * Usage:
  *   pnpm new-doc <path> [title]
@@ -21,7 +22,9 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
   console.log(`
   Usage: pnpm new-doc <path> [title]
 
-  Creates a new MDX doc page and adds it to navigation.
+  Creates a new MDX doc page and adds ordinary pages to navigation.
+  Integration pages print the required registration fields for
+  src/lib/integrations.mjs (shared by the directory and sidebar).
 
   Arguments:
     path    Page path relative to site root (e.g., docs/evaluation/my-eval)
@@ -65,9 +68,22 @@ Content goes here.
 fs.writeFileSync(filePath, content);
 console.log(`\x1b[32m✓\x1b[0m Created ${filePath}`);
 
-// Try to add to navigation
-const navResult = addToNavigation(urlPath, title);
-if (navResult) {
+// Integration cards and navigation are generated together. Do not insert a
+// literal navigation sibling or guess the connection method/category/logo.
+if (urlPath.startsWith('/docs/integrations/')) {
+  console.log(`\n  Register this guide in the integrations array in src/lib/integrations.mjs:`);
+  console.log(`  {`);
+  console.log(`    id: ${JSON.stringify(path.basename(rawPath))},`);
+  console.log(`    name: ${JSON.stringify(title)},`);
+  console.log(`    href: ${JSON.stringify(urlPath)},`);
+  console.log(`    category: '<choose an id from integrationCategories>',`);
+  console.log(`    summary: '<describe what this guide connects>',`);
+  console.log(`    method: '<the documented connection method>',`);
+  console.log(`    logo: '<existing key in public/images/integrations/manifest.json>',`);
+  console.log(`  },`);
+  console.log(`  Choose the required metadata before publishing. If adding a logo, record its source and license in the manifest.`);
+  console.log(`  Both the directory and sidebar will use this record. Run npm run test:integrations to check route coverage.`);
+} else if (addToNavigation(urlPath, title)) {
   console.log(`\x1b[32m✓\x1b[0m Added to navigation: ${urlPath}`);
 } else {
   console.log(`\x1b[33m!\x1b[0m Could not auto-add to navigation.`);
