@@ -132,6 +132,7 @@ export const integrations = [
   { id: 'litellm-proxy', name: 'LiteLLM Proxy', href: '/docs/integrations/gateways/litellm-proxy', category: 'gateways', summary: 'Export request spans from the proxy server’s callback.', method: 'Gateway OTLP', logo: 'litellm', aliases: ['server'] },
   { id: 'vercel-ai-gateway', name: 'Vercel AI Gateway', href: '/docs/integrations/gateways/vercel-ai-gateway', category: 'gateways', summary: 'Trace gateway calls from your app, not Trace Drains.', method: 'OpenAI client', logo: 'vercel' },
 
+  { id: 'google-genai-live', name: 'Gemini Live', href: '/docs/integrations/traceai/google_genai_live', category: 'voice', summary: 'Trace Python Live sessions, conversation turns and tool calls.', method: 'traceAI SDK', logo: 'google', aliases: ['Google GenAI Live'] },
   { id: 'livekit', name: 'LiveKit', href: '/docs/integrations/traceai/livekit', category: 'voice', summary: 'Trace voice agent sessions and model interactions.', method: 'traceAI SDK', logo: 'livekit' },
   { id: 'pipecat', name: 'Pipecat', href: '/docs/integrations/traceai/pipecat', category: 'voice', summary: 'Capture spans from conversational voice pipelines.', method: 'traceAI SDK', logo: 'pipecat' },
   { id: 'vapi', name: 'Vapi', href: '/docs/observe/concepts/voice-observability', category: 'voice', summary: 'Connect calls using the shared voice observability guide.', method: 'Voice guide', logo: 'vapi', sharedGuide: true },

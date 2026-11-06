@@ -12,6 +12,7 @@ import './cursor-sdk-page.test.mjs';
 import './grok-build-page.test.mjs';
 import './hermes-agent-page.test.mjs';
 import './kiro-cli-page.test.mjs';
+import './google-genai-live-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
