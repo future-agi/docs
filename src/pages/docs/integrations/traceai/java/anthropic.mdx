@@ -1,141 +1,208 @@
 ---
 title: "Anthropic Java Integration with Future AGI Tracing"
-description: "Trace Anthropic Messages API calls in Java with TracedAnthropicClient. Uses reflection for cross-version compatibility and automatic span capture."
+description: "Send native Anthropic Java OpenTelemetry spans to Future AGI without wrapping the SDK."
 ---
 
-<TLDR>
-- `TracedAnthropicClient` wraps any version of the Anthropic Java SDK
-- Uses reflection internally - the client is typed as `Object`, not a specific SDK class
-- Traces `createMessage()` calls with full message, token, and model capture
-- Works across different Anthropic SDK versions without recompilation
-</TLDR>
+Send Anthropic request timing, model names, token usage, and errors to Future AGI using the SDK's native OpenTelemetry tracing.
 
 ## Prerequisites
 
-Complete the [Java SDK setup](/docs/integrations/traceai/java) first.
+Use Java 17 or later, Anthropic Java 3.2.0 or later, and OpenTelemetry 1.57.0 or later. You need an Anthropic API key and [Future AGI API credentials](/docs/get-started/send-your-first-trace).
 
-## Installation
+<Warning>
+Use one tracing owner for Anthropic requests. Do not combine native SDK tracing with `TracedAnthropicClient` or another Anthropic instrumentor: both record the same request and can double-count token usage. Existing wrapper users can keep the [legacy setup](#existing-tracedanthropicclient-applications).
+</Warning>
 
-<CodeGroup titles={["Maven", "Gradle"]}>
+## Install dependencies
 
-```xml Maven
+Add these dependencies to your Maven project's `pom.xml`. The OpenTelemetry BOM keeps its API, SDK, and exporter versions aligned, including when another dependency requests an older API.
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-bom</artifactId>
+            <version>1.57.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+<dependencies>
+    <dependency>
+        <groupId>com.anthropic</groupId>
+        <artifactId>anthropic-java</artifactId>
+        <version>3.3.0</version>
+    </dependency>
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-sdk</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+</dependencies>
+```
+
+For Gradle:
+
+```groovy
+implementation platform('io.opentelemetry:opentelemetry-bom:1.57.0')
+implementation 'com.anthropic:anthropic-java:3.3.0'
+implementation 'io.opentelemetry:opentelemetry-sdk'
+implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+```
+
+This route does not require `traceai-java-anthropic` or `TraceAI.initFromEnvironment()`.
+
+## Configure credentials and destination
+
+Set these variables in your application's environment or secret manager:
+
+```bash
+export ANTHROPIC_API_KEY="<anthropic-api-key>"
+export FI_API_KEY="<future-agi-api-key>"
+export FI_SECRET_KEY="<future-agi-secret-key>"
+export FI_PROJECT_NAME="anthropic-java"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"
+```
+
+The traces endpoint is the **complete URL**, including `/tracer/v1/traces`. For a self-hosted deployment, replace the host with your Future AGI API host.
+
+## Trace a message
+
+Save this as `src/main/java/AnthropicTracingExample.java`. It registers one tracer provider, uses the stock OTLP/HTTP protobuf exporter, and flushes queued spans when the provider closes.
+
+If your application already configures OpenTelemetry, add the exporter to that provider instead of registering a second global provider. Keep its W3C trace-context propagator so Anthropic requests join your application's traces.
+
+```java
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.core.opentelemetry.OpenTelemetryContentMode;
+import com.anthropic.core.opentelemetry.OpenTelemetryOptions;
+import com.anthropic.core.opentelemetry.OpenTelemetryTraces;
+import com.anthropic.models.messages.MessageCreateParams;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
+import io.opentelemetry.context.propagation.ContextPropagators;
+import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
+
+public final class AnthropicTracingExample {
+    public static void main(String[] args) {
+        String project = System.getenv("FI_PROJECT_NAME");
+        var exporter = OtlpHttpSpanExporter.builder()
+            .setEndpoint(System.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+            .addHeader("X-Api-Key", System.getenv("FI_API_KEY"))
+            .addHeader("X-Secret-Key", System.getenv("FI_SECRET_KEY"))
+            .addHeader("X-Project-Name", project)
+            .build();
+
+        try (var provider = SdkTracerProvider.builder()
+            .setResource(Resource.getDefault().merge(Resource.create(Attributes.of(
+                AttributeKey.stringKey("service.name"), "anthropic-java-app",
+                AttributeKey.stringKey("project_name"), project))))
+            .addSpanProcessor(BatchSpanProcessor.builder(exporter).build())
+            .build()) {
+            OpenTelemetrySdk.builder().setTracerProvider(provider)
+                .setPropagators(ContextPropagators.create(W3CTraceContextPropagator.getInstance()))
+                .buildAndRegisterGlobal();
+
+            AnthropicClient client = AnthropicOkHttpClient.builder().fromEnv()
+                .openTelemetry(OpenTelemetryOptions.builder()
+                    .traces(OpenTelemetryTraces.builder()
+                        .contentMode(OpenTelemetryContentMode.METADATA_ONLY).build())
+                    .build())
+                .build();
+            try {
+                var message = client.messages().create(MessageCreateParams.builder()
+                    .model("claude-opus-5-5")
+                    .maxTokens(1024)
+                    .addUserMessage("What is the capital of France?")
+                    .build());
+                System.out.println(message.id());
+            } finally {
+                client.close();
+            }
+        }
+    }
+}
+```
+
+Run it from your Maven project:
+
+```bash
+mvn -Dmaven.compiler.release=17 \
+  org.apache.maven.plugins:maven-compiler-plugin:3.12.1:compile \
+  org.codehaus.mojo:exec-maven-plugin:3.5.0:java \
+  -Dexec.mainClass=AnthropicTracingExample
+```
+
+Open **Observe** in Future AGI, select the `anthropic-java` project, and open an `anthropic.messages.create` span. Its attributes include `gen_ai.provider.name`, request and response models, and input and output token counts. Native input-token usage includes cache reads and cache writes; do not add those cache counts again.
+
+## Async calls and streaming
+
+Use the same client and provider for async calls:
+
+```java
+var message = client.async().messages().create(params).join();
+```
+
+Close streams, including when you stop reading early. A streaming request's span ends when the stream completes or closes, not when the call returns:
+
+```java
+try (var stream = client.messages().createStreaming(params)) {
+    stream.stream().forEach(event -> {
+        // Handle each SDK event here.
+    });
+}
+```
+
+The SDK's tool runner also emits its own runner and tool spans. Do not wrap each tool or model request with a second LLM instrumentor.
+
+## Prompt and response privacy
+
+The example explicitly selects `METADATA_ONLY`: prompts and responses are not exported. To include them, change that setting to `OpenTelemetryContentMode.CONTENT`. This exports structured content in `gen_ai.input.messages` and `gen_ai.output.messages`; review your Future AGI access and retention settings before enabling it.
+
+Native SDK tracing uses Anthropic's content controls, not traceAI's `FI_HIDE_*` settings. Setting the content mode in code overrides the corresponding environment setting. Tool names and other developer-supplied metadata can still be recorded in metadata-only mode, so keep secrets out of identifiers and descriptions.
+
+## Existing TracedAnthropicClient applications
+
+The published wrapper remains available on Maven Central:
+
+```xml
 <dependency>
-    <groupId>com.github.future-agi.traceAI</groupId>
+    <groupId>com.futureagi</groupId>
     <artifactId>traceai-java-anthropic</artifactId>
-    <version>main-SNAPSHOT</version>
-</dependency>
-```
-
-```groovy Gradle
-implementation 'com.github.future-agi.traceAI:traceai-java-anthropic:main-SNAPSHOT'
-```
-
-</CodeGroup>
-
-You also need the Anthropic Java SDK (any version):
-
-<CodeGroup titles={["Maven", "Gradle"]}>
-
-```xml Maven
-<dependency>
-    <groupId>com.anthropic</groupId>
-    <artifactId>anthropic-java</artifactId>
     <version>1.0.0</version>
 </dependency>
 ```
 
-```groovy Gradle
-implementation 'com.anthropic:anthropic-java:1.0.0'
-```
+Keep the [Java SDK setup](/docs/integrations/traceai/java) and your existing `createMessage(params)` calls if you need the wrapper's capture format. It covers blocking message creation; `unwrap()` returns the original client. Calls made through the original client are not traced by the wrapper.
 
-</CodeGroup>
-
----
-
-## Why reflection?
-
-Unlike the OpenAI wrapper (which imports `com.openai` types directly), the Anthropic wrapper accepts `Object` for both the client and message params. This is intentional - the Anthropic Java SDK has changed its API surface across versions, and the reflection approach means `traceai-java-anthropic` works with any version without needing to match exact class signatures.
-
-The tradeoff: your IDE won't autocomplete the `createMessage()` parameter type. You pass the Anthropic SDK's own `MessageCreateParams` object, but the compiler sees it as `Object`.
-
----
-
-## Wrap the client
+When using the wrapper with a native-tracing SDK, disable native tracing on that client:
 
 ```java
-import ai.traceai.TraceAI;
-import ai.traceai.anthropic.TracedAnthropicClient;
-import com.anthropic.AnthropicClient;
-import com.anthropic.AnthropicOkHttpClient;
-
-TraceAI.initFromEnvironment();
-
-// Create the Anthropic client normally
-AnthropicClient client = AnthropicOkHttpClient.builder()
-    .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+AnthropicClient client = AnthropicOkHttpClient.builder().fromEnv()
+    .openTelemetry(false)
     .build();
-
-// Wrap it - note the client is accepted as Object
 TracedAnthropicClient traced = new TracedAnthropicClient(client);
 ```
 
----
+Older SDKs without `openTelemetry` do not need that setting. The released wrapper supports optional temperature parameters. Its content capture differs from the native route: it records raw input/output and structured messages by default. Review the [Java privacy configuration](/docs/integrations/traceai/java#traceconfig-reference) before using it for sensitive data; input/output hiding does not by itself hide exception details.
 
-## Create a message
+To migrate, remove the wrapper at the call site and call `client.messages().create(params)` directly, replace `TraceAI.initFromEnvironment()` with the provider setup above, and choose a native content mode explicitly. Do not run both initialization paths for the same provider.
 
-```java
-import com.anthropic.models.*;
+## Troubleshooting
 
-Object response = traced.createMessage(
-    MessageCreateParams.builder()
-        .model("claude-sonnet-4-20250514")
-        .maxTokens(1024)
-        .system("You are a helpful assistant.")
-        .addMessage(MessageParam.builder()
-            .role(MessageParam.Role.USER)
-            .content("What is the capital of France?")
-            .build())
-        .build()
-);
-
-// Cast to the SDK's Message type
-Message message = (Message) response;
-System.out.println(message.content().get(0).text());
-```
-
-The `createMessage()` return type is generic (`<T>`), so you need to cast the result to the Anthropic SDK's `Message` type. This is the cost of the reflection approach.
-
-**Span created:** "Anthropic Message" with kind `LLM`
-
----
-
-## What gets captured
-
-| Attribute | Example |
-|-----------|---------|
-| `llm.system` | `anthropic` |
-| `llm.provider` | `anthropic` |
-| `llm.request.model` | `claude-sonnet-4-20250514` |
-| `llm.response.model` | `claude-sonnet-4-20250514` |
-| `llm.response.id` | `msg_abc123` |
-| `llm.request.max_tokens` | `1024` |
-| `llm.request.temperature` | `0.7` |
-| `llm.token_count.prompt` | `20` |
-| `llm.token_count.completion` | `35` |
-| `llm.token_count.total` | `55` |
-| `llm.response.finish_reason` | `end_turn` |
-| Input messages | System prompt + user messages as structured JSON |
-| Output messages | Assistant response content blocks concatenated |
-| `fi.raw_input` / `fi.raw_output` | Full request/response serialized |
-
-The wrapper handles multi-block content (text blocks in the response are concatenated). System prompts are captured as a separate "system" role message in the input messages.
-
----
-
-## Accessing the original client
-
-```java
-Object original = traced.unwrap();
-// Cast back if you need typed access
-AnthropicClient anthropic = (AnthropicClient) original;
-```
+- **No spans:** register the tracer provider before creating the Anthropic client. Check `mvn dependency:tree` for an OpenTelemetry API below 1.57.0 and align all OpenTelemetry modules with the BOM.
+- **Two observations per request:** remove the wrapper or disable native tracing on the wrapped client. If you also enabled Anthropic server-side API tracing, its server span is distinct from the SDK client span; do not sum usage from both.
+- **Authentication or routing errors:** check both Future AGI credentials, the complete traces endpoint, and `X-Project-Name`.
+- **Missing prompts or responses:** metadata-only mode is intentional. Enable `CONTENT` only when content export is appropriate for your application.
+- **Missing spans at shutdown:** close the client and then the tracer provider. Wait for async calls to finish and close any streams first.
