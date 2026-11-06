@@ -7,7 +7,8 @@
 //   FI_PROJECT_NAME             Future AGI project (default: pi-sdk)
 //   FI_BASE_URL                 self-hosted Future AGI (default: https://api.futureagi.com)
 //   FI_HIDE_INPUTS=false        opt in to prompts and tool arguments
-//   FI_HIDE_OUTPUTS=false       opt in to answers and tool results
+//   FI_HIDE_OUTPUTS=false       opt in to successful answers and tool results
+//   FI_HIDE_ERROR_DETAILS=false opt in to error statuses; raw text also needs outputs
 //   PI_CODING_AGENT_DIR         Pi agent dir with models.json / auth.json (default: ~/.pi/agent)
 //   PI_PROVIDER, PI_MODEL       model to use (default: Pi's configured default)
 //   PI_CWD                      project directory the agent works in (default: cwd)
@@ -25,17 +26,21 @@ const tracerProvider = register({
 const instrumentation = new PiCodingAgentInstrumentation({ tracerProvider });
 const createTracedSession = instrumentation.wrapCreateAgentSession(createAgentSession);
 
-// Only the tools the example prompt needs; Pi has no approval step for tools.
-const options = { cwd, sessionManager: SessionManager.inMemory(cwd), tools: ["read", "ls"] };
-if (process.env.PI_PROVIDER && process.env.PI_MODEL) {
-  const modelRuntime = await ModelRuntime.create();
-  const model = modelRuntime.getModel(process.env.PI_PROVIDER, process.env.PI_MODEL);
-  if (!model) throw new Error(`Pi does not know ${process.env.PI_PROVIDER}/${process.env.PI_MODEL}; add it to models.json`);
-  Object.assign(options, { model, modelRuntime });
-}
-
-const { session } = await createTracedSession(options);
+let session;
 try {
+  // Only the tools the example prompt needs; Pi has no approval step for tools.
+  const options = { cwd, sessionManager: SessionManager.inMemory(cwd), tools: ["read", "ls"] };
+  if (Boolean(process.env.PI_PROVIDER) !== Boolean(process.env.PI_MODEL)) {
+    throw new Error("Set PI_PROVIDER and PI_MODEL together");
+  }
+  if (process.env.PI_PROVIDER && process.env.PI_MODEL) {
+    const modelRuntime = await ModelRuntime.create();
+    const model = modelRuntime.getModel(process.env.PI_PROVIDER, process.env.PI_MODEL);
+    if (!model) throw new Error(`Pi does not know ${process.env.PI_PROVIDER}/${process.env.PI_MODEL}; add it to models.json`);
+    Object.assign(options, { model, modelRuntime });
+  }
+
+  ({ session } = await createTracedSession(options));
   await session.prompt(prompt);
   console.log(session.getLastAssistantText() ?? "");
   console.error(`pi session id: ${session.sessionId}`);
@@ -46,6 +51,6 @@ try {
     process.exitCode = 1;
   }
 } finally {
-  session.dispose();
+  session?.dispose();
   await tracerProvider.shutdown();
 }
