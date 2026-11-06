@@ -69,7 +69,8 @@ import json, re, sys
 template, wrapper = sys.argv[1], sys.argv[2]
 if "'" in wrapper:
     sys.exit(f"cannot register a hook path that contains a single quote: {wrapper}")
-if re.search(r"[ |&;><$`]", wrapper):
+# Escape the backtick for macOS Bash 3.2's command-substitution heredoc parser.
+if re.search(r"[ |&;><$\x60]", wrapper):
     wrapper = f"'{wrapper}'"
 with open(template, encoding="utf-8") as f:
     settings = json.load(f)
