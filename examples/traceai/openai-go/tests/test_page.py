@@ -72,7 +72,7 @@ class PageMatchesExample(unittest.TestCase):
     def test_run_script_builds_from_the_documented_module_and_never_echoes_keys(self):
         run = RUN.read_text()
         self.assertIn("go get \"github.com/future-agi/traceAI/go/openai@$REF\"", run)
-        self.assertIn("go get github.com/future-agi/traceAI/go/openai@latest", self.page)
+        self.assertIn("github.com/future-agi/traceAI/go/openai@v0.1.0", self.page)
         for key in ("FI_API_KEY", "FI_SECRET_KEY", "OPENAI_API_KEY"):
             self.assertNotRegex(run, r"echo[^\n]*\$\{?" + key)
         self.assertIn("FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true", run)

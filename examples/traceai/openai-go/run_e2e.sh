@@ -15,7 +15,7 @@
 # Optional: FI_BASE_URL (default https://api.futureagi.com), FI_PROJECT_NAME,
 # OPENAI_BASE_URL (any OpenAI-compatible endpoint), MODEL,
 # TRACEAI_GO_OPENAI_REF (version or commit of github.com/future-agi/traceAI/go/openai,
-# default latest), OPENAI_GO_VERSION (default v3.78.0).
+# default v0.1.0), OPENAI_GO_VERSION (default v3.78.0).
 # This script never prints a key.
 set -euo pipefail
 
@@ -24,7 +24,7 @@ set -euo pipefail
 : "${OPENAI_API_KEY:?set OPENAI_API_KEY}"
 export FI_PROJECT_NAME="${FI_PROJECT_NAME:-openai-go-example}"
 MODEL="${MODEL:-gpt-4.1-mini}"
-REF="${TRACEAI_GO_OPENAI_REF:-latest}"
+REF="${TRACEAI_GO_OPENAI_REF:-v0.1.0}"
 OPENAI_GO_VERSION="${OPENAI_GO_VERSION:-v3.78.0}"
 # The FI_HIDE_* switches are set per run below; start from the defaults.
 unset FI_HIDE_INPUTS FI_HIDE_OUTPUTS FI_HIDE_INPUT_MESSAGES FI_HIDE_OUTPUT_MESSAGES \

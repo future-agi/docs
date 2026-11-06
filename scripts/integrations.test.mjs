@@ -419,6 +419,23 @@ test('Java pgvector qualifies successful-operation privacy and hides database er
   assert.ok(section.indexOf('FI_HIDE_ERROR_DETAILS=true') < section.indexOf('new TracedPgVectorStore(connection)'));
 });
 
+test('OpenAI Go guide is discoverable and bootstraps the released module', () => {
+  const page = read('src/pages/docs/integrations/traceai/go/openai.mdx');
+  const guide = integrations.find(item => item.id === 'openai-go');
+  assert.equal(guide?.href, '/docs/integrations/traceai/go/openai');
+  assert.equal(guide?.category, 'providers');
+  assert.equal(guide?.logo, 'openai');
+  for (const setting of [
+    'Go 1.26 or later', 'openai-go/v3` v3.71.1 or later',
+    'github.com/future-agi/traceAI/go/openai@v0.1.0',
+    'github.com/openai/openai-go/v3@v3.78.0',
+    'go.opentelemetry.io/otel/sdk@v1.47.0',
+    'go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0',
+    'go mod init example.com/openai-go-example', 'go mod tidy', 'go run . -stream -fail',
+  ]) assert.ok(page.includes(setting), setting);
+  assert.doesNotMatch(page, /end-to-end test|In our test|MARK_DEFAULT|trace_id=|latest on 20\d\d-/i);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));

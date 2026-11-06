@@ -97,7 +97,7 @@ func run() error {
 	stream := flag.Bool("stream", false, "stream the final answer")
 	fail := flag.Bool("fail", false, "also call a model that does not exist, to show an ERROR span")
 	session := flag.String("session", fmt.Sprintf("openai-go-example-%d", time.Now().Unix()), "session id")
-	toolNote := flag.String("tool-note", "", "extra text the tool returns (for privacy checks)")
+	toolNote := flag.String("tool-note", "", "extra text returned by the tool")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -142,7 +142,7 @@ func run() error {
 	if *fail {
 		// A separate trace in the same session.
 		_, err := client.Chat.Completions.New(sessionCtx, openai.ChatCompletionNewParams{
-			Model:    "no-such-model-th8271",
+			Model:    "no-such-model",
 			Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(*question)},
 		}, option.WithMaxRetries(0))
 		var apiErr *openai.Error
