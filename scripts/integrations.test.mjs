@@ -515,4 +515,13 @@ test('OpenAI Realtime guide installs the published package and runs a complete e
   assert.match(page, /FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true/);
   assert.match(page, /developers\.openai\.com\/api\/docs\/guides\/realtime/);
   assert.doesNotMatch(publicProse(page), /Live vendor verification|trace id|stand-in|QA harness/i);
+test('Microsoft Agent Framework guide uses the released package and global provider without a test diary', () => {
+  const page = read('src/pages/docs/integrations/traceai/microsoft-agent-framework.mdx');
+  const catalog = integrations.find(i => i.id === 'microsoft-agent-framework');
+  assert.equal(catalog?.href, '/docs/integrations/traceai/microsoft-agent-framework');
+  assert.equal(catalog?.category, 'frameworks');
+  assert.match(page, /pip install "traceAI-agent-framework==0\.1\.0" agent-framework/);
+  assert.match(page, /Python 3\.10 to 3\.13 and Agent Framework 1\.0\.0 or later/);
+  for (const term of ['set_global_tracer_provider=True', 'enable_instrumentation(enable_sensitive_data=True)', 'enable_fi_attribute_mapping()', 'trace_provider.force_flush()', 'agent_framework.usage.*', 'configure_otel_providers()']) assert.ok(page.includes(term), term);
+  assert.doesNotMatch(page, /Tested versions|end to end|unit tests|unique marker|Verified|\b20\d\d-\d\d-\d\d\b/);
 });
