@@ -3,7 +3,7 @@
 // with traceaigenai.
 //
 //	export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=my-service GEMINI_API_KEY=...
-//	go run ./example -stream
+//	go run . -stream -fail
 //
 // One run is one trace: an agent span, an LLM span that asks for a tool, the
 // tool span, and an LLM span for the final answer. -fail adds one call to a
@@ -94,7 +94,6 @@ func run() error {
 	stream := flag.Bool("stream", false, "stream the final answer")
 	fail := flag.Bool("fail", false, "also call a model that does not exist, to show an ERROR span")
 	session := flag.String("session", fmt.Sprintf("gemini-go-example-%d", time.Now().Unix()), "session id")
-	toolNote := flag.String("tool-note", "", "extra text the tool returns (for privacy checks)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -130,7 +129,7 @@ func run() error {
 	tc.SetAttributes(agent, attribute.String(traceaigenai.InputValue, *question))
 	fmt.Printf("trace_id=%s session=%s\n", agent.SpanContext().TraceID(), *session)
 
-	answer, err := askWithTool(ctx, client, tracer, tc, *model, *question, *toolNote, *stream)
+	answer, err := askWithTool(ctx, client, tracer, tc, *model, *question, *stream)
 	if err != nil {
 		agent.SetStatus(codes.Error, "agent failed")
 		agent.End()
@@ -142,7 +141,7 @@ func run() error {
 
 	if *fail {
 		// A separate trace in the same session.
-		_, err := client.Models.GenerateContent(sessionCtx, "no-such-model-th8273", genai.Text(*question), nil)
+		_, err := client.Models.GenerateContent(sessionCtx, "no-such-model", genai.Text(*question), nil)
 		var apiErr genai.APIError
 		if errors.As(err, &apiErr) {
 			fmt.Printf("expected failure: HTTP %d %s\n", apiErr.Code, apiErr.Status)
@@ -154,7 +153,7 @@ func run() error {
 }
 
 func askWithTool(ctx context.Context, client *genai.Client, tracer trace.Tracer, tc traceaigenai.TraceConfig,
-	model, question, toolNote string, stream bool) (string, error) {
+	model, question string, stream bool) (string, error) {
 	config := &genai.GenerateContentConfig{
 		SystemInstruction: genai.NewContentFromText("You are a weather assistant. Always call get_weather before answering.", genai.RoleUser),
 		Tools: []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{{
@@ -182,7 +181,7 @@ func askWithTool(ctx context.Context, client *genai.Client, tracer trace.Tracer,
 	history = append(history, first.Candidates[0].Content)
 	var results []*genai.Part
 	for _, call := range calls {
-		result := runTool(ctx, tracer, tc, call.ID, call.Name, call.Args, toolNote)
+		result := runTool(ctx, tracer, tc, call.ID, call.Name, call.Args)
 		part := genai.NewPartFromFunctionResponse(call.Name, result)
 		part.FunctionResponse.ID = call.ID
 		results = append(results, part)
@@ -209,7 +208,7 @@ func askWithTool(ctx context.Context, client *genai.Client, tracer trace.Tracer,
 
 // runTool executes the tool locally inside its own span. The transport spans
 // the model calls; your tool code is yours to span.
-func runTool(ctx context.Context, tracer trace.Tracer, tc traceaigenai.TraceConfig, id, name string, args map[string]any, note string) map[string]any {
+func runTool(ctx context.Context, tracer trace.Tracer, tc traceaigenai.TraceConfig, id, name string, args map[string]any) map[string]any {
 	_, span := tracer.Start(ctx, "execute_tool "+name, trace.WithAttributes(
 		attribute.String(traceaigenai.GenAISpanKind, traceaigenai.SpanKindTool),
 		attribute.String(traceaigenai.GenAIOperationName, "execute_tool"),
@@ -224,9 +223,6 @@ func runTool(ctx context.Context, tracer trace.Tracer, tc traceaigenai.TraceConf
 
 	city, _ := args["city"].(string)
 	out := map[string]any{"city": city, "temperature_c": 21, "conditions": "sunny"}
-	if note != "" {
-		out["note"] = note
-	}
 	b, _ := json.Marshal(out)
 	tc.SetAttributes(span,
 		attribute.String(traceaigenai.OutputValue, string(b)),
