@@ -1,97 +1,107 @@
 ---
 title: "Firecrawl Integration with Future AGI Tracing"
-description: "Trace the Firecrawl v2 Python client (scrape, search, map, crawl) in Future AGI with traceAI-firecrawl. One span per call, one span per blocking crawl."
+description: "Trace Firecrawl v2 Python scraping, search, crawl, extraction, agent and browser operations in Future AGI with traceAI-firecrawl."
 ---
 
-`traceAI-firecrawl` instruments the Firecrawl **v2** Python client. Each `scrape`, `search`, `map`, `crawl`, `start_crawl`, `get_crawl_status` and `cancel_crawl` call becomes one span, sync or async.
+Use the maintained `traceAI-firecrawl` package to see Firecrawl v2 Python calls, latency and errors in Future AGI. It instruments both `Firecrawl` and `AsyncFirecrawl`, with one span per supported call rather than one per page or internal poll.
 
-<Note>
-**Status: beta.** The package is released from [future-agi/traceAI](https://github.com/future-agi/traceAI) (`python/frameworks/firecrawl`). Verified against the live Firecrawl API (`api.firecrawl.dev`) on 2026-10-17; see "Live vendor verification" below.
-</Note>
+## Prerequisites
 
-## v1, v2 and OpenLIT
+- Python 3.10–3.13 and `firecrawl-py >=4.46.2,<5`.
+- A Firecrawl API key with credits for the operations you run.
+- [Future AGI API and secret keys](/docs/admin-settings/api-keys).
 
-`firecrawl-py` 4.x ships two clients. This package wraps the v2 client (`from firecrawl import Firecrawl`, `AsyncFirecrawl`). It does not wrap the feature-frozen v1 `FirecrawlApp`. OpenLIT's `FireCrawlInstrumentor` wraps `FirecrawlApp.scrape_url` (v1). If you build both clients and enable both instrumentors you get two spans for different calls; pick the one that matches your client.
+This guide uses the v2 client (`from firecrawl import Firecrawl`). The legacy v1 `FirecrawlApp` is not instrumented. Do not enable another Firecrawl instrumentor for the same calls.
 
 ## 1. Install
 
 ```bash
-pip install traceAI-firecrawl firecrawl-py
+pip install "traceAI-firecrawl==0.1.1" "firecrawl-py==4.50.0" "fi-instrumentation-otel==1.2.3"
 ```
 
-Supported: `firecrawl-py >=4.46.2,<5`, Python 3.10 to 3.13.
-
-## 2. Configure
+## 2. Configure credentials
 
 ```bash
 export FI_API_KEY="your-futureagi-api-key"
 export FI_SECRET_KEY="your-futureagi-secret-key"
+export FIRECRAWL_API_KEY="your-firecrawl-api-key"
 ```
 
-## 3. Instrument
+The tracing SDK sends spans to Future AGI Cloud by default. For a self-hosted deployment, set `FI_BASE_URL` to your Future AGI API base URL before starting the application.
 
-Call `instrument()` **before** constructing the client.
+Search query text is captured by default. To omit it, set `FI_HIDE_INPUTS=true` before calling `instrument()`. See [Privacy](#privacy) for the other captured fields.
+
+## 3. Trace a scrape and search
+
+Save this as `firecrawl_example.py`. Call `instrument()` **before** constructing the client.
 
 ```python
+import os
+
 from firecrawl import Firecrawl
 from fi_instrumentation import register
 from fi_instrumentation.fi_types import ProjectType
 from traceai_firecrawl import FirecrawlInstrumentor
 
-tracer_provider = register(project_name="firecrawl", project_type=ProjectType.OBSERVE)
+tracer_provider = register(
+    project_name="firecrawl",
+    project_type=ProjectType.OBSERVE,
+)
 FirecrawlInstrumentor().instrument(tracer_provider=tracer_provider)
 
-client = Firecrawl(api_key="your-firecrawl-api-key")
-client.scrape("https://example.com")
+client = Firecrawl(api_key=os.environ["FIRECRAWL_API_KEY"])
+try:
+    client.scrape("https://example.com", formats=["markdown"])
+    client.search("OpenTelemetry Python documentation", limit=2)
+finally:
+    tracer_provider.force_flush()
+    tracer_provider.shutdown()
 ```
 
-Put the calls inside your own agent or chain span and they show up as its children.
+Run the example in the shell where you set the credentials:
+
+```bash
+python firecrawl_example.py
+```
+
+Open **Observe** in Future AGI and select the `firecrawl` project. Look for `firecrawl.scrape` (TOOL) and `firecrawl.search` (RETRIEVER), with duration and status. The scrape records `server.address=example.com`, not the returned page body. The search records a result count and, unless hidden, the query in its input.
+
+Calls made inside an existing OpenTelemetry parent span appear as its children. Without a parent, the two example calls create separate root traces. In a long-running application, keep the provider alive and shut it down only when the application exits.
 
 ## What is captured
 
-| Method | Span | Kind | Attributes |
-|---|---|---|---|
-| `scrape`, `map` | `firecrawl.scrape`, `firecrawl.map` | TOOL | `server.address` (host of the target URL only) |
-| `search` | `firecrawl.search` | RETRIEVER | `gen_ai.retrieval.query`, `input.value`, `firecrawl.result_count` |
-| `crawl` (blocking) | `firecrawl.crawl` | TOOL | one span for the whole crawl, plus `firecrawl.job_id`, `firecrawl.limit`, `firecrawl.page_count`, `firecrawl.status` |
-| `start_crawl`, `get_crawl_status`, `cancel_crawl` | `firecrawl.<method>` | TOOL | `firecrawl.job_id` (shared across the job) |
+| Operations | Span kind | Metadata |
+|---|---|---|
+| `scrape`, `map` | TOOL | Target host (`server.address`); requested format names on scrape |
+| `search` | RETRIEVER | `gen_ai.retrieval.query`, `input.value`, `firecrawl.result_count` |
+| `crawl`, `start_crawl`, `get_crawl_status`, `cancel_crawl` | TOOL | Job ID, requested limit, job status; page count on blocking crawl |
+| `extract`, `start_extract`, `get_extract_status` | TOOL | Job ID and status |
+| `batch_scrape`, `start_batch_scrape`, `wait_batch_scrape`, `get_batch_scrape_status`, `get_batch_scrape_status_page`, `get_batch_scrape_errors`, `cancel_batch_scrape` | TOOL | Job ID and status; page count on blocking batch calls |
+| `agent`, `start_agent`, `get_agent_status`, `cancel_agent` | TOOL | Job ID and status |
+| `browser`, `browser_execute`, `delete_browser`, `list_browsers` | TOOL | Session ID when available |
 
-A blocking `crawl()` that fetches many pages is one span, not one per page. A crawl job that returns status `failed` or `cancelled` ends the span ERROR. SDK exceptions end the span ERROR with a safe event that carries only the exception type; the original exception is re-raised unchanged.
+Span names use `firecrawl.<method>`. Only methods exposed by the installed client are wrapped; `wait_batch_scrape` is async-only. Credit usage is recorded as `firecrawl.credits_used` when returned by the SDK. Requested format names, job IDs and session IDs use the `firecrawl.formats`, `firecrawl.job_id` and `firecrawl.session_id` attributes.
+
+A blocking crawl or batch operation produces one span, not one per page or internal poll. A blocking operation that returns a `failed` or `cancelled` job ends with ERROR; a successful status poll records the job state without becoming an error itself. SDK exceptions mark the span ERROR and are re-raised unchanged. Error metadata includes a safe exception type and HTTP status when available, not the vendor's exception message.
 
 ## Privacy
 
-- Captured by default: the **search query** (API key redacted, capped at 1024 characters) and the target host.
-- Never captured: page content (markdown, HTML, screenshots), URL paths and query strings, JSON-format prompts or schemas, the Firecrawl API key, raw exception text and tracebacks.
-- Turn the query off with the standard traceAI switches: `FI_HIDE_INPUTS=true`, or `TraceConfig(hide_inputs=True)` passed as `instrument(config=...)`. Shared PII redaction (`FI_PII_REDACTION=true`) applies to the query when enabled.
+- Search query text is captured by default, capped at 1024 characters after redacting the client's API key. The target host and operation metadata are also captured.
+- This instrumentor does not capture page content, screenshots, URL paths or query strings, extraction or agent prompts and schemas, browser code or output, the Firecrawl API key, raw exception text or tracebacks.
+- Set `FI_HIDE_INPUTS=true` before instrumentation to omit search query text. This does not hide host, format, job or session metadata. Set `FI_PII_REDACTION=true` to apply shared PII redaction to query text instead.
+- These limits apply to the Firecrawl instrumentor's spans, not to separate HTTP instrumentation or your application's logs.
 
-## Verified
+## Client lifecycle and limits
 
-| | |
-|---|---|
-| firecrawl-py | 4.46.2 (pinned) and 4.50.0 (latest on 2026-10-16) |
-| Python | 3.12 run end to end; 3.10 to 3.13 is the declared range, and the 168-test suite was run on all four in the PR |
-| Ingestion | local Future AGI, 10 spans per run: AGENT parent, 7 methods, 1 ERROR scrape, 1 async search |
-
-## Live vendor verification (2026-10-17)
-
-Run exactly as the install and usage steps above say, with a real Firecrawl key, against `https://api.firecrawl.dev` (no base-URL override), exporting to a local Future AGI project. Versions: `firecrawl-py` 4.50.0, `fi-instrumentation-otel` 1.1.0, `traceAI-firecrawl` 0.1.0, Python 3.12.
-
-- Trace `fc0dbe7b-cf70-494e-a5ed-d3b06b91e4df`, 9 spans, `fi_verify` PASS: an AGENT parent with `scrape` (TOOL), `search` (RETRIEVER), `map`, `start_crawl`, `get_crawl_status`, `cancel_crawl` and a blocking `crawl` (all TOOL) as children, plus a second `scrape` with a wrong key that ends ERROR `UnauthorizedError` with `firecrawl.error.status_code=401`.
-- Real attributes seen: `server.address=example.com`, `firecrawl.formats=["markdown"]`, `firecrawl.result_count=2` on a live search, one shared `firecrawl.job_id` across start, status and cancel, `firecrawl.status=completed`, `firecrawl.page_count=1`, `firecrawl.credits_used=1` on the blocking crawl.
-- Rate limit: on the free plan the live API returned HTTP 429 for a fourth crawl request inside a minute. The `start_crawl` span ended ERROR `RateLimitError` with `firecrawl.error.status_code=429`, and the vendor message (which contains plan text) was not copied onto the span.
-- Privacy scan over every stored column of the default run: the search query appears only in `gen_ai.retrieval.query` and `input.value`; the page body (`Example Domain`), the URL path and query string, the wrong key and the real key appear nowhere. With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` (trace `0e189c43-63d1-4420-b7c1-42bdb92dbca5`) the query marker appears nowhere.
-- Not proven live: the async client, the `watcher()` helpers, and a failed or cancelled crawl job status. These are covered only by the test suite and a stand-in of the HTTP API.
-- Note: `cancel_crawl` recorded `firecrawl.cancelled=false` for a job that had just started; the span reports whatever the SDK returns.
+- Top-level clients constructed before `instrument()` are not traced. Construct them afterwards.
+- Calling `FirecrawlInstrumentor().uninstrument()` stops tracing subsequent calls, including calls through clients already constructed while instrumentation was enabled. If you later re-enable instrumentation, construct new clients to use the new wrappers.
+- `Firecrawl.watcher()` polling runs in its own thread, so its instrumented status polls do not inherit the calling thread's parent span.
+- Use typed `ScrapeOptions` / `ScrapeFormats` when supplying nested format options. A raw nested dict in `scrape_options["formats"]` is not recorded as format metadata.
+- Methods outside the table, including `interact` and `parse`, are not instrumented.
 
 ## Troubleshooting
 
-- **No spans:** the client was constructed before `instrument()`. Construct it afterwards. Outside the supported version range `instrument()` logs an error and wraps nothing.
-- **Duplicate spans:** both this package and OpenLIT's Firecrawl instrumentor are enabled for the same client; enable one.
-- **`firecrawl.credits_used` is `0` on crawls:** the SDK fills `0` when the API omits it, so `0` can mean "not reported".
-
-## Limitations
-
-- Facades constructed before `instrument()` are not traced; facades built while instrumented keep tracing until you build a new one after `uninstrument()`.
-- `Firecrawl.watcher()` polls from its own thread, so each poll is a separate root span.
-- Format metadata (`firecrawl.formats`) is not recorded when `scrape_options["formats"]` is a raw nested dict; use the typed `ScrapeOptions` / `ScrapeFormats`.
-- No `agent`, `interact`, `parse` or browser-session spans.
+- **No spans:** construct the client after instrumentation, check both Future AGI keys, and let the provider flush before the process exits. Outside the supported `firecrawl-py` range, `instrument()` logs an error and wraps nothing.
+- **Duplicate spans:** enable only one Firecrawl instrumentor for the same calls.
+- **Unauthorized or rate-limited calls:** check the Firecrawl key for HTTP 401, and your plan's rate limits for HTTP 429. The span records `firecrawl.error.status_code` when available.
+- **`firecrawl.credits_used` is `0`:** the SDK can fill in `0` when the API omits it; do not treat it as proof that the call was free.
