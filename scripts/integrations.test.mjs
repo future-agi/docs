@@ -462,6 +462,49 @@ test('Java pgvector qualifies successful-operation privacy and hides database er
   assert.ok(section.indexOf('FI_HIDE_ERROR_DETAILS=true') < section.indexOf('new TracedPgVectorStore(connection)'));
 });
 
+test('Tavily uses the released package and is discoverable through the catalog', () => {
+  const page = read('src/pages/docs/integrations/traceai/tavily.mdx');
+  const entry = integrations.find(item => item.id === 'tavily');
+  assert.equal(entry?.href, '/docs/integrations/traceai/tavily');
+  assert.equal(entry?.category, 'frameworks');
+  assert.equal(entry?.method, 'traceAI SDK');
+  for (const pin of ['traceAI-tavily==0.1.1', 'tavily-python==0.8.5', 'fi-instrumentation-otel==1.2.3']) {
+    assert.ok(page.includes(pin), pin);
+  }
+  assert.match(page, /from traceai_tavily import TavilyInstrumentor/);
+  assert.match(page, /TavilyInstrumentor\(\)\.instrument\(tracer_provider=trace_provider\)/);
+  assert.match(page, /finally:\s+trace_provider\.force_flush\(\)/);
+  assert.match(page, /\*\*Observe\*\*/);
+  assert.doesNotMatch(page, /Live vendor verification|local stand-in|stored column|Tested versions|checked live|package is Alpha/i);
+});
+
+test('Tavily documents all six operations and research stream completion', () => {
+  const page = read('src/pages/docs/integrations/traceai/tavily.mdx');
+  for (const method of ['search', 'extract', 'map', 'crawl', 'research', 'get_research']) {
+    const kind = method === 'search' ? 'RETRIEVER' : 'TOOL';
+    assert.ok(page.includes(`| \`${method}\` | \`tavily.${method}\` | \`${kind}\` |`), method);
+  }
+  for (const attribute of ['tavily.request_id', 'tavily.result_count', 'tavily.url_count', 'tavily.cancelled', 'tavily.stream.closed']) {
+    assert.ok(page.includes(`\`${attribute}\``), attribute);
+  }
+  assert.match(page, /submission, not the entire background research job/);
+  assert.match(page, /`close\(\)`.*`await stream\.aclose\(\)`/);
+  assert.match(page, /Early closure ends the span with `ERROR`/);
+  assert.match(page, /Stream chunks are not recorded/);
+  assert.doesNotMatch(page, /only `search` and `extract`|`crawl`, `map`, `research`.*not traced/);
+});
+
+test('Tavily preserves privacy controls and scopes them to its own instrumentation', () => {
+  const page = read('src/pages/docs/integrations/traceai/tavily.mdx');
+  assert.match(page, /export FI_HIDE_INPUTS=true/);
+  assert.match(page, /export FI_HIDE_ERROR_DETAILS=true/);
+  assert.match(page, /`__REDACTED__`, omit `gen_ai.retrieval.query` and `tavily.request_id`/);
+  assert.match(page, /unless `FI_HIDE_ERROR_DETAILS=false`/);
+  assert.match(page, /Transport errors and errors from the other five methods record only the exception type/);
+  assert.match(page, /not to separate LangChain, MCP or HTTP-client instrumentation/);
+  assert.match(page, /literal key values, not encoded or transformed copies/);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));

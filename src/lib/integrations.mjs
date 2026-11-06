@@ -85,6 +85,7 @@ export const integrations = [
   { id: 'novita-ai', name: 'Novita AI', href: '/docs/integrations/providers/novita-ai', category: 'providers', summary: 'Trace Novita chat completions from your Python app.', method: 'OpenAI client', logo: 'novita' },
   { id: 'litellm-sdk', name: 'LiteLLM SDK', href: '/docs/integrations/traceai/litellm', category: 'frameworks', summary: 'Instrument LiteLLM calls in your Python application.', method: 'traceAI SDK', logo: 'litellm', aliases: ['traceAI-litellm', 'client'] },
 
+  { id: 'tavily', name: 'Tavily', href: '/docs/integrations/traceai/tavily', category: 'frameworks', summary: 'Trace Python search, extraction, mapping, crawling and research calls.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'langchain', name: 'LangChain', href: '/docs/integrations/traceai/langchain', category: 'frameworks', summary: 'Trace chains, retrievers, tools and model calls.', method: 'traceAI SDK', logo: 'langchain' },
   { id: 'langgraph', name: 'LangGraph', href: '/docs/integrations/traceai/langgraph', category: 'frameworks', summary: 'Follow agent graph execution and tool calls.', method: 'traceAI SDK', logo: 'langgraph' },
   { id: 'langchain-deep-agents', name: 'LangChain Deep Agents', href: '/docs/integrations/traceai/langchain-deep-agents', category: 'frameworks', summary: 'Trace model calls, filesystem tools, task subagents and sessions.', method: 'traceAI SDK', logo: 'langchain' },
