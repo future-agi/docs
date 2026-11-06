@@ -2,8 +2,8 @@
 
 Runnable companion to the docs page `src/pages/docs/integrations/traceai/typesafe.mdx`
 (`/docs/integrations/traceai/typesafe`). It traces TypeSafe System One decision calls made with the
-official `typesafe-sdk` Python client using the `traceAI-typesafe` instrumentor
-([traceAI PR #264](https://github.com/future-agi/traceAI/pull/264)).
+official `typesafe-sdk` Python client using the
+[`traceAI-typesafe`](https://pypi.org/project/traceAI-typesafe/) instrumentor.
 
 Status: verified against the live TypeSafe API on 2026-10-17 (typesafe-sdk 0.7.5, model `jev-1.13.0`): two real
 decisions (sync and async), a real 422 and a real 401, traced into a local Future AGI. The default `./run_e2e.sh`
@@ -22,7 +22,7 @@ decisions (sync and async), a real 422 and a real 401, traced into a local Futur
 
 ## Run it
 
-Python 3.10 to 3.13 (fi-instrumentation-otel 1.1.0 does not support 3.14).
+Python 3.10 to 3.13 (traceAI-typesafe 0.1.0 requires Python below 3.14).
 
 ```bash
 export FI_API_KEY=... FI_SECRET_KEY=...

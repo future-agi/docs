@@ -31,20 +31,34 @@ def test_every_page_snippet_from_the_app_is_an_exact_excerpt():
         assert _excerpt(name) in blocks, name
 
 
-def test_page_install_and_tested_versions_match_requirements():
+def test_page_install_and_supported_range():
     page = _read(PAGE)
-    pins = dict(re.findall(r"^([A-Za-z0-9_.-]+)==([0-9.]+)", _read(os.path.join(HERE, "requirements.txt")), re.M))
-    assert "typesafe-sdk **{0}**".format(pins["typesafe-sdk"]) in page
-    assert "fi-instrumentation-otel {0}".format(pins["fi-instrumentation-otel"]) in page
     assert "pip install traceAI-typesafe typesafe-sdk" in page
+    assert "Python 3.10 to 3.13, as required by `traceAI-typesafe` 0.1.0" in page
+    assert "`typesafe-sdk` 0.7.0 or later, below 1.0" in page
+    assert "fi-instrumentation-otel does not support" not in page
 
 
-def test_page_states_privacy_differences_and_the_stand_in():
+def test_page_snippets_define_what_they_use():
+    questions = next(block for block in _blocks("python") if "QUESTIONS = {" in block)
+    assert questions.lstrip().startswith("TICKET = (")
+    assert "MARKER" not in _read(PAGE)
+
+
+def test_page_states_privacy_and_scope():
     page = _read(PAGE)
     for needle in ("FI_HIDE_INPUTS=true", "FI_HIDE_OUTPUTS=true", "TraceConfig(hide_inputs=True)",
-                   "TH-8183", "traceAI-openai", "EVALUATOR", "STANDIN", "Not supported", "Troubleshooting",
-                   "never Pass/Fail", "models.list()"):
+                   "traceAI-openai", "EVALUATOR", "Not supported", "Troubleshooting",
+                   "never turns answers into Pass/Fail", "models.list()"):
         assert needle in page, needle
+
+
+def test_page_has_no_internal_test_material():
+    page = _read(PAGE)
+    for needle in ("STANDIN", "stand-in", "run_e2e.sh", "Live vendor verification", "fi_verify",
+                   "TH-8183", "2026-", "rows_hit", "PASS"):
+        assert needle not in page, needle
+    assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", page)
 
 
 def test_page_does_not_send_customers_to_another_platform_by_default():

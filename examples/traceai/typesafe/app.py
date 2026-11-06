@@ -44,20 +44,17 @@ trace_provider = register(
 TypeSafeInstrumentor().instrument(tracer_provider=trace_provider)
 # --- recipe end ---
 
-MARKER = os.environ.get("RUN_MARKER", "")
+# --- questions start ---
 TICKET = (
     "Order 1042: I was charged twice for the same order and nobody answers my emails. "
-    "Please refund the duplicate today. {0}".format(MARKER)
-).strip()
-if MARKER:  # privacy check: an email address in the content too
-    TICKET += " Reply to {0}@example.com.".format(MARKER)
+    "Please refund the duplicate today."
+)
 
-# --- questions start ---
 QUESTIONS = {
-    "billing": Noul(instructions="Is this message about billing? {0}".format(MARKER).strip()),
+    "billing": Noul(instructions="Is this message about billing?"),
     "tone": Choice(
         instructions="What is the tone of this message?",
-        criteria={"calm": None, "angry": "Upset or hostile {0}".format(MARKER).strip(), "excited": None},
+        criteria={"calm": None, "angry": "Upset or hostile", "excited": None},
     ),
     "urgency": Score(
         instructions="How urgent is this message?",
@@ -65,6 +62,17 @@ QUESTIONS = {
     ),
 }
 # --- questions end ---
+
+# Privacy check only (not part of the page): put a unique marker in the ticket text,
+# an email address, a question instruction and a criteria description.
+MARKER = os.environ.get("RUN_MARKER", "")
+if MARKER:
+    TICKET += " {0} Reply to {0}@example.com.".format(MARKER)
+    QUESTIONS["billing"] = Noul(instructions="Is this message about billing? {0}".format(MARKER))
+    QUESTIONS["tone"] = Choice(
+        instructions="What is the tone of this message?",
+        criteria={"calm": None, "angry": "Upset or hostile {0}".format(MARKER), "excited": None},
+    )
 
 tracer = FITracer(trace_provider.get_tracer("support-triage"))
 
