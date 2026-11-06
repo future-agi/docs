@@ -66,6 +66,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Overview', href: '/docs/self-hosting' },
               { title: 'Requirements', href: '/docs/self-hosting/requirements' },
               { title: 'Installation', href: '/docs/self-hosting/installation' },
+              { title: 'Automatic updates', href: '/docs/self-hosting/automatic-updates' },
               { title: 'Helm (Kubernetes)', href: '/docs/self-hosting/helm' },
               { title: 'Container images', href: '/docs/self-hosting/images' },
               {
