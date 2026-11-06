@@ -378,6 +378,46 @@ test('Vertex AI recommends Google Gen AI and keeps bounded legacy migration guid
   assert.match(page, /FI_HIDE_OUTPUTS=true/);
 });
 
+test('Claude Agent SDK TypeScript uses released packages and framework discovery', () => {
+  const page = read('src/pages/docs/integrations/traceai/claude-agent-sdk-typescript.mdx');
+  const entry = integrations.find(i => i.id === 'claude-agent-sdk-typescript');
+  assert.equal(entry?.category, 'frameworks');
+  assert.equal(entry?.method, 'traceAI SDK');
+  assert.equal(entry?.href, '/docs/integrations/traceai/claude-agent-sdk-typescript');
+  assert.equal(entry?.logo, 'anthropic');
+  assert.match(page, /npm install @traceai\/claude-agent-sdk@0\.1\.0 @traceai\/fi-core@1\.1\.1 @anthropic-ai\/claude-agent-sdk@0\.3\.302/);
+  assert.match(page, /Node\.js 22 or later/);
+  assert.match(page, /launch the SDK's CLI subprocess/);
+  assert.doesNotMatch(publicProse(page), /tested with|latest on npm|not tested|\balpha\b|2026-10-16/i);
+});
+
+test('Claude Agent SDK example wraps query and flushes on the error path', () => {
+  const page = read('src/pages/docs/integrations/traceai/claude-agent-sdk-typescript.mdx');
+  const example = page.match(/```javascript\n([\s\S]*?)\n```/)?.[1];
+  assert.ok(example, 'Keep the runnable ESM application example');
+  assert.match(example, /wrapQuery\(query, \{ tracerProvider \}\)/);
+  assert.match(example, /projectName: "my-agent"/);
+  assert.match(example, /tools: \["Read"\], allowedTools: \["Read"\]/);
+  assert.match(example, /finally \{\s*await shutdown\(\)/);
+  assert.match(page, /> notes\.txt\nnode agent\.mjs/);
+  assert.match(page, /Open \*\*Observe\*\*/);
+  assert.match(page, /otherwise it joins the caller's trace/);
+  assert.match(page, /\.\.\.process\.env, ANTHROPIC_BASE_URL:/);
+});
+
+test('Claude Agent SDK retains actionable privacy and usage limits', () => {
+  const page = read('src/pages/docs/integrations/traceai/claude-agent-sdk-typescript.mdx');
+  assert.match(page.split('## 3.')[0], /Content is captured by default/);
+  for (const setting of ['FI_HIDE_INPUTS=true', 'FI_HIDE_OUTPUTS=true', 'hideInputs: true', 'hideOutputs: true']) {
+    assert.ok(page.includes(setting), setting);
+  }
+  assert.match(page, /do not remove arbitrary secrets or all personal data/);
+  assert.match(page, /Span names, tool names, session IDs and other structural metadata remain/);
+  assert.match(page, /keep one session on one process/);
+  assert.match(page, /claude_agent\.usage\.baseline_unknown=true/);
+  assert.doesNotMatch(page, /user names and host names are not exported/);
+});
+
 test('Anthropic recommends native SDK tracing in both languages and keeps the Python instrumentor route', () => {
   const page = read('src/pages/docs/integrations/traceai/anthropic.mdx');
   const python = [...page.matchAll(/```(?:bash|python) Python\n([\s\S]*?)```/g)].map(m => m[1]).join('\n');
