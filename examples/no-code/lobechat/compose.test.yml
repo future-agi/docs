@@ -1,0 +1,125 @@
+# Test stack for run_e2e.sh: LobeHub (Gateway Mode, as LobeHub's own Docker Compose deploy ships it)
+# plus the Future AGI collector from this recipe. Mirrors docker-compose/deploy/docker-compose.yml of
+# lobehub/lobehub v2.2.19 without RustFS (file uploads) and SearXNG (web search), which this test
+# does not use. Container names are prefixed and memory is capped so it fits a small Docker VM.
+#
+# Required env (run_e2e.sh sets them): KEY_VAULTS_SECRET AUTH_SECRET GATEWAY_SERVICE_TOKEN JWKS_KEY
+# JWKS_PUBLIC_KEY POSTGRES_PASSWORD AGENT_EXEC_API_KEY FI_API_KEY FI_SECRET_KEY FI_TRACES_URL
+# FI_PROJECT_NAME TEST_LLM_BASE_URL TEST_LLM_API_KEY TEST_LLM_MODEL
+name: ${COMPOSE_PROJECT:-lobehub-futureagi-e2e}
+
+services:
+  postgresql:
+    image: paradedb/paradedb:0.26.2-pg17
+    container_name: ${COMPOSE_PROJECT:-lobehub-futureagi-e2e}-pg
+    command: ['postgres', '-c', 'shared_preload_libraries=pg_search,pg_cron,pg_stat_statements']
+    environment:
+      - 'POSTGRES_DB=lobechat'
+      - 'POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?}'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -h 127.0.0.1']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    mem_limit: 384m
+    networks: [lobe-network]
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT:-lobehub-futureagi-e2e}-redis
+    command: redis-server --save '' --appendonly no --maxmemory 48mb
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    mem_limit: 64m
+    networks: [lobe-network]
+
+  gateway:
+    image: ghcr.io/lobehub/lobehub-gateway:0.3.2
+    container_name: ${COMPOSE_PROJECT:-lobehub-futureagi-e2e}-gateway
+    ports:
+      - '127.0.0.1:${AGENT_GATEWAY_PORT:-8787}:8787'
+    environment:
+      - 'SERVICE_TOKEN=${GATEWAY_SERVICE_TOKEN:?}'
+      - 'JWKS_PUBLIC_KEY=${JWKS_PUBLIC_KEY:?}'
+      - 'LOBE_API_BASE_URL=http://lobe:3210'
+    mem_limit: 128m
+    networks: [lobe-network]
+
+  lobe:
+    image: lobehub/lobehub:${LOBEHUB_VERSION:-2.2.19}
+    container_name: ${COMPOSE_PROJECT:-lobehub-futureagi-e2e}-app
+    ports:
+      - '127.0.0.1:${LOBE_PORT:-3210}:3210'
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      futureagi-otelcol:
+        condition: service_started
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    environment:
+      # LobeHub deploy defaults (docker-compose/deploy).
+      - 'APP_URL=http://localhost:${LOBE_PORT:-3210}'
+      - 'INTERNAL_APP_URL=http://localhost:3210'
+      - 'KEY_VAULTS_SECRET=${KEY_VAULTS_SECRET:?}'
+      - 'AUTH_SECRET=${AUTH_SECRET:?}'
+      - 'JWKS_KEY=${JWKS_KEY:?}'
+      - 'JWKS_PUBLIC_KEY=${JWKS_PUBLIC_KEY:?}'
+      - 'DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/lobechat'
+      # No object storage in this test (no file uploads), but LobeHub requires the S3 settings to be
+      # present for chats too, so they point at an address nothing listens on.
+      - 'S3_ENDPOINT=http://localhost:9000'
+      - 'S3_BUCKET=lobe'
+      - 'S3_ACCESS_KEY_ID=unused'
+      - 'S3_SECRET_ACCESS_KEY=unused'
+      - 'S3_ENABLE_PATH_STYLE=1'
+      - 'S3_SET_ACL=0'
+      - 'LLM_VISION_IMAGE_USE_BASE64=1'
+      - 'REDIS_URL=redis://redis:6379'
+      - 'REDIS_PREFIX=lobechat'
+      - 'REDIS_TLS=0'
+      - 'ENABLE_AGENT_GATEWAY=1'
+      - 'AGENT_GATEWAY_URL=http://localhost:${AGENT_GATEWAY_PORT:-8787}'
+      - 'AGENT_GATEWAY_INTERNAL_URL=http://gateway:8787'
+      - 'AGENT_GATEWAY_SERVICE_TOKEN=${GATEWAY_SERVICE_TOKEN}'
+      - 'DEVICE_GATEWAY_SERVICE_TOKEN=${GATEWAY_SERVICE_TOKEN}'
+      - 'AGENT_EXEC_API_KEY=${AGENT_EXEC_API_KEY:?}'
+      # Test model: any OpenAI-compatible endpoint, plus the test MCP server, both on the host.
+      - 'OPENAI_API_KEY=${TEST_LLM_API_KEY:?}'
+      - 'OPENAI_PROXY_URL=${TEST_LLM_BASE_URL:?}'
+      - 'OPENAI_MODEL_LIST=-all,+${TEST_LLM_MODEL:?}<200000:fc>,+th8280-missing-model<8000:fc>'
+      - 'DEFAULT_AGENT_CONFIG=model=${TEST_LLM_MODEL};provider=openai'
+      - 'SSRF_ALLOW_PRIVATE_IP_ADDRESS=1'
+      # Future AGI (the recipe): traces and LobeHub's metrics go to the collector on this network.
+      - 'ENABLE_TELEMETRY=1'
+      - 'OTEL_EXPORTER_OTLP_ENDPOINT=http://futureagi-otelcol:4318'
+      - 'OTEL_EXPORTER_OTLP_TRACES_HEADERS=X-Api-Key=${FI_API_KEY:?},X-Secret-Key=${FI_SECRET_KEY:?}'
+      - 'OTEL_NODE_RESOURCE_DETECTORS=${OTEL_NODE_RESOURCE_DETECTORS:-env}'
+      - 'OTEL_METRICS_EXPORTER_INTERVAL=60000'
+    mem_limit: 768m
+    networks: [lobe-network]
+
+  futureagi-otelcol:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    container_name: ${COMPOSE_PROJECT:-lobehub-futureagi-e2e}-otelcol
+    command: ['--config=/etc/otelcol/config.yaml']
+    volumes:
+      - '${OTELCOL_CONFIG:-./otelcol/otelcol.yaml}:/etc/otelcol/config.yaml:ro'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    environment:
+      - 'FI_TRACES_URL=${FI_TRACES_URL:?}'
+      - 'FI_PROJECT_NAME=${FI_PROJECT_NAME:?}'
+      - 'FI_CAPTURE_CONTENT=${FI_CAPTURE_CONTENT:-false}'
+    mem_limit: 192m
+    networks: [lobe-network]
+
+networks:
+  lobe-network:
+    driver: bridge
