@@ -77,12 +77,18 @@ class PageMatchesExample(unittest.TestCase):
         self.assertIn('APIKey:  os.Getenv("OPENAI_API_KEY")', self.main)
 
     def test_page_states_versions_privacy_and_differences(self):
-        for needed in ("v0.9.21", "v0.9.19", "v0.1.13", "Go 1.26", "1.27.2", "1.26.9", "v1.47.0",
+        for needed in ("go/eino` v0.1.0", "Eino v0.9.21", "v0.1.13", "| Go | 1.26 or later |",
                        "FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "__REDACTED__", "go/openai", "go/anthropic",
                        "go/genai", "eino-ext/callbacks/langfuse", "AppendGlobalHandlers", "SIGTERM",
-                       "## Troubleshooting", "## Not supported", "## Privacy", "## What is captured",
-                       "## Errors", "DeepAgent", "interrupt/resume"):
+                       "## Troubleshooting", "## Scope limits", "## Privacy", "## What is captured",
+                       "## Errors", "DeepAgent", "interrupt/resume", "AgenticModel"):
             self.assertIn(needed, self.page)
+
+    def test_page_keeps_test_evidence_out_of_customer_guidance(self):
+        for internal in ("Tested with", "Tested surface", "end-to-end test", "local proxy",
+                         "scripted model", "stored column", "Not tested", "no test covers",
+                         "## Not supported", "@latest"):
+            self.assertNotIn(internal, self.page)
 
     def test_page_does_not_invent_usage_or_provider(self):
         self.assertIn("never a sum of chunks", self.page)
@@ -92,7 +98,7 @@ class PageMatchesExample(unittest.TestCase):
     def test_run_script_builds_from_the_documented_modules_and_never_echoes_keys(self):
         run = RUN.read_text()
         self.assertIn('go get "github.com/future-agi/traceAI/go/eino@$REF"', run)
-        self.assertIn("go get github.com/future-agi/traceAI/go/eino@latest", self.page)
+        self.assertIn("go get github.com/future-agi/traceAI/go/eino@v0.1.0 github.com/cloudwego/eino@v0.9.21", self.page)
         for key in ("FI_API_KEY", "FI_SECRET_KEY", "OPENAI_API_KEY"):
             self.assertNotRegex(run, r"echo[^\n]*\$\{?" + key)
         self.assertIn("FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true", run)
