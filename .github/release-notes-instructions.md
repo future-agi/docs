@@ -12,17 +12,36 @@ only that newest section** into customer-facing prose that matches the existing 
 
 ## Match the existing house style exactly
 Look at the sections already on the page and mirror them:
-- Bullets are `- **Benefit-led Title in Title Case:** one or two plain sentences.`
-- Lead with what the user can now do or what now works — never the code mechanism.
+- Bullets are `- **Benefit-led Title in Title Case:** one plain sentence, two at the very most.`
+- Lead with what the user can now do or what now works, never the code mechanism.
 - Phrase fixes as observed behavior, e.g. *"In some cases, X failed… This has been resolved."*
 - Keep the existing MDX wrapper markup and the `Features` / `Bugs/Improvements` / `Breaking Changes`
   subsection headings (only include a subsection that has content).
 
+## Be concise, like the live page
+- Match the brevity of the existing entries. Each bullet is a bold benefit-led lead, then one
+  sentence (two at the very most), about 15 to 35 words of body. Only a genuine flagship runs a
+  little longer, and even then it stays tight. Cut hedging, restatement, and any mechanism the
+  reader does not need. A bullet that reads as a paragraph is wrong; the fix is to cut, not to add.
+
 ## Cluster (the main job)
 - Merge every bullet about the same feature or scope (the conventional-commit scope in parentheses)
   into **one** bullet led by the combined user benefit. Collapse exact duplicates (the same subject
-  may appear twice from two commits — that is one bullet, not two).
+  may appear twice from two commits; that is one bullet, not two).
 - A dozen raw commits should become a handful of benefit statements.
+
+## New vs. improved
+- Do not dress up an upgrade as a launch. If the capability already existed, frame it as an upgrade
+  to that feature ("X now ..."), not a brand-new thing; look for an earlier version or "V2" /
+  "rebuilt" / "improve" signals in the source. Genuinely new capabilities go under **Features**;
+  enhancements and fixes to an existing surface go under **Bugs/Improvements**.
+
+## Availability and tier
+- State the real scope. If a capability is gated (enterprise, plan, or usage-gated), say so only
+  when the source confirms the tier; if you cannot confirm it is generally available, hold it (add a
+  `{/* REVIEW: confirm availability/tier */}` note) rather than imply everyone has it. Marketplace,
+  procurement, or billing availability (e.g. "now on a cloud marketplace") is go-to-market, not a
+  developer "What's New" item, so leave it off this page. Never state the gating mechanism itself.
 
 ## Omit changes customers can't observe
 - Leave out changes a customer cannot observe: tests, CI, refactors, chores, dependency bumps, and
@@ -35,6 +54,13 @@ Look at the sections already on the page and mirror them:
 - Describe only what the source bullets state. **Never invent** API names, flags, endpoints, model
   IDs, or version numbers not present in the source. When unsure, omit rather than guess.
 - Do not assert capabilities, limits, or guarantees the source does not state.
+- Do not over-claim. State only a number, limit, or guarantee a source gives. A development or
+  benchmark metric must carry a short caveat that the research result does not establish production
+  accuracy. No superlatives the source does not support.
+
+## Style
+- No em dashes in the notes; use commas, periods, or parentheses instead. No marketing filler
+  ("seamless", "powerful", "robust", "best-in-class", "world-class") and no exclamation marks.
 
 ## Breaking changes
 - Always in their own **Breaking Changes** subsection, each with a one-line migration note.
@@ -49,5 +75,5 @@ Look at the sections already on the page and mirror them:
 - Edit **only** the newest `## <version>` section. Do not touch the marker, any older section, or any
   file other than `src/pages/docs/release-notes.mdx`.
 - Preserve valid MDX: escape stray `<`, `{`, `}` in prose. Keep any commit/PR links from the source
-  on the corresponding polished bullet where natural (the importer may strip them — do not fabricate).
+  on the corresponding polished bullet where natural (the importer may strip them; do not fabricate).
 - Leave your edits in the working tree; do not commit, push, or open a PR.

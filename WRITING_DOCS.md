@@ -134,6 +134,14 @@ Navigation is defined in `src/lib/navigation.ts`. The site uses **tabs → group
   │       └── Custom Evals
 ```
 
+### Integration discovery
+
+The Integrations tab is generated from `src/lib/integrations.mjs`, the same catalog used by `/docs/integrations`. Add a published guide there, not a second list in `navigation.ts`. Use an existing category, an accurate connection method, a short purpose sentence, and useful search aliases. The tests reject any integration page that is missing from discovery and any catalog target without a page or redirect.
+
+Store genuine project marks in `public/images/integrations/` and record their source, hash, license/trademark note, and any retained upstream notices in `manifest.json`. Use neutral initials when a genuine mark is unavailable; do not draw a substitute brand mark. Light marks can use a neutral dark tile. Shared overview guides and historical paths are explicitly identified in the catalog.
+
+Run `npm run test:integrations` (Node 20 and Python 3), `npm run check:integrations`, `npm run audit-links`, and `npm run build`. To exercise the built site, run `npx playwright install chromium`, start `npm run preview -- --host 127.0.0.1 --port 4321`, then run `npm run test:integrations:browser` in a second terminal. Browser evidence goes to a temporary directory, or the directory specified by `INTEGRATIONS_EVIDENCE_DIR`. CI runs these checks, including Pagefind and browser navigation.
+
 ### Adding a Page to Navigation
 
 The `pnpm new-doc` command does this automatically. To do it manually:
