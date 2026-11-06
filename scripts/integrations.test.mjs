@@ -592,6 +592,8 @@ test('Tavily preserves privacy controls and scopes them to its own instrumentati
   assert.match(page, /Transport errors and errors from the other five methods record only the exception type/);
   assert.match(page, /not to separate LangChain, MCP or HTTP-client instrumentation/);
   assert.match(page, /literal key values, not encoded or transformed copies/);
+});
+
 test('Replicate documents released packages, provider-first setup and catalog discovery', () => {
   const page = read('src/pages/docs/integrations/traceai/replicate.mdx');
   assert.match(page, /pip install traceAI-replicate==0\.1\.0 fi-instrumentation-otel==1\.2\.3 replicate==1\.0\.7/);
@@ -645,6 +647,8 @@ test('Replicate keeps privacy instructions without public verification diaries',
   assert.match(page, /Webhook URLs are recorded only as present, not by value/);
   assert.match(page, /not what Replicate receives/);
   assert.doesNotMatch(page, /Live vendor verification|verified live|stand-in|load average|privacy scan|traceAI#219|## Tested versions/i);
+});
+
 test('mcp-use guide is discoverable and uses the released callback dependency floor', () => {
   const page = read('src/pages/docs/integrations/traceai/mcp-use.mdx');
   const entry = integrations.find(item => item.id === 'mcp-use');
@@ -856,6 +860,8 @@ test('OpenAI Realtime guide installs the published package and runs a complete e
   assert.match(page, /FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true/);
   assert.match(page, /developers\.openai\.com\/api\/docs\/guides\/realtime/);
   assert.doesNotMatch(publicProse(page), /Live vendor verification|trace id|stand-in|QA harness/i);
+});
+
 test('Microsoft Agent Framework guide uses the released package and global provider without a test diary', () => {
   const page = read('src/pages/docs/integrations/traceai/microsoft-agent-framework.mdx');
   const catalog = integrations.find(i => i.id === 'microsoft-agent-framework');
