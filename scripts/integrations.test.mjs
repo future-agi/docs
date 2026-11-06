@@ -1,6 +1,7 @@
 import './ollama-java.test.mjs';
 import './azure-openai-java.test.mjs';
 import './langsmith-page.test.mjs';
+import './exa-page.test.mjs';
 import './vercel-platform-page.test.mjs';
 import './scalekit-page.test.mjs';
 import test from 'node:test';
