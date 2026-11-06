@@ -7,6 +7,7 @@ import './scalekit-page.test.mjs';
 import './devin-page.test.mjs';
 import './pi-sdk-page.test.mjs';
 import './cursor-sdk-page.test.mjs';
+import './grok-build-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
