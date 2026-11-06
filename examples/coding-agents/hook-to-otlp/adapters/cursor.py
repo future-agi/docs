@@ -9,7 +9,7 @@ the docs define as the same value as ``conversation_id``.
 Mapped events (all non-permission hooks, so the emitter never decides
 whether Cursor may run something):
 
-    sessionStart        -> session start (root span exported, re-exported later)
+    sessionStart        -> session start (nothing exported until a child span is sent)
     beforeSubmitPrompt  -> turn start           prompt = content
     postToolUse         -> tool span            start = end - duration
     postToolUseFailure  -> tool span, ERROR     status message = failure_type
@@ -51,8 +51,12 @@ APP = "cursor"
 DISPLAY_NAME = "Cursor"
 SERVICE_NAME = "cursor"
 
-# Cursor blocks permission hooks on invalid output; this emitter is not
-# meant to be wired to them, and answers neutrally if it is.
+# The emitter is not registered on these (it observes, it never decides).
+# If it is wired to one by mistake it prints nothing: Cursor treats a hook
+# with no output as failed and lets the action through (fail-open unless the
+# hook sets failClosed), the same as a missing emitter. It never answers
+# "allow" (that could approve an action) and never prints "{}" (invalid for a
+# permission hook, which blocks the action).
 PERMISSION_HOOKS = {
     "preToolUse", "beforeShellExecution", "beforeMCPExecution",
     "beforeReadFile", "beforeTabFileRead", "subagentStart",
@@ -67,7 +71,7 @@ def respond(event: str, payload: Dict[str, Any]) -> str:
     if event == "beforeSubmitPrompt":
         return '{"continue": true}'
     if event in PERMISSION_HOOKS:
-        return '{"permission": "allow"}'
+        return ""
     return "{}"
 
 
@@ -237,7 +241,8 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         modified = payload.get("modified_files")
         return [SpanEvent(
             END, SUBAGENT, sid,
-            key=_digest(subagent_type, payload.get("task"), payload.get("description")),
+            key=_digest(subagent_type, turn, payload.get("duration_ms"),
+                        payload.get("task"), payload.get("description")),
             turn_id=turn,
             name=f"Subagent: {subagent_type}",
             duration_ms=number(payload.get("duration_ms")),

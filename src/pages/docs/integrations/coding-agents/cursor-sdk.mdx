@@ -1,201 +1,182 @@
 ---
 title: "Cursor SDK tracing with Future AGI"
-description: "Trace Cursor SDK (@cursor/sdk) agent runs in Future AGI with @traceai/cursor-sdk: one trace per run, tool calls, thinking, model, token usage, errors, and one session per agent. Prompt, code and error text stay off by default."
+description: "Trace local Cursor SDK agent runs, tools, thinking, token usage and errors with the maintained @traceai/cursor-sdk package. Content stays hidden by default."
 ---
 
-## About
+Trace agents started by your Node.js application with [`@traceai/cursor-sdk`](https://www.npmjs.com/package/@traceai/cursor-sdk). Each `agent.send()` becomes a **Cursor Agent run** trace in Future AGI, with tool, thinking and assistant spans. Runs from the same agent share a session.
 
-The [Cursor TypeScript SDK](https://cursor.com/docs/sdk/typescript) (`@cursor/sdk`) runs Cursor's coding agent from your own Node code. The `@traceai/cursor-sdk` package instruments it, so every `agent.send()` shows up in Future AGI as one trace, and every run of the same agent lands in the same session:
+For sessions started in the Cursor editor, use the [Cursor IDE integration](/docs/integrations/coding-agents/cursor) instead. [Cursor Enterprise OpenTelemetry export](https://cursor.com/docs/enterprise/opentelemetry-export) is a separate admin feature for team usage metrics and logs.
 
-```
-Cursor Agent run              one agent.send() (or Agent.prompt()): model, tokens, status
-├── Cursor thinking           one thinking block, with its duration
-├── Cursor assistant message  the agent's text between tool calls (LLM span, model)
-├── Cursor tool: ls           one tool call: name, call id, status
-└── Cursor tool: read         status ERROR when the tool call failed
-```
+## Prerequisites
 
-This is not the same as:
+- Node.js 22.13 or newer and a local repository the agent can access.
+- A Cursor user API key from [Cursor Dashboard → API Keys](https://cursor.com/dashboard/api), or a service-account key from [Team settings](https://cursor.com/dashboard/team-settings).
+- [Future AGI API credentials](/docs/quickstart/setup-observability).
 
-- **The [Cursor IDE integration](/docs/integrations/coding-agents/cursor)**, which traces the Cursor editor's Agent through `.cursor/hooks.json`. Use that page for sessions people run in the Cursor app. This page is for agents your code starts with `@cursor/sdk`.
-- **[Cursor Enterprise OpenTelemetry export](https://cursor.com/docs/enterprise/opentelemetry-export)**, an admin feature for team usage metrics and logs.
+This guide supports the **local runtime** with `@cursor/sdk` 1.0.38. Cloud (`bc-`) agents are outside this guide's supported scope.
 
 <Warning>
-Local SDK runs also execute the hooks in `.cursor/hooks.json` of the `local.cwd` repo and in `~/.cursor/hooks.json` ([Cursor docs](https://cursor.com/docs/sdk/typescript#hooks)). If the Future AGI Cursor hooks from the [IDE page](/docs/integrations/coding-agents/cursor) are installed there, each SDK run is traced twice: once here as **Cursor Agent run**, once by the hooks as a **Cursor session** trace. Use one integration per project, or send the two to different Future AGI projects.
+Local SDK runs execute hooks from the repository's `.cursor/hooks.json` and `~/.cursor/hooks.json`. If the [Future AGI Cursor IDE hooks](/docs/integrations/coding-agents/cursor) are installed there, the same run produces both a **Cursor Agent run** trace and a **Cursor session** trace. Use one integration per project, or send them to separate Future AGI projects.
 </Warning>
 
-| | |
-| --- | --- |
-| Tested with | `@cursor/sdk` 1.0.38, Node 26.8, a signed-in Cursor account on the Plus plan, local runtime, `composer-2.5`: streamed runs with `read`, `edit` and `shell` tool calls and thinking, a `wait()`-only follow-up in the same session, and a run the plan rejected, traced live into Future AGI (see [Live verification](#live-verification-2026-10-20)). Error paths without an account (wrong key, unknown agent, no key) on 1.0.37 and 1.0.38. The cloud runtime has not been run. |
-| Package | [`@traceai/cursor-sdk`](https://www.npmjs.com/package/@traceai/cursor-sdk) 0.1.0. Source: [typescript/packages/traceai_cursor_sdk](https://github.com/future-agi/traceAI/tree/main/typescript/packages/traceai_cursor_sdk) in traceAI |
-| Cursor docs used | [TypeScript SDK](https://cursor.com/docs/sdk/typescript), read 2026-10-15 |
-| Requires | Node 22.13+ (the SDK's minimum), a Cursor user API key from [Cursor Dashboard → API Keys](https://cursor.com/dashboard/api), or a service-account key from [Team settings](https://cursor.com/dashboard/team-settings) (the key created for this page's live test in October 2026 started with `grok_`) |
-
-## 1. Install
+## Install
 
 <CodeGroup titles={["npm", "pnpm"]}>
 
 ```bash npm
-npm install @traceai/cursor-sdk @traceai/fi-core @cursor/sdk
+npm install @traceai/cursor-sdk@0.1.1 @traceai/fi-core@1.1.1 @cursor/sdk@1.0.38
 ```
 
 ```bash pnpm
-pnpm add @traceai/cursor-sdk @traceai/fi-core @cursor/sdk
+pnpm add @traceai/cursor-sdk@0.1.1 @traceai/fi-core@1.1.1 @cursor/sdk@1.0.38
 ```
 
 </CodeGroup>
 
-## 2. Set environment variables
+## Set credentials
 
 ```bash
-export CURSOR_API_KEY="your-cursor-user-api-key"   # https://cursor.com/dashboard/api
+export CURSOR_API_KEY="your-cursor-user-api-key"
 export FI_API_KEY="your-futureagi-api-key"
 export FI_SECRET_KEY="your-futureagi-secret-key"
 ```
 
-For a self-hosted Future AGI, also set `FI_BASE_URL` to your Future AGI collector URL. Instead of `CURSOR_API_KEY`, an interactive app can call `Cursor.auth.login()`, which mints and stores a key through a browser login.
+For self-hosted Future AGI, also set `FI_BASE_URL` to your collector's base URL. An interactive application can use `Cursor.auth.login()` instead of `CURSOR_API_KEY`.
 
-## 3. Register a tracer provider
+## Instrument and run an agent
 
-```typescript
+Keep `setGlobalTracerProvider: false` and pass the provider explicitly. The Cursor SDK emits its own internal spans on the global provider; those spans are outside this integration's privacy controls and can contain file and rule names. If another part of your application registers a global provider, those internal spans go to that provider.
+
+Save this as `cursor-agent.mjs` in your repository:
+
+```javascript
+import * as CursorSDK from "@cursor/sdk";
 import { register, ProjectType } from "@traceai/fi-core";
+import { CursorSDKInstrumentation, shutdown } from "@traceai/cursor-sdk";
 
 const tracerProvider = register({
   projectName: "cursor-sdk-agents",
   projectType: ProjectType.OBSERVE,
   setGlobalTracerProvider: false,
 });
-```
-
-Keep `setGlobalTracerProvider: false`. `@cursor/sdk` starts its own internal OpenTelemetry spans (scope `context-tracer`, names such as `LocalGitExecutor.exec`) on the global tracer provider, 27 of them in one short local run. They are not covered by the privacy settings below and carry SDK internals such as file and rule names. With the provider kept off the global slot and passed explicitly, none of them reach Future AGI.
-
-## 4. Instrument the SDK
-
-Pass the SDK module and the provider before you create agents:
-
-```typescript
-import * as CursorSDK from "@cursor/sdk";
-import { CursorSDKInstrumentation } from "@traceai/cursor-sdk";
 
 const instrumentation = new CursorSDKInstrumentation({ tracerProvider });
 instrumentation.manuallyInstrument(CursorSDK);
-```
 
-`@cursor/sdk` is used as an ES module in most apps, and OpenTelemetry's automatic require hook does not see `import`, so call `manuallyInstrument()`. A CommonJS app can instead call `registerInstrumentations({ tracerProvider, instrumentations: [new CursorSDKInstrumentation()] })` before `require("@cursor/sdk")`.
-
-## 5. Run an agent
-
-Use the SDK as usual. Read `run.stream()` to get tool, thinking and assistant spans, and flush in `finally` so a failed `Agent.create()` is exported too:
-
-```typescript
-import { shutdown } from "@traceai/cursor-sdk";
-
-let agent: CursorSDK.SDKAgent | undefined;
+let agent;
 try {
   agent = await CursorSDK.Agent.create({
     apiKey: process.env.CURSOR_API_KEY,
-    // A model and its params from Cursor.models.list(). Plans with fixed model
-    // settings (Plus: fast=false) reject the run otherwise.
+    // Use an id and params returned for your key by Cursor.models.list().
     model: { id: "composer-2.5", params: [{ id: "fast", value: "false" }] },
-    local: { cwd: process.cwd() },   // an absolute path
+    local: { cwd: process.cwd() }, // Must be an absolute path.
   });
 
   const run = await agent.send("List the files in this folder and read README.md");
   for await (const event of run.stream()) {
     if (event.type === "tool_call") console.log(event.name, event.status);
   }
-  console.log("run 1:", (await run.wait()).status);
+  const result = await run.wait();
+  console.log("run 1:", result.status);
+  if (result.status !== "finished") {
+    throw new Error(`Cursor run ended with status: ${result.status}`);
+  }
 
-  // A follow-up on the same agent: a second trace in the same session.
-  await (await agent.send("Now summarize it in one line")).wait();
+  // A wait-only follow-up creates another trace in the same session.
+  const followUp = await (await agent.send("Now summarize it in one line")).wait();
+  console.log("run 2:", followUp.status);
+  if (followUp.status !== "finished") {
+    throw new Error(`Cursor follow-up ended with status: ${followUp.status}`);
+  }
 } finally {
-  await agent?.[Symbol.asyncDispose]();
-  await shutdown(tracerProvider);   // close open runs and flush before the script exits
+  try {
+    await agent?.[Symbol.asyncDispose]();
+  } finally {
+    await shutdown(tracerProvider); // Close open runs and flush, including factory errors.
+  }
 }
 ```
 
-Open **Observe** in Future AGI and select the project. Each run is a trace named **Cursor Agent run**; the **Sessions** tab groups the runs of one agent under its agent id. `Agent.prompt()` is traced too, as one run.
+Run the script from your repository:
 
-## What is captured
-
-| SDK source | Future AGI span / field |
-| --- | --- |
-| `agent.send()` | **Cursor Agent run** (`AGENT`), from the call until the run ends |
-| `agent.agentId` | `session.id` on the run and its child spans (the agent id, unless your app set a session id through fi-core context); `gen_ai.conversation.id` and `cursor.runtime` (`local`, or `cloud` for `bc-` ids) on the run span |
-| `run.id`, `RunResult.requestId` (or a `request` event, if the runtime sends one; live local runs do not) | `cursor.run.id`, `cursor.request.id` |
-| `model` on `send()` / `Agent.create()`, `RunResult.model` | `gen_ai.request.model`, `cursor.model.params` |
-| `usage` events, `RunResult.usage` | `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens.reasoning` on the run span. Cursor's `inputTokens` excludes cached tokens and its `totalTokens` includes them, so `gen_ai.usage.input_tokens` is `inputTokens + cacheReadTokens + cacheWriteTokens` (input + output = total); Cursor's own numbers are in `cursor.usage.*`. |
-| `RunResult.status` `error` | run `ERROR`, `cursor.run.status = error`, `cursor.run.error_code`; status message `RunError (<code>)`, or `RunError` when Cursor gives no code (Cursor's error text only with content on) |
-| `RunResult.status` `cancelled` | run `ERROR` with status message `cancelled` and `cursor.run.cancelled = true` |
-| `tool_call` events (`running`, then `completed` or `error`) | **Cursor tool: &lt;name&gt;** (`TOOL`): `tool.name`, `gen_ai.tool.call.id`, `cursor.tool.status`, truncation flags; `error` marks it `ERROR`. Parallel tool calls get one span each. |
-| `thinking` events | **Cursor thinking** (`CHAIN`): one span per thinking block, `cursor.thinking.duration_ms` (Cursor's figure for streaming the thinking text; the span starts at the previous event, so it also covers the model's wait) |
-| `assistant` events | **Cursor assistant message** (`LLM`): the text deltas between two other events, joined into one span |
-| `Agent.create()` / `Agent.resume()` throwing | one **Cursor Agent create** / **Cursor Agent resume** span, `ERROR`, with `cursor.error.name`, `.code`, `.http_status`, `.retryable`, `.operation` and status message `<ErrorName> (<status or code>)`, for example `AuthenticationError (401)`. It has a `session.id` only when you passed an agent id. |
-| `send()`, `stream()` or `wait()` throwing | the run span is `ERROR` with the same error fields; your code gets the same error |
-
-The instrumentation returns the SDK's own agent and run objects and passes every stream event through unchanged.
-
-## What is not available
-
-- **Tool, thinking and assistant spans when you do not read the stream.** This version of the instrumentation builds them from `run.stream()` only and never reads the stream on its own (it has a single reader). With `run.wait()` only, or with `Agent.prompt()`, you get the run span with model, tokens and status, and no child spans. The SDK's per-send `onStep` / `onDelta` callbacks could provide them; this version does not use them.
-- **Per-model-call spans and their token counts.** The SDK reports usage per turn, not per request; tokens are on the run span only.
-- **Cost.** It is not on the stream. Use `agent.getUsage()` where your plan has it (on Plus it returned `403 feature_unavailable`) or the Cursor usage dashboard.
-- **The system prompt and Cursor's internal context** (rules, skills, indexing). The SDK does not expose them.
-- **Subagent internals.** A subagent started through the `task` tool is one tool span.
-- **Runs your code did not start with `send()`**, such as runs fetched with `Agent.getRun()` or `Agent.listRuns()`.
-- **SDK hooks.** They are file based (`.cursor/hooks.json`) and are not used by this integration (see the warning above about double tracing).
-- **Cloud runtime.** The span model is the same, but cloud (`bc-`) agents have not been run end to end.
-- **Failed shell commands as errors.** Cursor reports a shell command that exits non-zero as a completed tool call, so its span is OK; the exit code is only in the tool result (content on).
-- **Runs still open when the process exits without `shutdown()`.** They are lost; `shutdown()` closes them with `cursor.run.status = running`.
-
-### Plan availability
-
-Cursor lists the TypeScript SDK as available to all users ([Cursor APIs](https://cursor.com/docs/api)), and SDK runs "follow the same pricing, request pools, and Privacy Mode rules as runs from the IDE and Cloud Agents" ([TypeScript SDK](https://cursor.com/docs/sdk/typescript)). Per [Pricing and plans](https://cursor.com/help/account-and-billing/pricing), the Free plan (and the legacy Hobby plan) has limited usage of Agent "with Cursor models (Grok and Composer)", and Auto and Cloud Agents come with Premium and above. On the Plus plan, `Cursor.models.list()` returned Composer 2.5, Grok 4.7, Grok 4.6 and Grok 4.5, each with one fixed variant (`fast: false`), and a run that asked for `composer-2.5` without params failed with "Model unavailable on Plus ... with fixed settings". Pass the id and params of a variant that `Cursor.models.list()` returns for your key.
-
-## Privacy
-
-By default no content is exported: only ids, tool names, model, sizes (`cursor.input.length`, `cursor.text.length`), durations, statuses, structural error fields and token counts.
-
-- **Not exported by default:** the prompt, tool arguments (shell commands, file paths, edits), tool results (file contents, command output), thinking text, assistant text, task summaries, and error text: exception messages, stack traces (they contain local file paths and your username), Cursor's run-error text and a failed tool's result.
-- **Exported for errors by default:** an `exception` event with only `exception.type` (the error class), the fields `cursor.error.name`, `.code`, `.http_status`, `.retryable`, `.operation`, and a fixed status message such as `AuthenticationError (401)` or `RunError (<code>)`.
-- **Never exported:** the Cursor API key. The instrumentation does not read it.
-
-To include content, turn it on in code:
-
-```typescript
-new CursorSDKInstrumentation({
-  tracerProvider,
-  traceConfig: { hideInputs: false, hideOutputs: false },
-});
+```bash
+node cursor-agent.mjs
 ```
 
-or set `FI_HIDE_INPUTS=false` (prompt, tool arguments) and `FI_HIDE_OUTPUTS=false` (results, thinking, assistant text). Only an explicit `false` turns content on. The prompt becomes the run's `input.value`, the final answer its `output.value`, and tool arguments and results go on each tool span, as the SDK reports them, including any file paths in them. Error messages, stack traces and Cursor's run-error text are exported only when both are on. Each value is cut at 5000 characters, error messages at 500.
+Choose a model and its parameters from `Cursor.models.list()` for your account. Plans with fixed model settings require those parameters; the example uses `composer-2.5` with `fast: false`.
+
+Call `manuallyInstrument()` before creating agents: the automatic CommonJS require hook does not see ES module imports. `Agent.prompt()` is also traced through its internal create, send and wait calls.
+
+### Streaming and wait-only runs
+
+The instrumentation observes per-send `onStep` and `onDelta` callbacks as well as events your application reads from `run.stream()`. A `wait()`-only run or `Agent.prompt()` can therefore include child spans for steps the SDK exposes through callbacks. Your own callbacks are preserved, and identified tool calls are deduplicated across callbacks and the stream.
+
+The instrumentation never consumes the single-reader stream itself. If a runtime exposes a tool event only on the stream, your application must read `run.stream()` before or while waiting to capture that event.
+
+## View traces in Future AGI
+
+Open **Observe**, select **cursor-sdk-agents**, and open a **Cursor Agent run** trace. The **Sessions** tab groups runs by the agent id, unless your application sets a session id through fi-core context.
+
+| Captured data | Where to find it |
+| --- | --- |
+| Run and agent identifiers | `cursor.run.id`, `cursor.agent.id`, `gen_ai.conversation.id` and `session.id` |
+| Request id and model | `cursor.request.id` when supplied by the SDK, `gen_ai.request.model` and `cursor.model.params` |
+| Tool calls | **Cursor tool: &lt;name&gt;** spans with tool name, call id when available and status; parallel calls stay separate |
+| Thinking and assistant steps | **Cursor thinking** and **Cursor assistant message** spans, with text hidden by default |
+| Token usage | `gen_ai.usage.*` on the run span; child spans do not repeat these totals |
+| Failed or cancelled runs | Run status `ERROR`, with `cursor.run.status` and structural error fields when available; error status messages are omitted by default |
+| Factory exceptions | **Cursor Agent create** or **Cursor Agent resume** spans with status `ERROR` and the error class; successful factories do not emit a separate span |
+
+Input tokens include Cursor's input, cache-read and cache-write counts. When input and output counts are available, total tokens are their normalized sum. The SDK's original counts remain in `cursor.usage.*`.
+
+Completed task results that contain `value.conversationSteps` can produce **Cursor subagent** spans with nested tool, thinking and assistant spans. Their times cover the enclosing task interval, not independently measured child execution. Tasks without those snapshots remain a single tool span.
+
+## Content and privacy
+
+By default, the instrumentation hides prompts, tool arguments and results, thinking and assistant text, task summaries, exception messages and stack traces. It retains identifiers, tool names, model, sizes, durations, statuses, token counts and structural error fields such as `cursor.error.name`, `.code`, `.http_status`, `.retryable` and `.operation`.
+
+An exception event retains `exception.type`, but no message or stack trace. With the default configuration, fi-core also removes error status messages and `cursor.error.message`, including fixed summaries. The instrumentor does not read the Cursor API key into span attributes. Do not put secrets in custom span attributes or captured content.
+
+To include prompts and results while keeping error details hidden, replace the instrumentation initialization with:
+
+```javascript
+const instrumentation = new CursorSDKInstrumentation({
+  tracerProvider,
+  traceConfig: {
+    hideInputs: false,
+    hideOutputs: false,
+    hideErrorDetails: true,
+  },
+});
+instrumentation.manuallyInstrument(CursorSDK);
+```
+
+Alternatively, set `FI_HIDE_INPUTS=false`, `FI_HIDE_OUTPUTS=false` and `FI_HIDE_ERROR_DETAILS=true` before starting the application. Explicit code options take precedence over environment variables. Only an explicit `false` for an input/output setting enables that content.
+
+Raw error messages, stack traces, Cursor run-error text and failed-tool results require **all three** resolved settings to be false: `hideInputs`, `hideOutputs` and `hideErrorDetails`. `FI_HIDE_ERROR_DETAILS=true` keeps those details hidden even when both content settings are false. Setting `hideErrorDetails: false` alone does not reveal raw errors while inputs or outputs remain hidden; it permits fixed error summaries instead.
+
+Content opt-in can export source code, shell commands, file paths and sensitive text exactly as the SDK supplies them. Content values are truncated at 5,000 characters and error status messages at 500; truncation is not redaction.
+
+## Limits
+
+- The SDK reports usage per turn, not per model request. There are no per-model-call token counts or dollar-cost fields. Use the Cursor usage dashboard, or `agent.getUsage()` where your plan supports it.
+- The SDK does not expose its system prompt, rules, skills or indexing context through this integration.
+- Existing runs fetched through `Agent.getRun()` or `Agent.listRuns()` are not traced.
+- A shell command with a nonzero exit code can still be a completed tool call, so its span is not necessarily `ERROR`. The exit code is in the tool result when output capture is enabled.
+- Await `shutdown(tracerProvider)` before a short script exits. It closes open run spans and flushes the exporter; a run still in progress retains `cursor.run.status = running`.
 
 ## Troubleshooting
 
-**Only a Cursor Agent create span, `AuthenticationError (401)`.** The API key is wrong or revoked: `Agent.create()` rejects it. Create a user API key in [Cursor Dashboard → API Keys](https://cursor.com/dashboard/api), or a service-account key in [Team settings](https://cursor.com/dashboard/team-settings).
+**An error span with `cursor.error.name = AuthenticationError` and `cursor.error.http_status = 401`.** Replace a revoked or incorrect key in [Cursor Dashboard → API Keys](https://cursor.com/dashboard/api). If no key is configured, set `CURSOR_API_KEY` or use `Cursor.auth.login()` before starting the run.
 
-**A Cursor Agent run span with status `RunError` about a second after it starts, with a working key.** The model, or its settings, is not in your plan. With content on, `cursor.error.message` says `Model unavailable on <plan> ...`. Use an id and params from `Cursor.models.list()` (see Plan availability).
+**A run fails before any tool calls.** Check the returned `RunResult.error` in your application. Select an id and parameters from `Cursor.models.list()`, and check the account's usage allowance. Changing tracing settings does not change model access or usage limits. See [content and privacy](#content-and-privacy) before enabling error text in traces.
 
-**A Cursor Agent run span with status `RunError` a few seconds after `send()`, and no tool spans.** No API key was found at all (no `apiKey`, no `CURSOR_API_KEY`, no stored `Cursor.auth.login()`). Without a key, `Agent.create()` and `send()` succeed and Cursor rejects the run once it starts (`RunResult.error` is `[unknown] Invalid User API Key`). Set `CURSOR_API_KEY`.
+**No spans, or spans missing at exit.** Call `manuallyInstrument(CursorSDK)` before `Agent.create()` and await `shutdown(tracerProvider)` in `finally`.
 
-**No spans at all.** Call `manuallyInstrument(CursorSDK)` before `Agent.create()`, and await `shutdown(tracerProvider)` before the process exits.
+**Extra traces such as `LocalGitExecutor.exec`.** Keep the Future AGI provider non-global and pass it explicitly to the instrumentation. Check for another global provider exporting the SDK's internal spans.
 
-**Extra traces named like `LocalGitExecutor.exec` or `writeInitialRequest`.** Those are the SDK's own internal spans. Register the provider with `setGlobalTracerProvider: false` and pass it to the instrumentation (steps 3 and 4).
+**A run span but no tool spans.** A run may not use tools, or its runtime may expose tool events only through the stream. Read `run.stream()` before or while calling `run.wait()`; do not begin reading after the span has closed.
 
-**A shell tool result saying the working directory no longer exists.** `local.cwd` was a relative path. Pass an absolute path.
+**`cursor.run.stream_detached = true`.** The application stopped reading early or left a stream partly read. Open tool spans end with `cursor.tool.incomplete = true`. Finish consuming the stream; a partly read stream closes at most 30 seconds after the run's end is known.
 
-**A run span but no tool spans, with a working key.** Your code did not read `run.stream()`. Read the stream before or while you call `run.wait()`.
-
-**The run span shows `cursor.run.stream_detached = true`.** Your code stopped reading the stream early (`break`), or left it partly read. Tool calls that were still open end with `cursor.tool.incomplete = true`; the run span closes when the run itself ends (for a partly read stream, at most 30 seconds after).
-
-**Spans arrive late or not at all for short scripts.** `shutdown()` closes open runs and flushes the exporter; await it in `finally`.
-
-## Live verification (2026-10-20)
-
-A signed-in Cursor account on the Plus plan ran `composer-2.5` (`fast: false`) through `@cursor/sdk` 1.0.38 with the setup on this page, in a throwaway git repo, into a Future AGI project:
-
-- A streamed run: **Cursor Agent run** with three **Cursor thinking** spans, **Cursor tool: read**, **Cursor tool: edit** and one **Cursor assistant message**; 23,820 input + 19,172 cache-read tokens, 258 output, 43,250 total.
-- A streamed run with two `shell` calls and a `read` that ran in parallel with the first one, then a `wait()`-only follow-up on the same agent: two traces in one session.
-- A run with a model setting the plan does not include: run `ERROR`, status message `RunError`.
-- Default privacy, over every stored field: no prompt text, no file content, no local paths, no API key. With `FI_HIDE_INPUTS=false` and `FI_HIDE_OUTPUTS=false`: the prompt, tool arguments (with local paths) and results, thinking and the answer. No SDK-internal span reached Future AGI.
+**The shell reports that its working directory no longer exists.** Pass an absolute `local.cwd`, such as `process.cwd()` in the example.
