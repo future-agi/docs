@@ -419,6 +419,56 @@ test('Java pgvector qualifies successful-operation privacy and hides database er
   assert.ok(section.indexOf('FI_HIDE_ERROR_DETAILS=true') < section.indexOf('new TracedPgVectorStore(connection)'));
 });
 
+test('mcp-use guide is discoverable and uses the released callback dependency floor', () => {
+  const page = read('src/pages/docs/integrations/traceai/mcp-use.mdx');
+  const entry = integrations.find(item => item.id === 'mcp-use');
+  assert.equal(entry?.href, '/docs/integrations/traceai/mcp-use');
+  assert.equal(entry?.category, 'frameworks');
+  assert.equal(entry?.method, 'traceAI callback');
+  for (const dependency of ['traceAI-mcp-use==0.1.1', 'mcp-use==1.7.1', 'langchain-openai==1.7.2', 'langchain-core>=1.6.12,<2']) {
+    assert.ok(page.includes(dependency), dependency);
+  }
+  assert.doesNotMatch(page, /langchain-core>=1\.0\.0|Tested with|test suite|verified live|2026-10-16/i);
+});
+
+test('mcp-use guide supplies the server it launches and closes sessions and tracing', () => {
+  const page = read('src/pages/docs/integrations/traceai/mcp-use.mdx');
+  const python = [...page.matchAll(/```python\n([\s\S]*?)\n```/g)].map(match => match[1]);
+  const server = python.find(block => block.includes('def add('));
+  const agent = python.find(block => block.includes('asyncio.run(main())'));
+  assert.ok(server && agent, 'Both executable example files must be provided');
+  assert.match(page, /Save this as `calculator_server\.py`/);
+  assert.match(page, /Save this as `agent\.py` next to `calculator_server\.py`/);
+  assert.match(server, /from mcp\.server\.fastmcp import FastMCP/);
+  assert.match(server, /@mcp\.tool\(\)\ndef add\(a: int, b: int\) -> str:/);
+  assert.match(server, /return str\(a \+ b\)/);
+  assert.match(server, /mcp\.run\("stdio"\)/);
+  assert.match(agent, /Path\(__file__\)\.resolve\(\)\.with_name\("calculator_server\.py"\)/);
+  assert.match(agent, /"command": sys\.executable, "args": \[server\]/);
+  assert.match(agent, /callbacks=\[FutureAGICallback\(tracer_provider=trace_provider\)\]/);
+  assert.match(agent, /finally:\n\s+await client\.close_all_sessions\(\)/);
+  assert.match(agent, /finally:\n\s+trace_provider\.shutdown\(\)/);
+  assert.match(page, /```bash\npython agent\.py\n```/);
+  // Syntax-check the two complete application files in CI, without importing packages.
+  for (const snippet of [server, agent]) {
+    const result = spawnSync('python3', ['-I', '-c', 'import ast, sys; ast.parse(sys.stdin.read())'], { input: snippet, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+});
+
+test('mcp-use guide retains actionable privacy and callback coverage limits', () => {
+  const page = read('src/pages/docs/integrations/traceai/mcp-use.mdx');
+  for (const setting of ['FI_HIDE_INPUTS=true', 'FI_HIDE_OUTPUTS=true', 'MCP_USE_ANONYMIZED_TELEMETRY=false']) {
+    assert.ok(page.includes(setting), setting);
+  }
+  assert.match(page, /console logs are separate from exported spans/);
+  assert.match(page, /not a guarantee of detecting arbitrary secrets/);
+  assert.match(page, /output_schema[^\n]*does not receive callbacks/);
+  assert.match(page, /not TypeScript agents or remote/);
+  assert.match(page, /Do not also instrument the same agent/);
+  assert.match(page, /Callback spans are not made current/);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
