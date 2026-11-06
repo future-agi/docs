@@ -136,6 +136,7 @@ export const integrations = [
   { id: 'livekit', name: 'LiveKit', href: '/docs/integrations/traceai/livekit', category: 'voice', summary: 'Trace voice agent sessions and model interactions.', method: 'traceAI SDK', logo: 'livekit' },
   { id: 'pipecat', name: 'Pipecat', href: '/docs/integrations/traceai/pipecat', category: 'voice', summary: 'Capture spans from conversational voice pipelines.', method: 'traceAI SDK', logo: 'pipecat' },
   { id: 'elevenlabs-agents', name: 'ElevenLabs Agents', href: '/docs/integrations/traceai/elevenlabs-agents', category: 'voice', summary: 'Forward post-call conversation traces, turns and tool calls.', method: 'traceAI forwarder', logo: 'generic-framework' },
+  { id: 'openai-realtime', name: 'OpenAI Realtime', href: '/docs/integrations/traceai/openai_realtime', category: 'voice', summary: 'Trace server-side OpenAI Realtime sessions from Python.', method: 'traceAI SDK', logo: 'openai' },
   { id: 'vapi', name: 'Vapi', href: '/docs/observe/concepts/voice-observability', category: 'voice', summary: 'Connect calls using the shared voice observability guide.', method: 'Voice guide', logo: 'vapi', sharedGuide: true },
   { id: 'retell', name: 'Retell', href: '/docs/observe/concepts/voice-observability', category: 'voice', summary: 'Connect calls using the shared voice observability guide.', method: 'Voice guide', logo: 'retell', sharedGuide: true },
 
