@@ -1,0 +1,101 @@
+# The last link of the chain backend contract → futureagi-sdk → docs: syncs the
+# platform SDK reference (src/pages/docs/sdk/reference) from the generated pages
+# in a futureagi-sdk commit and opens or updates ONE pull request per SDK release.
+#
+#   futureagi-sdk publish.yml      → sdk-release {ref, stage: released}  after PyPI and npm
+#   futureagi-sdk release-please   → sdk-release {ref, stage: candidate} when a version PR is prepared
+#   schedule                       → newest published release (catches a missed dispatch)
+#   workflow_dispatch              → any ref; a preview draft unless `stage` says otherwise
+#
+# scripts/sdk-reference-release.mjs decides the branch (one per Python/TypeScript
+# version pair, so retries update the same PR) and whether the PR may be marked
+# ready: only when BOTH packages at those versions are installable from PyPI and
+# npm. Everything else is a draft. The docs site never documents an SDK that
+# users cannot install. Pages are never edited here; fix the generator in the SDK.
+name: sdk-reference-sync
+
+on:
+  repository_dispatch:
+    types: [sdk-release]   # client_payload: ref (full commit SHA), stage (released|candidate), source (URL)
+  workflow_dispatch:
+    inputs:
+      sdk_ref:
+        description: futureagi-sdk commit, tag or branch (empty = newest published release)
+        default: ''
+      stage:
+        description: 'released, candidate or preview (empty = preview for a ref, released otherwise)'
+        default: ''
+  schedule:
+    - cron: '0 6 * * 1'    # Mondays 06:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sdk-reference-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # App token (not GITHUB_TOKEN): the org forbids Actions from creating PRs
+      # with GITHUB_TOKEN, and App-minted tokens are exempt. Scoped to this repo.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Resolve the SDK release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.sdk_ref || github.event.client_payload.ref }}
+          STAGE: ${{ inputs.stage || github.event.client_payload.stage }}
+        run: |
+          set -eu
+          if [ "$GITHUB_EVENT_NAME" = repository_dispatch ]; then
+            # A sender names the exact commit it published; a branch name could move under us.
+            [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sdk-release needs client_payload.ref as a full commit SHA, got '$REF'"; exit 1; }
+          fi
+          args=()
+          [ -n "$REF" ] && args+=(--ref "$REF")
+          [ -n "$STAGE" ] && args+=(--stage "$STAGE")
+          node scripts/sdk-reference-release.mjs "${args[@]}" | tee -a "$GITHUB_OUTPUT"
+      - name: Check out the generated reference from that SDK commit
+        uses: actions/checkout@v4
+        with:
+          repository: future-agi/futureagi-sdk
+          ref: ${{ steps.release.outputs.sha }}
+          path: .sdk
+          sparse-checkout: docs/sdk-reference
+          persist-credentials: false
+      - name: Sync the pages and the sidebar group
+        run: node scripts/sync-sdk-reference.mjs --from .sdk
+      - name: Check nav and content links
+        run: node scripts/audit-links.mjs
+      - name: Open, update or finish the pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHA: ${{ steps.release.outputs.sha }}
+          REF: ${{ steps.release.outputs.ref }}
+          PY: ${{ steps.release.outputs.python }}
+          TS: ${{ steps.release.outputs.typescript }}
+          BACKEND: ${{ steps.release.outputs.backend }}
+          BRANCH: ${{ steps.release.outputs.branch }}
+          STAGE: ${{ steps.release.outputs.stage }}
+          PUBLISH: ${{ steps.release.outputs.publish }}
+          SOURCE: ${{ github.event.client_payload.source || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        # scripts/sdk-reference-pr.sh holds the state rules (a stale candidate event never
+        # downgrades or rewrites a released PR; a ready decision is verified, not assumed)
+        # and scripts/sdk-reference-pr.test.mjs runs it against a fake gh/git.
+        run: bash scripts/sdk-reference-pr.sh
