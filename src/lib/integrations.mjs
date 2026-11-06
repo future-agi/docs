@@ -87,6 +87,7 @@ export const integrations = [
 
   { id: 'langchain', name: 'LangChain', href: '/docs/integrations/traceai/langchain', category: 'frameworks', summary: 'Trace chains, retrievers, tools and model calls.', method: 'traceAI SDK', logo: 'langchain' },
   { id: 'langgraph', name: 'LangGraph', href: '/docs/integrations/traceai/langgraph', category: 'frameworks', summary: 'Follow agent graph execution and tool calls.', method: 'traceAI SDK', logo: 'langgraph' },
+  { id: 'langchain-deep-agents', name: 'LangChain Deep Agents', href: '/docs/integrations/traceai/langchain-deep-agents', category: 'frameworks', summary: 'Trace model calls, filesystem tools, task subagents and sessions.', method: 'traceAI SDK', logo: 'langchain' },
   { id: 'llamaindex', name: 'LlamaIndex', href: '/docs/integrations/traceai/llamaindex', category: 'frameworks', summary: 'Trace retrieval and generation in RAG applications.', method: 'traceAI SDK', logo: 'llamaindex', aliases: ['RAG'] },
   { id: 'llamaindex-workflows', name: 'LlamaIndex Workflows', href: '/docs/integrations/traceai/llamaindex-workflows', category: 'frameworks', summary: 'Capture steps in event-driven agent workflows.', method: 'traceAI SDK', logo: 'llamaindex' },
   { id: 'openai-agents', name: 'OpenAI Agents SDK', href: '/docs/integrations/traceai/openai_agents', category: 'frameworks', summary: 'Trace agent runs, handoffs and tools.', method: 'traceAI SDK', logo: 'openai' },
