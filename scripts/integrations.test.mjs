@@ -436,6 +436,18 @@ test('OpenAI Go guide is discoverable and bootstraps the released module', () =>
   assert.doesNotMatch(page, /end-to-end test|In our test|MARK_DEFAULT|trace_id=|latest on 20\d\d-/i);
 });
 
+test('OpenAI Go privacy distinguishes granular message filtering from content suppression', () => {
+  const page = read('src/pages/docs/integrations/traceai/go/openai.mdx');
+  const privacy = page.split('## Privacy\n')[1]?.split('\n## ')[0];
+  assert.ok(privacy, 'The guide must explain privacy controls');
+  assert.match(privacy, /`FI_HIDE_INPUT_TEXT=true` \| redact text only in `gen_ai\.input\.messages\.\*`/);
+  assert.match(privacy, /`FI_HIDE_OUTPUT_TEXT=true` \| redact text only in `gen_ai\.output\.messages\.\*`/);
+  assert.match(privacy, /`FI_HIDE_INPUT_IMAGES=true` \| drop image URLs only from `gen_ai\.input\.messages\.\*`/);
+  assert.match(privacy, /message, text and image switches alone do not prevent content export/);
+  assert.match(privacy, /`input\.value` retains original prompts and image URLs \(including base64 images up to `FI_BASE64_IMAGE_MAX_LENGTH`\), and `output\.value` retains original answers/);
+  assert.match(privacy, /set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before constructing the middleware/);
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
