@@ -429,6 +429,19 @@ test('public prose and catalog labels contain no internal QA label or Alpha rele
   assert.equal(publicProse('Beta. `pkg==1.0.0-alpha`\n```python\nmodel="alpha"\n```\n'),'Beta. \n\n');
 });
 
+test('Voyage AI guide installs the package and keeps customer-facing privacy guidance', () => {
+  const page = read('src/pages/docs/integrations/traceai/voyage.mdx');
+  const catalog = integrations.find(i => i.id === 'voyage-ai');
+  assert.equal(catalog?.href, '/docs/integrations/traceai/voyage');
+  assert.equal(catalog?.method, 'traceAI SDK');
+  for (const text of [
+    'pip install traceAI-voyage', 'voyageai>=0.3.7,<1', 'fi-instrumentation-otel>=1.1.0',
+    'VoyageInstrumentor().instrument(tracer_provider=trace_provider)', 'trace_provider.force_flush()',
+    'capture_content=True', 'FI_HIDE_INPUTS=true', 'FI_HIDE_OUTPUTS=true',
+  ]) assert.ok(page.includes(text), text);
+  assert.doesNotMatch(page, /Live vendor verification|verified live|Not yet run live|trace [0-9a-f]{8}-/i);
+});
+
 test('Temporal TypeScript warns about incompatible histories before setup', () => {
   const page = read('src/pages/docs/integrations/frameworks/temporal-typescript.mdx');
   const prerequisites = page.split('## Set up tracing')[0];
