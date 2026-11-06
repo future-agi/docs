@@ -80,6 +80,7 @@ export const integrations = [
   { id: 'togetherai', name: 'Together AI', href: '/docs/integrations/traceai/togetherai', category: 'providers', summary: 'Trace Together AI through its OpenAI-compatible API.', method: 'OpenAI client', logo: 'together' },
   { id: 'ollama', name: 'Ollama', href: '/docs/integrations/traceai/ollama', category: 'providers', summary: 'Trace local model calls through the OpenAI client.', method: 'OpenAI client', logo: 'ollama' },
   { id: 'cometapi', name: 'CometAPI', href: '/docs/integrations/providers/cometapi', category: 'providers', summary: 'Trace chat completions through the OpenAI client.', method: 'OpenAI client', logo: 'cometapi' },
+  { id: 'typesafe', name: 'TypeSafe (Jev)', href: '/docs/integrations/traceai/typesafe', category: 'providers', summary: 'Trace System One decision calls from the Python client.', method: 'traceAI SDK', logo: 'generic-model', aliases: ['Jev', 'System One'] },
   { id: 'novita-ai', name: 'Novita AI', href: '/docs/integrations/providers/novita-ai', category: 'providers', summary: 'Trace Novita chat completions from your Python app.', method: 'OpenAI client', logo: 'novita' },
   { id: 'litellm-sdk', name: 'LiteLLM SDK', href: '/docs/integrations/traceai/litellm', category: 'frameworks', summary: 'Instrument LiteLLM calls in your Python application.', method: 'traceAI SDK', logo: 'litellm', aliases: ['traceAI-litellm', 'client'] },
 
