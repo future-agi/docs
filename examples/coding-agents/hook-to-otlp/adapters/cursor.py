@@ -9,7 +9,7 @@ the docs define as the same value as ``conversation_id``.
 Mapped events (all non-permission hooks, so the emitter never decides
 whether Cursor may run something):
 
-    sessionStart        -> session start (root span exported, re-exported later)
+    sessionStart        -> session start (nothing exported until a child span is sent)
     beforeSubmitPrompt  -> turn start           prompt = content
     postToolUse         -> tool span            start = end - duration
     postToolUseFailure  -> tool span, ERROR     status message = failure_type
@@ -29,6 +29,9 @@ Observed on real Cursor 3.24.18 payloads (not in the docs):
   ``cache_read_tokens``, ``cache_write_tokens`` for the turn. They go on the
   "Agent response" LLM span as standard token counts (the turn keeps them as
   ``cursor.usage.*`` so trace totals are not counted twice).
+- ``tool_use_id`` can be two ids joined by a newline (Cursor's ``call-...``
+  id, then the provider's function-call id). The first line is the call id;
+  the second is kept as ``cursor.tool.provider_call_id``.
 - ``afterAgentThought`` fires twice per thinking block, once with a
   ``generation_id`` suffixed ``-<n>-<4 chars>``. Suffixes are stripped and the
   pair maps to one span id.
@@ -48,8 +51,12 @@ APP = "cursor"
 DISPLAY_NAME = "Cursor"
 SERVICE_NAME = "cursor"
 
-# Cursor blocks permission hooks on invalid output; this emitter is not
-# meant to be wired to them, and answers neutrally if it is.
+# The emitter is not registered on these (it observes, it never decides).
+# If it is wired to one by mistake it prints nothing: Cursor treats a hook
+# with no output as failed and lets the action through (fail-open unless the
+# hook sets failClosed), the same as a missing emitter. It never answers
+# "allow" (that could approve an action) and never prints "{}" (invalid for a
+# permission hook, which blocks the action).
 PERMISSION_HOOKS = {
     "preToolUse", "beforeShellExecution", "beforeMCPExecution",
     "beforeReadFile", "beforeTabFileRead", "subagentStart",
@@ -64,7 +71,7 @@ def respond(event: str, payload: Dict[str, Any]) -> str:
     if event == "beforeSubmitPrompt":
         return '{"continue": true}'
     if event in PERMISSION_HOOKS:
-        return '{"permission": "allow"}'
+        return ""
     return "{}"
 
 
@@ -122,6 +129,17 @@ def _usage(payload: Dict[str, Any], prefix: str) -> Dict[str, Any]:
         for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
             usage[f"cursor.usage.{key}"] = payload.get(key)
     return compact(usage)
+
+
+def _tool_call_ids(payload: Dict[str, Any]) -> "tuple[str, Optional[str]]":
+    """(call id, provider call id) from a possibly newline-joined ``tool_use_id``."""
+    raw = first(payload, "tool_use_id")
+    if raw is None:
+        return "", None
+    parts = [part.strip() for part in str(raw).splitlines() if part.strip()]
+    if not parts:
+        return "", None
+    return parts[0], (parts[1] if len(parts) > 1 else None)
 
 
 def _digest(*parts: Any) -> str:
@@ -195,9 +213,10 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         tool_name = str(first(payload, "tool_name") or "tool")
         failed = event == "postToolUseFailure"
         failure_type = payload.get("failure_type") if failed else None
+        call_id, provider_call_id = _tool_call_ids(payload)
         return [SpanEvent(
             END, TOOL, sid,
-            key=str(first(payload, "tool_use_id") or ""),
+            key=call_id,
             turn_id=turn,
             name=tool_name,
             duration_ms=number(payload.get("duration")),
@@ -208,6 +227,7 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
             error_message=payload.get("error_message") if failed else None,
             attributes=compact({
                 "cursor.tool.name": tool_name,
+                "cursor.tool.provider_call_id": provider_call_id,
                 "cursor.tool.duration_ms": number(payload.get("duration")),
                 "cursor.tool.failure_type": failure_type,
                 "cursor.tool.is_interrupt": payload.get("is_interrupt") if failed else None,
@@ -221,7 +241,8 @@ def parse(event: str, payload: Dict[str, Any]) -> List[SpanEvent]:
         modified = payload.get("modified_files")
         return [SpanEvent(
             END, SUBAGENT, sid,
-            key=_digest(subagent_type, payload.get("task"), payload.get("description")),
+            key=_digest(subagent_type, turn, payload.get("duration_ms"),
+                        payload.get("task"), payload.get("description")),
             turn_id=turn,
             name=f"Subagent: {subagent_type}",
             duration_ms=number(payload.get("duration_ms")),
