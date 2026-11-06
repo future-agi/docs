@@ -60,6 +60,30 @@ test('Eino checkout instructions initialize the linked example without the QA ru
   assert.doesNotMatch(readme, /run_e2e\.sh|MARK_DEFAULT|MARK_HIDDEN/);
 });
 
+test('Eino identity attributes distinguish always-present kind from conditional metadata', () => {
+  const captured = page.split('## What is captured')[1]?.split('## Privacy')[0];
+  assert.ok(captured, 'Keep the captured attribute reference');
+  assert.match(captured, /^\| `gen_ai\.span\.kind` \| always \|$/m);
+  assert.match(captured, /^\| `gen_ai\.operation\.name` \| only on LLM \(`chat`\), tool \(`execute_tool`\), embedding \(`embeddings`\) and agent \(`invoke_agent`\) spans \|$/m);
+  assert.match(captured, /^\| `eino\.component`, `eino\.type`, `eino\.name` \| only when `RunInfo` supplies the corresponding non-empty field \|$/m);
+});
+
+test('Eino text switches do not hide ordinary conversation value attributes', () => {
+  const privacy = page.split('## Privacy')[1]?.split('## Errors')[0];
+  assert.ok(privacy, 'Keep the customer-facing privacy section');
+  const textSwitches = privacy.split('\n').find(line => line.startsWith('| `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT` |'));
+  assert.ok(textSwitches, 'Keep the text-specific masking settings');
+  assert.match(textSwitches, /redact text only in the structured `gen_ai\.input\.messages\.\*` \/ `gen_ai\.output\.messages\.\*` attributes/);
+  assert.match(textSwitches, /keep roles and tool calls/);
+  assert.match(textSwitches, /do not redact `input\.value` \/ `output\.value`/);
+  const warning = privacy.split('\n\n').find(paragraph => paragraph.startsWith('Message-specific switches do not redact'));
+  assert.ok(warning, 'Explain the value-attribute boundary beyond Agentic or generic JSON');
+  assert.match(warning, /`input\.value` \/ `output\.value`/);
+  assert.match(warning, /conversation text for ordinary `schema\.Message` inputs and `ChatModelAgent` runs/);
+  assert.match(warning, /not just Agentic or generic JSON payloads/);
+  assert.match(warning, /Set \*\*`FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`\*\* to keep conversation text out of these values and the structured message attributes/);
+});
+
 test('Eino media exclusions apply only to structured message media fields', () => {
   const privacy = page.split('## Privacy')[1]?.split('## Errors')[0];
   assert.ok(privacy, 'Keep the customer-facing privacy section');
