@@ -63,14 +63,15 @@ ignore_workspace_settings() {
 # Unicode and parentheses) go straight to spawn: quotes would become part of
 # the filename instead of being removed.
 # Built before anything is copied, so a path that cannot be registered leaves
-# no partial install behind.
-HOOKS="$(python3 - "$HERE/settings.json" "$DEST/futureagi-hook.sh" <<'PY'
+# no partial install behind. Keep the heredoc outside command substitution:
+# macOS Bash 3.2 can misparse quotes and backticks inside a nested heredoc.
+render_hooks() {
+  python3 - "$HERE/settings.json" "$DEST/futureagi-hook.sh" <<'PY'
 import json, re, sys
 template, wrapper = sys.argv[1], sys.argv[2]
 if "'" in wrapper:
     sys.exit(f"cannot register a hook path that contains a single quote: {wrapper}")
-# Escape the backtick for macOS Bash 3.2's command-substitution heredoc parser.
-if re.search(r"[ |&;><$\x60]", wrapper):
+if re.search(r"[ |&;><$`]", wrapper):
     wrapper = f"'{wrapper}'"
 with open(template, encoding="utf-8") as f:
     settings = json.load(f)
@@ -80,7 +81,8 @@ for groups in settings["hooks"].values():
             hook["command"] = wrapper
 print(json.dumps(settings, indent=2))
 PY
-)"
+}
+HOOKS="$(render_hooks)"
 
 mkdir -p "$DEST/adapters"
 cp "$EMITTER/emit.py" "$DEST/emit.py"
