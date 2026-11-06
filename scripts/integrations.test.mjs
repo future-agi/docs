@@ -23,6 +23,7 @@ import './typesafe-page.test.mjs';
 import './ag2-classic-page.test.mjs';
 import './firecrawl-page.test.mjs';
 import './parallel-page.test.mjs';
+import './otel-genai-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -192,6 +192,7 @@ export const integrationAids = [
   { name: 'Hook-to-OTLP emitter', href: '/docs/integrations/coding-agents/hook-to-otlp', category: 'coding' },
   { name: 'OpenAI Assistants retirement', href: '/docs/integrations/traceai/openai_assistants', category: 'providers' },
   { name: 'traceAI setup', href: '/docs/integrations/traceai' },
+  { name: 'OpenTelemetry GenAI compatibility', href: '/docs/integrations/traceai/otel-genai-conformance' },
   { name: 'Java SDK setup', href: '/docs/integrations/traceai/java', category: 'java' },
 ];
 
