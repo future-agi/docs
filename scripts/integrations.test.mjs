@@ -49,6 +49,30 @@ test('Vitest guide documents native test tracing without an evaluation-import cl
   assert.doesNotMatch(page, /@traceai\/vitest|verified live|test date/i);
 });
 
+test('AG2 guide uses released native-middleware setup without a public test diary', () => {
+  const page = read('src/pages/docs/integrations/traceai/ag2.mdx');
+  const entry = integrations.find(item => item.id === 'ag2');
+  assert.equal(entry?.href, '/docs/integrations/traceai/ag2');
+  assert.equal(entry?.category, 'frameworks');
+  assert.equal(entry?.method, 'OTel + traceAI');
+  for (const setting of [
+    '"traceAI-ag2==0.1.0"', '"ag2[openai]==1.1.2"', '"fi-instrumentation-otel==1.2.3"',
+    'from traceai_ag2 import setup', 'setup(agent, tracer_provider=trace_provider)',
+    'project_type=ProjectType.OBSERVE', 'with using_session("weather-example"):',
+    'python ag2_example.py',
+  ]) assert.ok(page.includes(setting), setting);
+  assert.match(page, /finally:\n    trace_provider\.force_flush\(\)\n    trace_provider\.shutdown\(\)/);
+  const capture = page.split('## 3. Run an instrumented agent')[0];
+  assert.match(capture, /FI_HIDE_INPUTS=true/);
+  assert.match(capture, /FI_HIDE_OUTPUTS=true/);
+  assert.match(capture, /before initializing tracing/);
+  assert.match(capture, /do not redact arbitrary custom attributes/);
+  assert.match(capture, /custom concurrent processor can export spans before content filtering/);
+  assert.match(page, /This is not general personal-data redaction/);
+  assert.match(page, /## 4\. View the trace/);
+  assert.doesNotMatch(page, /tested with|offline test|latest stable|verified live|\balpha\b|2026-\d{2}-\d{2}/i);
+});
+
 test('LlamaIndex distinguishes deprecated TypeScript from the supported Python guide', () => {
   const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
   const notice = page.split('## Install')[0];
