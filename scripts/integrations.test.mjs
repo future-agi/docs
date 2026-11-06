@@ -19,6 +19,7 @@ import './elevenlabs-agents-page.test.mjs';
 import './gemini-go-page.test.mjs';
 import './typesafe-page.test.mjs';
 import './ag2-classic-page.test.mjs';
+import './firecrawl-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
