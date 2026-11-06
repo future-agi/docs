@@ -16,8 +16,8 @@
 # Optional: FI_BASE_URL (default https://api.futureagi.com), FI_PROJECT_NAME,
 # OPENAI_API_KEY + OPENAI_BASE_URL + MODEL (the demo agent answers with that
 # model; without a key it echoes), TRACEAI_GO_A2A_REF (version or commit of
-# github.com/future-agi/traceAI/go/a2a, default latest), A2A_GO_VERSION
-# (default v2.6.0).
+# github.com/future-agi/traceAI/go/a2a, default v0.1.1), A2A_GO_VERSION
+# (default v2.7.0).
 # This script never prints a key.
 set -euo pipefail
 
@@ -25,11 +25,12 @@ set -euo pipefail
 : "${FI_SECRET_KEY:?set FI_SECRET_KEY}"
 export FI_PROJECT_NAME="${FI_PROJECT_NAME:-a2a-go-example}"
 MODEL="${MODEL:-gpt-4.1-mini}"
-REF="${TRACEAI_GO_A2A_REF:-latest}"
-A2A_GO_VERSION="${A2A_GO_VERSION:-v2.6.0}"
+REF="${TRACEAI_GO_A2A_REF:-v0.1.1}"
+A2A_GO_VERSION="${A2A_GO_VERSION:-v2.7.0}"
 # The FI_HIDE_* switches are set per run below; start from the defaults.
 unset FI_HIDE_INPUTS FI_HIDE_OUTPUTS FI_HIDE_INPUT_MESSAGES FI_HIDE_OUTPUT_MESSAGES \
-  FI_HIDE_INPUT_TEXT FI_HIDE_OUTPUT_TEXT FI_HIDE_INPUT_IMAGES FI_HIDE_LLM_INVOCATION_PARAMETERS
+  FI_HIDE_INPUT_TEXT FI_HIDE_OUTPUT_TEXT FI_HIDE_INPUT_IMAGES FI_HIDE_LLM_INVOCATION_PARAMETERS \
+  FI_HIDE_ERROR_DETAILS
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
@@ -40,6 +41,7 @@ cd "$WORK"
 echo "== build: go get github.com/future-agi/traceAI/go/a2a@$REF github.com/a2aproject/a2a-go/v2@$A2A_GO_VERSION"
 go mod init example.com/a2a-go-example >/dev/null 2>&1
 go get "github.com/future-agi/traceAI/go/a2a@$REF" "github.com/a2aproject/a2a-go/v2@$A2A_GO_VERSION"
+go get go.opentelemetry.io/otel/sdk@v1.47.0 go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0
 go mod tidy
 go build -o a2a-go-example .
 go version
@@ -61,7 +63,7 @@ echo "== run B: default capture, not streamed"
   -question "Plan one morning in Osaka in one sentence."
 
 echo "== run C: FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true, streamed, plus a failed task"
-FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true ./a2a-go-example -model "$MODEL" -stream -fail \
+FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true FI_HIDE_ERROR_DETAILS=true ./a2a-go-example -model "$MODEL" -stream -fail \
   -session "a2a-go-hidden-$TS" \
   -question "Plan one day in Kyoto. My reference is $MARK_HIDDEN, email $MARK_HIDDEN@example.com, file /Users/someone/$MARK_HIDDEN.txt. End your answer with the reference."
 

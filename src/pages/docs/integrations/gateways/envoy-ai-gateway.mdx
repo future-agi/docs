@@ -1,0 +1,121 @@
+---
+title: "Send Envoy AI Gateway traces to Observe"
+description: "Export the spans Envoy AI Gateway already creates for chat, completion and embedding requests to Future AGI with the gateway's standard OpenTelemetry environment variables. Prompts stay out unless you opt in. Beta."
+---
+
+Envoy AI Gateway sits in front of your model providers. For every OpenAI-style Chat Completions, legacy Completions and Embeddings request it records a span with OpenInference attributes (model, token counts, latency, status). Point its OpenTelemetry exporter at Future AGI and each gateway request shows up in an Observe project, even when the calling app has no Future AGI code in it.
+
+You configure the gateway only. There is no Future AGI package, no custom ext-proc and no Envoy-specific receiver.
+
+This page traces the gateway itself, including callers you do not control. Client instrumentation such as `traceAI-openai` records the app's call to the gateway instead. You can use both to see the two layers; [propagate context](#connect-application-and-gateway-spans) to keep their spans in the same trace.
+
+## Before you start
+
+- A Future AGI API key and secret key, and the Observe project name you want the traces in.
+- Envoy AI Gateway 1.2.0.
+- The Future AGI collector takes **traces only, over HTTP**. This setup sends them uncompressed, which every Future AGI release accepts. The gateway's own example uses a gRPC collector on `:4317`; do not copy that.
+
+## Setup
+
+Set these environment variables on the standalone `aigw` gateway process:
+
+```bash
+# Future AGI export, traces only
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://api.futureagi.com/tracer"   # self-hosted: http://<collector>:4318/tracer
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_HEADERS="X-Api-Key=YOUR_FI_API_KEY,X-Secret-Key=YOUR_FI_SECRET_KEY"
+export OTEL_RESOURCE_ATTRIBUTES="project_name=my-envoy-gateway,project_type=observe"
+export OTEL_METRICS_EXPORTER="none"
+export OTEL_LOGS_EXPORTER="none"
+
+# Keep prompts and responses out of the spans (the gateway captures them by default)
+export OPENINFERENCE_HIDE_INPUTS=true
+export OPENINFERENCE_HIDE_OUTPUTS=true
+export OPENINFERENCE_HIDE_EMBEDDINGS_TEXT=true
+export OPENINFERENCE_HIDE_EMBEDDINGS_VECTORS=true
+
+OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=YOUR_PROVIDER_KEY aigw run
+```
+
+<Warning>
+The input/output flags do not hide error status messages. Provider or routing errors can contain request data; export only traffic whose error text you are allowed to store in Future AGI.
+</Warning>
+
+| Variable | Why |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Keep the `/tracer` base path: the SDK appends `/v1/traces`, giving `/tracer/v1/traces`. If you already set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, it overrides this base; unset it or set it to the full URL ending in `/tracer/v1/traces`. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` | The collector does not take gRPC from this recipe. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `X-Api-Key` and `X-Secret-Key`. A Bearer token does not work (the collector answers 401). |
+| `OTEL_RESOURCE_ATTRIBUTES` | `project_name` is required. Without it the collector rejects the whole batch with HTTP 400. `project_type=observe` makes an Observe project. |
+| `OTEL_METRICS_EXPORTER=none` | The collector has no metrics route. |
+| `OTEL_LOGS_EXPORTER=none` | When an OTLP endpoint is set, `aigw` otherwise wires OTLP access logs too. The collector has no logs route. |
+| `OPENINFERENCE_HIDE_*` | See [Privacy](#privacy). |
+
+Send a request and wait about ten seconds for batching (`aigw` also flushes on shutdown):
+
+```bash
+curl -s localhost:1975/v1/chat/completions -H 'content-type: application/json' \
+  -H 'agent-session-id: my-session-1' \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}],"max_tokens":50}'
+```
+
+### Connect application and gateway spans
+
+Envoy AI Gateway extracts the incoming W3C `traceparent` header, creates a child span and forwards the child context upstream. When your app sends its active trace context with the request, the app and gateway spans share the same trace. Without propagated context, the gateway starts a new trace.
+
+Enable trace-context injection in your app's HTTP client instrumentation, and make sure any proxy between the app and gateway preserves `traceparent`. Recording a client span alone does not guarantee that the header is sent. Export both layers to the same Observe project to view them together. Keep the gateway's native tracing; do not add a second gateway instrumentor.
+
+### Group requests into sessions
+
+By default the gateway copies the request header `agent-session-id` to the span attribute `session.id`, which Observe uses as the session. To map more headers, set `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES` (standalone) or the controller flag `spanRequestHeaderAttributes` (Kubernetes), for example `agent-session-id:session.id,x-tenant-id:tenant.id`. Headers that are not mapped are not exported. `OTEL_AIGW_REQUEST_HEADER_ATTRIBUTES` sets all three signals at once; this page only uses the span variant.
+
+## What you see in Observe
+
+The gateway records a span for each request, named for the endpoint:
+
+| Request | Span | Observe type | What it carries |
+| --- | --- | --- | --- |
+| `/v1/chat/completions` | `ChatCompletion` | LLM | model, provider (`llm.system`), prompt / completion / total tokens, reasoning-token details, invocation parameters, `session.id`, latency |
+| `/v1/completions` | `Completion` | LLM | same |
+| `/v1/embeddings` | `CreateEmbeddings` | Embedding | model, latency |
+
+The gateway does not create separate provider-hop or tool-call spans for these requests.
+
+## Privacy
+
+Envoy AI Gateway puts the full request and response on the span by default. With the four `OPENINFERENCE_HIDE_*` variables set to `true`:
+
+- `input.value` and `output.value` are stored as `__REDACTED__`; no `llm.input_messages`, `llm.output_messages`, prompts or choices are exported.
+- Model, token counts, invocation parameters, latency and status are still exported.
+
+**Opt in** by setting the four variables to `false`. Prompts and completions then appear on the span.
+
+Error status messages remain visible even with content hiding enabled. See the warning beside the setup variables.
+
+## Limits
+
+- This guide covers the three OpenAI-style endpoints above, not streaming, MCP or other endpoint styles.
+- Gateway spans do not provide a per-tool or per-agent hierarchy.
+- If you use MCP, set your own session encryption seed.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| Nothing appears | Spans are batched; wait ten seconds or stop `aigw` (it flushes). Then check the gateway log for `traces export`. |
+| `ERROR` on a request span | An upstream or routing failure occurred. Inspect the status message. |
+| `401 Unauthorized` in the gateway export log | Fix `X-Api-Key` / `X-Secret-Key`; a Bearer header does not work. Export failures do not fail the model request. |
+| `400 ... have no project_name` in the export log | Set `project_name` in `OTEL_RESOURCE_ATTRIBUTES`. The collector drops the batch without failing the model request. |
+| Export goes to port 4317 or fails on gRPC | You copied the gateway's gRPC example. Use `http/protobuf` and the HTTP endpoint. |
+| `404` on `/v1/traces` | Keep `/tracer` in `OTEL_EXPORTER_OTLP_ENDPOINT`. If `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set, use the full `/tracer/v1/traces` URL there or unset it. |
+| App and gateway appear in separate traces | Check that your app sends its active `traceparent` header and that proxies preserve it. See [Connect application and gateway spans](#connect-application-and-gateway-spans). |
+| Errors about `/v1/logs` or `/v1/metrics` | Set `OTEL_LOGS_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none`. |
+| Prompts are visible | The `OPENINFERENCE_HIDE_*` variables are not set on the same process that serves traffic. |
+| No session | The request has no `agent-session-id` header, or you overrode the header map without it. |
+
+## Related guides
+
+<CardGroup cols={2}>
+  <Card title="Observe overview" href="/docs/observe" />
+  <Card title="Set up tracing with traceAI" href="/docs/integrations" />
+</CardGroup>
