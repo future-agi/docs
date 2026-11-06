@@ -243,22 +243,54 @@ class CoreTest(unittest.TestCase):
             self.assertNotIn(name, text)
         self.assertIn("/Users/<user>/p/a.md", text)
 
-    def test_home_path_scrub_handles_spaced_and_tilde_names(self):
-        cases = {
-            "C:\\Users\\John Smith\\x": "C:\\Users\\<user>\\x",
-            "/Users/Hank Smith/notes.txt": "/Users/<user>/notes.txt",
-            "see /Users/alice and /tmp": "see /Users/<user> and /tmp",
-            "~bob/x and ~/y": "~<user>/x and ~/y",
-        }
+    def assert_scrubs(self, cases):
         for raw, want in cases.items():
             self.assertEqual(emit.render_content(raw, 0), want)
-            self.assertEqual(json.loads(emit.render_content({"p": raw}, 0))["p"], want)
+            self.assertEqual(json.loads(emit.render_content({"p": raw}, 0))["p"], want, "JSON-escaped")
+
+    def test_home_path_scrub_replaces_only_the_name_component(self):
+        # Regression: a name must not run on across spaces and swallow the command after it.
+        with mock.patch.dict(os.environ, {"HOME": "/Users/someone"}):
+            self.assert_scrubs({
+                "cd /Users/alice && ls src/foo": "cd /Users/<user> && ls src/foo",
+                "grep -rn TODO /home/bob --include=*.py && cat docs/readme.md":
+                    "grep -rn TODO /home/<user> --include=*.py && cat docs/readme.md",
+                "ls /Users/alice;echo hi": "ls /Users/<user>;echo hi",
+                "(see /Users/alice), then /home/bob.": "(see /Users/<user>), then /home/<user>.",
+                "see /Users/alice and /tmp": "see /Users/<user> and /tmp",
+                "/Users/john.smith/x and /Users/ann@corp/y": "/Users/<user>/x and /Users/<user>/y",
+                "C:\\Users\\carol\\y and d:/Users/dave/z": "C:\\Users\\<user>\\y and d:/Users/<user>/z",
+                "~bob/x and ~/y": "~<user>/x and ~/y",
+                "/Users/<user>/x": "/Users/<user>/x",
+            })
+
+    def test_spaced_user_name_is_scrubbed_for_this_machines_home(self):
         with mock.patch.dict(os.environ, {"HOME": "/Users/Jo Ann"}):
-            text = emit.render_content({"cwd": "/Users/Jo Ann", "cmd": "cd /Users/Jo Ann && ls"}, 0)
-        self.assertNotIn("Jo Ann", text)
-        self.assertNotIn("Ann", text)
+            self.assert_scrubs({
+                "error at /Users/Jo Ann": "error at /Users/<user>",
+                "failed in /Users/Jo Ann.": "failed in /Users/<user>.",
+                "at /Users/Jo Ann, ok": "at /Users/<user>, ok",
+                "cd /Users/Jo Ann && ls src/x": "cd /Users/<user> && ls src/x",
+                "/Users/Jo Ann/notes.txt": "/Users/<user>/notes.txt",
+                # Another account that only starts with the same name is not this home.
+                "/Users/Jo Annabel/x": "/Users/<user> Annabel/x",
+            })
+        with mock.patch.dict(os.environ, {"HOME": "C:\\Users\\Jo Ann"}):
+            self.assert_scrubs({
+                "C:\\Users\\Jo Ann\\x": "C:\\Users\\<user>\\x",
+                "c:/Users/Jo Ann/x": "c:/Users/<user>/x",
+                "dir C:\\Users\\Jo Ann": "dir C:\\Users\\<user>",
+            })
         with mock.patch.dict(os.environ, {"HOME": "/Users/al"}):
-            self.assertEqual(emit.render_content("/Users/alice/x", 0), "/Users/<user>/x")
+            self.assert_scrubs({"/Users/alice/x /Users/al/y /Users/al.": "/Users/<user>/x /Users/<user>/y /Users/<user>."})
+
+    def test_another_accounts_spaced_name_keeps_the_part_after_the_space(self):
+        # Documented limitation: without this machine's home to go by, a space ends the name.
+        with mock.patch.dict(os.environ, {"HOME": "/Users/someone"}):
+            self.assert_scrubs({
+                "/Users/Hank Smith/notes.txt": "/Users/<user> Smith/notes.txt",
+                "C:\\Users\\John Smith\\x": "C:\\Users\\<user> Smith\\x",
+            })
 
     def test_default_timeout_is_short_when_the_send_is_inline(self):
         fork = os.fork

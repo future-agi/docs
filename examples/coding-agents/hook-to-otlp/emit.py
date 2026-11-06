@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import importlib
 import json
@@ -67,12 +68,20 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{12,}"),
     re.compile(r"(?i)\b((?:api[_-]?key|secret[_-]?key|access[_-]?token|password|passwd|token)\b[\"']?\s*[:=]\s*[\"']?)[^\s\"',}]+"),
 )
-# Opted-in content keeps paths but not the account name inside them. A name
-# may contain spaces when a path separator follows it ("/Users/Jo Ann/x").
-_NAME = r"(?:[^/\\\s\"']+(?: [^/\\\s\"']+)*(?=[/\\])|[^/\\\s\"']+)"
+# Opted-in content keeps paths but not the account name inside them: the one
+# directory component after /Users/, /home/ or C:\Users\ (raw, JSON-escaped or
+# with forward slashes). A component stops at whitespace, quotes and characters
+# no macOS, Linux or Windows account name uses (shell and sentence punctuation),
+# and does not end with a dot, so text after the path ("&& ls src/x", "),")
+# stays as it was. Names with spaces are matched only for this machine's own
+# home directory (see _own_home_pattern).
+_HOME_PREFIX = r"(/Users/|/home/|[A-Za-z]:(?:\\\\|\\|/)+Users(?:\\\\|\\|/)+)"
+_NAME_CHAR = r"[^\s/\\\"'`\[\]:;|=,+*?<>(){}&]"
+_NAME = _NAME_CHAR + r"*(?:(?!\.)" + _NAME_CHAR + r")"
+# Own name at a boundary: not followed by more name characters (al vs alice).
+_NAME_END = r"(?!\.*(?:(?!\.)" + _NAME_CHAR + r"))"
 HOME_PATTERNS = (
-    re.compile(r"(/Users/|/home/)" + _NAME),
-    re.compile(r"([A-Za-z]:(?:\\\\|\\|/)+Users(?:\\\\|\\|/)+)" + _NAME),
+    re.compile(_HOME_PREFIX + _NAME),
     re.compile(r"((?<![\w~])~)[A-Za-z_][A-Za-z0-9._-]*(?=/)"),
 )
 MAX_ENDED_TURNS = 64
@@ -179,20 +188,24 @@ def redact(text: str) -> str:
     return text
 
 
-def _own_home() -> Optional[Tuple[str, str]]:
-    """This machine's home directory and its <user> form, if it is a usual one."""
-    home = os.path.expanduser("~")
-    match = re.fullmatch(r"(/Users/|/home/|[A-Za-z]:\\Users\\)([^/\\]+)", home or "")
-    return (home, match.group(1) + "<user>") if match else None
+@functools.lru_cache(maxsize=4)
+def _own_home_pattern(home: str) -> Optional["re.Pattern[str]"]:
+    """The basename of this machine's home directory after any home prefix.
+
+    Matched literally, so a name the generic pattern cannot take whole (one
+    with spaces, quotes or parentheses) is still replaced in full.
+    """
+    name = re.split(r"[/\\]", home.rstrip("/\\"))[-1]
+    if not name or name in (".", ".."):
+        return None
+    return re.compile(_HOME_PREFIX + re.escape(name) + _NAME_END)
 
 
 def scrub_home(text: str) -> str:
     """Replace the user name in home-directory paths with <user>."""
-    own = _own_home()
-    if own:  # this machine's home first: catches a spaced name at the end of a string
-        home, scrubbed = own
-        for raw, repl in {home: scrubbed, json.dumps(home)[1:-1]: json.dumps(scrubbed)[1:-1]}.items():
-            text = re.sub(re.escape(raw) + r"(?![^/\\\s\"'])", lambda _m, r=repl: r, text)
+    own = _own_home_pattern(os.path.expanduser("~"))
+    if own:  # this machine's own name first: it may contain spaces
+        text = own.sub(lambda m: m.group(1) + "<user>", text)
     for pattern in HOME_PATTERNS:
         text = pattern.sub(lambda m: m.group(1) + "<user>", text)
     return text

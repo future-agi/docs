@@ -80,11 +80,14 @@ class KiroCliHooksConfigTest(unittest.TestCase):
                                  f"(python3 -B {path} kiro_cli {trigger} 2>/dev/null || true)", name)
         self.assertNotIn("version", json.loads((EXAMPLE / "agent-profile-hooks.json").read_text()))
 
-    def test_page_snippets_match_the_shipped_commands(self):
+    def test_page_uses_the_installer_and_shipped_guarded_command(self):
         page = (EXAMPLE.parents[2] / "src/pages/docs/integrations/coding-agents/kiro-cli.mdx").read_text()
         self.assertIn(dict(commands("fi-hook-to-otlp-kiro-cli.json"))["PostToolUse"], page)
-        for _, command in commands("agent-profile-hooks.json"):
-            self.assertIn(command.replace('"', '\\"'), page)
+        for scope in ("/path/to/your/project", "--user", "--agent-profile"):
+            self.assertIn(f"fi-docs/examples/coding-agents/kiro-cli/install.sh {scope}", page)
+        # Profile entries come from the installer, not a second copy in the page.
+        self.assertIn("prints the configuration entries", page)
+        self.assertIn("kiro-cli chat --v3 --agent my-cli-agent", page)
         self.assertNotIn("kiro_cli ||", page)
 
     def test_missing_emitter_exits_0_with_empty_stdout(self):
