@@ -3,7 +3,9 @@
 //
 //	export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=my-service
 //	export OPENAI_API_KEY=... MODEL=gpt-4.1-mini
-//	go run ./example -stream -fail
+//	go run . -stream -fail
+//
+// See README.md for module initialization and dependency installation.
 //
 // The agent is an Eino ADK ChatModelAgent with one tool (get_weather), run
 // through adk.Runner. Its chat model is the eino-ext OpenAI component, so any

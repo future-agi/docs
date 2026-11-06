@@ -1,36 +1,49 @@
 # CloudWeGo Eino Go example
 
-This folder backs [`src/pages/docs/integrations/traceai/go/eino.mdx`](../../../src/pages/docs/integrations/traceai/go/eino.mdx).
-`main.go` is the program the page walks through: an Eino ADK `ChatModelAgent` with the eino-ext OpenAI chat model and a
-`get_weather` tool, run through `adk.Runner` and traced with `github.com/future-agi/traceAI/go/eino`. It is the same
-program as `go/eino/example/main.go` in traceAI.
+This folder backs the [CloudWeGo Eino guide](../../../src/pages/docs/integrations/traceai/go/eino.mdx).
+`main.go` runs an Eino ADK `ChatModelAgent` with the eino-ext OpenAI chat model and a `get_weather` tool through
+`adk.Runner`. The maintained `github.com/future-agi/traceAI/go/eino` handler exports its spans to Future AGI using
+the stock OpenTelemetry OTLP/HTTP exporter.
 
-| File | What it does |
-| --- | --- |
-| `main.go` | Registers the handler once with `callbacks.AppendGlobalHandlers`, asks the agent one question under a request span (streamed with `-stream`), and with `-fail` asks a second agent whose model does not exist. Exports with the stock OTLP/HTTP exporter: both Future AGI headers, `project_name`, no gzip, flush on exit. Prints one trace id per question. |
-| `run_e2e.sh` | Builds `main.go` the way the page says (`go mod init`, `go get`, `go build`) in a temporary module and sends three runs: default capture streamed with the failing run, default capture not streamed, and `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` streamed with the failing run. Prints each trace id and the two privacy markers. Never prints a key. |
-| `tests/` | Checks that every Go snippet on the page is an excerpt of `main.go`, that the exporter settings Future AGI needs are present, and that the page states the documented versions, the privacy switches and how it differs from the provider Go modules and Eino's own handlers. No network, no Go toolchain. |
+## Run the example
 
-## Run it
+You need Go 1.26 or later, a Future AGI key pair and an OpenAI key. Set `OPENAI_BASE_URL` if you use an
+OpenAI-compatible endpoint instead.
 
-Needs Go 1.26 or later (or `GOTOOLCHAIN=auto` with network access), a Future AGI key pair and an OpenAI key (or any
-OpenAI-compatible endpoint through `OPENAI_BASE_URL`).
+From the root of your docs repository checkout, initialize this example's module and install its dependencies:
 
 ```bash
-export FI_API_KEY=... FI_SECRET_KEY=...
-export FI_PROJECT_NAME=eino-go-example            # optional
-export FI_BASE_URL=https://api.futureagi.com      # optional; your collector when self-hosting
-export OPENAI_API_KEY=... MODEL=gpt-4.1-mini      # OPENAI_BASE_URL optional
-./run_e2e.sh
+cd examples/traceai/eino-go
+go mod init example.com/eino-go-example
+go get github.com/future-agi/traceAI/go/eino@v0.1.0 github.com/cloudwego/eino@v0.9.21
+go get github.com/cloudwego/eino-ext/components/model/openai@v0.1.13
+go get go.opentelemetry.io/otel/sdk@v1.47.0 go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0
+go mod tidy
 ```
 
-`TRACEAI_GO_EINO_REF` picks the traceAI module version (default `v0.1.0`), `EINO_VERSION` the Eino version (default
-`v0.9.21`) and `EINO_EXT_OPENAI_VERSION` the eino-ext OpenAI model version (default `v0.1.13`). Set the ref to a release version or a commit to pin the module.
+If you already initialized the module, skip `go mod init`. Keep this directory selected for the remaining commands:
 
-Then open the project in Future AGI Observe. Search for the printed `MARK_DEFAULT` value: it is in the inputs of the
-first run. Search for `MARK_HIDDEN`: it is nowhere, because the third run hides content.
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="eino-go-example"
+export OPENAI_API_KEY="your-openai-api-key"
+export MODEL="gpt-4.1-mini"
+go run . -stream -fail
+```
 
-## Run the tests
+`FI_BASE_URL` is optional and defaults to `https://api.futureagi.com`; set it to your collector when self-hosting.
+The program prints one trace ID per question. Open **Observe → your project → Tracing** to see the request,
+agent, graph, model and tool spans. `-stream` streams the reply; `-fail` adds a second run with a nonexistent
+model to show an error trace.
+
+Content is captured by default. Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before running if inputs
+and outputs must stay in the process. Message-specific switches do not sanitize Agentic or generic JSON
+payloads; see the guide's [privacy section](../../../src/pages/docs/integrations/traceai/go/eino.mdx#privacy).
+
+## Page contract tests
+
+The offline tests check the page's Go snippets against `main.go` and its exporter configuration. From this directory:
 
 ```bash
 python3 -m unittest discover -s tests -v
