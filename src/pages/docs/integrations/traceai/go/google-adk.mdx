@@ -1,0 +1,448 @@
+---
+title: "Google ADK for Go"
+description: "Send native Google ADK Go agent, model and tool traces to Future AGI through an OpenTelemetry Collector with metadata-only filtering."
+---
+
+Send Google ADK's native agent, model and tool spans to Future AGI, including timing, token usage and session IDs, without adding callback instrumentation.
+
+## Before you start
+
+- Use `google.golang.org/adk` **v1.9.0** with Go **1.25.0**, or `google.golang.org/adk/v2` **v2.6.0** with Go **1.26.6** or **v2.7.0** with Go **1.26.10**. The v2 tab uses v2.7.0; the compatibility checks also cover v2.6.0. The two module paths are not interchangeable.
+- Install the [OpenTelemetry Collector Contrib v0.164.0 distribution](https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.164.0) for your operating system. The core Collector does not include the transform processor used below.
+- Have your Future AGI API and secret keys ready. The example also needs your own Google API key and a model available to your account.
+
+<Warning>
+ADK includes tool arguments and results in native spans even when message capture is disabled. Keep the Collector on the same host as your application: the unfiltered app-to-Collector hop is loopback-only. Do not point the application exporter directly at Future AGI when using this metadata-only setup.
+</Warning>
+
+## Configure the Collector
+
+Save the following as `collector.yaml`. Change `project_name` to the Future AGI project you want to use.
+
+```yaml
+receivers:
+  otlp/adk:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  filter/events:
+    error_mode: propagate
+    traces:
+      spanevent:
+        - 'true'
+  transform/adk:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, [])
+          - set(schema_url, "")
+          - set(attributes["service.name"], "google-adk-go")
+          - set(attributes["project_name"], "google-adk-go")
+          - set(attributes["project_type"], "observe")
+      - context: scope
+        statements:
+          - keep_keys(attributes, [])
+          - set(version, "")
+          - set(schema_url, "")
+          - set(name, "application") where name != "gcp.vertex.agent"
+      - context: spanevent
+        statements:
+          - set(span.attributes["error.type"], attributes["exception.type"]) where span.attributes["error.type"] == nil and attributes["exception.type"] != nil
+      - context: span
+        statements:
+          - keep_keys(attributes, ["session.id", "adk.session.id"]) where instrumentation_scope.name != "gcp.vertex.agent"
+          - set(attributes["gen_ai.operation.name"], "application") where instrumentation_scope.name != "gcp.vertex.agent"
+          - set(attributes["gen_ai.span.kind"], "CHAIN") where instrumentation_scope.name != "gcp.vertex.agent"
+          - set(attributes["gen_ai.span.kind"], "AGENT") where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - set(attributes["gen_ai.span.kind"], "LLM") where attributes["gen_ai.operation.name"] == "generate_content"
+          - set(attributes["gen_ai.span.kind"], "TOOL") where attributes["gen_ai.operation.name"] == "execute_tool"
+          - set(attributes["gen_ai.span.kind"], "CHAIN") where attributes["gen_ai.operation.name"] == "invoke_workflow" or attributes["gen_ai.operation.name"] == "invoke_node"
+          - set(attributes["session.id"], attributes["gen_ai.conversation.id"]) where attributes["session.id"] == nil and attributes["gen_ai.conversation.id"] != nil and attributes["gen_ai.conversation.id"] != ""
+          - set(attributes["session.id"], attributes["adk.session.id"]) where attributes["session.id"] == nil and attributes["adk.session.id"] != nil and attributes["adk.session.id"] != ""
+          - set(links, nil)
+          - set(name, attributes["gen_ai.operation.name"])
+          - set(status.message, "")
+          - set(trace_state, "")
+          - keep_keys(attributes, ["gen_ai.operation.name", "gen_ai.span.kind", "gen_ai.agent.name", "gen_ai.workflow.name", "gen_ai.node.name", "gen_ai.tool.name", "gen_ai.tool.call.id", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.provider.name", "gen_ai.system", "gen_ai.response.finish_reasons", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.reasoning.output_tokens", "gen_ai.conversation.id", "session.id", "error.type"])
+
+exporters:
+  otlp_http/futureagi:
+    traces_endpoint: https://api.futureagi.com/tracer/v1/traces
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+    compression: none
+    timeout: 5s
+    sending_queue:
+      enabled: true
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 3s
+      max_elapsed_time: 10s
+
+service:
+  telemetry:
+    logs:
+      level: error
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp/adk]
+      processors: [transform/adk, filter/events]
+      exporters: [otlp_http/futureagi]
+```
+
+This pipeline preserves the complete local trace, including enclosing application spans. It removes message and tool content, descriptions, span events, links and status messages before export. Native ADK spans retain operation names, agent/tool/model names, token counts and session IDs; use non-sensitive names and opaque session IDs. Other instrumentation is reduced to generic `application` spans with timing, status and session metadata, so request names and HTTP attributes are not exported.
+
+Send all ancestors of the ADK invocation through this pipeline. Do not filter out application or request spans: their IDs are still referenced by ADK children. For distributed traces, the upstream root must also be exported to the same Future AGI project. Keep the full-fidelity application telemetry, if needed, on a separate destination rather than sending a second copy to this project.
+
+Set credentials in the **Collector process**, then validate and start it:
+
+```bash
+export FI_API_KEY="<your-futureagi-api-key>"
+export FI_SECRET_KEY="<your-futureagi-secret-key>"
+otelcol-contrib validate --config=collector.yaml
+otelcol-contrib --config=collector.yaml
+```
+
+The exporter uses the full traces endpoint, `https://api.futureagi.com/tracer/v1/traces`, with `X-Api-Key` and `X-Secret-Key` headers. No log or metric pipeline is configured.
+
+## Run an agent
+
+In a separate terminal, configure the application to send traces to the local Collector:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://127.0.0.1:4318/v1/traces"
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT="false"
+export GOOGLE_API_KEY="<your-google-api-key>"
+export GOOGLE_MODEL="<a-model-available-to-your-account>"
+```
+
+Choose a model from the [Gemini model catalog](https://ai.google.dev/gemini-api/docs/models). The example runs an inventory assistant that calls a local `get_stock` tool.
+
+<Tabs>
+<Tab title="ADK v2">
+
+Create a module and install the dependencies:
+
+```bash
+mkdir adk-inventory && cd adk-inventory
+go mod init example.com/adk-inventory
+go get google.golang.org/adk/v2@v2.7.0
+go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0
+go get go.opentelemetry.io/contrib/processors/baggagecopy@v0.17.0
+```
+
+Save this as `main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"go.opentelemetry.io/contrib/processors/baggagecopy"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model/gemini"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
+	"google.golang.org/genai"
+)
+
+type StockRequest struct {
+	SKU string `json:"sku"`
+}
+type StockResult struct {
+	Available int `json:"available"`
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx := context.Background()
+	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithTimeout(5*time.Second))
+	if err != nil {
+		return err
+	}
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(baggagecopy.NewSpanProcessor(func(m baggage.Member) bool {
+			return m.Key() == "adk.session.id"
+		})),
+		sdktrace.WithBatcher(exporter),
+	)
+	otel.SetTracerProvider(provider)
+	defer func() {
+		// Do not reuse a cancelled request context when flushing completed spans.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := provider.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Trace shutdown: %v", err)
+		}
+	}()
+
+	stock, err := functiontool.New(functiontool.Config{
+		Name: "get_stock", Description: "Get available inventory for a product SKU.",
+	}, func(_ agent.Context, request StockRequest) (StockResult, error) {
+		inventory := map[string]int{"NOTEBOOK-A5": 24}
+		return StockResult{Available: inventory[request.SKU]}, nil
+	})
+	if err != nil {
+		return err
+	}
+	llm, err := gemini.NewModel(ctx, os.Getenv("GOOGLE_MODEL"), &genai.ClientConfig{
+		Backend: genai.BackendGeminiAPI, APIKey: os.Getenv("GOOGLE_API_KEY"),
+	})
+	if err != nil {
+		return err
+	}
+	assistant, err := llmagent.New(llmagent.Config{
+		Name: "inventory_assistant", Model: llm,
+		Instruction: "Use get_stock to answer inventory questions.",
+		Tools:       []tool.Tool{stock},
+	})
+	if err != nil {
+		return err
+	}
+	sessions := session.InMemoryService()
+	const appName, userID, sessionID = "inventory", "demo-user", "inventory-session-1"
+	if _, err = sessions.Create(ctx, &session.CreateRequest{
+		AppName: appName, UserID: userID, SessionID: sessionID,
+	}); err != nil {
+		return err
+	}
+	r, err := runner.New(runner.Config{AppName: appName, Agent: assistant, SessionService: sessions})
+	if err != nil {
+		return err
+	}
+	// Set this on each invocation's context, not on the shared provider.
+	member, err := baggage.NewMember("adk.session.id", sessionID)
+	if err != nil {
+		return err
+	}
+	bag, err := baggage.FromContext(ctx).SetMember(member)
+	if err != nil {
+		return err
+	}
+	runCtx := baggage.ContextWithBaggage(ctx, bag)
+	for event, err := range r.Run(runCtx, userID, sessionID,
+		genai.NewContentFromText("How many NOTEBOOK-A5 notebooks are available?", genai.RoleUser),
+		agent.RunConfig{}) {
+		if err != nil {
+			return err
+		}
+		if event.Content != nil {
+			for _, part := range event.Content.Parts {
+				if part.Text != "" {
+					fmt.Println(part.Text)
+				}
+			}
+		}
+	}
+	return nil
+}
+```
+
+```bash
+go mod tidy
+go run .
+```
+
+</Tab>
+<Tab title="ADK v1">
+
+Create a module and install the dependencies:
+
+```bash
+mkdir adk-inventory && cd adk-inventory
+go mod init example.com/adk-inventory
+go get google.golang.org/adk@v1.9.0
+go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.45.0
+go get go.opentelemetry.io/contrib/processors/baggagecopy@v0.16.2
+```
+
+Save this as `main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"go.opentelemetry.io/contrib/processors/baggagecopy"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/adk/agent"
+	"google.golang.org/adk/agent/llmagent"
+	"google.golang.org/adk/model/gemini"
+	"google.golang.org/adk/runner"
+	"google.golang.org/adk/session"
+	"google.golang.org/adk/tool"
+	"google.golang.org/adk/tool/functiontool"
+	"google.golang.org/genai"
+)
+
+type StockRequest struct {
+	SKU string `json:"sku"`
+}
+type StockResult struct {
+	Available int `json:"available"`
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx := context.Background()
+	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithTimeout(5*time.Second))
+	if err != nil {
+		return err
+	}
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(baggagecopy.NewSpanProcessor(func(m baggage.Member) bool {
+			return m.Key() == "adk.session.id"
+		})),
+		sdktrace.WithBatcher(exporter),
+	)
+	otel.SetTracerProvider(provider)
+	defer func() {
+		// Do not reuse a cancelled request context when flushing completed spans.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := provider.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Trace shutdown: %v", err)
+		}
+	}()
+
+	stock, err := functiontool.New(functiontool.Config{
+		Name: "get_stock", Description: "Get available inventory for a product SKU.",
+	}, func(_ agent.ToolContext, request StockRequest) (StockResult, error) {
+		inventory := map[string]int{"NOTEBOOK-A5": 24}
+		return StockResult{Available: inventory[request.SKU]}, nil
+	})
+	if err != nil {
+		return err
+	}
+	llm, err := gemini.NewModel(ctx, os.Getenv("GOOGLE_MODEL"), &genai.ClientConfig{
+		Backend: genai.BackendGeminiAPI, APIKey: os.Getenv("GOOGLE_API_KEY"),
+	})
+	if err != nil {
+		return err
+	}
+	assistant, err := llmagent.New(llmagent.Config{
+		Name: "inventory_assistant", Model: llm,
+		Instruction: "Use get_stock to answer inventory questions.",
+		Tools:       []tool.Tool{stock},
+	})
+	if err != nil {
+		return err
+	}
+	sessions := session.InMemoryService()
+	const appName, userID, sessionID = "inventory", "demo-user", "inventory-session-1"
+	if _, err = sessions.Create(ctx, &session.CreateRequest{
+		AppName: appName, UserID: userID, SessionID: sessionID,
+	}); err != nil {
+		return err
+	}
+	r, err := runner.New(runner.Config{AppName: appName, Agent: assistant, SessionService: sessions})
+	if err != nil {
+		return err
+	}
+	// Set this on each invocation's context, not on the shared provider.
+	member, err := baggage.NewMember("adk.session.id", sessionID)
+	if err != nil {
+		return err
+	}
+	bag, err := baggage.FromContext(ctx).SetMember(member)
+	if err != nil {
+		return err
+	}
+	runCtx := baggage.ContextWithBaggage(ctx, bag)
+	for event, err := range r.Run(runCtx, userID, sessionID,
+		genai.NewContentFromText("How many NOTEBOOK-A5 notebooks are available?", genai.RoleUser),
+		agent.RunConfig{}) {
+		if err != nil {
+			return err
+		}
+		if event.Content != nil {
+			for _, part := range event.Content.Parts {
+				if part.Text != "" {
+					fmt.Println(part.Text)
+				}
+			}
+		}
+	}
+	return nil
+}
+```
+
+```bash
+go mod tidy
+go run .
+```
+
+</Tab>
+</Tabs>
+
+The example owns one OpenTelemetry trace provider and closes it after the run. If your application already owns a provider, add the OTLP trace exporter to that provider during startup instead of replacing it. Register the allowlisted `baggagecopy` span processor on the existing provider as well. Let the provider's owner handle shutdown. Do not also enable ADK automatic telemetry export, callback-based instrumentation or a second provider transport instrumentor for the same model calls.
+
+## View the trace
+
+Open **Observe > Tracing** in Future AGI and select `google-adk-go` (or your configured project). Inspect the agent span, its model calls and the `get_stock` tool span. The Collector maps them to **AGENT**, **LLM** and **TOOL** observations; ADK v2 workflow and non-agent node spans map to **CHAIN**.
+
+Set `adk.session.id` in the invocation context before calling `r.Run`, as in the example. The upstream OpenTelemetry baggage processor copies only this key onto each new span; the Collector maps it to `session.id` when no explicit ID is present. This includes model and tool spans, which do not carry ADK's native conversation ID. An explicit `session.id` takes precedence; otherwise a native conversation ID takes precedence over the baggage fallback.
+
+Reuse the same ADK session ID for subsequent turns, and use a different ID for a separate conversation. Create a fresh context per invocation; do not put session IDs on the shared provider or resource. If you create request spans after selecting the session, attach the baggage before starting those spans too. This setup uses baggage locally and does not install a network baggage propagator.
+
+This configuration excludes prompts, responses and tool payloads. Model and token metadata remain available. Error status and error type remain available, but exception text and stack traces do not.
+
+## Troubleshooting
+
+### No traces arrive
+
+Start the Collector before the application. Check that the application uses the **trace-specific** local endpoint, including `/v1/traces`, and that the Collector has both Future AGI credentials. Let the runner finish before flushing the application-owned provider.
+
+### Session totals omit model calls
+
+Check that the provider has the allowlisted `baggagecopy` processor and that the context passed to `r.Run` contains `adk.session.id`. Mapping native conversation IDs alone only associates agent spans with the session; it does not associate model or tool spans.
+
+### Tool data appears in local telemetry
+
+The local hop carries the native ADK payload. The Collector removes content at the outbound boundary. Do not add a parallel exporter before the privacy processor, and do not enable Collector debug payload logging for sensitive runs. Keep the receiver bound to `127.0.0.1`.
+
+### Enabling message capture does not show prompts
+
+The Collector intentionally removes message content. In ADK v1, model message capture uses OpenTelemetry logs, which Future AGI's traces endpoint does not accept. In ADK v2, `true` and `EVENT_ONLY` also capture messages as logs; `SPAN_ONLY` adds message attributes to spans, but this metadata-only pipeline still removes them. Do not route logs to the traces endpoint.
+
+### Traces appear twice
+
+Keep one export path for native ADK spans. Remove duplicate callback instrumentation or automatic ADK exporter setup rather than adding another instrumentor. The native instrumentation scope is `gcp.vertex.agent`.
