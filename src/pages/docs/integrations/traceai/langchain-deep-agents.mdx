@@ -1,46 +1,40 @@
 ---
 title: "Trace LangChain Deep Agents with Future AGI"
-description: "Trace LangChain Deep Agents (create_deep_agent) with the existing traceAI LangChain instrumentor: model calls, built-in tools, task subagents and thread_id sessions. No new package."
+description: "Trace Deep Agents model calls, filesystem tools, task subagents and sessions with the traceAI LangChain integration."
 ---
 
-[Deep Agents](https://github.com/langchain-ai/deepagents) builds a LangGraph graph with `create_deep_agent`. There is no Deep Agents instrumentor and no `traceAI-deepagents` package: the existing [LangChainInstrumentor](/docs/integrations/traceai/langchain) traces the graph, its model calls, its built-in tools and its `task` subagents. This page shows the setup and what to expect in Observe.
+Trace [Deep Agents](https://github.com/langchain-ai/deepagents) model calls, built-in tools and `task` subagents in Future AGI using the maintained [traceAI LangChain integration](/docs/integrations/traceai/langchain). `create_deep_agent` builds a LangGraph graph, so you do not need a separate Deep Agents instrumentor.
 
-<Note>
-This page needs `traceAI-langchain` **0.2.1 or later**. Two changes it relies on are new in 0.2.1: `configurable.thread_id` becomes `session.id`, and a failed run no longer exports a stack trace. On 0.2.0, wrap the call in `using_session(thread_id)` to get sessions.
-</Note>
+## Prerequisites
 
-## Tested versions
-
-Run against a local Future AGI stack on 2026-10-16 with a real model and real tool calls.
-
-| Package | Version |
-|---|---|
-| `deepagents` | 0.7.28 (latest stable, primary); 0.7.21 also passes on the same dependencies |
-| `langchain` | 1.4.6 |
-| `langchain-core` | 1.6.12 (the cookbook compatibility test also ran at 1.6.6, the floor Deep Agents requires) |
-| `langgraph` | 1.2.16 (also 1.2.12) |
-| Python | 3.11 and 3.13 |
-| `traceAI-langchain` | 0.2.1, run from the traceAI repository before its release (see the note above) |
-
-`traceAI-langchain` keeps its own lower bound (`langchain-core>=0.2.43`); its regression suite also passes at that floor. Deep Agents itself needs `langchain-core>=1.6.6` and `langgraph`.
+- Python 3.11–3.13, a Future AGI account and [API keys](/docs/admin-settings/api-keys).
+- An OpenAI API key for the model used below, or a supported chat model with its own provider credentials.
+- Deep Agents 0.7.28 requires `langchain-core>=1.6.11`; your model adapter may require a newer core. Let pip resolve compatible LangChain dependencies rather than pinning an older core version.
 
 ## 1. Install
 
 ```bash
-pip install "traceAI-langchain>=0.2.1" deepagents langgraph langchain-openai
+pip install "traceAI-langchain==0.2.1" "fi-instrumentation-otel==1.2.3" "deepagents==0.7.28" "langchain-openai==1.7.4"
 ```
 
-## 2. Set environment variables
+`traceAI-langchain` 0.2.1 maps `configurable.thread_id` to `session.id`. The core package supplies the privacy controls used below.
+
+## 2. Configure credentials and privacy
+
+Set these variables before starting Python. Filesystem tools can include file contents in their arguments and results; this setup hides input, output and error details from traces.
 
 ```bash
 export FI_API_KEY="YOUR_API_KEY"
 export FI_SECRET_KEY="YOUR_SECRET_KEY"
 export OPENAI_API_KEY="YOUR_MODEL_PROVIDER_KEY"
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+export FI_HIDE_ERROR_DETAILS=true
 ```
 
-## 3. Instrument, then build the agent
+## 3. Instrument and run the agent
 
-Call `register()` first, then `instrument()`, then build the agent.
+Call `register()`, then `instrument()`, then build the agent. Save this example as `deep_agent.py`. The weather tool returns sample data, and `StateBackend` keeps files in graph state rather than writing them to disk.
 
 ```python
 from deepagents import create_deep_agent
@@ -60,74 +54,74 @@ LangChainInstrumentor().instrument(tracer_provider=trace_provider)
 
 @tool
 def lookup_weather(city: str) -> str:
-    """Return the weather for a city."""
-    return f"sunny in {city}"
+    """Return sample weather for a city."""
+    return f"Sample forecast: sunny in {city}"
 
 
-# Always pass a model. model=None selects Deep Agents' deprecated default.
 agent = create_deep_agent(
     model=ChatOpenAI(model="gpt-5.5"),
     tools=[lookup_weather],
     system_prompt="You are a travel assistant.",
-    backend=StateBackend(),  # files live in graph state, nothing touches disk
+    backend=StateBackend(),
 )
 
-result = agent.invoke(
-    {"messages": [{"role": "user", "content": "Save my trip notes, check Paris weather, then list the files."}]},
-    config={"configurable": {"thread_id": "trip-42"}},  # becomes session.id
-)
-
-trace_provider.force_flush()  # export before the process exits
+try:
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": "Save my Paris trip notes in /trip.txt, check Paris weather, then ask a general-purpose subagent to list the files."}]},
+        config={"configurable": {"thread_id": "trip-42"}},
+    )
+    print(result["messages"][-1].content)
+finally:
+    trace_provider.force_flush()
 ```
 
-A runnable offline version that needs no model key is in the traceAI repo: [`python/frameworks/langchain/examples/deep_agents.py`](https://github.com/future-agi/traceAI/blob/main/python/frameworks/langchain/examples/deep_agents.py).
+```bash
+python deep_agent.py
+```
 
-## What is captured
+Always pass a model explicitly instead of relying on Deep Agents' deprecated default. `thread_id` groups spans into a tracing session; it does not persist agent state between invocations without a checkpointer.
 
-Everything comes from `traceAI-langchain`; Deep Agents adds no attributes of its own.
+## 4. View the trace
 
-| In Observe | Source |
+Open **Observe**, select **deep-agents-app** and open the latest trace. Look for the model calls, the tools the agent chose to run and session **trip-42**. If the agent delegates through `task`, expand that tool span to inspect the nested subagent calls.
+
+| What you see | Source |
 |---|---|
-| **LLM** spans with model name and input, output and total tokens | the chat model's `usage_metadata`. Tokens are only on LLM spans, so a trace's token total is the sum of its model calls |
-| **TOOL** spans named after the tool that ran | with `StateBackend` at 0.7.28: `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `task`, plus your tools. `execute` is bound only for a sandbox backend |
-| **Subagents** in the same trace | the `task` TOOL span is the parent of the subagent's span (named after the subagent, for example `general-purpose`) and of its model and tool spans |
-| **Graph nodes** (`model`, `tools`, middleware nodes) | `CHAIN` spans; a node whose name contains "agent" (for example `PatchToolCallsMiddleware.before_agent`) is reported as `AGENT` by the existing name rule |
-| **Session** | `configurable.thread_id` becomes `session.id` on every span, subagents included |
-| **Errors** | a tool that raises ends its TOOL span, the `tools` node and the root span with status `ERROR` |
-
-Not emitted: cost, user id (wrap the call in `using_attributes(user_id=...)`), retrieval (Deep Agents has no retriever tool), and `gen_ai.provider.name`.
-
-Reference run (deepagents 0.7.28, `gpt-6-luna`, one write, one custom tool, one `task` subagent): 25 spans in one trace, 7 model calls with model and tokens, the `task` span with `general-purpose` and its `ls` call nested below it, one session.
+| **LLM** spans with model name and token usage | The chat model's `usage_metadata`, when supplied by the provider. Token counts belong to model spans, not every graph node. |
+| **TOOL** spans | Built-in filesystem tools such as `write_file` and `ls`, the `task` delegation tool and your application tools. Shell execution requires a sandbox backend. |
+| **Subagent** spans | Calls made by a `task` subagent, such as `general-purpose`, nested under the task that invoked it. |
+| **CHAIN** or **AGENT** spans | Graph nodes and middleware; node names containing "agent" are classified as `AGENT`. |
+| **Session** | `configurable.thread_id` becomes `session.id` unless an explicit session context or `metadata["session_id"]` takes precedence. |
+| **Errors** | Failed calls have `ERROR` status. A handled tool error does not necessarily fail the root agent run. |
 
 ## Privacy
 
-`traceAI-langchain` follows the standard traceAI `TraceConfig`: prompts, responses and tool arguments and results are captured by default. Filesystem tools can carry file contents, so turn capture off where that matters:
+Without privacy flags, the integration captures prompts, responses, tool arguments and tool results, which can include file contents. The input and output flags above redact or omit those content fields. Keep session IDs, tool names and custom metadata free of sensitive data; these flags are not a general-purpose metadata scrubber.
 
-```bash
-export FI_HIDE_INPUTS=true
-export FI_HIDE_OUTPUTS=true
+Error details are a separate setting. With `FI_HIDE_ERROR_DETAILS=false`, a failed span's status description contains the exception message without the formatted traceback, but its `exception` event can contain both the message and a stack trace, including local file paths. With `FI_HIDE_ERROR_DETAILS=true`, the core removes error messages, stack traces and the status description while preserving `ERROR` status and exception types.
+
+If `FI_HIDE_ERROR_DETAILS` is unset, the core derives it from the content-hiding flags, including `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS`. An explicit `false` overrides that derivation, so set it to `true` when error details must stay private.
+
+To configure privacy in code instead, replace the earlier `instrument()` call with this block before creating the agent:
+
+```python
+from fi_instrumentation import TraceConfig
+
+LangChainInstrumentor().instrument(
+    tracer_provider=trace_provider,
+    config=TraceConfig(
+        hide_inputs=True,
+        hide_outputs=True,
+        hide_error_details=True,
+    ),
+)
 ```
-
-or in code: `LangChainInstrumentor().instrument(tracer_provider=trace_provider, config=TraceConfig(hide_inputs=True, hide_outputs=True))`.
-
-With both hidden, input and output values are replaced by a redaction marker. Verified by scanning every stored column of a 25-span run for a unique marker that the agent wrote into a file and echoed in its prompt: present with capture on, absent with capture off.
-
-On a failed run, the span status description and the `exception` event hold the exception type and message and **never a stack trace** (a traceback contains local file paths). With `FI_HIDE_INPUTS` or `FI_HIDE_OUTPUTS` set, only the exception type name is kept, because an error message can echo prompt or tool content. On 0.2.0 and earlier the status description includes the traceback.
 
 ## Troubleshooting
 
-- **No `session.id`**: you are on 0.2.0 or earlier. Upgrade to 0.2.1 or later, or wrap the call in `using_session("trip-42")`. A narrower explicit session set inside the run gives two sessions in one trace, so set it around the whole invoke.
-- **No spans after the script ends**: call `trace_provider.force_flush()` before exit.
-- **Two LLM spans per step you did not expect**: rubric middleware adds a grading model call; it is off by default.
-- **Root token total shows 0 in the UI**: expected. Tokens live on the LLM spans.
-- **Agent fails with a Claude model error**: `model=None` selects Deep Agents' deprecated default; pass a model.
+- **No session grouping:** use `traceAI-langchain` 0.2.1 and pass a non-empty `configurable.thread_id`. Check that an explicit session context or `metadata["session_id"]` is not overriding it.
+- **No spans after exit:** keep `trace_provider.force_flush()` in a `finally` block so it runs after failed calls too.
+- **Unexpected model calls:** middleware can add grading or summarization calls. Inspect the parent node before treating them as duplicates, and instrument LangChain only once per process.
+- **No content in spans:** this guide hides inputs and outputs. To capture them, change the corresponding privacy flags only when your data policy allows it; keep error-detail hiding enabled independently.
 
-## Limitations
-
-- Cancelling an `astream` early closes every span, but the root span ends `ERROR` with a `GeneratorExit` description.
-- Deep Agents JS, and the Deep Agents CLI or ACP sessions, are not covered here.
-- `write_todos` is not a default tool at 0.7.28; harness profiles can add it, and it appears as a TOOL span when present.
-
-## How this differs from the LangChain and LangGraph pages
-
-Same instrumentor, same spans. This page only adds the Deep Agents specifics: built-in tool names, `task` subagent nesting, `thread_id` as session, and the tested version matrix.
+This guide covers the Python `create_deep_agent` application API, not Deep Agents JavaScript, CLI or ACP sessions. For other LangGraph applications, use the [LangGraph guide](/docs/integrations/traceai/langgraph).
