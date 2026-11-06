@@ -1,0 +1,217 @@
+---
+title: "LiteLLM Proxy tracing with Future AGI"
+description: "Trace LiteLLM Proxy requests in Future AGI with the proxy's OpenTelemetry v2 callback."
+---
+
+Trace requests sent through LiteLLM Proxy in Future AGI using the proxy's OpenTelemetry callback. For calls to the LiteLLM Python SDK inside your application, use the [LiteLLM traceAI integration](/docs/integrations/traceai/litellm) instead.
+
+This guide uses LiteLLM Proxy 1.105.1 and the v2 callback.
+
+## 1. Pick the callback mode
+
+Use the proxy's [OpenTelemetry v2 callback](https://docs.litellm.ai/docs/observability/opentelemetry_v2): set `LITELLM_OTEL_V2=true` and `callbacks: ["otel"]`. It places the HTTP request, authentication and model call in one trace. Additional proxy features can add spans; do not rely on a fixed span count. Do not enable a second tracing callback for the same requests.
+
+If you are migrating from v1, review [The v1 callback](#the-v1-callback), especially its additional data exposure.
+
+## 2. Install
+
+The official image already contains everything:
+
+```bash
+docker pull ghcr.io/berriai/litellm:v1.105.1
+```
+
+With `pip`, `litellm[proxy]` alone does **not** install the OpenTelemetry SDK or the OTLP exporter. Without them the proxy starts normally and logs `[Non-Blocking Error] Error initializing custom logger: No module named 'opentelemetry.sdk'`, and no traces are sent. Install them too (Python 3.10 to 3.14 is supported by LiteLLM):
+
+```bash
+pip install "litellm[proxy]==1.105.1" opentelemetry-sdk opentelemetry-exporter-otlp opentelemetry-instrumentation-fastapi
+```
+
+`opentelemetry-instrumentation-fastapi` is what produces the HTTP request span. Pinned dependencies are in [requirements.txt](https://github.com/future-agi/docs/blob/main/examples/gateways/litellm-proxy/requirements.txt).
+
+Do **not** install `traceAI-litellm` for this. It does not instrument the proxy.
+
+## 3. Configure the proxy
+
+`config.yaml` only names the callback. Everything that points at Future AGI is an environment variable, so no key is ever in the file:
+
+```yaml
+model_list:
+  - model_name: demo-model                       # the name callers send to the proxy
+    litellm_params:
+      model: openai/gpt-4o-mini                  # your provider model
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  callbacks: ["otel"]                            # the proxy's OpenTelemetry callback
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY      # must start with sk-
+```
+
+Create `proxy.env` with your provider key, a proxy master key beginning with `sk-`, and the tracing settings below. For another deployment, set the same values in the proxy process environment.
+
+```bash
+OPENAI_API_KEY=YOUR_PROVIDER_API_KEY
+LITELLM_MASTER_KEY=sk-YOUR_PROXY_MASTER_KEY
+```
+
+Add these settings to `proxy.env`:
+
+```bash
+LITELLM_OTEL_V2=true
+OTEL_EXPORTER=otlp_http
+OTEL_ENDPOINT=http://<your-collector-host>:4318/v1/traces
+OTEL_HEADERS=X-Api-Key=<your-api-key>,X-Secret-Key=<your-secret-key>
+OTEL_RESOURCE_ATTRIBUTES=project_name=litellm-proxy,project_type=observe
+OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT
+```
+
+| Variable | What it does |
+| --- | --- |
+| `LITELLM_OTEL_V2` | Turns on the v2 tracing. |
+| `OTEL_EXPORTER` | `otlp_http`. Future AGI's trace ingest is OTLP over HTTP. |
+| `OTEL_ENDPOINT` | The full traces URL. Self-hosted: `http://<host>:4318/v1/traces`. The hosted Future AGI URL in the SDK docs is `https://api.futureagi.com/tracer/v1/traces`. LiteLLM keeps a path that already ends in `/v1/traces`. |
+| `OTEL_HEADERS` | The two Future AGI key headers, comma separated, in this exact form. See [Header rules](#header-rules). |
+| `OTEL_RESOURCE_ATTRIBUTES` | **Required.** `project_name` decides the Observe project. `project_type=observe` is what the Future AGI SDK sets too; it is also the default. |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `NO_CONTENT` (also the default) keeps prompts and responses out. See [Privacy](#privacy). |
+
+Leave `LITELLM_OTEL_INTEGRATION_ENABLE_METRICS`, `LITELLM_OTEL_INTEGRATION_ENABLE_EVENTS` and `OTEL_EXPORTER_OTLP_COMPRESSION` unset. Future AGI's collector only serves traces, and self-hosted releases before v1.56.0 answered compressed bodies with HTTP 400. With metrics on, the proxy posts to `/v1/metrics` every few seconds and every one of those gets a 404.
+
+### Header rules
+
+Put the two key headers in `OTEL_HEADERS` as `X-Api-Key=...,X-Secret-Key=...`. How LiteLLM reads that string depends on the callback:
+
+| | v2 | v1 |
+| --- | --- | --- |
+| Parser | The OpenTelemetry SDK's own | LiteLLM's own: split on every comma, then on the first `=` |
+| Space after a comma | Ignored | Becomes part of the header name (` X-Secret-Key`), which breaks the header |
+| `%20` in a value | Decoded to a space | Sent literally |
+| Comma inside a value | The value is cut at the comma and the rest is skipped | Raises an error when the callback starts, and the proxy runs without tracing |
+| Header names | Sent in lower case (`x-api-key`) | As written |
+
+Write the string with no spaces and no commas inside a value and it behaves the same on both. Future AGI keys are plain strings, so this holds for them. Do not use `Authorization=Bearer ...`: the collector answers HTTP 401 to a Bearer token, and LiteLLM's own Traceloop example (`Bearer%20<key>`) would send a literal `%20` on v1.
+
+## 4. Run it and look at the trace
+
+Start the proxy in the background. Set `LITELLM_MASTER_KEY` in your shell to the same value as in `proxy.env`:
+
+```bash
+export LITELLM_MASTER_KEY=sk-YOUR_PROXY_MASTER_KEY
+docker run -d --env-file proxy.env -v "$PWD/config.yaml:/app/config.yaml:ro" -p 4000:4000 \
+  ghcr.io/berriai/litellm:v1.105.1 --config /app/config.yaml --port 4000
+```
+
+Wait for the proxy to start, then send a request:
+
+```bash
+curl -s http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"demo-model","messages":[{"role":"user","content":"Say hello"}]}'
+```
+
+A Docker `--env-file` takes values literally, so do not put quotes around them. The first container start can take a few minutes on a busy machine. The proxy batches spans and sends them within a few seconds. `proxy.env` contains both variable blocks above, one `NAME=value` per line. Open **Observe** and select the project (`litellm-proxy` above). The project is created by the first batch; you do not need to create it first.
+
+## What you see in Observe
+
+Open a recent chat-completion request. With the v2 callback, its trace includes an HTTP request, authentication and a model-call span:
+
+```text
+POST /v1/chat/completions      type unknown   the HTTP request to the proxy
+├─ auth /v1/chat/completions   type unknown   the proxy key check
+└─ chat demo-model             type LLM       the model call: model, provider, tokens, finish reason
+```
+
+Only the `chat <model>` span is typed as an LLM call. The other two are plain spans in the same trace. They are not model calls, so ignore them when you count LLM calls.
+
+| Signal | Where it is | Notes |
+| --- | --- | --- |
+| Model | `chat` span, `gen_ai.request.model` | The model group your caller sent (`demo-model`), not the upstream model. Inspect `litellm.provider.model` for the configured upstream (`openai/gpt-4o-mini` in this example). |
+| Provider | `gen_ai.provider.name` | The provider label reported by LiteLLM. |
+| Tokens | `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens` | Available when the upstream returns usage; a missing value is not zero. |
+| Latency | every span | Streams also carry `gen_ai.response.time_to_first_chunk`. |
+| Errors | `chat` and request spans | Status ERROR, `error.type`, and the message. See [Errors](#errors). |
+| Tools | `gen_ai.tool.<n>.name`, `description`, `parameters` | The tool **definitions** you send. Arguments and results appear only with content capture on. |
+| Cost | `litellm.cost.total`, `litellm.cost.input`, `litellm.cost.output` | LiteLLM's own figure in USD, kept as a span attribute (or `0.0` for a model LiteLLM has no price for). Inspect these attributes for LiteLLM's reported cost; Observe's cost column is not populated directly from these keys. |
+| Who called | `litellm.api_key.hash`, `litellm.metadata.user_api_key_user_id` | A hash of the proxy key, never the key. The master key shows as the literal `litellm_proxy_master_key`. |
+
+Not captured: sessions (nothing sets a session id, so the Sessions tab stays empty) and the proxy's spend logs.
+
+## Privacy
+
+With `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT` (the default), no prompt, response, tool argument or tool result leaves the proxy. Future AGI's `FI_HIDE_*` settings do not apply on this path, because nothing from the Future AGI SDK runs in the proxy.
+
+Tool definitions, provider error messages, stack traces, caller addresses, user agents and proxy and upstream addresses can still be exported. Check tool descriptions for sensitive data. The Future AGI SDK's `FI_HIDE_*` settings do not apply to the proxy callback. If these remaining fields must not reach Future AGI, use the collector configuration below to remove error text, stack traces and addresses.
+
+### Remove error text, stack traces and addresses
+
+[collector/otelcol-scrub.yaml](https://github.com/future-agi/docs/blob/main/examples/gateways/litellm-proxy/collector/otelcol-scrub.yaml) is a collector config that deletes error text, stack traces and addresses, empties the span status message and sends the rest to Future AGI with your two keys. It also sets `service.telemetry.metrics.level: none` and `compression: none` (optional on Future AGI cloud and self-hosted v1.56.0 and later, which also accept gzip).
+
+Save the linked configuration as `otelcol-scrub.yaml`, then run the collector:
+
+```bash
+docker run -d --name otelcol -p 4318:4318 \
+  -v "$PWD/otelcol-scrub.yaml:/etc/otelcol/config.yaml:ro" \
+  -e FI_TRACES_ENDPOINT=https://api.futureagi.com/tracer/v1/traces \
+  -e FI_API_KEY=YOUR_API_KEY -e FI_SECRET_KEY=YOUR_SECRET_KEY \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol/config.yaml
+```
+
+Then point the proxy at the collector. The collector holds the keys, so the proxy does not need `OTEL_HEADERS`:
+
+```bash
+OTEL_ENDPOINT=http://<collector-host>:4318/v1/traces
+OTEL_RESOURCE_ATTRIBUTES=project_name=litellm-proxy,project_type=observe
+```
+
+The scrubbed trace keeps its structure, model, tokens, status and `error.type`; it removes error messages, stack traces and addresses. This config is for the v2 callback.
+
+### Turn content capture on
+
+Set the variable to `SPAN_ONLY` and restart the proxy. The messages are exported as the span attributes `gen_ai.input.messages` and `gen_ai.output.messages`, JSON text that includes tool-call arguments (in the output) and tool results (in the input). They are exported to Future AGI exactly as the proxy sees them, so only do this for data you may send.
+
+```bash
+OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_ONLY
+```
+
+Inspect the exported message attributes on the span. Future AGI's collector serves traces only; do not use `EVENT_ONLY` for content capture on this path.
+
+## Errors
+
+Inspect the failing span's status and `error.type`. A model-call failure appears on the `chat` span; an authentication rejection can occur before any model-call span exists. Provider error text may be exported even with message capture off, so keep the [collector scrub rules](#remove-error-text-stack-traces-and-addresses) if you must suppress it. The caller's HTTP response and retry behavior depend on your proxy configuration and the upstream error.
+
+## Join a caller's trace
+
+Send a W3C `traceparent` header and the proxy's request span becomes a child of that trace, so the proxy call shows up under your application's trace in Observe. The caller does not need traceAI.
+
+Do not use `OTEL_IGNORE_CONTEXT_PROPAGATION` to stop that. Only the v1 code reads it. On 1.105.1 it does nothing on v2. On v1 the request span still joined the caller's trace, and the LLM call (`litellm_request`) moved into a trace of its own, away from its request. No setting on either callback makes every proxy request its own root. If you need that, remove the `traceparent` header before it reaches the proxy (outside this guide’s coverage).
+
+## The v1 callback
+
+Without `LITELLM_OTEL_V2=true`, `callbacks: ["otel"]` uses v1. Its span layout differs and can include health checks; use the vendor's [v1 migration guide](https://docs.litellm.ai/docs/observability/opentelemetry_v2_migration) when updating saved queries.
+
+v1 can export additional request metadata even with content off: `metadata.requester_ip_address`, `metadata.user_agent`, `hidden_params` (including the upstream `api_base`) and inbound headers **with their values** in `metadata.requester_metadata` and `metadata.requester_custom_headers`. Custom headers and `X-Forwarded-For` can reach Future AGI in clear. The linked scrub configuration does **not** remove these v1 attributes. Prefer the v2 setup above; review [Header rules](#header-rules) if you retain v1.
+
+## Limits
+
+- Keep metrics and log events off: the Future AGI collector serves traces only.
+- Inspect `litellm.cost.*` attributes for the cost reported by LiteLLM; they are not direct overrides for Observe's cost column.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| The proxy runs and nothing arrives, and its log has `Error initializing custom logger: No module named 'opentelemetry.sdk'` | You installed `litellm[proxy]` without the OpenTelemetry packages. See [Install](#2-install). |
+| The proxy log has `Failed to export ... code: 400` and `ResourceSpan(s) have no project_name` | The batch has no `project_name`. Check `OTEL_RESOURCE_ATTRIBUTES` is set in the proxy's own environment (not your shell). |
+| `Failed to export ... code: 401` | Wrong keys, or a Bearer header. Use `X-Api-Key` and `X-Secret-Key`. |
+| Repeated export errors for metrics (`/v1/metrics` answers 404 on Future AGI) | `LITELLM_OTEL_INTEGRATION_ENABLE_METRICS` is on. Unset it. |
+| Requests work but no trace appears | Exporter errors never fail the caller's request. Read the proxy log for `Failed to export`, then wait: the first container start takes minutes and spans are batched for a few seconds. |
+| Traces appear in a different project | `project_name` is spelled differently from the project you are looking at. The first batch creates the project. |
+| Prompts and responses are missing | Content capture is off, which is the default. See [Turn content capture on](#turn-content-capture-on). |
+| You installed `traceAI-litellm` and the proxy still has no spans | That package traces the LiteLLM SDK inside your application. It does not trace a proxy. |
+
+## Next Steps
+
+- [LiteLLM (traceAI)](/docs/integrations/traceai/litellm): trace `litellm.completion(...)` calls inside your own code.
+- [Traces](/docs/observe/concepts/traces) and [Spans](/docs/observe/concepts/spans): how Observe organises what you just sent.
+- [No traces appearing](/docs/observe/troubleshooting/no-traces-appearing): the general checklist.
