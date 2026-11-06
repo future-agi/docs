@@ -487,3 +487,14 @@ test('Temporal Go uses the official extension and authenticated traces-only OTLP
   assert.doesNotMatch(page, /AddOtlpMetricExporter|AddOtlpLogExporter|traceai-temporal-go|Live vendor verification/);
   assert.match(read('src/pages/docs/integrations/frameworks/temporal.mdx'), /frameworks\/temporal-go/);
 });
+
+test('Microsoft Agent Framework guide uses the released package and global provider without a test diary', () => {
+  const page = read('src/pages/docs/integrations/traceai/microsoft-agent-framework.mdx');
+  const catalog = integrations.find(i => i.id === 'microsoft-agent-framework');
+  assert.equal(catalog?.href, '/docs/integrations/traceai/microsoft-agent-framework');
+  assert.equal(catalog?.category, 'frameworks');
+  assert.match(page, /pip install "traceAI-agent-framework==0\.1\.0" agent-framework/);
+  assert.match(page, /Python 3\.10 to 3\.13 and Agent Framework 1\.0\.0 or later/);
+  for (const term of ['set_global_tracer_provider=True', 'enable_instrumentation(enable_sensitive_data=True)', 'enable_fi_attribute_mapping()', 'trace_provider.force_flush()', 'agent_framework.usage.*', 'configure_otel_providers()']) assert.ok(page.includes(term), term);
+  assert.doesNotMatch(page, /Tested versions|end to end|unit tests|unique marker|Verified|\b20\d\d-\d\d-\d\d\b/);
+});
