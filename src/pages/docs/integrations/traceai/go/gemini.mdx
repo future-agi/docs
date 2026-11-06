@@ -1,0 +1,275 @@
+---
+title: "Gemini Go tracing with Future AGI"
+description: "Trace the Google Gen AI Go SDK (google.golang.org/genai) with the traceAI Go transport: one span per GenerateContent, GenerateContentStream or EmbedContent call, exported to Future AGI over OTLP/HTTP."
+---
+
+`traceaigenai` (module `github.com/future-agi/traceAI/go/genai`) traces Go services that call Gemini with the Google Gen AI Go SDK, [`google.golang.org/genai`](https://github.com/googleapis/go-genai). The SDK has no middleware option; its hook is `ClientConfig.HTTPClient`. You pass the traced HTTP client from `traceaigenai.NewHTTPClient` when you build the client. Every `Models.GenerateContent` and `Models.GenerateContentStream` call (and the `Chats` helpers built on them) becomes one LLM span, and every `Models.EmbedContent` call becomes one embedding span.
+
+A run of the example on this page is one trace:
+
+```
+weather-agent                            your agent span (AGENT)
+├── generate_content gemini-3.8-flash    the transport: the model asks for get_weather (LLM)
+├── execute_tool get_weather             your tool span (TOOL)
+└── generate_content gemini-3.8-flash    the transport: the final answer, streamed (LLM)
+```
+
+Use a different guide for:
+
+- **[Google GenAI (Python)](/docs/integrations/traceai/google_genai)** (`traceAI-google-genai`) and **[Google GenAI for Java](/docs/integrations/traceai/java/llm-providers)** (`traceai-java-google-genai`). The Go module writes the same attribute names as the Python package (`gen_ai.provider.name` is `google` in all three), so the spans look the same in Future AGI.
+- **[Vertex AI](/docs/integrations/traceai/vertexai)**, the Python Vertex AI SDK. This Go module supports the Gemini Developer API only (see [Not supported](#not-supported)).
+- **`github.com/google/generative-ai-go`**, the older Go module. Google ended its support on 2025-11-30, and it is not supported here; move to `google.golang.org/genai`.
+
+| | |
+| --- | --- |
+| Module | `github.com/future-agi/traceAI/go/genai` v0.1.1 (package `traceaigenai`) |
+| Gemini SDK | `google.golang.org/genai` v1.71.0 or later |
+| Go | 1.26 or later |
+| Backend | Gemini Developer API (`genai.BackendGeminiAPI`, API key) |
+| Source | [traceAI `go/genai`](https://github.com/future-agi/traceAI/tree/go/genai/v0.1.1/go/genai) |
+
+## 1. Install
+
+```bash
+go get github.com/future-agi/traceAI/go/genai@v0.1.1 google.golang.org/genai@latest
+go get go.opentelemetry.io/otel/sdk go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+```
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-service"
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
+`FI_BASE_URL` is optional (default `https://api.futureagi.com`; set it to your own collector when you self-host). The Gemini SDK reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`, which wins when both are set) itself.
+
+## 3. Create the tracer provider
+
+The module does not build an exporter. Use the stock OpenTelemetry OTLP/HTTP exporter with the three things Future AGI needs: both auth headers, the `project_name` resource attribute, and an uncompressed body (the collector rejects gzip).
+
+```go
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	traceaigenai "github.com/future-agi/traceAI/go/genai"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/genai"
+)
+```
+
+```go
+func newTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
+	apiKey, secretKey := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY")
+	project := os.Getenv("FI_PROJECT_NAME")
+	if apiKey == "" || secretKey == "" || project == "" {
+		return nil, errors.New("set FI_API_KEY, FI_SECRET_KEY and FI_PROJECT_NAME")
+	}
+	base := strings.TrimRight(envOr("FI_BASE_URL", "https://api.futureagi.com"), "/")
+
+	exp, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			"X-Api-Key":    apiKey,
+			"X-Secret-Key": secretKey,
+		}),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+	)
+	if err != nil {
+		return nil, err
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(
+		attribute.String("project_name", project),
+		attribute.String("project_type", "observe"),
+		attribute.String("service.name", project),
+	))
+	if err != nil {
+		return nil, err
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+		sdktrace.WithBatcher(exp),
+	), nil
+}
+
+func shutdown(tp *sdktrace.TracerProvider) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := tp.Shutdown(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "trace export:", err)
+	}
+}
+```
+
+`resource.Default()` adds only the SDK name and version and `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` if you set them. No host, process or OS detector is added, so no host name, user name or local path is exported.
+
+## 4. Pass the traced HTTP client and flush on exit
+
+```go
+	tp, err := newTracerProvider(ctx)
+	if err != nil {
+		return err
+	}
+	defer shutdown(tp) // flush before exit
+
+	// The SDK reads GEMINI_API_KEY (or GOOGLE_API_KEY) as usual.
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		Backend:    genai.BackendGeminiAPI,
+		HTTPClient: traceaigenai.NewHTTPClient(traceaigenai.WithTracerProvider(tp)),
+	})
+	if err != nil {
+		return err
+	}
+```
+
+Call the SDK as usual. `defer shutdown(tp)` matters: the batch exporter sends spans in the background, and spans still queued when the process exits are lost. Without `WithTracerProvider` the transport uses the OpenTelemetry global provider (`otel.SetTracerProvider`).
+
+`NewHTTPClient` behaves like the client the SDK builds when `HTTPClient` is nil (default transport, no client timeout). If you already build your own `*http.Client` (a proxy, a timeout), wrap it instead: `traceaigenai.WrapClient(hc, traceaigenai.WithTracerProvider(tp))`. `traceaigenai.NewTransport(base, ...)` wraps any `http.RoundTripper`.
+
+A stream is one span, open until the range loop ends:
+
+```go
+	for chunk, err := range client.Models.GenerateContentStream(ctx, model, history, config) {
+		if err != nil {
+			return b.String(), err
+		}
+		b.WriteString(chunk.Text())
+	}
+```
+
+The span ends when the stream is read to the end, fails, is cancelled, or when you break out of the loop (the SDK closes the body). Token usage comes from the last reported usage, not a sum of chunks.
+
+## 5. Sessions and your own spans
+
+Put a session id on the context; every Gemini span started from it carries `session.id`, and Future AGI groups those traces into one session. `ContextWithUserID` does the same for `user.id` (use an opaque id, not an email address).
+
+```go
+	sessionCtx := traceaigenai.ContextWithSessionID(ctx, *session)
+	ctx, agent := tracer.Start(sessionCtx, "weather-agent", trace.WithAttributes(
+		attribute.String(traceaigenai.GenAISpanKind, traceaigenai.SpanKindAgent),
+		attribute.String(traceaigenai.GenAIOperationName, "invoke_agent"),
+		attribute.String("gen_ai.agent.name", "weather-agent"),
+	), trace.WithAttributes(traceaigenai.ContextAttributes(sessionCtx)...))
+```
+
+The transport spans the model calls. Your agent loop and your function code are yours to span, as above; `ContextAttributes` copies the session and user ids onto them. The example's custom agent and tool spans contain only identity, session and status metadata, never prompts, answers, tool arguments or results. Content is captured only by the traced client under the [privacy settings](#privacy).
+
+```go
+	_, span := tracer.Start(ctx, "execute_tool "+name, trace.WithAttributes(
+		attribute.String(traceaigenai.GenAISpanKind, traceaigenai.SpanKindTool),
+		attribute.String(traceaigenai.GenAIOperationName, "execute_tool"),
+		attribute.String(traceaigenai.GenAIToolName, name),
+		attribute.String(traceaigenai.GenAIToolCallID, id),
+	), trace.WithAttributes(traceaigenai.ContextAttributes(ctx)...))
+	defer span.End()
+```
+
+With Gemini 3 models, send the model's function-call turn back unchanged (`first.Candidates[0].Content`) so its thought signature goes with it; the example does. The transport never copies the signature onto a span.
+
+## 6. Run the example
+
+The complete program (agent span, a `get_weather` function call, the tool span, a streamed answer, a failing call) is [`examples/traceai/gemini-go/main.go`](https://github.com/future-agi/docs/tree/main/examples/traceai/gemini-go) in this docs repo.
+
+```bash
+go run . -stream -fail
+```
+
+It prints the trace id. Open **Observe → your project → Tracing**: the LLM spans show the model, provider `google`, prompt and completion tokens, and the conversation (system instruction, user turn, the model's function call, the function response, the answer); the failing call shows status ERROR with `HTTP 404 NOT_FOUND`.
+
+## Trace embeddings
+
+Embedding calls on the same traced client need no extra setup:
+
+```go
+	embeddings, err := client.Models.EmbedContent(ctx, "gemini-embedding-001", []*genai.Content{
+		genai.NewContentFromText("How do I reset my password?", genai.RoleUser),
+		genai.NewContentFromText("Open Settings and choose Reset password.", genai.RoleUser),
+	}, &genai.EmbedContentConfig{TaskType: "RETRIEVAL_DOCUMENT"})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Embedded %d documents\n", len(embeddings.Embeddings))
+```
+
+Each call is one span named `embeddings gemini-embedding-001` with `gen_ai.span.kind` = `EMBEDDING`. The SDK sends it to `batchEmbedContents`, including for a single input; direct `embedContent` requests are traced too. This is synchronous embedding, not the asynchronous Batch API.
+
+## What is captured
+
+| Attribute | When |
+| --- | --- |
+| `gen_ai.span.kind` = `LLM`, `gen_ai.operation.name` = `generate_content`, `gen_ai.provider.name` = `google` | generation calls |
+| `gen_ai.span.kind` = `EMBEDDING`, `gen_ai.operation.name` = `embeddings`, `embedding.model_name`, `embedding.count`, `gen_ai.embeddings.dimension.count` | embedding calls; the dimension only when every returned vector has the same size |
+| `gen_ai.request.model` | always, from the model in the request URL (`models/{model}`) |
+| `gen_ai.request.temperature`, `top_p`, `top_k`, `max_tokens`, `seed`, `frequency_penalty`, `presence_penalty`, `stop_sequences` | when set in `GenerateContentConfig` |
+| `gen_ai.request.parameters` | allow-listed `generationConfig` fields as JSON (no response schema); for embeddings, `taskType` and `outputDimensionality` |
+| `gen_ai.tool.definitions.*` | function declarations (name, description, parameter schema) |
+| `gen_ai.request.tool_choice`, `gen_ai.request.builtin_tools` | the function-calling mode and allowed names, and built-in tools such as `googleSearch` or `urlContext` (never their configuration) |
+| `gen_ai.response.id`, `gen_ai.response.model` (`modelVersion`), `gen_ai.response.finish_reasons` | when the response has them |
+| `gen_ai.usage.input_tokens` (`promptTokenCount` + `toolUsePromptTokenCount`), `gen_ai.usage.input_tokens.tool_use`, `output_tokens` (`candidatesTokenCount` + `thoughtsTokenCount`, as in Python), `total_tokens`, `output_tokens.reasoning`, `cache_read_tokens`, `gen_ai.usage.details` (per-modality counts) | only when the API returns usage. Absent counts are not written; reported zero input, output and total counts are kept. Embedding responses carry no token usage |
+| `gen_ai.input.messages.*` (system instruction first, then each turn: text, images, function calls, function responses; embedding text inputs), `gen_ai.output.messages.*` (answer text, function calls with id, name, arguments), `input.value`, `output.value` | content; on by default |
+| `gen_ai.response.grounding` | when the response has grounding, citation or URL context metadata: source URLs and titles, search queries, citations and URL retrieval status, with bounded sizes |
+| `session.id`, `user.id` | when set on the context |
+| `http.response.status_code`, `error.type`, `error.message` | on errors |
+
+Never captured, in any mode: the Gemini API key (`x-goog-api-key`) or any other request header, the request URL, transport error text (it carries URLs and host names; only a class such as `transport`, `canceled` or `timeout` is recorded), `thoughtSignature`, thought summaries, audio, video and file bytes, images the model generates, and embedding vector values. The API key is also scrubbed from any API error text before it reaches a span.
+
+## Privacy
+
+Content is captured by default, as in every traceAI instrumentor. The traceAI switches, with the same names and defaults as the Python package, turn it off. Set them in the environment before the client is built, or pass `traceaigenai.WithTraceConfig(traceaigenai.TraceConfig{...})`.
+
+| Variable | Effect |
+| --- | --- |
+| `FI_HIDE_INPUTS=true` | `input.value` becomes `__REDACTED__`; input messages (system instruction, prompts, function calls and function responses in the history), tool selection and grounding are dropped |
+| `FI_HIDE_OUTPUTS=true` | `output.value` becomes `__REDACTED__`; output messages (answer text, function-call arguments) and grounding are dropped |
+| `FI_HIDE_INPUT_MESSAGES=true` | drop `gen_ai.input.messages.*`, tool selection and grounding; keep `input.value` |
+| `FI_HIDE_OUTPUT_MESSAGES=true` | drop `gen_ai.output.messages.*` and grounding; keep `output.value` |
+| `FI_HIDE_INPUT_TEXT=true` / `FI_HIDE_OUTPUT_TEXT=true` | redact message text and the text inside transport-generated `input.value` / `output.value`; keep roles and function calls. Grounding is dropped, and input text hiding also drops tool selection |
+| `FI_HIDE_INPUT_IMAGES=true` | drop image parts |
+| `FI_HIDE_LLM_INVOCATION_PARAMETERS=true` | drop `gen_ai.request.parameters` and tool selection; separately exported sampling attributes remain |
+| `FI_HIDE_ERROR_DETAILS` | `true` drops the API error message from attributes and the span status; `false` keeps it. Unset, it follows the content switches (see below) |
+| `FI_BASE64_IMAGE_MAX_LENGTH` | redact `data:` images longer than this (default 32000) |
+
+A hide switch counts only when it is `true` (any case).
+
+**Custom spans:** in v0.1.1, `TraceConfig.SetAttributes` does not apply text-only hiding to arbitrary `input.value` or `output.value` attributes. If you add those values yourself, use `FI_HIDE_INPUTS=true` / `FI_HIDE_OUTPUTS=true` with `SetAttributes` to redact them, or omit them as this example does. Direct OpenTelemetry attribute writes bypass traceAI filtering. The switches do not filter console output; the example still prints the answer locally.
+
+Function declarations: under `FI_HIDE_INPUTS`, `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_INPUT_TEXT` or `FI_HIDE_LLM_INVOCATION_PARAMETERS`, `gen_ai.tool.definitions.*` keeps only each function's name; descriptions and the whole parameter schema are dropped, because property names, enum values and defaults can carry private data. Do not put sensitive text in function names. The switches change exported telemetry only, never the requests sent to Gemini.
+
+Error messages: an API error can quote the prompt or answer. When `FI_HIDE_ERROR_DETAILS` is unset, the message is dropped whenever any input, output, message or text hide switch is on. Setting it to `false` keeps the message even then, which can expose content quoted in the error. In code, leave `TraceConfig.HideErrorDetails` nil to follow the content switches, or set `genai.Ptr(true)` / `genai.Ptr(false)`.
+
+With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` the model, token counts, function names, session id and error status are still exported; prompts, answers, function arguments and results, declaration schemas and API error messages are not.
+
+## Errors, cancellation and retries
+
+- An HTTP 4xx or 5xx response, or an error block inside a stream, ends the span with status ERROR, `http.response.status_code` and `error.type` (the Google status, such as `NOT_FOUND`, `RESOURCE_EXHAUSTED` or `UNAVAILABLE`). The API's error message is added unless `FI_HIDE_ERROR_DETAILS` hides it (see [Privacy](#privacy)). The SDK still returns its `genai.APIError` to you unchanged.
+- A response the transport cannot decode ends the span with ERROR and `error.type` `decode`, without the response body. The SDK still receives the original response.
+- A context cancelled or timed out before the response completes ends the span with ERROR and `error.type` `canceled` or `timeout`. Breaking out of a stream loop yourself ends the span without an error.
+- The SDK retries at the HTTP layer only when you set `HTTPOptions.RetryOptions`. Each attempt is then its own span (the failed ones ERROR). Automatic continuation (v1.74.0 and later, when the server returns a continuation token for a long answer) also sends several requests for one call, and each hop is its own span. Start a span around the call, as the example's agent span does, so they share one trace.
+
+## Not supported
+
+- **Vertex AI** (`genai.BackendVertexAI`). A Vertex call made through a wrapped client may still produce a span, but this guide does not cover it. For Vertex the client you pass must also handle authentication.
+- **`github.com/google/generative-ai-go`** (support ended 2025-11-30).
+- The Live API (websocket), video generation, token counting, files, caches, asynchronous batch jobs, model listing and the Interactions API pass through without a span. Only generation and embedding calls are traced.
+- Cost is not computed in Go; Future AGI prices the model from the token counts.
+
+## Troubleshooting
+
+- **No traces.** Check that the process calls `shutdown(tp)` (or `tp.Shutdown`) before it exits, and that `FI_API_KEY`, `FI_SECRET_KEY` and `FI_PROJECT_NAME` are set. The exporter URL must be the full traces URL, `{FI_BASE_URL}/tracer/v1/traces`.
+- **Export errors about the body.** Keep `otlptracehttp.WithCompression(otlptracehttp.NoCompression)`; the collector rejects gzip.
+- **Spans in the wrong project or none at all.** `project_name` must be a resource attribute on the tracer provider, not a span attribute.
+- **No span for a call.** Check that `HTTPClient` on the `genai.ClientConfig` is the traced client. Only generation and embedding calls are spanned.
+- **ERROR spans with `RESOURCE_EXHAUSTED` (429) or `UNAVAILABLE` (503).** Those are Gemini quota or capacity errors, recorded as they happened. On the free tier, space your requests or use another model.
+- **A 400 about a missing thought signature on the second turn.** Append the model's whole `Content` from the first response to the history, not a rebuilt function-call part.
+- **Every retry is a separate trace.** Start a parent span around the call (step 5).
