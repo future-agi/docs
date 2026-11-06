@@ -419,6 +419,56 @@ test('Java pgvector qualifies successful-operation privacy and hides database er
   assert.ok(section.indexOf('FI_HIDE_ERROR_DETAILS=true') < section.indexOf('new TracedPgVectorStore(connection)'));
 });
 
+test('Discovery Engine uses released packages and a standalone v1 search example', () => {
+  const page = read('src/pages/docs/integrations/traceai/google-discovery-engine.mdx');
+  const catalog = integrations.find(i => i.id === 'google-discovery-engine');
+  assert.equal(catalog?.href, '/docs/integrations/traceai/google-discovery-engine');
+  assert.equal(catalog?.category, 'frameworks');
+  assert.equal(catalog?.method, 'traceAI SDK');
+  assert.ok(catalog?.aliases?.includes('Vertex AI Search'));
+  for (const dependency of [
+    'traceAI-discoveryengine==0.1.1',
+    'fi-instrumentation-otel==1.2.3',
+    'google-cloud-discoveryengine==0.20.5',
+  ]) assert.ok(page.includes(dependency), dependency);
+  assert.match(page, /Python 3\.10–3\.13/);
+  assert.match(page, /google-cloud-discoveryengine>=0\.20\.5,<1/);
+  assert.match(page, /from google\.cloud import discoveryengine_v1 as discoveryengine/);
+  const example = page.split('## Run a traced search\n')[1].split('## Trace answers')[0];
+  assert.match(example, /DiscoveryEngineInstrumentor\(\)\.instrument\(tracer_provider=trace_provider\)/);
+  assert.ok(example.indexOf('register(') < example.indexOf('.instrument('));
+  assert.ok(example.indexOf('.instrument(') < example.indexOf('client.search('));
+  assert.match(example, /first_page = next\(pager\.pages\)/);
+  assert.match(example, /finally:\n    trace_provider\.force_flush\(\)/);
+  assert.match(example, /python discoveryengine_example\.py/);
+  assert.match(example, /Observe → Traces/);
+  assert.doesNotMatch(example, /answers\.answer_query\(/);
+});
+
+test('Discovery Engine preserves API prerequisites and privacy limits without a QA diary', () => {
+  const page = read('src/pages/docs/integrations/traceai/google-discovery-engine.mdx');
+  const setup = page.split('## Run a traced search\n')[0];
+  assert.match(setup, /Application Default Credentials/);
+  assert.match(setup, /FI_API_KEY/);
+  assert.match(setup, /FI_SECRET_KEY/);
+  assert.match(setup, /export FI_HIDE_INPUTS=true/);
+  assert.match(setup, /export FI_HIDE_ERROR_DETAILS=true/);
+  assert.match(page, /Public website search with a Google API key/);
+  assert.match(page, /Enterprise edition features and Generative responses/);
+  assert.match(page, /Large Language Model add-on/);
+  assert.match(page, /Advanced website indexing/);
+  assert.match(page, /eu-discoveryengine\.googleapis\.com/);
+  assert.match(page, /first page creates no additional spans/);
+  assert.match(page, /Only the Python v1 clients/);
+  assert.match(page, /reworded or truncated copies/);
+  assert.match(page, /custom gRPC channel/);
+  assert.match(page, /Serving config and session names remain/);
+  assert.doesNotMatch(page, /Live vendor verification|Tested versions|stand-ins|fi_verify|our test|276682b6|2026-10-18/i);
+  for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#]+)(?:#[^)]*)?\)/g)) {
+    assert.ok(exists(route), `Missing guide link: ${route}`);
+  }
+});
+
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
