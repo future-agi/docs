@@ -435,7 +435,8 @@ test('Voyage AI guide installs the package and keeps customer-facing privacy gui
   assert.equal(catalog?.href, '/docs/integrations/traceai/voyage');
   assert.equal(catalog?.method, 'traceAI SDK');
   for (const text of [
-    'pip install traceAI-voyage', 'voyageai>=0.3.7,<1', 'fi-instrumentation-otel>=1.1.0',
+    'pip install "traceAI-voyage>=0.1.2"', 'voyageai>=0.3.7,<1', 'fi-instrumentation-otel>=1.1.0',
+    'voyage.multimodal_embed', 'voyage.contextualized_embed', '[media omitted]',
     'VoyageInstrumentor().instrument(tracer_provider=trace_provider)', 'trace_provider.force_flush()',
     'capture_content=True', 'FI_HIDE_INPUTS=true', 'FI_HIDE_OUTPUTS=true',
   ]) assert.ok(page.includes(text), text);
