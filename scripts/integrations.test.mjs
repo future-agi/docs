@@ -495,7 +495,9 @@ test('OpenAI Realtime guide installs the published package and runs a complete e
   assert.equal(catalog?.category, 'voice');
   assert.match(page, /python -m pip install traceAI-openai-realtime/);
   assert.match(page, /client\.realtime\.connect\(\)/);
-  assert.match(page, /traceai\/main\/python\/frameworks\/openai-realtime\/examples\/voice_agent\.py/);
+  assert.match(page, /traceAI\/blob\/main\/python\/frameworks\/openai-realtime\/examples\/voice_agent\.py/);
+  assert.match(page, /does not trace `client\.beta\.realtime`/);
+  assert.match(page, /enable input audio transcription/);
   assert.match(page, /python voice_agent\.py --typed/);
   assert.match(page, /FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true/);
   assert.match(page, /developers\.openai\.com\/api\/docs\/guides\/realtime/);
