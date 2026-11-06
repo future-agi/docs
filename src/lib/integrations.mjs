@@ -162,6 +162,7 @@ export const integrationAids = [
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
+  { name: 'Devin (hosted) support status', href: '/docs/integrations/coding-agents/devin', category: 'coding' },
   { name: 'Hook-to-OTLP emitter', href: '/docs/integrations/coding-agents/hook-to-otlp', category: 'coding' },
   { name: 'OpenAI Assistants retirement', href: '/docs/integrations/traceai/openai_assistants', category: 'providers' },
   { name: 'traceAI setup', href: '/docs/integrations/traceai' },
