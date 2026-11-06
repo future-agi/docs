@@ -1,0 +1,248 @@
+---
+title: "Send Gravitee APIM Gateway traces to Observe"
+description: "Export the OpenTelemetry spans the Gravitee APIM Gateway records for each API call to Future AGI, through an OpenTelemetry Collector: request, policy and backend spans with timing and errors. Headers and payloads stay out by default. This guide covers APIM HTTP proxy APIs, not Gravitee AI Gateway traces."
+---
+
+## About
+
+Trace Gravitee APIM Gateway HTTP proxy requests, including flows, policies, backend calls and errors, in Observe. This guide does not cover Gravitee AI Gateway LLM, MCP or A2A Proxy traces.
+
+The Gateway spans are API-gateway spans: HTTP method, route, status, timing, policies, the backend call and errors. They are not LLM spans. Even when the API you proxy is an LLM API, there is no model, no token count, no prompt and no cost on them. If you want those, trace the calling application with traceAI (for example [OpenAI](/docs/integrations/traceai/openai)) and point its base URL at the Gravitee API. The Gateway forwards W3C `traceparent`, so the gateway spans then sit inside the application's trace (see [Join a caller's trace](#join-a-callers-trace)).
+
+You configure Gravitee and an OpenTelemetry Collector. There is no Future AGI package, no Gravitee plugin and no Future AGI setting screen.
+
+## How it fits together
+
+```text
+your clients ──> Gravitee APIM Gateway ──OTLP/HTTP protobuf──> OpenTelemetry Collector ──OTLP/HTTP protobuf──> Future AGI
+                 (verbose off, redaction rules)                (sets project_name, holds the keys)
+```
+
+The Collector adds the required `project_name` resource attribute, authenticates the Gateway and keeps Future AGI keys on the Collector. Gravitee normalizes underscores in configured resource-attribute keys, so use the Collector to set `project_name`.
+
+## Before you start
+
+- A Gravitee APIM Gateway 4.12.23. OpenTelemetry tracing is part of the Community Edition.
+- A Future AGI API key and secret key, and the Observe project name you want the traces in.
+- Somewhere to run an OpenTelemetry Collector (contrib distribution) that the Gateway can reach on a private network.
+
+## Setup
+
+### 1. Run the Collector
+
+Download [otelcol.yaml](https://github.com/future-agi/docs/blob/main/examples/gateways/gravitee/otelcol.yaml) as `otelcol.yaml`. It includes the verbose-content transform referenced by the pipeline below:
+
+```yaml
+extensions:
+  bearertokenauth/gateway:
+    scheme: Bearer
+    token: ${env:GATEWAY_TOKEN}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/gateway
+
+processors:
+  resource/future_agi:
+    attributes:
+      - key: project_name
+        value: ${env:FI_PROJECT_NAME}
+        action: upsert
+      - key: project_type
+        value: observe
+        action: insert
+  # transform/gravitee_verbose: see Privacy
+  batch: {}
+
+exporters:
+  otlp_http/future_agi:
+    traces_endpoint: ${env:FI_TRACES_URL}     # https://api.futureagi.com/tracer/v1/traces, or http://<host>:4318/v1/traces
+    encoding: proto
+    compression: none                          # optional: Future AGI cloud and self-hosted v1.56.0+ also accept gzip
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+
+service:
+  extensions: [bearertokenauth/gateway]
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/future_agi, transform/gravitee_verbose, batch]
+      exporters: [otlp_http/future_agi]
+```
+
+```bash
+docker run -d --name otel-collector --network <gateway-network> --memory 256m \
+  -e GATEWAY_TOKEN -e FI_API_KEY -e FI_SECRET_KEY -e FI_PROJECT_NAME -e FI_TRACES_URL \
+  -v "$PWD/otelcol.yaml:/etc/otelcol/config.yaml:ro" \
+  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol/config.yaml
+```
+
+`GATEWAY_TOKEN` is a secret you make up. The Future AGI keys stay on the Collector, not on the Gateway.
+
+### 2. Point the Gateway at the Collector
+
+Merge the complete [`gravitee-opentelemetry.yml` block](https://github.com/future-agi/docs/blob/main/examples/gateways/gravitee/gravitee-opentelemetry.yml) into the Gateway's `gravitee.yml` under `services:`. It contains all the redaction rules used by this guide; the abbreviated block below is a reference, not a replacement. With Helm the same keys go under `gateway.services.opentelemetry` in `values.yaml`, per Gravitee's docs (outside this guide’s coverage).
+
+```yaml
+services:
+  opentelemetry:
+    enabled: true
+    verbose: false
+    exporter:
+      endpoint: http://otel-collector:4318     # base URL only, no /v1/traces
+      protocol: http/protobuf
+      compression: none
+    redactionRules:
+      - attributeNamePattern: hostname         # the Gateway node's container hostname (resource attribute)
+        maskingStrategy: { type: FULL }
+      - attributeNamePattern: ip               # and its IP
+        maskingStrategy: { type: FULL }
+      - attributeNamePattern: http.target      # request path + query string, only when there is a query string
+        valuePattern: "\\?"
+        maskingStrategy: { type: FULL }
+      - attributeNamePattern: http.url         # backend URL + query string, same rule
+        valuePattern: "\\?"
+        maskingStrategy: { type: FULL }
+      - attributeNamePattern: client.address   # the caller's IP
+        maskingStrategy: { type: FULL }
+      - attributeNamePattern: exception.message
+        maskingStrategy: { type: FULL }
+      - attributeNamePattern: exception.stacktrace
+        maskingStrategy: { type: FULL }
+      # ...plus url.query, original-url, user-id and the credential headers
+      # (authorization, cookie, x-gravitee-api-key, ...): see the full file
+```
+
+Give the Gateway the Collector token as environment variables, not in the file. Replace the placeholder with your token:
+
+```bash
+export gravitee_services_opentelemetry_exporter_headers_0_name=Authorization
+export gravitee_services_opentelemetry_exporter_headers_0_value='Bearer YOUR_GATEWAY_TOKEN'
+```
+
+| Setting | Why |
+| --- | --- |
+| `protocol: http/protobuf` | Gravitee's default is `grpc`. Use OTLP over HTTP with protobuf. `http` would send OTLP/JSON (outside this guide’s coverage). Any other value, `http/json` included, is unknown to Gravitee: per its source it logs `OpenTelemetry protocol unsupported, fallback to GRPC.` and uses gRPC. |
+| `endpoint` | The base URL only. With `http/protobuf` Gravitee appends `/v1/traces` itself. An endpoint that already ends in `/v1/traces` is posted to `/v1/traces/v1/traces` and nothing arrives. |
+| `compression: none` | Gravitee's default. Gravitee's own example shows `gzip`. Future AGI cloud and self-hosted v1.56.0 and later accept gzip bodies; earlier self-hosted releases answered them with HTTP 400, so keep `none` on anything that may talk directly to an older self-hosted receiver. |
+| Header via environment variables | Gravitee does not resolve `${...}` placeholders in exporter header values: a `value: ${GATEWAY_TOKEN}` in `gravitee.yml` was sent literally. Use the `name` / `value` environment variables above instead. |
+| `verbose: false` | No span events with request headers and context attributes. This is the content switch, see [Privacy](#privacy). |
+| `redactionRules` | Gravitee masks these attributes inside the Gateway, before export.  |
+
+Keys in the block can also be set as environment variables in the same style, and they override `gravitee.yml`. For example, `gravitee_services_opentelemetry_verbose` and `gravitee_services_opentelemetry_exporter_endpoint`. Keep the rule lists in `gravitee.yml`. Restart the Gateway after changing any of them.
+
+### 3. Turn tracing on for each API
+
+Both switches must be on, or no spans are created for that API: the Gateway's `services.opentelemetry.enabled` and the API's own tracing switch. In the Console, per Gravitee's docs: the API, **Reporter Settings**, the **OpenTelemetry** card, **Trace enabled**, then **Save changes** and redeploy. In an API definition (Management API, GKO, an export), it is `analytics.tracing.enabled: true`. For example:
+
+```json
+"analytics": { "enabled": true, "tracing": { "enabled": true, "verbose": false } }
+```
+
+An API with `tracing.enabled: false` does not produce traces, even with the Gateway exporting.
+
+### 4. Send a request
+
+```bash
+curl -i http://<gateway-host>:8082/<context-path>/
+```
+
+Spans are batched. Allow a few seconds for the trace to appear in the project. When the Gateway stops on SIGTERM, it exports buffered spans.
+
+## What you see in Observe
+
+Each call is one trace. For a v4 HTTP proxy API with one flow and one policy, a trace can look like this:
+
+```text
+POST /fi-echo                              root, the Gateway's server span (route-based name)
+  Request phase
+    REQUEST Security (keyless)             the plan's security step
+    REQUEST flow (api-add-recipe-header)
+      REQUEST policy-transform-headers     one span per policy
+  endpoint-invoker
+    POST                                   the call to your backend (client span)
+  Response phase
+    RESPONSE flow (api-add-recipe-header)
+```
+
+All spans show as type unknown in Observe. They have no Future AGI span kind, because they are not LLM, tool or agent spans. A request that matches no API (a 404 from the Gateway) is traced too, by the Gateway's own tracer, as a short trace named after the method (for example `GET /`).
+
+| Where | What it carries |
+| --- | --- |
+| Root span | `http.method`, `http.route`, `http.status_code`, `http.scheme`, `net.host.name`, `net.host.port`, request and response body sizes, `user_agent.original`, `gravitee.request.id`, `gravitee.transaction.id`. `http.target` (path and query) is kept when there is no query string. |
+| Backend span | `http.method`, `http.url` (masked when it has a query string), `http.status_code`, content lengths. |
+| Policy and flow spans | `gravitee.policy`, `gravitee.policy.trigger.executed`, `gravitee.execution.phase`, ids. |
+| Resource (every span) | `service.name: gio-apim-gateway`, `service.version`, `gravitee.api.id`, `gravitee.api.name`, `gravitee.api.type`, `gravitee.org.id`, `gravitee.env.id`, plus `project_name` and `project_type` from the Collector. |
+
+These APIM HTTP proxy spans do not capture request or response bodies, LLM model, token or cost measurements, or Future AGI session and user attributes. A zero token or cost summary means usage was not recorded.
+
+## Privacy
+
+Content capture is **off** in the setup above, and it is off in two places: the Gateway's `verbose: false`, and the Collector, which drops verbose snapshots unless you set `FI_CAPTURE_CONTENT=true`.
+
+What is still exported with content off: the API route and the request path (in the span name, `http.route`, and `http.target` when there is no query string), the backend's host and path, the user agent, the HTTP status and timing, and Gravitee's API, organization and environment ids and names. Do not put secrets or personal data in URL paths of APIs you trace. Request and response bodies are never on Gravitee spans.
+
+### The opt-in: verbose tracing
+
+Verbose tracing records the request headers and Gravitee's context attributes before and after each policy, as span events (`gravitee.policy.pre` and `gravitee.policy.post`) on the policy span. It needs **all three**:
+
+1. `verbose: true` on the Gateway (or `gravitee_services_opentelemetry_verbose=true`). With the Gateway at `false`, an API with Verbose on exported no events.
+2. **Verbose** on the API's OpenTelemetry card (`analytics.tracing.verbose: true`). With it off, the Gateway at `true` exported no events for that API.
+3. `FI_CAPTURE_CONTENT=true` on the Collector. Future AGI keeps the name and time of span events but not their attributes. The Collector therefore copies the `gravitee.policy.post` snapshot onto the policy span (`transform/gravitee_verbose` in `otelcol.yaml`). Without the flag, the Collector strips the snapshots.
+
+With all three on, redaction rules still apply to configured attributes such as `Authorization`, `Cookie`, `X-Gravitee-Api-Key` and query strings in `gravitee.attribute.request.original-url`. Turn on verbose tracing only to debug a policy, and only if you accept that every other request header is exported. Gravitee notes that verbose mode makes traces 10 to 50 times larger. A policy span is needed for the events to appear: an API with no policy in its flows had none.
+
+## Errors
+
+Backend failures can appear with error status on the request and backend spans. The Gateway redaction rules mask exception messages and stack traces. Export failures do not affect API calls, but rejected batches can be lost. Check the Gateway and Collector logs for rejected batches.
+
+## Join a caller's trace
+
+The Gateway reads a W3C `traceparent` from the incoming request and forwards one to your backend. If your application exports its spans to the same Observe project, the gateway spans join its trace. Without an incoming header, the Gateway starts a new trace.
+
+<Note>
+If a caller sends a `traceparent` but does not export its own spans to the same project (a service mesh or an uninstrumented client that only forwards the header, for example), the gateway spans are stored but their top span points at a parent that is not there. Observe's trace list shows traces by their root span, so such a trace does not appear in the list; open it by trace id. Traces started by the Gateway (no incoming `traceparent`) are listed normally.
+</Note>
+
+## Gravitee AI Gateway (LLM, MCP and A2A Proxy)
+
+This guide does not cover the LLM, MCP or A2A Proxy trace mapping. These proxies are Enterprise Edition features and require a licence. To trace calls to an OpenAI-compatible LLM Proxy endpoint, instrument the calling application with [traceAI OpenAI](/docs/integrations/traceai/openai).
+
+## Logs are not traces
+
+Gravitee 4.12 can also export captured request and response payloads as OpenTelemetry **log records** (`reporters.otel.enabled`, sent to `services.opentelemetry.exporter.logsEndpoint`, a Loki URL by default). That is a different signal. Future AGI accepts traces only. Do not point `logsEndpoint` at a Future AGI traces URL or at the Collector above (its pipeline is traces only), and leave `reporters.otel` off for this setup. Prompt and payload capture through that path is not supported.
+
+## Limits
+
+- This guide covers v4 HTTP proxy APIs using OTLP/HTTP protobuf. It does not cover v2, message or Kafka APIs, gRPC, OTLP/JSON, or streaming responses.
+- One Collector sends to one project. To split environments into projects, run a Collector or pipeline per project. Create the Observe project first.
+- Future AGI accepts traces, not Gravitee OpenTelemetry logs.
+
+## Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| Nothing arrives, no Gateway error | Tracing is off on the API (Reporter Settings, Trace enabled) or `services.opentelemetry.enabled` is false. Both are needed. |
+| Gateway log `status code 400` | The batch reached Future AGI without `project_name`, usually because the Gateway points straight at Future AGI. Send it through the Collector. |
+| Gateway log `status code 401` | The Collector token does not match, or the header variables are missing. A `${...}` placeholder in `gravitee.yml` is sent literally. |
+| Gateway log `status code 404` | The endpoint ends in `/v1/traces`. Use the base URL; Gravitee adds the path. |
+| Gateway connects to port 4317 or logs a gRPC error | `protocol` is missing or misspelled, so Gravitee used gRPC. Set `http/protobuf`. |
+| Collector log `Exporting failed. Dropping data.` | Future AGI rejected the Collector's request. Check `FI_API_KEY`, `FI_SECRET_KEY` and `FI_TRACES_URL`. |
+| No model or tokens | Expected. Gateway spans do not carry them. Trace the calling application with traceAI. |
+| Verbose is on but no headers in Observe | Check all three switches in [the opt-in](#the-opt-in-verbose-tracing), and that the API's flow has at least one policy. |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Observe overview" href="/docs/observe" />
+  <Card title="Trace OpenAI-compatible clients with traceAI" href="/docs/integrations/traceai/openai" />
+</CardGroup>

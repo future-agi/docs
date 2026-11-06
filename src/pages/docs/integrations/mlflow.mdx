@@ -1,0 +1,120 @@
+---
+title: "Export MLflow traces to Future AGI over OTLP"
+description: "Send native MLflow traces through a trusted local OpenTelemetry Collector, retaining timing, hierarchy, model metadata and token counts without forwarding recorded content."
+---
+
+Send new MLflow traces to **Observe** using [MLflow's native OTLP export](https://mlflow.org/docs/latest/genai/tracing/opentelemetry/export/) and a local OpenTelemetry Collector. You do not need a traceAI MLflow instrumentor or custom Python privacy processors.
+
+## Before you start
+
+This setup sends **unfiltered traces from your application process to a separate, trusted collector on the same host**. The collector removes recorded content before forwarding traces to Future AGI. It is not in-process redaction.
+
+**If your policy requires content never to leave the application process, do not enable this route.** A loopback connection does not satisfy that requirement. Keep tracing disabled until you have a maintained in-process redaction integration approved for your environment; do not bypass the collector or remove an existing in-process privacy control.
+
+Use a dedicated collector on a host you control. Its unauthenticated receiver listens only on `127.0.0.1:4318`; do not expose it through a proxy or change it to `0.0.0.0`. Do not add debug/file exporters, payload logging, an unfiltered pipeline or dual export to an MLflow tracking server. These would create additional destinations for recorded content.
+
+This is live trace export, not an import of traces already stored in MLflow, Databricks or Unity Catalog.
+
+## Install
+
+Use Python 3.12 and install MLflow with the OTLP/HTTP exporter:
+
+```bash
+pip install mlflow==3.17.2 opentelemetry-sdk==1.45.0 opentelemetry-exporter-otlp-proto-http==1.45.0
+```
+
+Install the **Contrib** binary for your operating system from [OpenTelemetry Collector Contrib 0.164.0](https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.164.0). The core collector does not include the filtering processors used here. Run the binary directly on the application host so both processes share the same loopback interface.
+
+## Start the local collector
+
+Download the [MLflow collector configuration](https://github.com/future-agi/docs/blob/main/examples/mlflow/otelcol.yaml):
+
+```bash
+curl -fL https://raw.githubusercontent.com/future-agi/docs/main/examples/mlflow/otelcol.yaml -o otelcol.yaml
+```
+
+In the collector's terminal, set your [Future AGI API keys](/docs/admin-settings/api-keys) and the full traces URL for your deployment:
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-mlflow-app"
+export FI_TRACES_ENDPOINT="https://YOUR_FI_COLLECTOR_ORIGIN/tracer/v1/traces"
+
+otelcol-contrib validate --config otelcol.yaml
+otelcol-contrib --config otelcol.yaml
+```
+
+Replace `YOUR_FI_COLLECTOR_ORIGIN` with your Future AGI collector origin. For a local self-hosted deployment, for example, use `http://localhost:14338/tracer/v1/traces`. Keep the full path; the configuration uses `traces_endpoint` without appending a suffix. Header values come directly from the collector environment, so no comma-separated header encoding is needed.
+
+The configuration runs standard `filter` and `transform` processors **before** batching and export. Both use `error_mode: propagate`: a processing error rejects the payload instead of forwarding it unfiltered. A collector outage can lose traces; it does not cause MLflow to fall back to a direct Future AGI connection.
+
+## Configure MLflow
+
+In a separate application terminal, set these variables **before importing MLflow or creating the first span**:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://127.0.0.1:4318/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_SERVICE_NAME="my-mlflow-app"
+export MLFLOW_ENABLE_OTEL_GENAI_SEMCONV=true
+export MLFLOW_DISABLE_TELEMETRY=true
+export MLFLOW_MODEL_CATALOG_URI=""
+export MLFLOW_TRACE_ENABLE_OTLP_DUAL_EXPORT=false
+
+# Use only the local traces destination, without authentication headers.
+unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+unset OTEL_EXPORTER_OTLP_HEADERS OTEL_EXPORTER_OTLP_TRACES_HEADERS
+unset MLFLOW_TRACING_DESTINATION
+```
+
+The Future AGI keys belong to the collector, not the application. The collector sets `project_name`, `project_type=observe` and `service.name` using `FI_PROJECT_NAME` rather than trusting application resource attributes.
+
+Do not call `mlflow.tracing.set_destination()` or configure a Databricks tracking URI for this route. Those settings can select a different export destination. Keep the GenAI semantic-convention switch on so model names and token counts use standard `gen_ai.*` attributes.
+
+## Trace a function
+
+Save this as `app.py` and run `python app.py`:
+
+```python
+import mlflow
+
+@mlflow.trace(span_type="TOOL")
+def get_refund_window(product: str) -> dict:
+    return {"product": product, "days": 30}
+
+@mlflow.trace(span_type="CHAIN")
+def answer_refund_question(product: str) -> dict:
+    return get_refund_window(product)
+
+print(answer_refund_question("headphones"))
+mlflow.flush_trace_async_logging()
+```
+
+For an existing OpenAI application, install `openai==2.54.0` and call `mlflow.openai.autolog()` before making Chat Completions requests. Keep those requests inside a traced root function to preserve the parent/child relationship. Do not also instrument the same calls with a traceAI OpenAI instrumentor: that would create duplicate spans.
+
+## What reaches Future AGI
+
+| Data | Behavior |
+|---|---|
+| Trace and span IDs, parent IDs, timing | Preserved for ordinary parent/child traces. |
+| Span names | Replaced with the recognized operation, such as `chat`, `execute_tool` or `CHAIN`. Unknown operations use `mlflow`; original function/tool names are not forwarded. |
+| Model, provider, token counts | Retained when MLflow supplies `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens` or `gen_ai.usage.output_tokens`. |
+| Error status | Preserved; the status message and all exception events are removed. |
+| Prompts, responses, tool arguments/results and tool schemas | Removed from span attributes. |
+| All span events and other span attributes | Removed, including custom fields and operational events. |
+| Resource and instrumentation-scope attributes | Replaced with the project/service metadata above and a fixed `mlflow` scope. |
+| Spans with cross-trace links | Dropped entirely, because link payloads are outside this configuration's redaction support. Do not use linked spans with this route; dropping a linked parent can leave children without their parent. |
+
+The remaining model/provider identifiers and the project name are exported metadata. Use non-sensitive values for them; the collector does not inspect those values for personal data. This recipe is for MLflow-generated traces, not a general-purpose receiver for arbitrary OTLP producers.
+
+Open **Observe** in Future AGI and select the project matching `FI_PROJECT_NAME`. The example produces a root with a nested tool span. Content columns are empty by design. Model calls can show model and token metadata when supplied by MLflow; no session or user ID is added.
+
+## Troubleshooting
+
+- **No traces arrive.** Confirm the collector is running on the same host, the application uses `http/protobuf` and `http://127.0.0.1:4318/v1/traces`, and the HTTP exporter is installed. Check the collector's forwarding URL, credentials and `FI_PROJECT_NAME`. Restart the application after changing exporter variables.
+- **Collector configuration fails.** Use the Contrib 0.164.0 binary, set all four `FI_*` variables above and run `validate` again. Do not disable the privacy processors to make export succeed.
+- **The collector rejects a payload.** Keep `error_mode: propagate`. Resolve the processor error before resuming export; do not enable debug payload logging to diagnose a trace containing sensitive data.
+- **Model or token metadata is missing.** Enable `MLFLOW_ENABLE_OTEL_GENAI_SEMCONV` before the first span and use MLflow's supported autologging integration. The collector retains these fields but does not invent missing metadata.
+- **Content, tool names or events are missing.** Expected. This configuration intentionally excludes them. It is not a content-capture toggle.
+- **A local MLflow database appears, or traces go elsewhere.** Disable dual export and remove a code-level tracing destination or Databricks tracking configuration. Restart the application.
