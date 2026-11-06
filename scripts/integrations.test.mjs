@@ -590,6 +590,59 @@ test('Tavily preserves privacy controls and scopes them to its own instrumentati
   assert.match(page, /Transport errors and errors from the other five methods record only the exception type/);
   assert.match(page, /not to separate LangChain, MCP or HTTP-client instrumentation/);
   assert.match(page, /literal key values, not encoded or transformed copies/);
+test('Replicate documents released packages, provider-first setup and catalog discovery', () => {
+  const page = read('src/pages/docs/integrations/traceai/replicate.mdx');
+  assert.match(page, /pip install traceAI-replicate==0\.1\.0 fi-instrumentation-otel==1\.2\.3 replicate==1\.0\.7/);
+  assert.match(page, /Python 3\.10–3\.13/);
+  assert.match(page, /replicate>=1\.0\.0,<2/);
+  assert.match(page, /from traceai_replicate import ReplicateInstrumentor/);
+  const example = [...page.matchAll(/```python\n([\s\S]*?)```/g)][0]?.[1];
+  assert.ok(example);
+  assert.ok(example.indexOf('trace_provider = register(') < example.indexOf('ReplicateInstrumentor().instrument('));
+  assert.ok(example.indexOf('ReplicateInstrumentor().instrument(') < example.indexOf('replicate.run('));
+  assert.match(example, /finally:\n    trace_provider\.shutdown\(\)/);
+  assert.doesNotMatch(example, /stream_reload_seconds=/);
+  assert.match(page, /Open the `my-replicate-app` Observe project/);
+  const entry = integrations.find(i => i.id === 'replicate');
+  assert.equal(entry?.href, '/docs/integrations/traceai/replicate');
+  assert.equal(entry?.category, 'providers');
+  assert.equal(entry?.method, 'traceAI SDK');
+});
+
+test('Replicate preserves default-off reads, stream costs, cancellation and lifecycle limits', () => {
+  const page = read('src/pages/docs/integrations/traceai/replicate.mdx');
+  assert.match(page, /Post-stream reads are off by default \(`stream_reload_seconds=0`\)/);
+  assert.match(page, /no final prediction status, `predict_time` or token counts/);
+  assert.match(page, /No extra request is made and no package worker thread starts/);
+  assert.match(page, /stream_reload_seconds=2/);
+  assert.match(page, /All three options accept `0`–`10` seconds and default to `0`/);
+  for (const setting of ['stream_reload_seconds', 'stream_flush_wait_seconds', 'stream_shutdown_wait_seconds']) {
+    assert.ok(page.includes(`| \`${setting}\` |`), setting);
+  }
+  assert.match(page, /Each read counts toward \[Replicate's API rate limit\]/);
+  assert.match(page, /HTTP 429 and 5xx responses are not retried/);
+  assert.match(page, /real request to your client's `base_url`, including a local stub server/);
+  assert.match(page, /64 stream spans[\s\S]*64 live reads/);
+  assert.match(page, /`uninstrument\(\)` never waits for a read/);
+  assert.match(page, /up to 5 seconds for a span the finisher thread is exporting/);
+  assert.match(page, /`timeout_millis` does not shorten that wait/);
+  assert.match(page, /terminal `canceled` status is recorded with an OK span/);
+  assert.match(page, /`ERROR` and `replicate.cancelled=true`/);
+  assert.match(page, /Partial output is retained, subject to the privacy settings/);
+});
+
+test('Replicate keeps privacy instructions without public verification diaries', () => {
+  const page = read('src/pages/docs/integrations/traceai/replicate.mdx');
+  for (const setting of ['FI_HIDE_INPUTS', 'FI_HIDE_OUTPUTS', 'FI_HIDE_ERROR_DETAILS']) {
+    assert.ok(page.includes(`export ${setting}=true`), setting);
+  }
+  assert.match(page, /Error messages and error status descriptions are removed/);
+  assert.match(page, /FI_PII_REDACTION=true/);
+  assert.match(page, /never downloaded by the instrumentor/);
+  assert.match(page, /a `data:` chunk in text output is preserved unless outputs are hidden/);
+  assert.match(page, /Webhook URLs are recorded only as present, not by value/);
+  assert.match(page, /not what Replicate receives/);
+  assert.doesNotMatch(page, /Live vendor verification|verified live|stand-in|load average|privacy scan|traceAI#219|## Tested versions/i);
 });
 
 test('public prose and catalog labels contain no internal QA label or Alpha release status', () => {
