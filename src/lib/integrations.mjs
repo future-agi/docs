@@ -198,6 +198,7 @@ export const integrationAids = [
   { name: 'OpenAI Assistants retirement', href: '/docs/integrations/traceai/openai_assistants', category: 'providers' },
   { name: 'traceAI setup', href: '/docs/integrations/traceai' },
   { name: 'OpenTelemetry GenAI compatibility', href: '/docs/integrations/traceai/otel-genai-conformance' },
+  { name: 'Trace privacy settings', href: '/docs/sdk/tracing/trace-config' },
   { name: 'Java SDK setup', href: '/docs/integrations/traceai/java', category: 'java' },
 ];
 

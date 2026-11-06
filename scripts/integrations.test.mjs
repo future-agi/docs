@@ -25,6 +25,7 @@ import './firecrawl-page.test.mjs';
 import './parallel-page.test.mjs';
 import './otel-genai-page.test.mjs';
 import './genkit-page.test.mjs';
+import './trace-config-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
