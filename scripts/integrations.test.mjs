@@ -3,6 +3,7 @@ import './azure-openai-java.test.mjs';
 import './langsmith-page.test.mjs';
 import './vercel-platform-page.test.mjs';
 import './scalekit-page.test.mjs';
+import './trace-config-page.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
