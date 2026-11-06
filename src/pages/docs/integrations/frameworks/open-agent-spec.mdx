@@ -1,0 +1,154 @@
+---
+title: "Open Agent Spec tracing with Future AGI"
+description: "Trace Open Agent Spec agents on the LangGraph adapter with maintained traceAI packages, tool-call visibility and configurable content privacy."
+---
+
+Trace [Open Agent Spec](https://github.com/oracle/agent-spec) agents running through the LangGraph adapter with traceAI's LangChain instrumentor. See the agent run, model calls and tool calls in one Future AGI trace.
+
+This guide covers `pyagentspec[langgraph]` 26.3.1 agents, an OpenAI-compatible Chat Completions endpoint and a self-hosted Future AGI instance. Other Agent Spec adapters and `Flow` components are outside this guide's scope.
+
+Use one instrumentor for the runtime. If you already followed the [LangGraph](/docs/integrations/traceai/langgraph) or [LangChain](/docs/integrations/traceai/langchain) guide, reuse that provider and instrumentor rather than registering another.
+
+## 1. Install
+
+Use Python 3.10 to 3.13. For async runs, use Python 3.11 or later so LangChain can propagate parent context across tasks.
+
+```bash
+pip install "pyagentspec[langgraph]==26.3.1" "traceai-langchain>=0.2.1" "fi-instrumentation-otel>=1.2.2"
+```
+
+The `langgraph` extra installs LangGraph and `langchain-openai`. These traceAI versions provide the maintained error-privacy configuration used below.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="agent-spec-weather"
+# Replace with your self-hosted Future AGI origin; traceAI adds /tracer/v1/traces.
+export FI_BASE_URL="http://localhost:4318"
+
+export MODEL_BASE_URL="https://your-openai-compatible-endpoint/v1"
+export MODEL_API_KEY="your-model-api-key"
+export MODEL_ID="your-model-id"
+
+# Optional: keep prompts, outputs and tool payloads out of traces.
+# export FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true
+```
+
+Set `FI_BASE_URL` to the origin only, without `/tracer/v1/traces`. Use your model provider's key for `MODEL_API_KEY`, not your Future AGI keys.
+
+<Warning>
+  Prompts, answers and tool payloads are captured by default. Set both `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before running the application if you do not want that content exported. The configuration below suppresses exception messages and stack traces independently of these content settings.
+</Warning>
+
+## 3. Configure tracing and run the agent
+
+Save this as `app.py`. Call `register()` and `LangChainInstrumentor().instrument()` once, before loading the agent. No custom exporter or tracing helper is needed.
+
+```python title="app.py"
+import os
+
+from fi_instrumentation import TraceConfig, register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_langchain import LangChainInstrumentor
+
+tracer_provider = register(project_type=ProjectType.OBSERVE, verbose=False)
+LangChainInstrumentor().instrument(
+    tracer_provider=tracer_provider,
+    config=TraceConfig(hide_error_details=True),
+)
+
+from pyagentspec.adapters.langgraph import AgentSpecLoader
+from pyagentspec.agent import Agent
+from pyagentspec.llms import OpenAiCompatibleConfig
+from pyagentspec.property import StringProperty
+from pyagentspec.tools import ServerTool
+
+
+def get_weather(city: str) -> str:
+    return f"Sunny, 21 C in {city}."
+
+
+try:
+    agent = Agent(
+        name="weather_assistant",
+        llm_config=OpenAiCompatibleConfig(
+            name="chat-model",
+            url=os.environ["MODEL_BASE_URL"],
+            model_id=os.environ["MODEL_ID"],
+            api_key=os.environ["MODEL_API_KEY"],
+        ),
+        tools=[
+            ServerTool(
+                name="get_weather",
+                description="Get the current weather for a city.",
+                inputs=[StringProperty(title="city")],
+                outputs=[StringProperty(title="forecast")],
+            )
+        ],
+        system_prompt="You are a weather assistant. Call get_weather before you answer.",
+    )
+
+    graph = AgentSpecLoader(tool_registry={"get_weather": get_weather}).load_component(agent)
+    result = graph.invoke({"messages": [{"role": "user", "content": "What is the weather in Lisbon?"}]})
+    print(result["messages"][-1].content)
+finally:
+    tracer_provider.force_flush()
+```
+
+```bash
+python app.py
+```
+
+`register()` reads `FI_PROJECT_NAME` and sends traces through its OTLP/HTTP exporter. `force_flush()` sends queued spans before a short script exits, including when an agent run fails. In a long-running service, flush at shutdown rather than after every request.
+
+### Load an agent from JSON
+
+To load a serialized definition instead of the in-memory `agent`, replace the `load_component` call with the following. Agent Spec stores a reference in place of the model API key; supply that reference when loading:
+
+```python
+from pyagentspec.serialization import AgentSpecSerializer
+
+agent_json = AgentSpecSerializer().to_json(agent)
+graph = AgentSpecLoader(tool_registry={"get_weather": get_weather}).load_json(
+    agent_json,
+    components_registry={f"{agent.llm_config.id}.api_key": os.environ["MODEL_API_KEY"]},
+)
+```
+
+## 4. Open the trace
+
+Open **Observe** in your self-hosted Future AGI instance, select **agent-spec-weather** and open the latest trace. For a run that calls `get_weather` once, the trace contains:
+
+- **weather_assistant**: the root LangGraph chain, named after the Agent Spec agent.
+- **model → ChatOpenAI**: one model span per model call, with the model ID and token counts reported by the endpoint.
+- **tools → get_weather**: the tool call, including arguments and results when content capture is enabled.
+
+Separate runs produce separate traces. Failed model and tool calls retain `ERROR` status and an `exception.type` event attribute. Exception messages, status descriptions and stack traces are omitted by this guide's explicit `hide_error_details=True` setting.
+
+You see LangGraph's runtime tree, not Agent Spec's native span names such as `AgentExecution[...]`. The root uses the `CHAIN` span kind. Session and user identifiers are not set by this example.
+
+## Privacy
+
+`TraceConfig(hide_error_details=True)` removes error details even when prompt and response capture is enabled. This is stronger than stripping only the traceback: it also omits exception messages and the error status description, while retaining the exception type and `ERROR` status. The explicit `True` takes precedence over `FI_HIDE_ERROR_DETAILS` in the environment.
+
+Input and output privacy remain independent. Set both `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`, or replace the config in step 3 with:
+
+```python
+TraceConfig(hide_inputs=True, hide_outputs=True, hide_error_details=True)
+```
+
+Input and output values are redacted, and message content is dropped. Span names, timing, model IDs, token counts and tool names remain available. These settings are not a general-purpose secret scrubber: keep sensitive data out of span names, tool descriptions, schemas and custom metadata. Error text that your application returns as normal output is content, not an exception, so use the content switches to hide it.
+
+### Agent Spec's native tracing interface
+
+Agent Spec also exposes a `SpanProcessor` interface. [Arize's Agent Spec integration](https://arize.com/docs/ax/integrations/python-agent-frameworks/agentspec/agentspec-tracing) uses that interface instead of LangGraph callbacks. It is a separate third-party route, not a prerequisite for this guide or a guarantee of portable adapter and flow coverage. Do not enable it alongside this LangChain instrumentor: both can observe the same execution and produce duplicate traces.
+
+## Troubleshooting
+
+- **No traces in the project.** Check `FI_API_KEY`, `FI_SECRET_KEY` and `FI_BASE_URL` in the shell running the application. Instrument before loading the agent, and flush before the process exits.
+- **Unexpected `hide_error_details` argument.** Upgrade `fi-instrumentation-otel` and `traceai-langchain` with the minimum versions in step 1.
+- **Each async model call becomes its own trace.** Use Python 3.11 or later for `ainvoke`, or use synchronous `invoke` on Python 3.10.
+- **Duplicate traces.** Keep one runtime instrumentor; remove a second LangChain/LangGraph setup or Agent Spec bus instrumentor.
+- **The error has no message.** This is intentional. The guide hides error details regardless of input/output capture. Use `exception.type` and `ERROR` status to identify the failure without exporting its text.

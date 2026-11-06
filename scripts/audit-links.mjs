@@ -14,6 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { integrationNavigation } from '../src/lib/integrations.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -57,6 +58,15 @@ while ((match = hrefRegex.exec(navFile)) !== null) {
   const lineNum = navFile.substring(0, match.index).split('\n').length;
   navHrefs.set(match[1], lineNum);
 }
+
+// Dynamic catalog links are not literals in navigation.ts. Audit them too.
+function addCatalogLinks(items) {
+  for (const item of items) {
+    if (item.href) navHrefs.set(item.href, 'catalog');
+    if (item.items) addCatalogLinks(item.items);
+  }
+}
+addCatalogLinks(integrationNavigation);
 
 // ── 3. Extract all internal links from MDX files ──────────────
 function findMdxFiles(dir) {
