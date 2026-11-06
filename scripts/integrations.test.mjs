@@ -42,6 +42,51 @@ function flatten(list) { return list.flatMap(item => [item.href, ...(item.items 
 // Release labels are prose, not code samples, model names or package versions.
 export function publicProse(text) { return text.replace(/^\s*(```|~~~)[\s\S]*?^\s*\1.*$/gm, '').replace(/`+[^`]*`+/g, ''); }
 
+test('VoltAgent uses the released processor and a discoverable Node.js example', () => {
+  const page = read('src/pages/docs/integrations/traceai/voltagent.mdx');
+  const catalog = integrations.find(i => i.id === 'voltagent');
+  assert.equal(catalog?.href, '/docs/integrations/traceai/voltagent');
+  assert.equal(catalog?.category, 'frameworks');
+  assert.equal(catalog?.method, 'traceAI SDK');
+  for (const pin of ['@traceai/voltagent@0.1.0', '@traceai/fi-core@1.1.1', '@voltagent/core@2.11.0', 'ai@6.0.309', '@ai-sdk/openai@3.0.130', 'zod@4.6.7']) {
+    assert.ok(page.includes(pin), pin);
+  }
+  assert.match(page, /setGlobalTracerProvider: false/);
+  assert.match(page, /spanProcessors: \[new FIVoltAgentSpanProcessor\(\{ tracerProvider \}\)\]/);
+  assert.match(page, /node voltagent\.mjs/);
+  assert.match(page, /Open \*\*Observe\*\*/);
+  assert.doesNotMatch(page, /tested with|live run|unit tests|end-to-end runs|2026-10-16/i);
+});
+
+test('VoltAgent closes the application and owned provider even when the operation fails', () => {
+  const page = read('src/pages/docs/integrations/traceai/voltagent.mdx');
+  const example = page.match(/```javascript\n([\s\S]*?)\n```/)?.[1];
+  assert.ok(example, 'A runnable example is required');
+  assert.match(example, /const app = new VoltAgent\(/);
+  assert.match(example, /try \{\s*const result = await agent\.generateText\(/);
+  assert.match(example, /\} finally \{\s*try \{\s*await app\.shutdown\(\);\s*\} finally \{\s*\/\/[^\n]*\n\s*await tracerProvider\.shutdown\(\);\s*\}\s*\}/);
+  assert.doesNotMatch(example, /await observability\.(?:shutdown|forceFlush)\(\)|process\.exit/);
+  assert.match(page, /`observability\.shutdown\(\)` alone does not stop all application resources/);
+  assert.match(page, /full application and owned-provider cleanup/);
+  assert.match(page, /await observability\.forceFlush\(\)/);
+  assert.match(page, /not after each request/);
+});
+
+test('VoltAgent keeps actionable resumed-workflow, token and privacy limits', () => {
+  const page = read('src/pages/docs/integrations/traceai/voltagent.mdx');
+  assert.match(page, /Resumed workflows in VoltAgent 2\.11\.0/);
+  assert.match(page, /500 ms polling interval.*even after `app\.shutdown\(\)`/);
+  assert.match(page, /Do not force-exit a server or manipulate private timers/);
+  assert.match(page, /actual success or failure status/);
+  assert.match(page, /flush before the agent span ends/);
+  assert.match(page, /FI_HIDE_INPUTS=true/);
+  assert.match(page, /FI_HIDE_OUTPUTS=true/);
+  assert.match(page, /JSON-valued attributes.*can retain nested credentials/);
+  assert.match(page, /`FI_PII_REDACTION` is not applied/);
+  assert.match(page, /not VoltOps or other exporters/);
+  assert.doesNotMatch(page, /Credentials are never exported/);
+});
+
 test('Vitest guide documents native test tracing without an evaluation-import claim', () => {
   const page = read('src/pages/docs/integrations/frameworks/vitest.mdx');
   const catalog = integrations.find(i => i.id === 'vitest');
