@@ -93,7 +93,7 @@ class PageMatchesExample(unittest.TestCase):
 
     def test_privacy_and_scope_are_actionable_not_a_test_diary(self):
         for needed in ("FI_HIDE_INPUTS=true", "FI_HIDE_OUTPUTS=true", "FI_HIDE_ERROR_DETAILS=true",
-                       "__REDACTED__", "setting it to `false`", "separately", "SIGTERM",
+                       "__REDACTED__", "setting it to `false`", "independently in each process", "SIGTERM",
                        "never an LLM span", "ListTasks", "## Privacy", "## Troubleshooting",
                        "/docs/command-center/features/mcp-a2a"):
             self.assertIn(needed, self.page)
