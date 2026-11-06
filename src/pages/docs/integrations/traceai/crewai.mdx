@@ -1,96 +1,187 @@
 ---
-title: "CrewAI Integration with Future AGI for Multi-Agent Tracing"
-description: "Integrate CrewAI with Future AGI observability. Set up traceAI-crewai to trace multi-agent crew task execution and tool usage automatically."
+title: "CrewAI tracing"
+description: "Send CrewAI's native lifecycle spans to Future AGI through an OpenTelemetry Collector with configuration filtering and observation types."
 ---
 
-## 1. Installation
-Install the traceAI and Crew packages
+Trace crews, standalone agents, Flows and model calls in **Observe** using CrewAI's native OpenTelemetry session and a local Collector.
+
+## Install
+
+Use Python 3.10–3.13 and CrewAI 1.15.33 or newer.
 
 ```bash
-pip install traceAI-crewai crewai crewai_tools
+pip install 'crewai>=1.15.33,<2' opentelemetry-exporter-otlp-proto-http
 ```
 
----
+Install [OpenTelemetry Collector Contrib 0.164.0](https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.164.0) for your operating system and put `otelcol-contrib` on your `PATH`. The Contrib distribution includes the transform processor used below.
 
-## 2. Set Environment Variables
+This route uses CrewAI's event lifecycle directly. You do not need `traceAI-crewai` or a copied tracing helper.
 
-Set up your environment variables to authenticate with both FutureAGI and OpenAI.
+## Configure credentials and destinations
+
+Set your Future AGI credentials and an OpenAI model available to your account before importing CrewAI.
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export OPENAI_API_KEY="your-openai-api-key"
+export OPENAI_MODEL="openai/gpt-4o-mini"
+
+# Turn off CrewAI's separate analytics and hosted trace destination.
+export CREWAI_DISABLE_TELEMETRY=true
+export CREWAI_TRACING_ENABLED=false
+```
+
+The explicit session below still exports spans. Do not enable another CrewAI or model-client instrumentor for the same execution: native sessions already create model-call spans, and combining routes can duplicate them.
+
+## Start the local Collector
+
+**Do not export native sessions directly to Future AGI.** CrewAI serializes function registries and callbacks into span attributes, including credentials held by partial functions and callable objects. The required Collector configuration below removes `crewai.llm.available_functions` and `crewai.llm.callbacks` before export. It also maps agents to **agent** observations and crews, tasks, Flows and methods to **chain** observations; model calls remain **llm** observations.
+
+Save this as `crewai-collector.yaml`. Use this receiver only for CrewAI traces. It listens on loopback, so run the Collector alongside the Python process on the same host. Future AGI credentials are read by the Collector, not attached to the application's local exporter.
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  transform/crewai:
+    error_mode: propagate
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "crewai.llm.available_functions")
+          - delete_key(attributes, "crewai.llm.callbacks")
+          - >-
+            set(attributes["fi.span.kind"], "agent")
+            where attributes["gen_ai.operation.name"] == "invoke_agent"
+          - >-
+            set(attributes["fi.span.kind"], "chain")
+            where attributes["gen_ai.operation.name"] == "invoke_workflow"
+            or attributes["gen_ai.operation.name"] == "execute_task"
+            or attributes["gen_ai.operation.name"] == "execute_method"
+
+exporters:
+  otlphttp/futureagi:
+    traces_endpoint: https://api.futureagi.com/tracer/v1/traces
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+    sending_queue:
+      enabled: false
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/crewai]
+      exporters: [otlphttp/futureagi]
+```
+
+In a terminal with `FI_API_KEY` and `FI_SECRET_KEY` set, start the Collector and leave it running:
+
+```bash
+otelcol-contrib validate --config=crewai-collector.yaml
+otelcol-contrib --config=crewai-collector.yaml
+```
+
+**Content capture:** this configuration removes runtime function and callback configuration, not application content. Native sessions still export inputs, outputs, tool definitions/results, Flow state and error details. Keep credentials and sensitive data out of that content and add your organization's redaction policy to the Collector if needed. `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` and `FI_HIDE_ERROR_DETAILS` do not apply to CrewAI's native provider. Keep the local receiver private; it receives the unfiltered spans. Do not add an exporter or pipeline that bypasses the transform processor.
+
+## Run a traced crew
+
+Save this as `crewai_example.py` and run it in another terminal with the CrewAI and OpenAI environment variables set. The application sends OTLP/HTTP protobuf to the local Collector; only the filtered, normalized spans are forwarded to Future AGI. The resource selects your Observe project.
 
 ```python
 import os
+from uuid import uuid4
 
-os.environ["OPENAI_API_KEY"] = "your-openai-api-key"
-os.environ["FI_API_KEY"] = "your-futureagi-api-key"
-os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
-```
+from crewai import Agent, Crew, LLM, Task
+from crewai.telemetry.tracing import telemetry_session
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
 
----
+exporter = OTLPSpanExporter(endpoint="http://127.0.0.1:4318/v1/traces")
+resource = Resource({
+    "service.name": "crewai-app",
+    "project_name": "crewai_project",
+    "project_type": "observe",
+})
 
-## 3. Initialize Trace Provider
-Set up the trace provider to create a new project in FutureAGI, establish telemetry data pipelines.
-
-```python
-from fi_instrumentation import register
-from fi_instrumentation.fi_types import ProjectType
-
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="crewai_project",
+writer = Agent(
+    role="Writer",
+    goal="Explain technical ideas clearly",
+    backstory="You write concise explanations for developers.",
+    llm=LLM(model=os.environ["OPENAI_MODEL"]),
+    allow_delegation=False,
 )
+task = Task(
+    description="Explain why distributed tracing helps debug an agent workflow.",
+    expected_output="A two-sentence explanation.",
+    agent=writer,
+)
+crew = Crew(agents=[writer], tasks=[task])
+
+with telemetry_session(
+    str(uuid4()),
+    "crewai_project",
+    exporters=[exporter],
+    resource=resource,
+):
+    result = crew.kickoff()
+    print(result.raw)
 ```
 
----
-
-## 4. Instrument your Project
-Initialize the Crew AI instrumentor to enable automatic tracing.
-
-```python   
-from traceai_crewai import CrewAIInstrumentor
-
-CrewAIInstrumentor().instrument(tracer_provider=trace_provider)
+```bash
+python crewai_example.py
 ```
 
----
+Exiting `telemetry_session` drains the event handlers, finishes pending spans, flushes the exporter and removes that session's listeners. Create a new session and exporter for each independent execution; do not reuse a shut-down exporter.
 
-## 5. Run Crew AI
-Run your Crew AI application as you normally would. Our Instrumentor will automatically trace and send the telemetry data to our platform.
+## Trace a standalone agent or Flow
+
+For a standalone agent, replace the `crew.kickoff()` call inside the session with `writer.kickoff("Explain distributed tracing in two sentences.")`. Keep the call inside the session so its agent and model spans share the same execution.
+
+For a Flow, define the Flow in the same script, then replace the session's two execution lines with `print(ExplanationFlow().kickoff())`. The Flow and each executed method get their own spans.
 
 ```python
-from crewai import LLM, Agent, Crew, Process, Task
-from crewai_tools import SerperDevTool
+from crewai.flow.flow import Flow, listen, start
 
-def story_example():
-    llm = LLM(
-        model="gpt-4",
-        temperature=0.8,
-        max_tokens=150,
-        top_p=0.9,
-        frequency_penalty=0.1,
-        presence_penalty=0.1,
-        stop=["END"],
-        seed=42,
-    )
+class ExplanationFlow(Flow):
+    @start()
+    def topic(self):
+        return "Distributed tracing connects the steps in an agent workflow."
 
-    writer = Agent(
-        role="Writer",
-        goal="Write creative stories",
-        backstory="You are a creative writer with a passion for storytelling",
-        allow_delegation=False,
-        llm=llm,
-    )
-
-    writing_task = Task(
-        description="Write a short story about a magical forest",
-        agent=writer,
-        expected_output="A short story about a magical forest",
-    )
-
-    crew = Crew(agents=[writer], tasks=[writing_task])
-
-    # Execute the crew
-    result = crew.kickoff()
-    print(result)
-
-if __name__ == "__main__":
-    story_example()
+    @listen(topic)
+    def summarize(self, explanation):
+        return {"summary": explanation}
 ```
+
+In async code, keep the session open while awaiting `flow.kickoff_async()` or `writer.kickoff_async(...)`. Do not start background work that outlives the session.
+
+## View the trace
+
+Open **Observe** in Future AGI and select **crewai_project**. Expand the trace to inspect the execution hierarchy, durations and errors. Model spans include the model name and token usage when the provider reports it. Native content is carried in `gen_ai.input.messages`, `gen_ai.output.messages` and `crewai.*` span attributes.
+
+## Existing traceAI installations
+
+You can keep the maintained wrapper route for existing crew/task/tool workloads. Use Python 3.10–3.12 and upgrade the package rather than retaining an older pinned release:
+
+```bash
+pip install --upgrade 'traceAI-crewai>=0.1.10'
+```
+
+This route wraps crew kickoff, task execution and tool usage. It does not add Flow, standalone-agent or model lifecycle spans; use the native session above for those paths. Do not run both tracing routes together.
+
+Configure the wrapper route using [the package README](https://github.com/future-agi/traceAI/tree/dev/python/frameworks/crewai). Its `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` controls apply to wrapper-captured content; see [mask span attributes](/docs/sdk/tracing/mask-span-attributes). They do not control CrewAI's independent exporters.
+
+CrewAI 0.41.1 has no native telemetry opt-out: upgrade CrewAI if you need to disable its separate analytics exporter. On maintained releases, set `CREWAI_DISABLE_TELEMETRY=true` before importing it.
+
+## Troubleshooting
+
+- **No spans arrive:** keep execution inside `telemetry_session`, let the context exit, and check the Collector's logs. The application must reach `http://127.0.0.1:4318/v1/traces`; the Collector must have both Future AGI credentials and use the full `/tracer/v1/traces` HTTPS endpoint.
+- **Agent or chain filters miss spans:** check that the `transform/crewai` processor is present in the traces pipeline. Do not point the Python exporter directly at Future AGI to bypass a Collector error.
+- **Duplicate model spans:** remove other CrewAI and model-client instrumentors from this execution and disable CrewAI-hosted tracing with `CREWAI_TRACING_ENABLED=false`.
+- **Native session import fails:** upgrade CrewAI to the version range in the install command and restart the Python process.

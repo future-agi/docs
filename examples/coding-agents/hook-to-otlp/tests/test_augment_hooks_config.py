@@ -37,7 +37,7 @@ from tests.helpers import Receiver, attrs
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "augment-code"
 TEMPLATE_COMMAND = "/Users/you/.augment/fi-hook-to-otlp/futureagi-hook.sh"
-OBSERVE_EVENTS = ["SessionStart", "PostToolUse", "Stop", "SessionEnd"]
+OBSERVE_EVENTS = ["SessionStart", "Stop", "SessionEnd"]
 SHELLS = [sh for sh in ("/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash") if os.path.exists(sh)]
 WORKSPACE_FILE = ".augment/settings.local.json"
 # Home directories that break naive quoting: a space, JSON and sed specials, shell specials.
@@ -117,9 +117,9 @@ class AugmentHooksConfigTest(unittest.TestCase):
                                *args], capture_output=True, text=True,
                               env=self.base_env(home, GIT_CONFIG_NOSYSTEM="1"))
 
-    def test_template_registers_observation_hooks_only(self):
+    def test_template_registers_session_hooks_only(self):
         settings = json.loads((EXAMPLE / "settings.json").read_text())
-        self.assertEqual(list(settings["hooks"]), OBSERVE_EVENTS)  # never PreToolUse
+        self.assertEqual(list(settings["hooks"]), OBSERVE_EVENTS)  # no PreToolUse or PostToolUse
         for event, hook in commands(settings):
             self.assertEqual(hook, {"type": "command", "command": TEMPLATE_COMMAND, "timeout": 5000}, event)
         self.assertNotIn("metadata", json.dumps(settings))  # no includeUserContext / ConversationData
@@ -152,13 +152,24 @@ class AugmentHooksConfigTest(unittest.TestCase):
                                               transport, shell)
                             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""),
                                              f"{label} {event}")
+                        session_spans = rx.spans()
+                        self.assertEqual({s["name"] for s in session_spans},
+                                         {"Agent stop", "Auggie session"}, label)
+                        self.assertEqual({attrs(s)["session.id"] for s in session_spans}, {sid}, label)
+                        stop = [s for s in session_spans if s["name"] == "Agent stop"][-1]
+                        self.assertEqual(attrs(stop)["augment.stop.cause"], "end_turn", label)
+                        # Keep the synthetic transport/escaping regression for the adapter's
+                        # tool parser without registering it in the customer configuration.
+                        tool_sid = sid + "-synthetic-tool"
+                        result = run_hook(hook["command"],
+                                          payload("PostToolUse", tool_sid, project), env, project,
+                                          transport, shell)
+                        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""), label)
                         spans = rx.spans()
                     finally:
                         rx.close()
-                    names = {s["name"] for s in spans}
-                    self.assertTrue({"view", "Agent stop", "Auggie session"} <= names, f"{label}: {names}")
                     view = [s for s in spans if s["name"] == "view"][-1]
-                    self.assertEqual(attrs(view)["session.id"], sid, label)
+                    self.assertEqual(attrs(view)["session.id"], tool_sid, label)
                     # The heredoc is quoted: no expansion of $HOME, backticks or quotes on the way in.
                     self.assertEqual(attrs(view)["output.value"], payload("PostToolUse", sid, project)["tool_output"],
                                      label)

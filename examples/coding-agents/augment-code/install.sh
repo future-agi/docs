@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install the Future AGI hook emitter for Augment's Auggie CLI (macOS, Linux).
+# Install session-only Future AGI hooks for Auggie CLI 0.36.0 on macOS.
+# The template registers SessionStart, Stop and SessionEnd, not tool hooks.
 #
 #   ./install.sh                  hooks for every Auggie session (~/.augment/settings.json)
 #   ./install.sh --project REPO   hooks for one repository only (REPO/.augment/settings.local.json)

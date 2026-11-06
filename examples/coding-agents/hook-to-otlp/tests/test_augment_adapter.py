@@ -48,6 +48,30 @@ class AugmentAdapterTest(unittest.TestCase):
         extra = {"FI_HOOK_CAPTURE_CONTENT": "1"} if capture else {}
         return replay(augment, config("augment", self.tmp.name, **extra), self.records)
 
+    def test_session_only_recipe_exports_stops_without_content_or_tools(self):
+        # Filter the synthetic fixture to the three shipped lifecycle hooks.
+        # This exercises the supported recipe without claiming a live tool run.
+        records = [r for r in self.records if r["event"] in ("SessionStart", "Stop", "SessionEnd")]
+        for capture in ("0", "1"):
+            with tempfile.TemporaryDirectory() as state:
+                cfg = config("augment", state, FI_HOOK_CAPTURE_CONTENT=capture)
+                spans = replay(augment, cfg, records)
+            root_id = emit.span_id("augment", SID, SESSION, "")
+            root = latest(spans, root_id)
+            self.assertEqual(root["name"], "Auggie session")
+            self.assertEqual(attrs(root)["session.id"], SID)
+            self.assertEqual(attrs(root)["augment.stop.last_cause"], "error")
+            self.assertEqual({s["traceId"] for s in spans}, {emit.trace_id("augment", SID)})
+            children = [s for s in spans if s.get("parentSpanId") == root_id]
+            self.assertEqual([s["name"] for s in children], ["Agent stop", "Agent stop"])
+            self.assertEqual([attrs(s)["augment.stop.cause"] for s in children], ["end_turn", "error"])
+            for marker in MARKERS + NEVER + (ERROR_USER, "/Users/"):
+                self.assertNotIn(marker, json.dumps(spans), marker)
+
+    def test_session_without_a_stop_exports_nothing(self):
+        records = [r for r in self.records if r["event"] in ("SessionStart", "SessionEnd")]
+        self.assertEqual(replay(augment, config("augment", self.tmp.name), records), [])
+
     def test_one_trace_keyed_by_conversation_id(self):
         spans = self.spans()
         self.assertEqual({s["traceId"] for s in spans}, {emit.trace_id("augment", SID)})
