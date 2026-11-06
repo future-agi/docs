@@ -37,9 +37,10 @@ The program prints one trace ID per question. Open **Observe â†’ your project â†
 agent, graph, model and tool spans. `-stream` streams the reply; `-fail` adds a second run with a nonexistent
 model to show an error trace.
 
-Content is captured by default. Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before running if inputs
-and outputs must stay in the process. Message-specific switches do not sanitize Agentic or generic JSON
-payloads; see the guide's [privacy section](../../../src/pages/docs/integrations/traceai/go/eino.mdx#privacy).
+Content is captured by default. Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before running to hide
+mapped input/output content and suppress `error.message`. Message-specific switches do not sanitize Agentic or generic JSON
+payloads. Keep sensitive values out of metadata and `OTEL_RESOURCE_ATTRIBUTES`, which these switches do not
+sanitize; see the guide's [privacy section](../../../src/pages/docs/integrations/traceai/go/eino.mdx#privacy).
 
 ## Page contract tests
 

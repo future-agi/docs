@@ -5,7 +5,7 @@ description: "Trace Go applications built with CloudWeGo Eino: one callback hand
 
 ## About
 
-`traceaieino` (module `github.com/future-agi/traceAI/go/eino`) traces Go services built with [CloudWeGo Eino](https://github.com/cloudwego/eino). It is an Eino `callbacks.Handler`, the framework's own extension point: you register it once at start-up, and every component run Eino reports becomes one span. That covers graphs, chains and workflows and their nodes, chat models (model name, token usage, messages, tool calls), tools, retrievers, embedders, prompts, lambdas and ADK agents. A span's parent is the span of the enclosing run, so one question to your agent is one trace.
+`traceaieino` (module `github.com/future-agi/traceAI/go/eino`) traces Go services built with [CloudWeGo Eino](https://github.com/cloudwego/eino). It is an Eino `callbacks.Handler`, the framework's own extension point: you register it once at start-up, and every component run Eino reports becomes one span. That covers graphs, chains and workflows and their nodes, chat models (model name, token usage, messages, tool calls), tools, retrievers, embedders, prompts, lambdas and ADK agents. Runs normally nest under the enclosing run or your own span; see [callback parenting](#callback-parenting) when multiple tracing handlers share a context.
 
 A run of the example on this page is one trace:
 
@@ -23,7 +23,7 @@ trip_request                     your request span (CHAIN)
 This is not the same as:
 
 - **The OpenAI, Anthropic and Gemini Go modules** (traceAI `go/openai`, `go/anthropic`, `go/genai`). Those wrap one provider SDK's HTTP calls and see nothing of Eino. This module reads Eino's callbacks, so it traces whatever model provider an Eino component uses, plus the graph, tool and agent structure around it.
-- **Eino's own callback handlers for other vendors** (`eino-ext/callbacks/langfuse`, APMPlus, CozeLoop). They export another product's attributes and headers; pointing one at Future AGI does not work. This module does not use or replace them, and they can stay registered next to it.
+- **Eino's own callback handlers for other vendors** (`eino-ext/callbacks/langfuse`, APMPlus, CozeLoop). They export another product's attributes and headers; pointing one at Future AGI does not work. This module does not use or replace them. They can stay registered next to it, but [callback ordering can affect span parents](#callback-parenting).
 - **The Python framework integrations** ([LangGraph](/docs/integrations/traceai/langgraph), [Google ADK](/docs/integrations/traceai/google_adk), ...). Eino is a Go framework; this module writes the same traceAI attribute names, so its spans read the same in Future AGI.
 
 | | |
@@ -125,7 +125,7 @@ func newTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
 }
 ```
 
-`resource.Default()` adds only the SDK name and version and `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` if you set them. No host, process or OS detector is added, so no host name, user name or local path is exported.
+`resource.Default()` adds SDK metadata and reads `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES`. This setup overrides `service.name` with your project name and enables no host, process or OS detectors. However, attributes supplied through `OTEL_RESOURCE_ATTRIBUTES` are still exported, including any host names, user names or local paths you put there. Review those values separately: the handler's privacy switches do not filter resource attributes.
 
 ## 4. Register the handler and flush on exit
 
@@ -192,7 +192,7 @@ Put a session id on the context you pass to the run; every span the handler star
 	ctx = traceaieino.ContextWithSessionID(ctx, sessionID)
 ```
 
-A span you start yourself becomes the parent of the Eino run you start under it. The example wraps each question in a request span, the way an HTTP server span would:
+For a top-level Eino run, the current OpenTelemetry span becomes its parent unless another callback replaces it first. The example uses one tracing handler and wraps each question in a request span, the way an HTTP server span would:
 
 ```go
 	ctx, span := tp.Tracer("eino-example").Start(ctx, "trip_request",
@@ -204,7 +204,13 @@ A span you start yourself becomes the parent of the Eino run you start under it.
 	tc.SetAttributes(span, attribute.String(traceaieino.InputValue, q))
 ```
 
-`TraceConfig.SetAttributes` applies the same privacy switches to values you add yourself: the question and, at the end, the answer on the request span are what the Future AGI trace list shows, and they become `__REDACTED__` when content is hidden. The handler also puts its own span on the context it hands to your code, so a span you start inside a tool or a lambda nests under that node.
+`TraceConfig.SetAttributes` applies the same key-based privacy rules to attributes you add yourself: the question in `input.value` and the answer in `output.value` become `__REDACTED__` when their respective content switches are enabled. It does not scrub arbitrary custom attributes. The handler puts its own span on the context it returns; with no other handler replacing that span, a span you start inside a tool or a lambda nests under that node.
+
+### Callback parenting
+
+A top-level run with no enclosing traceAI run inherits the current OpenTelemetry span, including one placed on the context by another callback handler. Eino v0.9.21 calls `OnStart` handlers in reverse registration order: with `compose.WithCallbacks(h, other)`, `other` runs first and can make its span the parent of the traceAI top-level span.
+
+For a nested run with an enclosing traceAI span, the handler keeps the current span only if it is valid and uses the same tracer provider as the enclosing span; otherwise it uses the enclosing traceAI span. This protects nested runs from cross-provider reparenting, not top-level runs or other handlers using the same provider. Use a single tracing handler per run if you do not want callback ordering to affect the parent.
 
 ## 6. Streams and agents
 
@@ -238,7 +244,7 @@ It prints a trace id per question. `-fail` asks a second agent whose model does 
 | `Agent`, `AgenticAgent` (ADK) | `AGENT` (`invoke_agent`) |
 | `Retriever` | `RETRIEVER` |
 | `Embedding` | `EMBEDDING` (`embeddings`) |
-| `Graph`, `Chain`, `Workflow`, `Lambda`, `Passthrough`, `ToolsNode`, `ChatTemplate`, `Indexer`, `Loader`, `DocumentTransformer` | `CHAIN` |
+| `Graph`, `Chain`, `Workflow`, `Lambda`, `Passthrough`, `ToolsNode`, `ChatTemplate`, `AgenticChatTemplate`, `Indexer`, `Loader`, `DocumentTransformer` | `CHAIN` |
 | any other (custom) component | `UNKNOWN`, kept with its name |
 
 The span name is the node, tool or agent name (`compose.WithNodeName`, the tool name, the agent name), otherwise Eino's display name, for example `OpenAIChatModel`.
@@ -248,17 +254,21 @@ The span name is the node, tool or agent name (`compose.WithNodeName`, the tool 
 | `gen_ai.span.kind` | always |
 | `gen_ai.operation.name` | only on LLM (`chat`), tool (`execute_tool`), embedding (`embeddings`) and agent (`invoke_agent`) spans |
 | `eino.component`, `eino.type`, `eino.name` | only when `RunInfo` supplies the corresponding non-empty field |
-| `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature`, `gen_ai.request.top_p`, `gen_ai.request.stop_sequences`, `gen_ai.request.parameters` | when the chat model reports its config in the callback (the eino-ext models do; a model that fires no callbacks itself, wrapped by the graph, reports only the messages). Zero values are not written |
-| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens`, `gen_ai.usage.cache_read_tokens`, `gen_ai.usage.output_tokens.reasoning` | only when the component reports a non-zero count; never a placeholder 0, never a sum of chunks |
-| `gen_ai.response.finish_reasons`, `gen_ai.tool.definitions.*` | chat model spans |
-| `gen_ai.input.messages.*`, `gen_ai.output.messages.*` (role, text, image URLs, tool calls) | chat model spans (content) |
-| `gen_ai.tool.name`, `gen_ai.tool.call.id`; `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` (content) | tool spans |
-| `gen_ai.agent.name` | agent spans |
-| `gen_ai.retrieval.query` (content), `gen_ai.retrieval.top_k`, `retrieval.documents.{i}.document.id` / `.score` / `.content` (content) | retriever spans |
-| `gen_ai.embeddings.dimension.count` | embedding spans; the vectors are never written |
-| `input.value`, `output.value` (content) | every span whose input or output can be encoded |
+| `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature`, `gen_ai.request.top_p`, `gen_ai.request.stop_sequences`, `gen_ai.request.parameters` | when supplied by the chat model callback; numeric zero values are omitted. The parameters JSON can also contain `tool_choice` |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` | chat model spans: all three are emitted when usage has any non-zero input, output or total count; individual input/output counts may be zero. A zero total is derived from input + output; never a sum of chunks |
+| `gen_ai.usage.cache_read_tokens`, `gen_ai.usage.output_tokens.reasoning` | chat model spans: only positive counts, and only when ordinary token usage is present |
+| `gen_ai.response.finish_reasons` | when the chat model response supplies a non-empty finish reason |
+| `gen_ai.tool.definitions.*` | when the chat model input supplies encodable named tool definitions |
+| `gen_ai.input.messages.*`, `gen_ai.output.messages.*` (role, text, image URLs, tool calls) | chat model spans when the corresponding message fields are supplied (content) |
+| `gen_ai.tool.name`, `gen_ai.tool.call.id`; `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` (content) | tool spans: name from non-empty `RunInfo.Name`, call ID from context, arguments/result from the tool callback |
+| `gen_ai.agent.name` | agent spans with a non-empty `RunInfo.Name` |
+| `gen_ai.retrieval.query` (content), `gen_ai.retrieval.top_k`, `retrieval.documents.{i}.document.id` / `.score` / `.content` | retriever callbacks: query and document content are content attributes; top-k is positive-only, IDs must be non-empty, scores require `_score` metadata |
+| `gen_ai.embeddings.dimension.count` | embedding callbacks with a non-empty first vector; this mapping omits the vectors themselves |
+| `input.value`, `output.value` (content) | when the component mapping emits a value; retrieval, embedding and indexer outputs use dedicated attributes instead |
 | `session.id`, `user.id` | from `ContextWithSessionID` / `ContextWithUserID` |
 | `error.type`, `error.message` | on errors, see below |
+
+These attributes depend on the callback payload and [privacy settings](#privacy). Embedding callbacks emit `gen_ai.usage.input_tokens` and `gen_ai.usage.total_tokens` when usage has a non-zero count; either exported count may be zero, and this mapping does not derive a missing total. They can also supply `gen_ai.request.model`.
 
 `gen_ai.provider.name` is not written: Eino reports the component (`OpenAI`), not the endpoint behind it. Cost is not computed by the module; Future AGI derives it from the model name and token counts when it knows the model.
 
@@ -272,10 +282,12 @@ Content is captured by default, as in every traceAI instrumentor. The traceAI sw
 | `FI_HIDE_OUTPUTS=true` | `output.value` becomes `__REDACTED__`; output messages, tool-call results, retrieved text and `error.message` are dropped |
 | `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES` | drop `gen_ai.input.messages.*` / `gen_ai.output.messages.*` only |
 | `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT` | redact text only in the structured `gen_ai.input.messages.*` / `gen_ai.output.messages.*` attributes; keep roles and tool calls. They do not redact `input.value` / `output.value` |
-| `FI_HIDE_INPUT_IMAGES`, `FI_BASE64_IMAGE_MAX_LENGTH` | drop input images; redact inline images longer than the limit (default 32 000) |
+| `FI_HIDE_INPUT_IMAGES`, `FI_BASE64_IMAGE_MAX_LENGTH` | apply only to structured input-message image attributes: drop image data, or redact base64 `data:image/` URLs longer than the limit (default 32 000 bytes). Output images are unaffected |
 | `FI_HIDE_LLM_INVOCATION_PARAMETERS` | drop `gen_ai.request.parameters` |
 
-A value counts only when it is `true` (any case). With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true` the span tree, model names, token counts, tool and agent names and error types are still exported; the conversation, tool arguments and results are not.
+Boolean switches take effect only when set to `true` (any case; surrounding whitespace is ignored). `FI_BASE64_IMAGE_MAX_LENGTH` takes a positive integer byte limit. With `FI_HIDE_INPUTS=true FI_HIDE_OUTPUTS=true`, the handler hides the mapped conversation, tool arguments and results; the span tree, model names, token counts, tool and agent names and error types can still be exported.
+
+These switches are not general-purpose metadata sanitizers. Session/user IDs, span and component names, document IDs, tool definitions and stop sequences can still be exported: keep sensitive data out of those fields. `FI_HIDE_LLM_INVOCATION_PARAMETERS` drops only the `gen_ai.request.parameters` JSON attribute, not individual request attributes such as `gen_ai.request.stop_sequences`.
 
 Message-specific switches do not redact `input.value` / `output.value`, which also contain conversation text for ordinary `schema.Message` inputs and `ChatModelAgent` runs, not just Agentic or generic JSON payloads. Set **`FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`** to keep conversation text out of these values and the structured message attributes.
 
@@ -288,8 +300,8 @@ The embedding callback mapping omits embedding vectors. The module adds no resou
 ## Errors
 
 - A failed run ends its span with status ERROR and `error.type`: `canceled` or `timeout` for the context, otherwise the Go type of the innermost error (for example `*openai.APIError`), or `error` for a plain Go error. The enclosing graph and agent spans are ERROR too, because Eino reports the error at each level.
-- `error.message` is the first line of the error with URLs, email addresses, file paths, IP addresses and `host:port` pairs (and this machine's host name, user name and home directory) replaced by placeholders. It is dropped when inputs or outputs are hidden. No stack trace and no exception event are recorded.
-- A stream that fails part-way ends its span ERROR. A later `OnEnd` for a run that already failed changes nothing.
+- `error.message` uses the first line of the error with best-effort scrubbing of matching URLs, email addresses, file paths, IPv4 addresses, `host:port` pairs and known local host/user/home values. IPv6 endpoints and other unmatched details can remain. Set **`FI_HIDE_INPUTS=true` or `FI_HIDE_OUTPUTS=true`** to suppress `error.message` when network details must not be exported. The handler adds no stack trace or exception event.
+- When the handler receives an error from a component's output stream, it ends that component's span ERROR. A later `OnEnd` for a run that already failed changes nothing.
 - The handler never changes an input, an output or an error, never returns an error to Eino, and recovers from its own panics.
 
 ## Scope limits
@@ -308,4 +320,4 @@ The embedding callback mapping omits embedding vectors. The module adds no resou
 - **Two spans for every node.** The handler is registered twice: `AppendGlobalHandlers` ran twice, or the handler is global and also passed with `compose.WithCallbacks` / `adk.WithCallbacks`.
 - **No model name or token counts on a model span.** The chat model fires no callbacks itself, so the graph reports only its messages. The eino-ext models report both; for your own model, fire `callbacks.OnStart` / `OnEnd` with `*model.CallbackInput` / `*model.CallbackOutput`.
 - **A streamed model span ends late or never.** Read the stream to the end or close it; the span ends when the handler's copy is read to the end.
-- **Spans from another tracing handler (Langfuse, APMPlus) in the same process.** They stay separate; this module never makes another handler's span the parent of its own.
+- **A traceAI root appears under another tracing handler's span.** Top-level runs inherit the current OpenTelemetry span. Another handler can replace it before traceAI runs; review [callback ordering and the narrower nested-run protection](#callback-parenting).

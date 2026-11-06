@@ -65,7 +65,8 @@ func main() {
 // newTracerProvider sends spans to Future AGI over OTLP/HTTP: the full traces
 // URL, both auth headers, no gzip (the collector rejects it), and the
 // project_name / project_type resource attributes. It adds no host, process or
-// OS resource detector, so no host name, user name or local path is exported.
+// OS resource detector. Review OTEL_RESOURCE_ATTRIBUTES separately: the handler's
+// privacy switches do not filter environment-supplied resource attributes.
 func newTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
 	apiKey, secretKey := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY")
 	project := os.Getenv("FI_PROJECT_NAME")

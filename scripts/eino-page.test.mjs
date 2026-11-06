@@ -107,3 +107,82 @@ test('Eino message-specific masking is not described as generic JSON sanitizatio
   assert.match(warning, /do not sanitize generic JSON/);
   assert.match(readme, /Message-specific switches do not sanitize Agentic or generic JSON/);
 });
+
+test('Eino error scrubbing is best-effort and does not promise IPv6 privacy', () => {
+  const errors = page.split('## Errors')[1]?.split('## Scope limits')[0];
+  assert.ok(errors, 'Keep the error export guidance');
+  assert.match(errors, /`error\.message` uses the first line of the error with best-effort scrubbing/);
+  assert.match(errors, /IPv4 addresses/);
+  assert.match(errors, /IPv6 endpoints and other unmatched details can remain/);
+  assert.match(errors, /Set \*\*`FI_HIDE_INPUTS=true` or `FI_HIDE_OUTPUTS=true`\*\* to suppress `error\.message` when network details must not be exported/);
+  assert.doesNotMatch(errors, /IP addresses|safe to export|all network details.*(?:removed|redacted)/);
+});
+
+test('Eino separates top-level callback ordering from nested cross-provider protection', () => {
+  const parenting = page.split('### Callback parenting')[1]?.split('## 6. Streams and agents')[0];
+  assert.ok(parenting, 'Explain callback parenting next to application spans');
+  assert.match(parenting, /A top-level run with no enclosing traceAI run inherits the current OpenTelemetry span/);
+  assert.match(parenting, /including one placed on the context by another callback handler/);
+  assert.match(parenting, /Eino v0\.9\.21 calls `OnStart` handlers in reverse registration order/);
+  assert.match(parenting, /`compose\.WithCallbacks\(h, other\)`, `other` runs first and can make its span the parent/);
+  assert.match(parenting, /nested run with an enclosing traceAI span/);
+  assert.match(parenting, /current span only if it is valid and uses the same tracer provider/);
+  assert.match(parenting, /otherwise it uses the enclosing traceAI span/);
+  assert.match(parenting, /not top-level runs or other handlers using the same provider/);
+  assert.match(page, /\*\*A traceAI root appears under another tracing handler's span\.\*\*/);
+  assert.doesNotMatch(page, /They stay separate|never makes another handler's span the parent/);
+});
+
+test('Eino token counts distinguish ordinary usage from positive-only details', () => {
+  const captured = page.split('## What is captured')[1]?.split('## Privacy')[0];
+  assert.ok(captured, 'Keep the token attribute reference');
+  const rows = captured.split('\n');
+  const ordinary = rows.find(line => line.startsWith('| `gen_ai.usage.input_tokens`,'));
+  const details = rows.find(line => line.startsWith('| `gen_ai.usage.cache_read_tokens`,'));
+  assert.ok(ordinary, 'Give ordinary usage its own row');
+  assert.ok(details, 'Give cache-read and reasoning counts their own row');
+  assert.match(ordinary, /all three are emitted when usage has any non-zero input, output or total count/);
+  assert.match(ordinary, /individual input\/output counts may be zero/);
+  assert.match(ordinary, /A zero total is derived from input \+ output; never a sum of chunks/);
+  assert.match(details, /`gen_ai\.usage\.output_tokens\.reasoning`/);
+  assert.match(details, /only positive counts, and only when ordinary token usage is present/);
+  assert.match(captured, /Embedding callbacks emit `gen_ai\.usage\.input_tokens` and `gen_ai\.usage\.total_tokens`/);
+  assert.match(captured, /either exported count may be zero, and this mapping does not derive a missing total/);
+  assert.doesNotMatch(captured, /never a placeholder 0/);
+});
+
+test('Eino resource privacy does not cover environment-supplied metadata', () => {
+  const provider = page.split('## 3. Create the tracer provider')[1]?.split('## 4. Register')[0];
+  assert.ok(provider, 'Keep exporter resource guidance');
+  assert.match(provider, /enables no host, process or OS detectors/);
+  assert.match(provider, /attributes supplied through `OTEL_RESOURCE_ATTRIBUTES` are still exported/);
+  assert.match(provider, /privacy switches do not filter resource attributes/);
+  assert.doesNotMatch(provider, /no host name, user name or local path is exported/);
+  assert.match(main, /Review OTEL_RESOURCE_ATTRIBUTES separately/);
+  assert.doesNotMatch(main, /no host name, user name or local path is exported/);
+  assert.match(readme, /Keep sensitive values out of metadata and `OTEL_RESOURCE_ATTRIBUTES`/);
+});
+
+test('Eino privacy switches leave metadata and output image boundaries explicit', () => {
+  const privacy = page.split('## Privacy')[1]?.split('## Errors')[0];
+  assert.ok(privacy, 'Keep the customer-facing privacy section');
+  const images = privacy.split('\n').find(line => line.startsWith('| `FI_HIDE_INPUT_IMAGES`, `FI_BASE64_IMAGE_MAX_LENGTH` |'));
+  assert.ok(images, 'Keep the input image settings');
+  assert.match(images, /only to structured input-message image attributes/);
+  assert.match(images, /base64 `data:image\/` URLs/);
+  assert.match(images, /Output images are unaffected/);
+  assert.match(privacy, /not general-purpose metadata sanitizers/);
+  assert.match(privacy, /Session\/user IDs, span and component names, document IDs, tool definitions and stop sequences can still be exported/);
+  assert.match(privacy, /`FI_HIDE_LLM_INVOCATION_PARAMETERS` drops only the `gen_ai\.request\.parameters` JSON attribute, not individual request attributes/);
+  assert.match(page, /It does not scrub arbitrary custom attributes/);
+});
+
+test('Eino captured attributes retain callback-specific conditions', () => {
+  const captured = page.split('## What is captured')[1]?.split('## Privacy')[0];
+  assert.ok(captured, 'Keep the callback mapping reference');
+  assert.match(captured, /`ChatTemplate`, `AgenticChatTemplate`/);
+  assert.match(captured, /`gen_ai\.agent\.name` \| agent spans with a non-empty `RunInfo\.Name`/);
+  assert.match(captured, /embedding callbacks with a non-empty first vector; this mapping omits the vectors themselves/);
+  assert.match(captured, /retrieval, embedding and indexer outputs use dedicated attributes instead/);
+  assert.doesNotMatch(captured, /every span whose input or output can be encoded/);
+});
