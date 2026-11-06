@@ -37,7 +37,12 @@ def main() -> None:
     plugin = plugins[0]
     assert plugin["source"] == ("entrypoint" if route == "pip" else "user"), plugin
     assert plugin["enabled"] == args.enabled, plugin
-    assert not plugin["error"], plugin
+    if args.enabled:
+        assert not plugin["error"], plugin
+    else:
+        assert plugin["error"] == (
+            "not enabled in config (run `hermes plugins enable futureagi` to activate)"
+        ), plugin
     assert plugin["hooks"] == (len(tuple(HOOKS)) if args.enabled else 0), plugin
     print(f"Released {route} plugin: enabled={args.enabled}, hooks={plugin['hooks']}")
 
