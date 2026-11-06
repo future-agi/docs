@@ -16,6 +16,10 @@ test('Pi documents content-on privacy, status, kill switch and source-specific l
   assert.match(page, /Manual compaction between prompts/);
   assert.doesNotMatch(page, /verified live|test runs|E2B|mock server|PASS\/FAIL/);
 });
+test('Pi explains project lifecycle, credential recovery and replay privacy', () => {
+  for (const value of ['uninstall pi --scope project', 'Run status from the project directory', 'hidden prompts', 'Invalid replacements leave your saved profile unchanged', 'including when the conversation is resumed', 'including environment credentials'])
+    assert.ok(page.includes(value), value);
+});
 test('every local media reference exists', () => {
   for (const [,src] of page.matchAll(/(?:src=["']|!\[[^\]]*\]\()([^"')]+\.(?:png|webp|gif|mp4|webm))/g)) {
     if (src.startsWith('/')) assert.ok(existsSync(new URL(`../public${src}`, import.meta.url)), src);
