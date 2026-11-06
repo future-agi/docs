@@ -46,6 +46,20 @@ test('Gemini CLI setup matches the shipped native settings and preserves privacy
   assert.match(page, /processors: \[transform\/gemini-cli, batch\]/);
 });
 
+test('Gemini CLI clears inherited endpoint overrides before launching with privacy filtering', () => {
+  const setup = page.split('## 2. Configure native telemetry')[1]?.split('## 3. Run a session')[0];
+  assert.ok(setup, 'Keep endpoint cleanup in the setup before the first session');
+  assert.match(setup, /```bash\nunset OTEL_EXPORTER_OTLP_ENDPOINT GEMINI_TELEMETRY_OTLP_ENDPOINT\n```/);
+  assert.match(setup, /terminal that will launch Gemini CLI/);
+  assert.match(setup, /remove conflicting `GEMINI_TELEMETRY_\*` environment overrides/);
+  assert.match(setup, /take precedence over `telemetry\.otlpEndpoint`/);
+  assert.match(setup, /bypass the local collector and its privacy filters/);
+  assert.match(setup, /even with `logPrompts: false`/);
+  const session = page.split('## 3. Run a session')[1]?.split('## 4. Inspect the session')[0];
+  assert.ok(session, 'Include session launch instructions');
+  assert.match(session, /In the terminal where you cleared the overrides/);
+});
+
 test('Gemini CLI explains session mapping and native trace limitations', () => {
   assert.match(page, /copies `gen_ai\.conversation\.id` to `session\.id`/);
   assert.match(page, /does not emit turn spans in this mode/);
