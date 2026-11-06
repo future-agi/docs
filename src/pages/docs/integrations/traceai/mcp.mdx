@@ -1,7 +1,15 @@
 ---
 title: "Model Context Protocol Integration with Future AGI Tracing"
-description: "Integrate Model Context Protocol (MCP) with Future AGI. Trace MCP server interactions and tool calls with traceAI-mcp auto-instrumentation."
+description: "Propagate trace context across MCP transports and connect it to application or OpenAI Agents spans in Future AGI."
 ---
+
+Connect trace context across MCP client/server transports. MCP instrumentation propagates context; it does not create a complete agent or tool span tree by itself. The Python example uses OpenAI Agents instrumentation to create those spans. The TypeScript example creates an application span around an MCP request.
+
+<Note>
+For new Python integrations, use [native MCP 2.x tracing](/docs/integrations/traceai/mcp-python). It creates client and server tool spans without an agent framework or model API key. Do not add `MCPInstrumentor` to that native setup. The Python example below is the existing MCP 1.x propagation route; the TypeScript instructions are separate.
+
+Using Python FastMCP 4.1.x? Follow the [native FastMCP guide](/docs/integrations/frameworks/fastmcp) instead. FastMCP already creates and propagates its own spans; it does not need this additional MCP instrumentor.
+</Note>
 
 ## 1. Installation
 First install the traceAI package to access the observability framework
@@ -9,18 +17,18 @@ First install the traceAI package to access the observability framework
 <CodeGroup titles={["Python", "JS/TS"]}>
 
 ```bash Python
-pip install traceAI-mcp
+pip install "traceAI-mcp>=0.1.3" "mcp>=1.8.1,<2"
 ```
 
 ```bash JS/TS
-npm install @traceai/mcp @traceai/fi-core @opentelemetry/instrumentation @modelcontextprotocol/sdk
+npm install @traceai/mcp @traceai/fi-core @opentelemetry/api @opentelemetry/instrumentation '@modelcontextprotocol/sdk@^1.10.2'
 ```
 
 </CodeGroup>
 <Note>
 You also need to install the orchestration package that will utilize the MCP server.
 
-For example, if you are using the OpenAI MCP server, you need to install the `traceAI-openai-agents` package.
+The Python example uses the OpenAI Agents SDK as its MCP client, not an OpenAI MCP server. Install `traceAI-openai-agents` for its agent and tool spans; the package also installs `openai-agents`.
 
 ```bash
 pip install traceAI-openai-agents
@@ -31,7 +39,11 @@ pip install traceAI-openai-agents
 
 ## 2. Set Environment Variables
 
-Set up your environment variables to authenticate with both FutureAGI and OpenAI.
+Supply your Future AGI keys through the environment. The Python example also needs an OpenAI key. Python requires 3.11–3.13 for `traceAI-mcp`.
+
+The OpenAI Agents example can send prompts, file contents read by tools, tool arguments/results and error details to Future AGI. Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before initializing the Python instrumentors to hide input/output values and messages; see [mask span attributes](/docs/sdk/tracing/mask-span-attributes). These switches do not sanitize arbitrary custom attributes or all error text. Only expose a dedicated sample directory to the filesystem server, never your home directory or a repository containing secrets. MCP context propagation itself does not redact data sent to a model or an MCP server.
+
+By default, `OpenAIAgentsInstrumentor` replaces the Agents SDK's tracing processors with Future AGI's processor. Passing `exclusive_processor=False` adds it alongside existing processors instead, so those destinations may also receive trace data.
 
 <CodeGroup titles={["Python", "JS/TS"]}>
 
@@ -85,7 +97,7 @@ const tracerProvider = register({
 
 ## 4. Instrument your Project
 
-Instrument your Project with OpenAI Agents Instrumentor. This step ensures that all interactions with the OpenAI are tracked and monitored.
+Initialize MCP instrumentation. The Python example also instruments OpenAI Agents; the TypeScript example instruments MCP stdio modules.
 
 <CodeGroup titles={["Python", "JS/TS"]}>
 
@@ -99,8 +111,8 @@ MCPInstrumentor().instrument(tracer_provider=trace_provider)
 
 ```typescript JS/TS
 import { MCPInstrumentation } from "@traceai/mcp";
-import * as MCPClientStdioModule from "@modelcontextprotocol/sdk/client/stdio";
-import * as MCPServerStdioModule from "@modelcontextprotocol/sdk/server/stdio";
+import * as MCPClientStdioModule from "@modelcontextprotocol/sdk/client/stdio.js";
+import * as MCPServerStdioModule from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // MCP must be manually instrumented as it doesn't have a traditional module structure
 const mcpInstrumentation = new MCPInstrumentation({});
@@ -116,7 +128,7 @@ mcpInstrumentation.manuallyInstrument({
 
 ## 5. Interact with MCP Server
 
-Interact with the MCP Server as you normally would. Our Instrumentor will automatically trace and send the telemetry data to our platform.
+For the Python example, install Node.js 24 or later so `npx` is available, and create a `sample_files` directory beside your script with files you want the agent to read. Continue the script after the setup above:
 
 ```python
 
@@ -126,20 +138,6 @@ import shutil
 
 from agents import Agent, Runner
 from agents.mcp import MCPServer, MCPServerStdio
-
-from traceai_openai_agents import OpenAIAgentsInstrumentor
-from traceai_mcp import MCPInstrumentor
-
-from fi_instrumentation import register
-from fi_instrumentation.fi_types import ProjectType
-
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="mcp_project",
-)
-
-OpenAIAgentsInstrumentor().instrument(tracer_provider=trace_provider)
-MCPInstrumentor().instrument(tracer_provider=trace_provider)
 
 async def run(mcp_server: MCPServer):
     agent = Agent(
@@ -168,7 +166,52 @@ async def main():
 
 if __name__ == "__main__":
     if not shutil.which("npx"):
-        raise RuntimeError("npx is not installed. Please install it with `npm install -g npx`.")
+        raise RuntimeError("npx is not installed. Please install Node.js and ensure npx is on your PATH.")
 
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        trace_provider.shutdown()
 ```
+
+### TypeScript client request
+
+Use Node.js 24 or later. Save the TypeScript setup above and the request below together as `example.mts`, then run `npx tsx example.mts` from that directory. Create an empty `sample_files` directory beside the script first. This example lists the server's available tools without asking a model to read files.
+
+```typescript
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
+const samplesDir = fileURLToPath(new URL("./sample_files/", import.meta.url));
+const client = new Client({ name: "sample-client", version: "1.0.0" });
+const transport = new MCPClientStdioModule.StdioClientTransport({
+  command: "npx",
+  args: ["-y", "@modelcontextprotocol/server-filesystem", resolve(samplesDir)],
+});
+
+try {
+  await client.connect(transport);
+  const tracer = tracerProvider.getTracer("mcp-example");
+  await tracer.startActiveSpan("list-mcp-tools", async (span) => {
+    try {
+      const result = await client.listTools();
+      console.log(result.tools.map((tool) => tool.name));
+    } finally {
+      span.end();
+    }
+  });
+} finally {
+  try {
+    await client.close();
+  } finally {
+    await tracerProvider.shutdown();
+  }
+}
+```
+
+The `list-mcp-tools` span is application instrumentation, not a span automatically created by `@traceai/mcp`. A server needs its own tracing setup to produce server-side spans. Do not add filenames, arguments or results as custom span attributes unless you intend to export them.
+
+## View the trace
+
+Open **Observe** in Future AGI and select the `mcp_project` project to inspect the trace.
