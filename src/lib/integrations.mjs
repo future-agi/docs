@@ -179,6 +179,7 @@ export const integrations = [
 export const integrationAids = [
   { name: 'DeepSeek Harness support status', href: '/docs/integrations/deepseek-harness', category: 'coding' },
   { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
+  { name: 'Flowise support status', href: '/docs/integrations/no-code/flowise', category: 'apps' },
   { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
