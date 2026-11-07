@@ -13,6 +13,7 @@ import './scalekit-page.test.mjs';
 import './devin-page.test.mjs';
 import './pi-sdk-page.test.mjs';
 import './cursor-sdk-page.test.mjs';
+import './cursor-page.test.mjs';
 import './grok-build-page.test.mjs';
 import './hermes-agent-page.test.mjs';
 import './kiro-cli-page.test.mjs';
