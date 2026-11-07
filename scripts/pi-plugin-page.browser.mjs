@@ -19,11 +19,18 @@ const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
 try{
  const page=await browser.newPage({viewport:{width:1440,height:1100}});
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto(`http://127.0.0.1:${server.address().port}/docs/integrations/coding-agents/pi/`,{waitUntil:'networkidle'});
- await page.locator('h1').first().waitFor();
- assert.match(await page.locator('body').innerText(),/Connect Pi/);
- assert.match(await page.locator('body').innerText(),/npx @traceai\/agents setup pi --project coding-agents/);
- await page.screenshot({path:'pi-docs.png',fullPage:true});
- assert.equal(errors.length,0,errors.join('\n'));
- console.log(JSON.stringify({page:'pi',browser:'chromium',width:1440,pass:true}));
+ for (const agent of ['pi', 'oh-my-pi']) {
+  const response = await page.goto(`http://127.0.0.1:${server.address().port}/docs/integrations/coding-agents/${agent}/`,{waitUntil:'networkidle'});
+  assert.equal(response.status(), 200);
+  await page.locator('h1').first().waitFor();
+  const body = await page.locator('body').innerText();
+  assert.ok(body.includes(`npx @traceai/agents setup ${agent} --project coding-agents`));
+  assert.ok(body.includes('captured by default'));
+  assert.ok(body.includes('Status and lifecycle'));
+  await page.screenshot({path:`${agent}-docs.png`,fullPage:true});
+  await page.getByRole('heading', {name:'Quick start',exact:true}).scrollIntoViewIfNeeded();
+  await page.screenshot({path:`${agent}-quick-start.png`});
+  assert.equal(errors.length,0,errors.join('\n'));
+  console.log(JSON.stringify({page:agent,browser:'chromium',width:1440,pass:true}));
+ }
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
