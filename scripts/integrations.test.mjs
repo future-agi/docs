@@ -1,3 +1,4 @@
+import './cursor-page.test.mjs';
 import './google-antigravity-page.test.mjs';
 import './codex-page.test.mjs';
 import './opencode-page.test.mjs';
