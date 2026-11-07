@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 
 const root = new URL('../', import.meta.url);
 const names = ['index', 'quickstart', 'import-skills', 'versions-and-labels', 'use-in-agents', 'mcp-tools', 'checks-reference', 'api-reference', 'troubleshooting'];
@@ -82,3 +86,144 @@ test('consumption docs preserve selector, installation, and MCP safety contracts
   for (const field of ['next_offset', 'eof', 'sha256', '24000', 'character offsets', 'standalone']) assert.ok(mcp.includes(field));
   assert.match(read('index'), /fetch.*does not prove.*used/i);
 });
+
+test('amendments use files multipart field and workspace-wide list stats', () => {
+  for (const name of names) assert.doesNotMatch(read(name), /files\[\]/);
+  assert.match(read('import-skills'), /-F 'files=@team-skills\.zip/);
+  const api = read('api-reference');
+  for (const field of ['stats', 'total', 'in_production', 'fetches_7d', 'my_drafts']) assert.ok(api.includes(field));
+  assert.match(api, /statistics cover the workspace, unaffected/);
+});
+
+test('skill links point to real headings, not just existing pages', () => {
+  const slug = heading => heading.toLowerCase().replace(/[`*_]/g, '').replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
+  for (const name of names) {
+    for (const [, target, anchor] of read(name).matchAll(/\]\(\/docs\/skills(?:\/([a-z-]+))?#([a-z-]+)\)/g)) {
+      const headings = [...read(target ?? 'index').matchAll(/^##+ (.+)$/gm)].map(([, heading]) => slug(heading));
+      assert.ok(headings.includes(anchor), `${name}: missing anchor ${target}#${anchor}`);
+    }
+  }
+});
+
+test('screenshots have either explicit placeholders or existing image files', () => {
+  const all = names.map(read).join('\n');
+  const shots = [...all.matchAll(/\{\/\* screenshot: ([a-z-]+\.png) — ([^\n]+) \*\/\}/g)];
+  const images = [...all.matchAll(/!\[([^\]]+)\]\(\/images\/docs\/skills\/([a-z-]+\.png)\)/g)];
+  assert.equal(shots.length + images.length, 12);
+  assert.equal(new Set([...shots.map(([, file]) => file), ...images.map(([, , file]) => file)]).size, 12);
+  for (const [, , description] of shots) assert.match(description, /light theme/);
+  for (const [, alt, file] of images) {
+    assert.ok(alt.trim().length > 10, `Descriptive alt text required for ${file}`);
+    assert.ok(existsSync(new URL(`public/images/docs/skills/${file}`, root)), `Missing screenshot ${file}`);
+  }
+});
+
+test('all 28 cURL operation examples send the documented verb, route, headers, and multipart field', async () => {
+  const page = read('api-reference');
+  const requests = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      requests.push({ method: req.method, url: req.url, headers: req.headers, body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"status":true,"result":{}}');
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const cwd = mkdtempSync(join(tmpdir(), 'skills-docs-curl-'));
+  try {
+    const json = [...page.matchAll(/```json\n([\s\S]*?)```/g)].map(([, code]) => code);
+    for (const [index, file] of ['files.json', 'version.json', 'draft.json'].entries()) writeFileSync(join(cwd, file), json[index]);
+    writeFileSync(join(cwd, 'team-skills.zip'), 'Synthetic transport fixture, not an archive-parser test.');
+    const sections = page.split(/(?=^`(?:GET|POST|PUT|PATCH|DELETE) \/model-hub\/skills\/)/m).slice(1);
+    assert.equal(sections.length, 28);
+    for (const section of sections) {
+      const [, method, path] = section.match(/^`(\w+) (\/model-hub\/skills\/[^`]+|\/model-hub\/skills\/)`/);
+      const [, code] = section.match(/```bash\n([\s\S]*?)```/);
+      const child = spawn('bash', ['-e', '-c', `BASE="$HOST_API/model-hub/skills"\nAUTH=(-H "X-Api-Key: $FI_API_KEY" -H "X-Secret-Key: $FI_SECRET_KEY" -H "X-Workspace-Id: $FI_WORKSPACE_ID")\nJSON=(-H 'Content-Type: application/json')\n${code}`], {
+        cwd,
+        env: { ...process.env, HOST_API: `http://127.0.0.1:${server.address().port}`, FI_API_KEY: 'synthetic-key', FI_SECRET_KEY: 'synthetic-secret', FI_WORKSPACE_ID: 'synthetic-workspace', SKILL_ID: 'synthetic-id', SELECTED_KEYS: '["reviewed-key"]' },
+        timeout: 15000,
+      });
+      let stderr = '';
+      child.stderr.on('data', data => { stderr += data; });
+      child.stdout.resume();
+      const exit = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+      assert.equal(exit, 0, stderr);
+      const request = requests.at(-1);
+      assert.equal(request.method, method);
+      const expected = path.replace('{skill_id}', 'synthetic-id').replace('{number}', '1').replace('{label}', method === 'DELETE' ? 'staging' : 'production');
+      assert.equal(new URL(request.url, 'http://localhost').pathname, expected);
+      assert.equal(request.headers['x-api-key'], 'synthetic-key');
+      assert.equal(request.headers['x-secret-key'], 'synthetic-secret');
+      assert.equal(request.headers['x-workspace-id'], 'synthetic-workspace');
+      if (path.includes('/import/')) {
+        assert.match(request.headers['content-type'], /multipart\/form-data; boundary=/);
+        assert.match(request.body, /name="files"; filename="team-skills.zip"/);
+        assert.doesNotMatch(request.body, /name="files\[\]"/);
+      } else if (request.body) assert.doesNotThrow(() => JSON.parse(request.body));
+    }
+    assert.equal(requests.length, 28);
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// Execute the exact published HTTP snippets against a synthetic local server.
+// This checks consumer behavior, not deployment availability or backend conformance.
+for (const language of ['python', 'typescript']) {
+  for (const scenario of ['valid', 'tampered', 'http-error']) {
+    test(`${language} consumption example: ${scenario}`, async () => {
+      const content = '---\nname: support-policy\n---\nSynthetic policy: café and 😀.\n';
+      const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
+      let request;
+      const server = createServer((req, res) => {
+        request = { url: req.url, headers: req.headers };
+        res.writeHead(scenario === 'http-error' ? 404 : 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(scenario === 'http-error' ? { status: false, code: 'label_not_found' } : {
+          status: true,
+          result: {
+            version_id: '00000000-0000-4000-8000-000000000001',
+            digest: 'sha256:synthetic-manifest',
+            files: [{ path: 'SKILL.md', content: scenario === 'tampered' ? `${content}changed` : content, sha256 }],
+          },
+        }));
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const code = [...read('use-in-agents').matchAll(/```(python|typescript)\n([\s\S]*?)```/g)]
+          .find(([, name]) => name === language)[2];
+        const executable = language === 'python' ? (process.env.SKILLS_DOCS_PYTHON ?? 'python3') : process.execPath;
+        const args = language === 'python' ? ['-I', '-c', code] : ['--input-type=module', '-e', code];
+        const child = spawn(executable, args, {
+          env: { ...process.env, HOST_API: `http://127.0.0.1:${server.address().port}`, FI_API_KEY: 'synthetic-key', FI_SECRET_KEY: 'synthetic-secret', FI_WORKSPACE_ID: 'synthetic-workspace' },
+          timeout: 15000,
+        });
+        let stdout = '', stderr = '';
+        child.stdout.on('data', data => { stdout += data; });
+        child.stderr.on('data', data => { stderr += data; });
+        const codeResult = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+        assert.ok(request, `Example did not make a request: ${stderr}`);
+        const url = new URL(request.url, 'http://localhost');
+        assert.equal(url.pathname, '/model-hub/skills/resolve/');
+        assert.deepEqual(Object.fromEntries(url.searchParams), { name: 'support-policy', label: 'production', include_content: 'true' });
+        assert.equal(request.headers['x-api-key'], 'synthetic-key');
+        assert.equal(request.headers['x-secret-key'], 'synthetic-secret');
+        assert.equal(request.headers['x-workspace-id'], 'synthetic-workspace');
+        if (scenario === 'valid') {
+          assert.equal(codeResult, 0, stderr);
+          assert.match(stdout, /00000000-0000-4000-8000-000000000001 sha256:synthetic-manifest/);
+        } else {
+          assert.notEqual(codeResult, 0);
+          assert.match(stderr, scenario === 'tampered' ? /Digest mismatch/ : /404/);
+        }
+      } finally {
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+  }
+}

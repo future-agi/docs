@@ -753,6 +753,36 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
+        group: 'Skills',
+        icon: 'book',
+        items: [
+          { title: 'Overview', href: '/docs/skills' },
+          { title: 'Quickstart', href: '/docs/skills/quickstart' },
+          {
+            title: 'Concepts',
+            items: [
+              { title: 'Versions and labels', href: '/docs/skills/versions-and-labels' },
+            ]
+          },
+          {
+            title: 'Guides',
+            items: [
+              { title: 'Import skills', href: '/docs/skills/import-skills' },
+              { title: 'Use skills in your agents', href: '/docs/skills/use-in-agents' },
+              { title: 'MCP tools', href: '/docs/skills/mcp-tools' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Checks reference', href: '/docs/skills/checks-reference' },
+              { title: 'API reference', href: '/docs/skills/api-reference' },
+            ]
+          },
+          { title: 'Troubleshooting', href: '/docs/skills/troubleshooting' },
+        ]
+      },
+      {
         group: 'Protect',
         icon: 'shield',
         items: [

@@ -1,0 +1,436 @@
+---
+title: "Skills API reference"
+description: "Reference every Skills REST operation, including authentication, file checks, publish, resolve, downloads, imports, versions, labels, drafts, and usage."
+---
+
+## About
+
+Use the Skills REST API to manage a workspace library and retrieve immutable file sets. All paths start with `/model-hub/skills/` and retain the trailing slash. Examples use Bash and cURL; [Python requests and TypeScript fetch examples](/docs/skills/use-in-agents#fetch-files-in-an-application) show full-text resolution and hash verification. There are no Skills SDK methods in this release.
+
+## Authentication and example setup
+
+Choose one authentication style:
+
+| Style | Headers |
+| --- | --- |
+| Organization API key | `X-Api-Key` and `X-Secret-Key`, both required |
+| JWT Bearer | `Authorization: Bearer <JWT>` |
+| Workspace | `X-Workspace-Id: <workspace UUID>` for the workspace you can access |
+
+A JWT is not an API key. Do not place `FI_API_KEY` in a Bearer header. Obtain API credentials from **Settings > API Keys** and load them from your secret manager. Do not log them or put them in browser code. Keys retain their existing access; there is no read-only Skills key scope.
+
+Every operation requires authentication and a resolved organization and workspace. Every non-GET requires workspace write access, including stateless checks and import preview. Objects outside the resolved tenant return 404, not a disclosure of another tenant's object.
+
+Run this setup once in the Bash session used for the examples below:
+
+```bash
+export HOST_API="https://api.futureagi.com"
+: "${FI_API_KEY:?Set FI_API_KEY}"
+: "${FI_SECRET_KEY:?Set FI_SECRET_KEY}"
+: "${FI_WORKSPACE_ID:?Set FI_WORKSPACE_ID to your workspace UUID}"
+BASE="${HOST_API%/}/model-hub/skills"
+AUTH=(-H "X-Api-Key: $FI_API_KEY" -H "X-Secret-Key: $FI_SECRET_KEY" -H "X-Workspace-Id: $FI_WORKSPACE_ID")
+JSON=(-H 'Content-Type: application/json')
+```
+
+For Bearer authentication, use this setup **instead**; the remaining examples are unchanged:
+
+```bash
+export HOST_API="https://api.futureagi.com"
+: "${FI_JWT:?Set FI_JWT to a valid JWT}"
+: "${FI_WORKSPACE_ID:?Set FI_WORKSPACE_ID to your workspace UUID}"
+BASE="${HOST_API%/}/model-hub/skills"
+AUTH=(-H "Authorization: Bearer $FI_JWT" -H "X-Workspace-Id: $FI_WORKSPACE_ID")
+JSON=(-H 'Content-Type: application/json')
+```
+
+For UUID routes, set `SKILL_ID` to the `id` returned by create or list. Version examples use number 1; use a published number from your own skill. `files.json` below is a complete request object, not a bare file array. Save this synthetic example as `files.json` before checks or publication:
+
+```json
+{
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "---\nname: support-policy\ndescription: Use when answering refund questions using the team's reviewed support policy.\n---\n\n# Support policy\n\nAsk for the order date and issue. Escalate decisions not covered by the approved policy.\n"
+    }
+  ]
+}
+```
+
+The snippets that write labels, tags, drafts, versions, or archives change your workspace. Run only the operation you intend, not every example as a single script. A complete file set replaces the previous version's file set; it is not a patch.
+
+## Response conventions
+
+JSON successes wrap the result as `{"status": true, "result": ...}`. Errors have `status: false`, a `code`, and error details when relevant. HTTP 204 and 304 have no JSON body. Downloads return ZIP bytes, not the JSON envelope.
+
+A newly published version returns 201. Content identical to the latest version produces no new version and returns 200 with `unchanged: true`. Labels are mutable; version numbers, version UUIDs, and file content are immutable. [Selector rules](/docs/skills/versions-and-labels#one-selection-rule) apply to resolve, downloads, and MCP: `version` or `label`; neither means `production`; missing labels never silently fall back.
+
+Paged results have `results`, `count`, `page`, `page_size`, and `total_pages`. `page_size` defaults to 25 and is capped at 100. The library list also has workspace-wide `stats`.
+
+### Shared response objects
+
+| Object | Fields |
+| --- | --- |
+| `SkillSummary` | `id`, `name`, `description`, `tags`, `latest_version` (integer or null), `labels` (objects with `name`, `version`), `has_draft` (for requester), `updated_at`, `updated_by` (actor or null), `created_at`, `fetches_7d`, `file_count` (latest, or null) |
+| `SkillDetail` | All summary fields plus `source`, `created_by`, `latest` (VersionSummary or null), and `drafts` (objects with `user`, `updated_at`, `base_version`, `is_mine`); `labels` contains full LabelOut objects |
+| `LabelOut` | `name`, `version`, `version_id`, `updated_at`, `updated_by` (actor or null) |
+| `VersionSummary` | `id`, `number`, `digest`, `note`, `created_at`, `created_by` (actor or null), `file_count`, `total_bytes`, `labels` (strings), `source` |
+| `VersionDetail` | All version summary fields plus `frontmatter`, `checks`, `files` (objects with `path`, `size_bytes`, `sha256`, `token_estimate`) |
+| `Manifest` | `skill_id`, `name`, `description`, `version`, `version_id`, `digest`, `requested` (label or version), `frontmatter`, `files` (objects with `path`, `size_bytes`, `sha256`, and optional `content`), `created_at` |
+
+Actor objects above have `id` and `name`. IDs are UUIDs; version numbers are integers starting at 1; timestamps use UTC. `source` describes provenance such as blank, template, import, or API. Checks use the [ChecksResult shape](/docs/skills/checks-reference#check-result-and-token-estimates).
+
+## List skills
+
+`GET /model-hub/skills/`
+
+| Query | Meaning |
+| --- | --- |
+| `search` | Case-insensitive search across name, description, and tags |
+| `tag` | Filter by tag |
+| `label` | Filter to skills having the label |
+| `sort` | `updated` (default), `name`, or `created` |
+| `order` | `asc` or `desc` |
+| `page`, `page_size` | Pagination |
+
+Returns a paged list of SkillSummary objects plus `stats: {total, in_production, fetches_7d, my_drafts}`. These statistics cover the workspace, unaffected by search or filters.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/?search=support&sort=updated&order=desc&page=1&page_size=25"
+```
+
+## Create a skill
+
+`POST /model-hub/skills/`
+
+Body: required `name` and `description`; optional `tags` (string list) and `template_id`. Returns 201 SkillDetail and seeds the creator's draft. It does not publish a version. A duplicate name returns 409 `name_taken`; an invalid name returns 400 `invalid_name`.
+
+```bash
+curl -fsS -X POST "${AUTH[@]}" "${JSON[@]}" \
+  --data '{"name":"support-policy","description":"Use when answering refund questions using the reviewed support policy.","tags":["support"],"template_id":"support-policy"}' \
+  "$BASE/"
+```
+
+## List templates
+
+`GET /model-hub/skills/templates/`
+
+Returns a list of objects with `id`, `name`, `title`, `description`, `tags`, and `files: [{path, size_bytes}]`. Template IDs are `blank`, `support-policy`, `code-review`, `incident-triage`, `research-brief`, `trace-debugging`, and `eval-writer`. A template is starting content, not an executed workflow.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/templates/"
+```
+
+## Check files
+
+`POST /model-hub/skills/checks/`
+
+Body: `files: [{path, content}]` and optional `name` to check against an existing skill name. Returns ChecksResult without saving files or publishing. Inspect its `summary.errors`, not just HTTP success. [All codes and limits](/docs/skills/checks-reference) apply.
+
+```bash
+curl -fsS -X POST "${AUTH[@]}" "${JSON[@]}" --data-binary @files.json "$BASE/checks/"
+```
+
+## Publish by name
+
+`POST /model-hub/skills/publish/`
+
+Body: required `files`; optional `note`, `labels`, `tags`, and `acknowledge_warnings`. The frontmatter name identifies the skill. A new name creates it; an existing name receives a new version without a base-version check. Returns `{skill: SkillSummary, version: VersionSummary, unchanged}`.
+
+Add `"labels": ["staging"]` to the request only if you intend to move that label. Review warnings before adding `"acknowledge_warnings": true`.
+
+```bash
+curl -fsS -X POST "${AUTH[@]}" "${JSON[@]}" --data-binary @files.json "$BASE/publish/"
+```
+
+## Resolve a skill
+
+`GET /model-hub/skills/resolve/`
+
+Query: required `name`; optional `label` **or** `version`; optional `include_content=true` to include full text per file. Returns Manifest with the resolved version identity and a quoted digest in the `ETag` header. `If-None-Match` with the matching ETag returns 304; retain your previously verified result and do not parse a 304 as JSON. Resolution records an `api` fetch, or `mcp` through the MCP executor.
+
+```bash
+curl -fsS -D resolve-headers.txt "${AUTH[@]}" \
+  "$BASE/resolve/?name=support-policy&label=production&include_content=true"
+```
+
+Do not cache only by skill name: include API origin, tenant/workspace, credential identity, selector, and content mode. The digest is `sha256:` followed by the SHA-256 of a canonical manifest: sorted `[path, file_sha256]` pairs encoded as compact JSON. Per-file hashes are SHA-256 of UTF-8 content.
+
+## Download selected skills
+
+`GET /model-hub/skills/download/`
+
+Query: `names` (comma-separated names) or `tag`, and `label` or `version`. Numeric `version` is allowed only with exactly one explicit name. At most 50 skills can be downloaded. The response is `application/zip` with `Content-Disposition: attachment; filename="futureagi-skills.zip"`.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/download/?tag=support&label=production" -o futureagi-skills.zip
+```
+
+Files are under `<name>/<path>`. The root `.futureagi-skills.lock.json` contains `schema: 1`, `origin`, `skills: [{name, version, version_id, digest, label}]`, and `skipped: [{name, reason}]`. Skills lacking the label are skipped; zero resolvable skills returns 404 `nothing_to_download`. Included skills each record a `download` fetch. See [installation and safe updates](/docs/skills/use-in-agents).
+
+## Import preview
+
+`POST /model-hub/skills/import/preview/`
+
+Multipart body: repeat the field **`files`** for every ZIP or loose file. Each part's filename is its relative path. Let cURL set the multipart boundary. Preview does not publish.
+
+```bash
+curl -fsS -X POST "${AUTH[@]}" -F 'files=@team-skills.zip;type=application/zip' "$BASE/import/preview/"
+```
+
+Returns `{bundles, rejected, skipped}`. Each bundle contains `key`, `root`, `name`, `file_count`, `total_bytes`, `status` (`new`, `changed`, `unchanged`, or `invalid`), optional `skill_id` and `latest_version`, and `checks`. Rejected entries contain `path` and `reason`; skipped entries are paths. See [archive discovery and safety limits](/docs/skills/import-skills).
+
+## Import selected bundles
+
+`POST /model-hub/skills/import/`
+
+Multipart body: the same `files` upload, `selected` as a JSON string array of preview keys, `labels` as a JSON string array, and `acknowledge_warnings` as a boolean form value. Invalid bundles cannot be published.
+
+```bash
+: "${SELECTED_KEYS:?Set a JSON array of exact reviewed preview keys}"
+curl -fsS -X POST "${AUTH[@]}" \
+  -F 'files=@team-skills.zip;type=application/zip' \
+  --form-string "selected=$SELECTED_KEYS" --form-string 'labels=["staging"]' \
+  --form-string 'acknowledge_warnings=false' "$BASE/import/"
+```
+
+Returns `{created: [...], updated: [...], unchanged: [...], failed: [{key, name, code, message}]}`. Each bundle publishes in its own transaction. Inspect every result; one failed bundle does not undo the others.
+
+## Read, tag, or archive a skill
+
+`GET /model-hub/skills/{skill_id}/`
+
+Returns SkillDetail. `has_draft` describes your own draft, while `drafts` identifies work in progress without returning another person's draft files.
+
+```bash
+: "${SKILL_ID:?Set the skill UUID}"
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/"
+```
+
+`PATCH /model-hub/skills/{skill_id}/`
+
+Body: `tags` (complete replacement list). Returns the updated skill detail. The name is immutable; the description follows the latest published frontmatter.
+
+```bash
+curl -fsS -X PATCH "${AUTH[@]}" "${JSON[@]}" --data '{"tags":["support","reviewed"]}' "$BASE/$SKILL_ID/"
+```
+
+`DELETE /model-hub/skills/{skill_id}/`
+
+Archives the skill and returns 204. It becomes unavailable to consumers. This is not a per-version deletion and does not erase label history.
+
+```bash
+curl -fsS -X DELETE "${AUTH[@]}" "$BASE/$SKILL_ID/"
+```
+
+## List or publish versions
+
+`GET /model-hub/skills/{skill_id}/versions/`
+
+Accepts `page` and `page_size`. Returns paged VersionSummary objects.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/versions/?page=1&page_size=25"
+```
+
+`POST /model-hub/skills/{skill_id}/versions/`
+
+Body: required `files`; optional `note`, `base_version`, `labels`, `acknowledge_warnings`, and `force`. Use the version number you edited as `base_version` (or null before first publish). A stale base returns 409 `stale_base` with `{base_version, latest_version}` unless `force: true`. Force does not bypass checks. Returns `{version: VersionSummary, unchanged, checks}`.
+
+This example starts from version 1. Save the following as `version.json`; replace the base with the version you actually edited and include every file you want to retain. It intentionally moves no labels.
+
+```json
+{
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "---\nname: support-policy\ndescription: Use when answering refund questions using the team's reviewed support policy.\n---\n\n# Support policy\n\nAsk for the order date and issue. Escalate decisions not covered by the approved policy. Never promise an unapproved refund.\n"
+    }
+  ],
+  "base_version": 1,
+  "note": "Clarify approval requirement",
+  "labels": [],
+  "acknowledge_warnings": false,
+  "force": false
+}
+```
+
+```bash
+curl -fsS -X POST "${AUTH[@]}" "${JSON[@]}" --data-binary @version.json "$BASE/$SKILL_ID/versions/"
+```
+
+## Read a version
+
+`GET /model-hub/skills/{skill_id}/versions/{number}/`
+
+Returns VersionDetail. `files` contains metadata, not full contents; use file reads to retrieve text.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/versions/1/"
+```
+
+## Read a file chunk
+
+`GET /model-hub/skills/{skill_id}/versions/{number}/files/`
+
+Query: required `path`; `offset` defaults to 0; `max_bytes` defaults to 32768 and is capped at 49152. Offsets count characters, while `max_bytes` limits UTF-8 bytes. The result is the longest prefix fitting the byte budget.
+
+Returns `{path, sha256, size_bytes, total_chars, offset, next_offset, eof, text}`. Append `text` in order and continue at the returned `next_offset` until `eof` is true and `next_offset` is null. Verify SHA-256 of the complete UTF-8 file against `sha256`. Only reads with `offset == 0` record a fetch; MCP executor reads use the `mcp` channel.
+
+```bash
+curl -fsS -G "${AUTH[@]}" --data-urlencode 'path=SKILL.md' \
+  --data-urlencode 'offset=0' --data-urlencode 'max_bytes=32768' \
+  "$BASE/$SKILL_ID/versions/1/files/"
+```
+
+A single successful chunk is not necessarily the complete file. Do not compute the next offset from byte length or JavaScript UTF-16 string length. See the [MCP read flow](/docs/skills/mcp-tools#read-a-complete-skill).
+
+## Download one version
+
+`GET /model-hub/skills/{skill_id}/versions/{number}/download/`
+
+Returns that version's ZIP with `label: null` in the lock file. It does not resolve a label.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/versions/1/download/" -o support-policy-v1.zip
+```
+
+## Restore a version
+
+`POST /model-hub/skills/{skill_id}/versions/{number}/restore/`
+
+Body: optional `note`, defaulting to `Restored from v{number}`. Republishes the selected complete file set on top of the latest version. Returns `{version: VersionSummary, unchanged, checks}`. Identical latest content follows the unchanged rule. This does not move `production`; label changes are separate.
+
+```bash
+curl -fsS -X POST "${AUTH[@]}" "${JSON[@]}" --data '{"note":"Restore reviewed policy from v1"}' \
+  "$BASE/$SKILL_ID/versions/1/restore/"
+```
+
+## Compare files
+
+`GET /model-hub/skills/{skill_id}/compare/`
+
+Query: required `from` and `to`, each a version number or `draft` for the requesting person's draft. The REST endpoint takes numbers or `draft`, not label names; resolve labels to version numbers first.
+
+Returns `{from, to, files, summary}`. Each file has `path`, `status` (`added`, `removed`, `modified`, `unchanged`), `from_sha256`, and `to_sha256`, plus `from_text` and `to_text` for non-unchanged files. The summary counts each status. A comparison does not test model behavior.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/compare/?from=1&to=draft"
+```
+
+## List, move, or remove labels
+
+`GET /model-hub/skills/{skill_id}/labels/`
+
+Returns LabelOut objects for assigned labels. `latest` is virtual, not an assignable label.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/labels/"
+```
+
+`PUT /model-hub/skills/{skill_id}/labels/{label}/`
+
+Body: required target `version`; optional `expected_version` and `note` (at most 500 characters). Returns LabelOut. The optional compare-and-set value means the current version must match; `null` means the label must not exist; omission makes the move unconditional. A mismatch returns 409 `label_conflict` with `{current_version}`.
+
+```bash
+curl -fsS -X PUT "${AUTH[@]}" "${JSON[@]}" \
+  --data '{"version":1,"expected_version":null,"note":"First reviewed release"}' \
+  "$BASE/$SKILL_ID/labels/production/"
+```
+
+`DELETE /model-hub/skills/{skill_id}/labels/{label}/`
+
+Optional JSON body: `expected_version` with the same conflict protection. Returns 204. Removing a label causes later fetches of that label to fail; it does not delete the version. Label moves and removals write history in the same transaction.
+
+```bash
+curl -fsS -X DELETE "${AUTH[@]}" "${JSON[@]}" --data '{"expected_version":1}' \
+  "$BASE/$SKILL_ID/labels/staging/"
+```
+
+## Read label history
+
+`GET /model-hub/skills/{skill_id}/labels/history/`
+
+Accepts optional `label`, `page`, and `page_size`. Returns paged events with `label`, `from_version`, `to_version`, `actor` (`{id, name, kind}` or null; `kind` is `user` or `api_key`), `note`, and `created_at`. A null `from_version` denotes creation; null `to_version` denotes removal. This history does not require licensed audit logs.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/labels/history/?label=production&page=1"
+```
+
+## Read, save, or discard your draft
+
+`GET /model-hub/skills/{skill_id}/draft/`
+
+Returns `{base_version, files, note, revision, updated_at}` or 404 `draft_not_found`. Drafts are per person per skill, not per tab.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/draft/"
+```
+
+`PUT /model-hub/skills/{skill_id}/draft/`
+
+Body: required `files`, `base_version`, `revision`; optional `note`. `revision` must equal the stored revision, or 0 when none exists. A successful save returns the draft shape with an incremented revision; a newly created draft starts at 1. Mismatch returns 409 `draft_conflict` with `{revision, updated_at}`. Size limits apply even when checks are not yet passing.
+
+Save the complete request in `draft.json`. This example assumes an existing draft at revision 1 based on version 1. Replace both with the values you actually read; use revision 0 only if there is no draft, and a null base only before first publication. Include all files you want to keep.
+
+```json
+{
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "---\nname: support-policy\ndescription: Use when answering refund questions using the team's reviewed support policy.\n---\n\n# Support policy\n\nAsk for the order date and issue. Escalate decisions not covered by the approved policy.\n"
+    }
+  ],
+  "base_version": 1,
+  "revision": 1,
+  "note": "Review escalation wording"
+}
+```
+
+```bash
+curl -fsS -X PUT "${AUTH[@]}" "${JSON[@]}" --data-binary @draft.json "$BASE/$SKILL_ID/draft/"
+```
+
+`DELETE /model-hub/skills/{skill_id}/draft/`
+
+Discards your draft and returns 204. No published version or label changes.
+
+```bash
+curl -fsS -X DELETE "${AUTH[@]}" "$BASE/$SKILL_ID/draft/"
+```
+
+## Publish your draft
+
+`POST /model-hub/skills/{skill_id}/draft/publish/`
+
+Body: optional `note`, `labels`, `acknowledge_warnings`, and `force`. Returns `{version: VersionSummary, unchanged, checks}` and deletes the draft on success. Errors leave you to resolve checks, warning acknowledgment, or the stale base before retrying.
+
+```bash
+curl -fsS -X POST "${AUTH[@]}" "${JSON[@]}" \
+  --data '{"note":"Reviewed policy update","labels":["staging"],"acknowledge_warnings":false,"force":false}' \
+  "$BASE/$SKILL_ID/draft/publish/"
+```
+
+## Read fetch usage
+
+`GET /model-hub/skills/{skill_id}/usage/`
+
+Query: `days` is 7, 30, or 90. Returns `days`, `total`, `by_day: [{day, version, count}]`, `by_channel: {api, download, mcp}`, `by_version: [{version, count, last_at}]`, `consumers: [{label, channel, count, last_at}]`, and `last_fetched_at`.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/$SKILL_ID/usage/?days=7"
+```
+
+A fetch does not prove an agent used the skill. These counts describe requests, not task success, unique agents, evaluations, or trace linkage.
+
+## Errors and limits
+
+[The error table](/docs/skills/troubleshooting#error-codes-and-recovery) covers every public Skills error code and recovery action. Publishing errors include 422 `checks_failed` and `warnings_unacknowledged`, whose detail is ChecksResult. Concurrency errors are 409 `stale_base`, `draft_conflict`, and `label_conflict`. Invalid requests include 400 `invalid_selector`, `invalid_name`, `invalid_label`, `invalid_tags`, and `import_invalid`; over-limit payloads return 413 `payload_too_large`.
+
+Apply the [file, name, tag, label, and chunk limits](/docs/skills/checks-reference#limits) and the [ZIP and upload limits](/docs/skills/import-skills#limits-and-rejected-entries) before sending content. Text files only are supported; uploaded scripts are never run by import or checks.
+
+## Next steps
+
+- [Install skills or fetch them from Python and TypeScript](/docs/skills/use-in-agents).
+- [Use the platform MCP tools](/docs/skills/mcp-tools).
+- [Recover from errors and conflicts](/docs/skills/troubleshooting).
