@@ -11,9 +11,12 @@ test('Antigravity remains discoverable through the maintained CLI plugin', () =>
   assert.equal(entry?.category, 'coding');
   assert.equal(entry?.method, 'traceAI plugin');
   assert.match(entry.summary, /Linux CLI/);
+  assert.match(entry.summary, /macOS desktop-app/);
   assert.match(page, /Antigravity CLI 1\.x on Linux/);
   assert.match(page, /Node\.js 22\.16\+ within 22\.x, or 24\.x/);
-  assert.match(page, /## IDE and desktop app[\s\S]*not yet available/);
+  assert.match(page, /Antigravity desktop app on macOS/);
+  assert.match(page, /## Desktop app[\s\S]*only a turn's final model response includes response text/);
+  assert.match(page, /The desktop app on Windows and Linux is \*\*not yet available\*\*/);
   assert.doesNotMatch(page, /setup antigravity-ide|CLI 1\.4\.2 on macOS/);
 });
 

@@ -25,9 +25,15 @@ test('Copilot page explains recovery, privacy, scope and diagnosis', () => {
   assert.match(page, /not a security sandbox/);
   assert.match(page, /Disable stops Copilot tracing across your user and project profiles/);
 });
-test('Copilot page describes trace contents and separates the unavailable VS Code surface', () => {
+test('Copilot page describes trace contents and the VS Code extension surface', () => {
   for (const term of ['Each prompt', 'token usage', 'tool calls', 'subagent', 'user.id'])
     assert.ok(page.includes(term), term);
-  assert.match(page, /## VS Code Copilot\s+Tracing for VS Code Copilot Chat and inline completions is \*\*not yet available\*\*/);
-  assert.doesNotMatch(page, /setup copilot-vscode|Live vendor verification|E2B|run ids|HOLD/);
+  assert.ok(page.split('## Quick start')[1].includes('npx @traceai/agents setup copilot-vscode --project coding-agents'));
+  const vscode = page.split('## VS Code Copilot\n')[1]?.split('\n## ')[0] ?? '';
+  for (const term of ['settingsSync.ignoredSettings', 'Restricted Mode', 'Inline completions are not traced', 'not yet available'])
+    assert.ok(vscode.includes(term), term);
+  assert.match(page, /never written to VS Code settings/);
+  assert.match(page, /restores your VS Code settings exactly/);
+  assert.match(page, /npx @traceai\/agents disable copilot-vscode/);
+  assert.doesNotMatch(page, /Live vendor verification|E2B|run ids|HOLD/);
 });
