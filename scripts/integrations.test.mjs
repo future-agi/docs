@@ -1,3 +1,4 @@
+import './claude-code-page.test.mjs';
 import './codex-sdk-page.test.mjs';
 import './augment-code-page.test.mjs';
 import './gemini-cli-page.test.mjs';
