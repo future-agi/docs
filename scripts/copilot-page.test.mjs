@@ -33,7 +33,8 @@ test('Copilot page describes trace contents and the VS Code extension surface', 
   for (const term of ['settingsSync.ignoredSettings', 'Restricted Mode', 'Inline completions are not traced', 'not yet available'])
     assert.ok(vscode.includes(term), term);
   assert.match(page, /never written to VS Code settings/);
-  assert.match(page, /restores your VS Code settings exactly/);
+  assert.match(page, /removes the tracing settings it owns[\s\S]*keeps your other edits/);
+  assert.doesNotMatch(page, /exactly as they were/);
   assert.match(page, /npx @traceai\/agents disable copilot-vscode/);
   assert.doesNotMatch(page, /Live vendor verification|E2B|run ids|HOLD/);
 });

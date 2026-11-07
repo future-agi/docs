@@ -63,5 +63,7 @@ test('OpenCode provides diagnostics and owned lifecycle commands without QA diar
   assert.match(page, /PROJECT_CONFIG_IGNORED_UNSAFE/);
   assert.match(page, /OPENCODE_CONFIG_CONTENT/);
   assert.match(page, /forced process kill can lose/);
-  assert.doesNotMatch(page, /verified live|E2B|run[_ -]?ids?|release hold|qualification|QA harness|placeholder.*image|!\[.*\]\(/i);
+  assert.doesNotMatch(page, /verified live|E2B|run[_ -]?ids?|release hold|qualification|QA harness|placeholder.*image/i);
+  // The only media is the real OpenCode trace capture.
+  assert.deepEqual([...page.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m => m[1]), ['/images/docs/integrations/coding-agents/opencode-trace.png']);
 });

@@ -50,9 +50,11 @@ test('Goose explains deferred interactive delivery before opening traces and in 
   assert.match(page, /Configured but no traces[^\n]*submit another prompt or exit normally/);
   assert.doesNotMatch(page, /exported when Goose finishes the turn/);
 });
-test('Goose media is an existing real product view, accurately captioned', () => {
-  const images = [...page.matchAll(/!\[[^\]]*\]\((\/images\/[^)]+)\)/g)];
-  assert.equal(images.length, 1);
-  for (const [, src] of images) assert.ok(existsSync(fileURLToPath(new URL(`../public${src}`, import.meta.url))));
-  assert.match(page, /general support-agent example/);
+test('Goose media is a real Goose trace, accurately captioned', () => {
+  const images = [...page.matchAll(/!\[([^\]]*)\]\((\/images\/[^)]+)\)/g)];
+  assert.deepEqual(images.map(m => m[2]), ['/images/docs/integrations/coding-agents/goose-trace.png']);
+  for (const [, , src] of images) assert.ok(existsSync(fileURLToPath(new URL(`../public${src}`, import.meta.url))));
+  assert.match(images[0][1], /Goose turn/);
+  assert.ok(page.includes('src="/images/docs/integrations/coding-agents/goose-trace.mp4"'));
+  assert.doesNotMatch(page, /general support-agent example|dashboard-trace-detail/);
 });

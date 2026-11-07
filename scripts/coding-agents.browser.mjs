@@ -39,6 +39,17 @@ try {
         assert.ok(headings.some(h => h.includes(heading)), heading);
       }
       await page.getByRole('heading', { name: 'Quick start', exact: true }).scrollIntoViewIfNeeded();
+      // Real trace media: the screenshot decodes and the click-through video is served.
+      const shot = page.locator(`img[src$="/coding-agents/${slug}-trace.png"]`);
+      assert.equal(await shot.count(), 1, 'trace screenshot');
+      await shot.scrollIntoViewIfNeeded();
+      assert.ok(await shot.evaluate(i => i.complete && i.naturalWidth >= 1200), 'trace screenshot decodes');
+      const video = page.locator(`video[src$="/coding-agents/${slug}-trace.mp4"]`);
+      assert.equal(await video.count(), 1, 'trace video');
+      const media = await fetch(base + await video.getAttribute('src'));
+      assert.equal(media.status, 200); assert.match(media.headers.get('content-type') ?? '', /video\/mp4/);
+      await shot.screenshot({ path: `browser-results/${slug}-media.png` });
+      await page.getByRole('heading', { name: 'Quick start', exact: true }).scrollIntoViewIfNeeded();
     }
     await page.screenshot({ path: `browser-results/${slug}.png` });
     assert.deepEqual(errors, []);
