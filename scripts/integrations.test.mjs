@@ -1,3 +1,4 @@
+import './opencode-page.test.mjs';
 import './claude-code-page.test.mjs';
 import './codex-sdk-page.test.mjs';
 import './augment-code-page.test.mjs';
