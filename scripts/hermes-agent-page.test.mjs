@@ -17,7 +17,9 @@ test('Hermes guide has a three-step setup and retains a Python-only native route
   assert.match(page, /hermes plugins install future-agi\/traceAI\/python\/frameworks\/hermes-agent\/hermes-plugin\/futureagi --enable/);
   assert.match(page, /hermes chat --oneshot -q/);
   assert.match(page, /Node is not needed while Hermes runs/);
-  assert.match(page, /CLI, not Desktop or messaging-platform gateways/);
+  assert.match(page, /Desktop and messaging-platform gateway integrations are not yet available/);
+  assert.match(entry.summary, /content capture on by default/);
+  assert.doesNotMatch(entry.summary, /off by default/);
   assert.doesNotMatch(page, /run_e2e|git clone|\/path\/to\/hermes\/python|tested with|verified live/i);
 });
 
@@ -38,6 +40,21 @@ test('Hermes guide discloses default capture, protected configuration and contro
   assert.match(page, /no completion callback has no tool span/);
   assert.match(page, /Turn summaries do not duplicate model token usage/);
   assert.match(page, /earlier metadata-only default/);
+});
+
+test('Hermes guide documents scope, diagnostics and persistent gateway changes', () => {
+  for (const command of ['status hermes --check', 'doctor hermes', 'disable hermes', 'enable hermes', 'uninstall hermes']) {
+    assert.ok(page.includes(`npx @traceai/agents ${command}`), command);
+  }
+  assert.match(page, /setup hermes --project coding-agents --user-only/);
+  assert.match(page, /--scope project --project-dir \/absolute\/project\/path/);
+  assert.match(page, /does not permanently disable project discovery/);
+  assert.match(page, /\.futureagi\/agents\.json/);
+  assert.match(page, /futureagi\/agents\/credentials\.json/);
+  assert.match(page, /`futureagi\.json` profile reference/);
+  assert.match(page, /HERMES_HOME/);
+  assert.match(page, /hermes gateway restart/);
+  assert.match(page, /gateway launch environment/);
 });
 
 test('Hermes image and motion references resolve to real committed assets', () => {
