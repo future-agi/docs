@@ -15,9 +15,9 @@ test('Cursor IDE and CLI retain a discoverable shared route distinct from the SD
 });
 
 test('Cursor quick start uses one maintained setup for IDE and interactive CLI', () => {
-  assert.equal((page.match(/^### [123]\. /gm) ?? []).length, 3);
+  // Three-step layout is enforced by coding-agents-contract.test.mjs.
   assert.match(page, /https:\/\/app\.futureagi\.com\/dashboard\/keys/);
-  assert.match(page, /npx @traceai\/agents setup cursor --project cursor-sessions/);
+  assert.match(page, /npx @traceai\/agents setup cursor --project coding-agents/);
   assert.match(page, /Node\.js 22\.16\+/);
   assert.match(page, /```bash\ncursor-agent\n```/);
   assert.match(page, /keep the IDE installed/);
@@ -46,7 +46,7 @@ test('Cursor provides privacy controls, scope and complete lifecycle commands', 
   assert.match(page, /~\/\.config\/futureagi\/agents\/credentials\.json/);
   assert.match(page, /0600/);
   assert.match(page, /--scope project/);
-  assert.match(page, /changing the user default does not override an existing project setting/);
+  assert.match(page, /a repository cannot re-enable content disabled by the user/);
   assert.match(page, /--user-only/);
   assert.match(page, /Project scope does not install a second set of project hooks/);
   for (const command of ['status', 'doctor', 'disable', 'enable', 'update', 'uninstall']) {

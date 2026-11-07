@@ -10,9 +10,6 @@ test('Hermes guide has a three-step setup and retains a Python-only native route
   assert.equal(entry?.href, '/docs/integrations/coding-agents/hermes-agent');
   assert.equal(entry?.category, 'coding');
   assert.equal(entry?.method, 'traceAI plugin');
-  assert.match(page, /## 1\. Get your keys/);
-  assert.match(page, /## 2\. Set up tracing/);
-  assert.match(page, /## 3\. Run Hermes and inspect the trace/);
   assert.match(page, /npx @traceai\/agents setup hermes --project coding-agents/);
   assert.match(page, /hermes plugins install future-agi\/traceAI\/python\/frameworks\/hermes-agent\/hermes-plugin\/futureagi --enable/);
   assert.match(page, /hermes chat --oneshot -q/);

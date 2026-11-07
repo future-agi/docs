@@ -28,8 +28,7 @@ test('Goose documents scoped settings, file locations and lifecycle controls', (
   assert.doesNotMatch(page, /verified live|run ids?|internal hold|QA runner/i);
 });
 test('Goose starts with keys, native setup and the normal agent command', () => {
-  const steps = [...page.matchAll(/^## (\d+)\. (.+)$/gm)];
-  assert.deepEqual(steps.map(m => m[1]), ['1', '2', '3']);
+  // Three-step layout is enforced by coding-agents-contract.test.mjs.
   assert.match(page, /npx @traceai\/agents setup goose --project coding-agents/);
   assert.match(page, /goose run -t/);
   assert.doesNotMatch(page, /git clone|curl -fsSLO|otelcol-contrib --config|run_e2e\.sh/);
@@ -44,7 +43,7 @@ test('Goose explains content-on privacy, native-export migration and recorded ti
   assert.match(page, /cross-session subagent nesting/);
 });
 test('Goose explains deferred interactive delivery before opening traces and in troubleshooting', () => {
-  const run = page.split('## 3. Run Goose and open your trace')[1].split('## What you get')[0];
+  const run = page.split('<Step title="Run the agent and open the trace">')[1].split('</Step>')[0];
   assert.match(run, /For your first trace, run a task directly/);
   assert.match(run, /submit another prompt or exit normally/);
   assert.match(run, /exports before the command exits/);

@@ -14,9 +14,7 @@ test('Codex CLI has a registered native-plugin route distinct from the SDK', () 
 });
 
 test('Codex CLI quick start uses one maintained setup command and native hook review', () => {
-  const steps = [...page.matchAll(/^## ([123])\. (.+)$/gm)];
-  assert.equal(steps.length, 3);
-  assert.deepEqual(steps.map(step => step[1]), ['1', '2', '3']);
+  // Three-step layout is enforced by coding-agents-contract.test.mjs.
   assert.match(page, /https:\/\/app\.futureagi\.com\/dashboard\/keys/);
   assert.match(page, /npx @traceai\/agents setup codex --project coding-agents/);
   assert.match(page, /without echoing/);
@@ -58,7 +56,7 @@ test('Codex CLI separates destination, user installation and invocation-only sco
   assert.match(page, /`--project coding-agents` names the destination/);
   assert.match(page, /`--scope project` is not supported/);
   assert.match(page, /`--user-only`/);
-  assert.match(page, /Does not disable repository settings in subsequent Codex hooks/);
+  assert.match(page, /does not disable repository settings in subsequent Codex hooks/);
   assert.match(page, /`--project-dir <path>`/);
   assert.match(page, /PROJECT_CONFIG_IGNORED/);
 });

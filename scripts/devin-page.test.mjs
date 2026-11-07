@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { integrationAids, integrations } from '../src/lib/integrations.mjs';
+import { integrationAids, integrationAliases, integrations } from '../src/lib/integrations.mjs';
 
 const pages = new URL('../src/pages/', import.meta.url);
 const href = '/docs/integrations/coding-agents/devin';
@@ -21,10 +21,9 @@ function routeExists(route) {
     .some(suffix => existsSync(new URL(`.${route}${suffix}`, pages)));
 }
 
-test('Devin is discoverable as a coding support-status aid, not an integration card', () => {
-  assert.deepEqual(integrationAids.find(aid => aid.href === href), {
-    name: 'Devin (hosted) support status', href, category: 'coding',
-  });
+test('Devin legacy route points discovery to the coding overview, not a support-status card', () => {
+  assert.equal(integrationAids.find(aid => aid.href === href), undefined);
+  assert.equal(integrationAliases[href], '/docs/integrations/coding-agents');
   assert.ok(!integrations.some(integration => integration.href === href));
   const about = section('## About');
   assert.match(about, /not supported as a direct Future AGI integration/);

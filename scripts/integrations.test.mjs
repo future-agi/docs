@@ -1,3 +1,8 @@
+import './pi-plugin-page.test.mjs';
+import './openclaw-package-page.test.mjs';
+import './goose-page.test.mjs';
+import './copilot-page.test.mjs';
+import './coding-agents-contract.test.mjs';
 import './cursor-page.test.mjs';
 import './google-antigravity-page.test.mjs';
 import './codex-page.test.mjs';

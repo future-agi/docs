@@ -189,15 +189,13 @@ export const integrations = [
 
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
-  { name: 'DeepSeek Harness support status', href: '/docs/integrations/deepseek-harness', category: 'coding' },
+  { name: 'Coding agent overview', href: '/docs/integrations/coding-agents', category: 'coding' },
   { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
   { name: 'Flowise support status', href: '/docs/integrations/no-code/flowise', category: 'apps' },
   { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
   { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
-  { name: 'Devin (hosted) support status', href: '/docs/integrations/coding-agents/devin', category: 'coding' },
-  { name: 'Hook-to-OTLP emitter', href: '/docs/integrations/coding-agents/hook-to-otlp', category: 'coding' },
   { name: 'OpenAI Assistants retirement', href: '/docs/integrations/traceai/openai_assistants', category: 'providers' },
   { name: 'traceAI setup', href: '/docs/integrations/traceai' },
   { name: 'OpenTelemetry GenAI compatibility', href: '/docs/integrations/traceai/otel-genai-conformance' },
@@ -208,6 +206,9 @@ export const integrationAids = [
 // Earlier published copies remain reachable; prefer their current traceAI guide
 // in discovery rather than displaying the same integration twice.
 export const integrationAliases = {
+  '/docs/integrations/coding-agents/hook-to-otlp': '/docs/integrations/coding-agents',
+  '/docs/integrations/coding-agents/devin': '/docs/integrations/coding-agents',
+  '/docs/integrations/deepseek-harness': '/docs/integrations/coding-agents',
   '/docs/integrations/google-adk': '/docs/integrations/traceai/google_adk',
   '/docs/integrations/google-genai': '/docs/integrations/traceai/google_genai',
   '/docs/integrations/openai-agents': '/docs/integrations/traceai/openai_agents',

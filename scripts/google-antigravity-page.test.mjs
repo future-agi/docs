@@ -18,9 +18,9 @@ test('Antigravity remains discoverable through the maintained CLI plugin', () =>
 });
 
 test('Antigravity quick start requires keys, one setup command and an ordinary agent run', () => {
-  const start = page.split('## Quick start')[1]?.split('## What you see')[0];
+  const start = page.split('## Quick start')[1]?.split('## Configuration')[0];
   assert.ok(start);
-  assert.equal((start.match(/^### \d\./gm) ?? []).length, 3);
+  // Three-step layout is enforced by coding-agents-contract.test.mjs.
   for (const text of [
     'https://app.futureagi.com/dashboard/keys',
     'npx @traceai/agents setup antigravity --project coding-agents',

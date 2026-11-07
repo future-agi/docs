@@ -14,10 +14,10 @@ test('Grok Build has a discoverable native-plugin three-step quick start', () =>
   assert.match(page, /@traceai\/grok-plugin/);
   assert.match(page, /1\.0\.77 or later in the 1\.x series/);
   assert.match(page, /Node\.js 22\.16 or later/);
-  const quickStart = page.split('## Quick start\n')[1].split('\n## What you see')[0];
-  assert.equal((quickStart.match(/^### [123]\. /gm) ?? []).length, 3);
+  const quickStart = page.split('## Quick start\n')[1].split('\n## Configuration')[0];
+  // Three-step layout is enforced by coding-agents-contract.test.mjs.
   assert.match(quickStart, /https:\/\/app\.futureagi\.com\/dashboard\/keys/);
-  assert.match(quickStart, /npx @traceai\/agents setup grok --project grok-build/);
+  assert.match(quickStart, /npx @traceai\/agents setup grok --project coding-agents/);
   assert.match(quickStart, /grok -p "List the files in this folder and read README\.md"/);
   assert.match(quickStart, /\*\*Observe\*\*/);
   assert.doesNotMatch(page, /git clone|install\.sh|emit\.py|FI_HOOK_CAPTURE_CONTENT|```json/);

@@ -10,9 +10,7 @@ test('Claude Code keeps its discoverable route and three-step maintained-package
   assert.equal(entry?.href, '/docs/integrations/coding-agents/claude-code');
   assert.equal(entry?.category, 'coding');
   assert.equal(entry?.method, 'traceAI plugin');
-  assert.deepEqual([...page.matchAll(/^## \d\. (.+)$/gm)].map(match => match[1]), [
-    'Get your keys', 'Set up tracing', 'Run Claude Code',
-  ]);
+  // Three-step layout is enforced by coding-agents-contract.test.mjs.
   assert.match(page, /https:\/\/app\.futureagi\.com\/dashboard\/keys/);
   assert.match(page, /npx @traceai\/agents setup claude --project coding-agents/);
   assert.match(page, /```bash\nclaude\n```/);
@@ -23,7 +21,7 @@ test('Claude Code keeps its discoverable route and three-step maintained-package
 });
 
 test('Claude Code documents content-on defaults, a content-off switch and protected configuration', () => {
-  const beforeRun = page.split('## 3. Run Claude Code')[0];
+  const beforeRun = page.split('<Step title="Run the agent and open the trace">')[0];
   assert.match(beforeRun, /Content capture is \*\*on by default\*\*/);
   assert.match(beforeRun, /--no-capture-content/);
   assert.match(beforeRun, /secrets the agent reads/);
