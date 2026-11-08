@@ -76,13 +76,13 @@ test('overview distinguishes available surfaces from held surfaces and retired r
   for (const route of ['/docs/integrations/coding-agents/hook-to-otlp', '/docs/integrations/coding-agents/devin', '/docs/integrations/deepseek-harness']) {
     assert.equal(integrationAliases[route], '/docs/integrations/coding-agents');
   }
-  for (const name of ['VS Code Copilot', 'Antigravity desktop app (Windows, Linux)', 'Cursor Cloud', 'Hosted Codex', 'DeepSeek Harness']) {
+  for (const name of ['Antigravity desktop app (Windows, Linux)', 'Cursor Cloud', 'Hosted Codex', 'DeepSeek Harness']) {
     const row = overview.split('\n').find(line => line.startsWith(`| ${name} |`));
     assert.ok(row?.endsWith('| Not yet available |'), name);
     assert.ok(row.includes('| — |'), 'Held surfaces must not advertise runnable setup');
   }
   assert.match(overview, /best effort/);
-  for (const [name, agent] of [['Antigravity desktop app (macOS)', 'antigravity']]) {
+  for (const [name, agent] of [['VS Code Copilot', 'copilot-vscode'], ['Antigravity desktop app (macOS)', 'antigravity']]) {
     const row = overview.split('\n').find(line => line.startsWith(`| [${name}]`));
     assert.ok(row?.endsWith('| Available |'), name);
     assert.ok(row.includes(`npx @traceai/agents setup ${agent} --project coding-agents`), name);
