@@ -86,9 +86,11 @@ async function run(name, command, { expected = 'model', hidden = false, override
     assert.match(result.stdout, /Hello!/);
     assert.equal(spans.length, 1, `${name}: exactly one model span, no duplicate wire span`);
     const serialized = JSON.stringify(spans);
-    assert.match(serialized, /docs-test-model/);
-    assert.match(serialized, /prompt_tokens|token_count\.prompt|input_tokens/);
-    assert.match(serialized, /completion_tokens|token_count\.completion|output_tokens/);
+    const attributes = Object.fromEntries(spans[0].attributes.map(attribute => [attribute.key, attribute.value]));
+    assert.equal(attributes['gen_ai.request.model'].stringValue, 'docs-test-model');
+    assert.equal(Number(attributes['gen_ai.usage.input_tokens'].intValue), 13);
+    assert.equal(Number(attributes['gen_ai.usage.output_tokens'].intValue), 3);
+    assert.equal(Number(attributes['gen_ai.usage.total_tokens'].intValue), 16);
     assert.ok(BigInt(spans[0].endTimeUnixNano) > BigInt(spans[0].startTimeUnixNano));
     assert.match(JSON.stringify(batches.slice(from)), /my-ai-app/);
     if (hidden) assert.doesNotMatch(serialized, /Say hello in one word\.|Hello!/);
