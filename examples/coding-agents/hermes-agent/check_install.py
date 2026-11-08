@@ -20,7 +20,7 @@ def main() -> None:
     route = os.environ["INSTALL_ROUTE"]
     assert route in {"pip", "directory"}, route
     assert version("hermes-agent") == "0.21.5"
-    assert version("traceAI-hermes-agent") == "0.1.0"
+    assert version("traceAI-hermes-agent") == "0.1.1"
     assert set(HOOKS) <= VALID_HOOKS
     assert "pre_tool_call" not in HOOKS
     assert any(
