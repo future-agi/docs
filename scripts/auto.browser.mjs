@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
+import { createDocsContext } from './docs-browser.cjs';
 
 const base = 'http://127.0.0.1:4321';
 const route = '/docs/integrations/traceai/auto';
@@ -9,7 +10,7 @@ await mkdir(out, { recursive: true });
 const browser = await chromium.launch({ headless: true });
 const results = [];
 try {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'] });
+  const context = await createDocsContext(browser, base,{ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));

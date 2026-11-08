@@ -96,6 +96,14 @@ async function run(name, command, { expected = 'model', hidden = false, override
     if (hidden) assert.doesNotMatch(serialized, /Say hello in one word\.|Hello!/);
     else { assert.match(serialized, /Say hello in one word\./); assert.match(serialized, /Hello!/); }
     assert.doesNotMatch(serialized, /synthetic-(?:fi|provider)/);
+  } else if (expected === 'http-server' || expected === 'no-http') {
+    assert.equal(requests.length - before, 0, `${name}: no AI provider call`);
+    assert.match(result.stdout, /ordinary health response/);
+    assert.equal(spans.length, expected === 'http-server' ? 1 : 0, `${name}: HTTP span count`);
+    if (expected === 'http-server') {
+      assert.equal(spans[0].kind, 2, 'Incoming request exports a SERVER span, not a CLIENT span');
+      assert.match(JSON.stringify(spans[0].attributes), /\/health/);
+    }
   } else if (expected === 'doctor') {
     const report = JSON.parse(result.stdout);
     assert.equal(report.active, true);
@@ -140,8 +148,32 @@ try {
   await run('doctor rejects collector errors despite exit zero', block('npx --no-install traceai-auto doctor').code, { expected: 'doctor' });
   collectorStatus = 200;
   assert.equal(done.size, blocks.length, 'All page blocks executed');
+  // Ordinary HTTP is not AI traffic. The optional integration traces only the
+  // incoming half of this request; no manual tracing APIs are used in the app.
+  await writeFile(join(app, 'http.mjs'), `import { createServer, get } from 'node:http';
+const server = createServer((request, response) => response.end('ordinary health response'));
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+try {
+  const body = await new Promise((resolve, reject) => {
+    get('http://127.0.0.1:' + server.address().port + '/health', response => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { text += chunk; });
+      response.on('end', () => resolve(text));
+      response.on('error', reject);
+    }).on('error', reject);
+  });
+  console.log(body);
+} finally { await new Promise(resolve => server.close(resolve)); }
+`);
+  const httpCommand = block('node --import').code.replace('app.mjs', 'http.mjs');
+  await run('HTTP without the optional instrumentor', httpCommand, { expected: 'no-http' });
+  await run('install optional HTTP instrumentor', 'npm install @opentelemetry/instrumentation-http@0.202.0', { expected: 'install' });
+  await run('HTTP integration captures incoming but not outgoing requests', httpCommand, { expected: 'http-server' });
+  assert.ok(page.includes('FI_DISABLED_INSTRUMENTATIONS=http'));
+  await run('HTTP denylist disables incoming spans', `FI_DISABLED_INSTRUMENTATIONS=http ${httpCommand}`, { expected: 'no-http' });
   const packages = {};
-  for (const name of ['@traceai/auto', 'openai']) packages[name] = JSON.parse(await readFile(join(app, 'node_modules', name, 'package.json'), 'utf8')).version;
+  for (const name of ['@traceai/auto', 'openai', '@opentelemetry/instrumentation-http']) packages[name] = JSON.parse(await readFile(join(app, 'node_modules', name, 'package.json'), 'utf8')).version;
   const receipt = { node: process.version, packages, executedBlocks: done.size, totalBlocks: blocks.length, results, scope: 'Synthetic loopback provider and OTLP only; not a live Cloud test.' };
   await writeFile(join(output, 'snippets.json'), JSON.stringify(receipt, null, 2));
   await writeFile(join(output, 'otlp.json'), JSON.stringify(batches, null, 2));

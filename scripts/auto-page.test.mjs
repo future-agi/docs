@@ -33,6 +33,13 @@ test('primary setup preloads a maintained package without app instrumentation', 
   assert.match(page, /zero exit code alone does not prove export health/);
 });
 
+test('HTTP scope distinguishes outgoing calls from the optional incoming integration', () => {
+  assert.match(page, /outgoing non-AI HTTP calls are not automatically traced/);
+  assert.match(page, /optional `@opentelemetry\/instrumentation-http` package is installed/);
+  assert.match(page, /incoming HTTP server spans/);
+  assert.match(page, /`FI_DISABLED_INSTRUMENTATIONS=http` to disable that integration/);
+});
+
 test('privacy defaults, runtime boundaries and reference links remain explicit', () => {
   const setup = page.split('## Try a minimal')[0];
   assert.match(setup, /captured by default/);
