@@ -86,10 +86,13 @@ class GrokBuildHooksConfigTest(unittest.TestCase):
             self.assertEqual(hook["command"],
                              f'(python3 -B "$HOME/.grok/fi-hook-to-otlp/emit.py" grok_build {event} 2>/dev/null || true)')
 
-    def test_page_shows_the_shipped_hook_file(self):
+    def test_page_uses_the_maintained_setup_instead_of_a_hook_copy(self):
+        # The page installs the maintained @traceai/grok-plugin; a pasted copy of this
+        # recipe's hook file would drift from the shipped one.
         page = (ROOT.parents[2] / "src/pages/docs/integrations/coding-agents/grok-build.mdx").read_text(encoding="utf-8")
-        block = page.split("```json\n", 1)[1].split("\n```", 1)[0]
-        self.assertEqual(json.loads(block)["hooks"], HOOKS)
+        self.assertIn("npx @traceai/agents setup grok --project", page)
+        self.assertNotIn('"hooks"', page)
+        self.assertNotIn("emit.py", page)
 
     def test_missing_emitter_exits_0_with_empty_output(self):
         for shell in SHELLS:
