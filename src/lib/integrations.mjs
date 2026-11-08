@@ -26,6 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
+  { id: 'traceai-auto', name: 'Zero-code Node.js', href: '/docs/integrations/traceai/auto', category: 'frameworks', summary: 'Trace supported Node.js AI calls with one startup preload and no tracing imports.', method: 'traceAI preload', logo: 'generic-framework', aliases: ['@traceai/auto', 'Node.js', 'TypeScript', 'JavaScript', 'zero code', 'auto instrumentation'] },
   { id: 'a2a-go', name: 'A2A Go', href: '/docs/integrations/traceai/go/a2a', category: 'frameworks', summary: 'Trace Go agent-to-agent calls on clients and servers.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'vitest', name: 'Vitest', href: '/docs/integrations/frameworks/vitest', category: 'frameworks', summary: 'Trace test runs and workers with native OpenTelemetry.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Vitest tests'] },
   { id: 'helicone', name: 'Helicone', href: '/docs/integrations/gateways/helicone', category: 'gateways', summary: 'Trace OpenAI-client calls through a self-hosted Helicone gateway.', method: 'OpenAI client', logo: 'generic-framework' },
