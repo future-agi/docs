@@ -348,6 +348,8 @@ test('Cognee uses the maintained adapter with native tracing and safe lifecycle'
   assert.match(page, /free text is not scanned for secrets/);
   assert.match(page, /Error descriptions and stack traces remain excluded/);
   assert.match(page, /other exporters/);
+  assert.match(page, /Leave `OTEL_EXPORTER_OTLP_ENDPOINT` unset/);
+  assert.match(page, /log and metric exporters, which are not filtered by this adapter/);
   assert.match(page, /cognee\.disable_tracing\(\)/);
   assert.doesNotMatch(page, /CogneeExportFilter|cognee_filter|Live vendor verification|PASS\/FAIL|There is no .*package/);
 });
