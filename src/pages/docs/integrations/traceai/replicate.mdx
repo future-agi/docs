@@ -1,0 +1,159 @@
+---
+title: "Trace Replicate predictions"
+description: "Use traceAI-replicate to trace Python predictions in Future AGI, with optional stream metadata and content privacy controls."
+---
+
+Use the maintained `traceAI-replicate` package to send Replicate predictions, streamed output, latency and errors to Future AGI. It instruments the official [Replicate Python client](https://github.com/replicate/replicate-python), not an OpenAI-compatible endpoint.
+
+## Prerequisites
+
+- Python 3.10–3.13. The integration supports `replicate>=1.0.0,<2`; Replicate 2.x is not supported.
+- Future AGI API and secret keys, and a Replicate API token with access to the model you call.
+
+Input, output and error messages are recorded by default. Set the [privacy controls](#privacy) before initializing tracing if your application handles sensitive content.
+
+## 1. Install
+
+```bash
+pip install traceAI-replicate==0.1.0 fi-instrumentation-otel==1.2.3 replicate==1.0.7
+```
+
+## 2. Set credentials
+
+Set these variables in the process that runs your application. Use your secret manager rather than committing credentials to source control.
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export REPLICATE_API_TOKEN="your-replicate-api-token"
+```
+
+The Replicate client reads `REPLICATE_API_TOKEN` itself.
+
+## 3. Register tracing and run a prediction
+
+Call `register()` before `instrument()`, and instrument before making predictions.
+
+```python
+import replicate
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_replicate import ReplicateInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-replicate-app",
+)
+ReplicateInstrumentor().instrument(tracer_provider=trace_provider)
+
+try:
+    output = replicate.run(
+        "meta/meta-llama-3-8b-instruct",
+        input={
+            "prompt": "Write a one-line caption about a quiet field.",
+            "max_tokens": 24,
+        },
+    )
+    print("".join(output))
+finally:
+    trace_provider.shutdown()
+```
+
+Use `replicate.run` after instrumentation rather than a function imported earlier with `from replicate import run`: that earlier reference remains untraced. The same applies to the module's async and streaming functions.
+
+## 4. View the trace
+
+Open the `my-replicate-app` Observe project in Future AGI and inspect the `replicate.run` span. It contains the provider, model, prediction ID, output and status returned by Replicate. Token counts and `replicate.metrics.predict_time` appear when the prediction reports them; the integration does not estimate tokens or record cost.
+
+## What is traced
+
+Sync and async calls have the same coverage. Spans nest under the active OpenTelemetry span.
+
+| Operation | Span behavior |
+|---|---|
+| `replicate.run` / `Client.run` | One `replicate.run` span, including the client's create request and polling. |
+| `replicate.stream` / `Client.stream` | One `replicate.stream` span, starting at the first iteration. A stream that is never iterated has no span. |
+| `predictions.create`, `models.predictions.create`, `deployments.predictions.create` | One `replicate.predictions.create` span. A later `wait()` or `cancel()` continues and ends that same span. |
+| `Prediction.wait`, `Prediction.cancel`, `predictions.cancel(id)` | Ends the open create span, or creates a separate wait/cancel span when none is open. |
+
+Text output produces an `LLM` span. Files, images and calls with no output produce a `CHAIN` span, including failures before any text is returned. Count failures by error status rather than span kind.
+
+A create without a later wait or cancel ends with its create-time status at flush, shutdown, `uninstrument()` or exit. Held creates also expire lazily at the next traced call after `max_pending_seconds` (default `600`). The instrumentor does not poll predictions you did not wait for.
+
+Trainings, file uploads, `predictions.get` / `list`, and `Prediction.stream()` / `output_iterator()` on predictions you created yourself are not traced. Use `replicate.stream` or `replicate.run` for iterator tracing. This package does not instrument the JavaScript client.
+
+## Streaming and optional metadata
+
+**Post-stream reads are off by default (`stream_reload_seconds=0`).** A successful stream ends its span at `done` with the prediction ID and received output, but no final prediction status, `predict_time` or token counts. No extra request is made and no package worker thread starts. A `done` event that explicitly reports `canceled` still records that status.
+
+To request final metadata, replace the `instrument()` call in your setup with:
+
+```python
+ReplicateInstrumentor().instrument(
+    tracer_provider=trace_provider,
+    stream_reload_seconds=2,
+)
+```
+
+After `done`, the package reads `GET /v1/predictions/{id}` in the background through its own connection pool, using your client's `base_url` and headers. If the answer is non-final, it makes one more read after `poll_interval`, within the same budget. Your stream loop does not wait for these reads.
+
+- Each read counts toward [Replicate's API rate limit](https://replicate.com/docs/topics/predictions/rate-limits). It creates no prediction and adds no prediction charge or extra tracing span. HTTP 429 and 5xx responses are not retried by this metadata reader.
+- Reads require a plain `httpx` transport, including a plain transport mounted with `mounts=`. Custom/subclassed transports, proxies, custom network backends and instance-patched transports are skipped. Detected replacements of HTTP or socket methods also skip the read.
+- At most 64 stream spans can wait for metadata, with at most 64 live reads. Beyond either cap, the span ends without a read. Responses are limited to 2 MiB, and the request is cancelled when its wall-time budget expires.
+- The read adds only prediction ID, status, version, model, metrics and error information, not the response's input, output or logs. Privacy settings still apply.
+
+<Warning>
+The opt-in read is a real request to your client's `base_url`, including a local stub server. Keep `stream_reload_seconds=0` in tests unless they expect that extra request; mock detection is not a guarantee that no request will be sent.
+</Warning>
+
+### Flush and shutdown
+
+All three options accept `0`–`10` seconds and default to `0`:
+
+| Option | Purpose |
+|---|---|
+| `stream_reload_seconds` | Post-stream metadata read budget; `0` disables reads. |
+| `stream_flush_wait_seconds` | Wait for reads during `force_flush()`, at most half its `timeout_millis`. |
+| `stream_shutdown_wait_seconds` | Wait for reads during provider shutdown and normal process exit. |
+
+By default, flush, shutdown and exit end pending metadata spans with what is known and cancel their reads. `uninstrument()` never waits for a read. With reads enabled, each of these operations can still wait up to 5 seconds for a span the finisher thread is exporting; `timeout_millis` does not shorten that wait. An inline exporter can also make span completion exceed the requested timeout, even at `force_flush(timeout_millis=0)`. Prefer the default batch processor.
+
+For short-lived or serverless processes that need stream metadata, set the appropriate wait option before instrumentation. Flushing immediately with the default wait can discard pending metadata, and a shared provider's flush affects every request's pending stream spans.
+
+Close or consume streams before calling `uninstrument()`. A stream still open then ends when completed or closed; a dropped stream ends at the next traced call after re-instrumenting, or at exit. The removed provider hooks can no longer end it on flush or shutdown.
+
+With reads enabled, a fork can wait up to 5 seconds for an export, and the child does not export the parent's pending spans. Initialize tracing in each worker; use the `spawn` multiprocessing start method on macOS to avoid system-proxy lookup crashes in forked children. With reads disabled, the package adds no fork wait.
+
+## Errors and cancellation
+
+- Failed predictions and HTTP errors produce `ERROR` spans. A create answered HTTP 429 is not retried by the default Replicate client: reduce the request rate or address the account's credit limit before retrying. A new application-level attempt produces another span.
+- Replicate's terminal `canceled` status is recorded with an OK span. Caller cancellation is different: Ctrl-C, `SystemExit`, asyncio/trio cancellation, or closing/dropping a stream before `done` records `ERROR` and `replicate.cancelled=true`.
+- Calls or iterators still running at provider shutdown or normal exit end as cancelled. Partial output is retained, subject to the privacy settings; a stream ending without `done` also records `replicate.stream.truncated=true`. Closing a stream after `done` is not a cancellation.
+
+## Privacy
+
+Set controls before `register()` and `instrument()`. To retain metadata without recording input, output or error details:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+export FI_HIDE_ERROR_DETAILS=true
+```
+
+With the installed core version, content hide flags also enable error-detail hiding unless explicitly overridden. Setting all three makes the intended policy explicit. You can alternatively pass `config=TraceConfig(hide_inputs=True, hide_outputs=True, hide_error_details=True)` to `instrument()`, importing `TraceConfig` from `fi_instrumentation`.
+
+- Input/output values become `__REDACTED__`. Error messages and error status descriptions are removed; error status and exception types remain. Model, prediction ID, timing and reported tokens remain available.
+- `FI_PII_REDACTION=true` applies pattern-based masking to recorded strings, including error text. It is not a substitute for hiding content that must not be exported.
+- The instrumentor redacts known Replicate API tokens from recorded strings and does not attach exception stack traces. Error messages themselves can contain sensitive information, so use error-detail hiding rather than assuming they are safe.
+- File outputs are recorded as URL strings, or counted for streams, and are never downloaded by the instrumentor. File `data:` payloads are omitted, but a `data:` chunk in text output is preserved unless outputs are hidden. URLs can themselves contain sensitive values.
+- Webhook URLs are recorded only as present, not by value. The package hosts no webhook receiver.
+
+These settings control telemetry, not what Replicate receives in your prediction request.
+
+## Troubleshooting
+
+- **No spans:** use `traceAI-replicate`, not `traceAI-openai`. Register before instrumenting, and avoid previously imported module-function references.
+- **Create span says `starting`:** call `wait()` before flushing if you need the final prediction result. A `run` span can also show `processing` if that is the status Replicate returned with the output.
+- **Stream has no status or tokens:** this is the default. With reads enabled, inspect `replicate.stream.read`: `timeout`, `failed`, `unfinished`, `flushed`, `shutdown` or `uninstrumented` explains missing metadata. Increase the budget, configure a flush/shutdown wait, or check rate limits as appropriate.
+- **Metadata read is `skipped`:** inspect `replicate.stream.skip_reason`. `custom_transport` includes proxies and instance instrumentation such as `HTTPXClientInstrumentor.instrument_client()`; `patched_http` includes Sentry's `HttpxIntegration`; `patched_socket` includes gevent and `truststore.inject_into_ssl()`. Keep the default-off mode if your application needs these integrations. `at_capacity` means the concurrency cap was reached; `no_provider_hook` means tracing was not registered before instrumentation or the provider cannot be hooked.
+- **HTTP 401:** check the Replicate token in the application's environment and its model access. Never put the token in logs or trace attributes.
