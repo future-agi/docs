@@ -26,7 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
-  { id: 'langflow', name: 'Langflow fork backend', href: '/docs/integrations/no-code/langflow', category: 'apps', summary: 'Trace API runs from the pinned source fork, not stock Langflow.', method: 'Source-fork tracer', logo: 'generic-framework' },
+  { id: 'langflow', name: 'Langflow', href: '/docs/integrations/no-code/langflow', category: 'apps', summary: 'Export self-hosted Langflow API traces through its built-in Traceloop integration.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'traceai-auto', name: 'Zero-code Node.js', href: '/docs/integrations/traceai/auto', category: 'frameworks', summary: 'Trace supported Node.js AI calls with one startup preload and no tracing imports.', method: 'traceAI preload', logo: 'generic-framework', aliases: ['@traceai/auto', 'Node.js', 'TypeScript', 'JavaScript', 'zero code', 'auto instrumentation'] },
   { id: 'a2a-go', name: 'A2A Go', href: '/docs/integrations/traceai/go/a2a', category: 'frameworks', summary: 'Trace Go agent-to-agent calls on clients and servers.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'vitest', name: 'Vitest', href: '/docs/integrations/frameworks/vitest', category: 'frameworks', summary: 'Trace test runs and workers with native OpenTelemetry.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Vitest tests'] },
