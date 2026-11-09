@@ -1,0 +1,183 @@
+---
+title: "Trace Firebase Genkit with Future AGI"
+description: "Send Genkit's native flow, model and tool spans to Future AGI with the maintained @traceai/genkit processor."
+---
+
+Trace your [Genkit](https://genkit.dev) application's flows, model calls and tools in Future AGI with `@traceai/genkit`. The package connects to Genkit's native OpenTelemetry pipeline and maps its spans to Future AGI kinds, model names and token usage without wrapping `ai.generate()`.
+
+## Prerequisites
+
+- Node.js 20 or later. This guide uses Genkit 1.42.0 for JavaScript / TypeScript, not Genkit Python or Go.
+- [Future AGI API credentials](/docs/admin-settings/api-keys).
+- Your own OpenAI API key with access to `gpt-4.1-nano` for the example.
+
+Use one telemetry setup per process. Do not combine this processor with `enableFirebaseTelemetry()`, `enableGoogleCloudTelemetry()`, or `ENABLE_FIREBASE_MONITORING=true`: both setups call Genkit's `enableTelemetry()`, so one misses spans and the other is not flushed correctly. This setup does not require Google Cloud.
+
+## 1. Install
+
+```bash
+npm install @traceai/genkit@0.1.0 @traceai/fi-core@1.1.1 genkit@1.42.0 @genkit-ai/compat-oai@1.42.0
+```
+
+`genkit` is a peer dependency of `@traceai/genkit`; install it alongside the processor.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_FUTURE_AGI_API_KEY"
+export FI_SECRET_KEY="YOUR_FUTURE_AGI_SECRET_KEY"
+export FI_PROJECT_NAME="my-genkit-app"
+export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
+```
+
+The Future AGI keys authenticate export requests; the processor does not add them to spans. Inputs, outputs and error messages are captured by default. Set the [privacy options](#privacy) before starting your application if these may contain sensitive data.
+
+## 3. Configure tracing and run a flow
+
+Save this as `genkit-app.mjs`. The sample tool returns static weather data so you can see the model and tool calls together.
+
+```javascript
+import { genkit, z } from "genkit"; // Import first to initialize Genkit's telemetry provider.
+import { enableTelemetry, flushTracing } from "genkit/tracing";
+import { openAI } from "@genkit-ai/compat-oai/openai";
+import { ProjectType, register } from "@traceai/fi-core";
+import { FIGenkitSpanProcessor, flushOnSignals } from "@traceai/genkit";
+
+const tracerProvider = register({
+  projectType: ProjectType.OBSERVE,
+  projectName: process.env.FI_PROJECT_NAME,
+  // Genkit must own the global OpenTelemetry provider.
+  setGlobalTracerProvider: false,
+});
+
+// Call once, before the first flow, model or tool runs.
+await enableTelemetry({
+  spanProcessors: [new FIGenkitSpanProcessor({ tracerProvider })],
+});
+
+const ai = genkit({ plugins: [openAI()], model: openAI.model("gpt-4.1-nano") });
+
+// Flush before Genkit's exit handlers on SIGTERM / SIGINT.
+flushOnSignals(flushTracing);
+
+const getWeather = ai.defineTool(
+  {
+    name: "getWeather",
+    description: "Get the current weather for a city",
+    inputSchema: z.object({ city: z.string() }),
+    outputSchema: z.string(),
+  },
+  async ({ city }) => `It is 21 degrees and sunny in ${city}.`,
+);
+
+const weatherFlow = ai.defineFlow(
+  { name: "weatherFlow", inputSchema: z.string(), outputSchema: z.string() },
+  async (city) => {
+    const { text } = await ai.generate({ prompt: `What is the weather in ${city}?`, tools: [getWeather] });
+    return text;
+  },
+);
+
+try {
+  console.log(await weatherFlow("Lisbon"));
+} finally {
+  // Flush even when the flow throws.
+  await flushTracing();
+}
+```
+
+```bash
+node genkit-app.mjs
+```
+
+Keep `setGlobalTracerProvider: false`: otherwise Genkit's spans bypass this processor and arrive without the mapped kinds or privacy filtering. Pass `spanProcessors`, not `traceExporter`, to `enableTelemetry()`. Genkit keeps its own Dev UI exporter, so the Dev UI continues to receive spans.
+
+Do not also register `@traceai/openai` in this process. The OpenAI plugin already creates model spans, so instrumenting its underlying OpenAI SDK would trace each call twice.
+
+## 4. View the trace
+
+Open **Observe** in Future AGI, select the `my-genkit-app` project and open the `weatherFlow` trace. Expand its `generate` spans to inspect the `openai/gpt-4.1-nano` model calls and any `getWeather` tool calls. Model spans contain token usage when the provider reports it; Future AGI computes cost when the model is in its price table.
+
+## Privacy
+
+To hide inputs and outputs, set these variables before creating the processor:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+These hide flow inputs and outputs, prompts and model responses, tool arguments and results, retriever queries and documents, and embedder inputs and vectors. A hidden side appears as `__REDACTED__`. With either flag enabled, error messages are also redacted while the error type and `ERROR` status remain. Model names, token usage, span kinds and session attributes remain available.
+
+You can instead pass `traceConfig: { hideInputs: true, hideOutputs: true }` to `FIGenkitSpanProcessor`. Explicit options take precedence over environment variables; environment values enable hiding only when they equal `true` (case-insensitive).
+
+For narrower controls:
+
+- `FI_HIDE_INPUT_MESSAGES` / `FI_HIDE_OUTPUT_MESSAGES` hide content on model spans only.
+- `FI_HIDE_INPUT_TEXT` / `FI_HIDE_OUTPUT_TEXT` redact model text and reasoning but keep roles and tool calls.
+- `FI_HIDE_EMBEDDING_VECTORS` redacts vectors on embedder spans.
+
+The processor drops Genkit's request context (`genkit:metadata:context`) and exception stack traces, scrubs local paths from exported strings, and redacts emails and local user/host names from error text. This is not general PII removal: emails in prompts or tool results remain unless you hide that content. `FI_PII_REDACTION` is not applied by this processor. Genkit's Dev UI and other exporters still receive the original, unredacted spans.
+
+## Sessions
+
+To group flow calls, install the OpenTelemetry context API:
+
+```bash
+npm install @opentelemetry/api@1.9.0
+```
+
+Add these imports to `genkit-app.mjs` and replace its final `try` / `finally` block with this context-wrapped call:
+
+```javascript
+import { context } from "@opentelemetry/api";
+import { setSession, setUser } from "@traceai/fi-core";
+
+try {
+  console.log(await context.with(
+    setUser(setSession(context.active(), { sessionId: "chat-123" }), { userId: "user-42" }),
+    () => weatherFlow("Lisbon"),
+  ));
+} finally {
+  await flushTracing();
+}
+```
+
+The context helpers attach `session.id` and `user.id` to spans started within the call. Genkit beta agents also map their own session ID to `session.id` on the agent span.
+
+## Captured spans and fields
+
+| Genkit operation | Future AGI kind |
+|---|---|
+| Flow, `generate`, `ai.run()`, prompt rendering and other actions | CHAIN |
+| Model call | LLM |
+| Tool call | TOOL |
+| Retriever | RETRIEVER |
+| Embedder | EMBEDDING |
+| Reranker, evaluator, beta agent | RERANKER, EVALUATOR, AGENT |
+
+Unrecognized Genkit span types are exported without a mapped kind. The processor preserves trace and parent relationships, and exports a mapped copy rather than changing Genkit's original span.
+
+- **Models:** `gen_ai.request.model` and `gen_ai.response.model` contain the action name without its plugin prefix, such as `gpt-4.1-nano`. Genkit does not report a resolved model version. Embedder names use `embedding.model_name`.
+- **Providers:** `gen_ai.provider.name` is mapped for `googleai`, `vertexai`, `openai`, `anthropic`, `deepseek`, `xai`, `ollama`, `mistral`, `groq`, `aws-bedrock` and `azure-openai`. Other prefixes leave it unset.
+- **Usage:** input, output, total, reasoning and cache-read tokens are mapped when present. Token and cost attributes on non-model spans are moved under `genkit.usage.*` to avoid counting them twice. Other usage fields remain in the output JSON.
+- **Content:** `input.value` / `output.value` contain the operation's input and output, subject to the privacy settings. Retrieved documents remain output JSON, not structured `retrieval.documents.*` attributes.
+- **Errors:** failing spans keep `ERROR` status and exception events, subject to the error-redaction rules above.
+
+This integration exports traces, not Genkit metrics.
+
+## Flushing and shutdown
+
+- Call `await flushTracing()` before a short script exits or a serverless handler returns. Use `finally` so failures also flush.
+- For servers, call `flushOnSignals(flushTracing)` after telemetry setup and after installing other SIGTERM / SIGINT listeners. It flushes first, with a 10-second default timeout, then runs the existing listeners. Listeners installed later are not delayed by it.
+- Give Genkit a dedicated provider from `register()`. The processor's `shutdown()` also shuts down that provider.
+- `FIGenkitSpanProcessor` accepts `flushTimeoutMillis` (default `30000`) to bound its flush and shutdown operations. Export failures are logged through OpenTelemetry diagnostics rather than failing the flow; a completed flush does not guarantee delivery.
+
+## Troubleshooting
+
+- **No traces:** check the Future AGI keys, `FI_PROJECT_NAME`, and that `enableTelemetry()` runs exactly once before the first flow. Disable the Firebase / Google Cloud telemetry setup in this process.
+- **`FAILED_PRECONDITION: TelemetryProvider is not initialized`:** import `genkit` before calling `enableTelemetry()`.
+- **Spans arrive without mapped kinds:** pass `setGlobalTracerProvider: false` to `register()` so Genkit owns the global provider.
+- **Last spans missing:** keep `await flushTracing()` in `finally`; use `flushOnSignals(flushTracing)` for signal-based shutdown.
+- **Content shows `__REDACTED__`:** check `FI_HIDE_*` variables and `traceConfig` flags.
+- **Provider or cost is empty:** the plugin prefix may be unmapped, or the model may be absent from Future AGI's price table. Model names and reported tokens are still recorded.

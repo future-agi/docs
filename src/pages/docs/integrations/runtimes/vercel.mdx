@@ -1,0 +1,92 @@
+---
+title: "Trace Next.js requests on Vercel"
+description: "Export native Next.js request spans to Future AGI with Vercel's OpenTelemetry integration."
+---
+
+Send native Next.js request spans to an Observe project in Future AGI, including ordinary HTTP spans rather than only model calls.
+
+## 1. Install
+
+Use a Next.js 16 application with the Node.js runtime on Node.js 22 or later. Keep Next.js on its latest security patch. This setup uses `@vercel/otel` 2.x (2.0.0 or later) with the standard OpenTelemetry OTLP/HTTP JSON exporter. It does not require `@traceai/vercel` or an AI SDK.
+
+```bash
+npm install @vercel/otel@^2.0.0 @opentelemetry/api@^1.9.0 \
+  '@opentelemetry/exporter-trace-otlp-http@>=0.200.0 <0.300.0'
+```
+
+If your application already registers OpenTelemetry, configure its existing provider instead of registering a second one. The exporter range above uses the compatible OpenTelemetry SDK 2.x line; let npm resolve its API peer version rather than forcing `@opentelemetry/api@latest`. The [AI SDK guide](/docs/integrations/traceai/vercel) uses a separate setup.
+
+## 2. Set credentials
+
+Add these server-only environment variables in your Vercel project's settings for each deployment environment you use, then redeploy. For local development, set them in your shell before starting Next.js. Never prefix them with `NEXT_PUBLIC_` or commit them to source control.
+
+```bash
+export FI_API_KEY="YOUR_FI_API_KEY"
+export FI_SECRET_KEY="YOUR_FI_SECRET_KEY"
+```
+
+## 3. Register tracing at startup
+
+Create `instrumentation.js` in your project root, or in `src/` if your application uses that directory. [Next.js calls `register()` at server startup](https://nextjs.org/docs/app/guides/instrumentation); do not call it from a route handler.
+
+```javascript title="instrumentation.js"
+export async function register() {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+
+  const { registerOTel } = await import("@vercel/otel");
+  const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
+  const apiKey = process.env.FI_API_KEY;
+  const secretKey = process.env.FI_SECRET_KEY;
+  if (!apiKey || !secretKey) {
+    throw new Error("Set FI_API_KEY and FI_SECRET_KEY before starting Next.js.");
+  }
+
+  registerOTel({
+    serviceName: "vercel-web",
+    attributes: {
+      project_name: "vercel-web",
+      project_type: "observe",
+    },
+    traceExporter: new OTLPTraceExporter({
+      url: "https://api.futureagi.com/tracer/v1/traces",
+      headers: { "X-Api-Key": apiKey, "X-Secret-Key": secretKey },
+    }),
+  });
+}
+```
+
+Replace `vercel-web` with your service and Observe project names. `project_name` and `project_type` are resource attributes used for project routing; `serviceName` identifies the application. For self-hosted Future AGI, replace the exporter URL with your instance's `/tracer/v1/traces` endpoint.
+
+This configuration exports application traces directly to Future AGI. Do not also forward the same traces through a Vercel Trace Drain to Future AGI. Do not add `isFISpan`: it filters out ordinary Next.js request spans. Trace Drains and Marketplace provisioning are separate from this application-level setup.
+
+<Warning>
+Native telemetry can include request URLs, paths, errors and custom attributes. Keep secrets and private data out of URLs and telemetry metadata, and review your framework's exported fields before using sensitive workloads. `FI_HIDE_*` settings do not redact this native exporter. If you need central redaction, route traces through an OpenTelemetry Collector with your redaction policy before exporting to Future AGI.
+</Warning>
+
+## 4. Make a request
+
+For a Pages Router application, add a small API route. App Router applications can use an existing Node.js route instead.
+
+```javascript title="pages/api/health.js"
+export default function handler(req, res) {
+  res.status(200).json({ status: "ok" });
+}
+```
+
+Start or deploy your application and request `/api/health`. For local development:
+
+```bash
+npm run dev
+curl http://localhost:3000/api/health
+```
+
+Open **Observe** in Future AGI and select `vercel-web`. Inspect the request's span tree, timing, status and native HTTP attributes. Ordinary HTTP spans are not model generations: they do not supply prompts, responses or token usage. To add model-call details, use the [Vercel AI SDK integration](/docs/integrations/traceai/vercel) without registering a second provider or exporting the same spans twice.
+
+## Troubleshooting
+
+- **No request spans:** confirm that the route runs in Node.js, `instrumentation.js` is in the correct directory, and the deployment has both Future AGI credentials. Check your OpenTelemetry sampling settings if only some requests appear.
+- **Export rejected:** check the complete `/tracer/v1/traces` URL, both auth headers and the `project_name` resource attribute.
+- **Only model spans appear:** remove an AI-only `isFISpan` filter from the processor responsible for exporting application spans.
+- **Duplicate request spans:** keep one provider registration and one export path to Future AGI. Remove any overlapping Trace Drain or processor.
+
+See [Vercel's OpenTelemetry configuration](https://vercel.com/docs/otel) for native instrumentation and deployment options.

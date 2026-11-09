@@ -40,7 +40,10 @@ def test_the_tested_version_is_pinned_everywhere():
 def test_the_page_follows_the_style_guide():
     page = PAGE.read_text()
     body = page.split("---", 2)[2]
-    assert body.lstrip().startswith("## About")
+    assert body.lstrip().startswith("Send Mirascope model and application spans")
+    assert "self-hosted Future AGI" in body
+    assert 'export FI_BASE_URL="http://localhost:4318"' in body
+    assert "How this was checked" not in body
     assert "—" not in page, "no em-dashes"
     assert "## Next Steps" in page
     for heading in ("## What is captured", "## Privacy", "## Limitations", "## Troubleshooting"):
