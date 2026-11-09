@@ -1,13 +1,16 @@
 ---
 title: "Send OpenInference spans to Future AGI"
-description: "Export traces from the Python OpenInference OpenAI instrumentor to Future AGI over OTLP/HTTP."
+description: "Export Python, TypeScript, Java and Go OpenInference spans to Future AGI over OTLP/HTTP."
 ---
 
-Send Python OpenAI traces from [OpenInference](https://github.com/Arize-ai/openinference) to **Observe** using a standard OTLP/HTTP exporter. Future AGI reads OpenInference's span kinds, model names, token counts and input/output attributes; no Future AGI instrumentation package is needed.
+Send [OpenInference](https://github.com/Arize-ai/openinference) spans to **Observe** using a standard OTLP/HTTP exporter. Choose Python for OpenAI text calls, TypeScript for application functions and methods, Java for annotated methods, or Go for manual application spans with session and user context. These routes use native OpenInference packages, without a Future AGI instrumentation package.
 
-This guide covers OpenAI text calls. It does not configure sessions, users, embeddings, images, cost reporting or evaluations. Other OpenInference instrumentors may emit different attributes.
+Use the collector endpoint below, not the retired Django OTLP route (`/api/public/otel/...`).
 
-The old Django OTLP route (`/api/public/otel/...`) is retired. A response from that path is not evidence that spans are ingested. Use the collector endpoint below.
+<Tabs>
+<Tab title="Python">
+
+This Python recipe covers OpenAI text calls. It does not configure sessions, users, embeddings, images, cost reporting or evaluations.
 
 ## Install
 
@@ -86,15 +89,15 @@ Future AGI maps OpenInference span attributes as follows:
 | --- | --- | --- |
 | `openinference.span.kind=AGENT` | agent | Parent of the others; shown in the trace tree and Agent Graph |
 | `RETRIEVER` | retriever | `input.value` is the query. `retrieval.documents.*` attributes are kept in the span's extra attributes, not in the output column |
-| `LLM` (OpenAI instrumentor) | llm | `llm.model_name` becomes the model; `llm.token_count.prompt` / `completion` become prompt and completion tokens; total is their sum |
-| `TOOL` (`tracer.tool` decorator) | tool | Inputs and outputs from `input.value` / `output.value` |
-| Exception in a span | status ERROR | Message appears in the status message |
+| `LLM` | llm | `llm.model_name` becomes the model; `llm.token_count.prompt` / `completion` become prompt and completion tokens; total is their sum |
+| `TOOL` | tool | Inputs and outputs from `input.value` / `output.value`, when recorded |
+| Span status set to `ERROR` | status ERROR | The supplied status description becomes the status message. The Python OpenAI instrumentor sets this on exceptions; for manual Go spans, set the status explicitly as shown in the Go tab. An exception event alone does not set it |
 
 An unrecognised `openinference.span.kind` value never makes the export fail; the span is stored with type `unknown`. `PROMPT` and `DECISION` are two such values in current OpenInference semantic conventions.
 
 ## Privacy
 
-OpenInference captures content by default (prompts, completions, tool arguments and results, retrieval text). Turn it off with the OpenInference settings, not Future AGI's `FI_HIDE_*`:
+The Python OpenInference OpenAI instrumentor captures content by default. Turn it off with the OpenInference settings, not Future AGI's `FI_HIDE_*`. These settings apply to instrumentor-generated attributes, not arbitrary manual Go spans:
 
 ```bash
 export OPENINFERENCE_HIDE_INPUTS=true
@@ -119,4 +122,451 @@ These settings replace `input.value` and `output.value` with `__REDACTED__` and 
 
 - Display of types follows Future AGI's own mapping of `openinference.span.kind`; there is no OpenInference-specific UI.
 - Retriever documents are not shown in the output column.
-- This recipe supports the Python OpenAI instrumentor only. Other OpenInference instrumentors are outside its supported scope, even when they use the same attribute keys.
+- Other Python OpenInference instrumentors may emit different attributes.
+
+</Tab>
+<Tab title="Go">
+
+## Go
+
+Use Go 1.26 or later for the dependency versions below. The [OpenInference Go helpers](https://github.com/Arize-ai/openinference/tree/main/go/openinference-instrumentation) carry session and user context; importing them does **not** instrument your application or configure an exporter. Use the standard OpenTelemetry SDK to create manual spans, or keep your existing OpenInference provider instrumentor. Do not wrap an already-instrumented model call in another LLM span.
+
+### Install Go dependencies
+
+In a new example directory, initialize a module and install the published dependencies. Skip `go mod init` in an existing Go module.
+
+```bash
+mkdir openinference-example
+cd openinference-example
+go mod init example.com/openinference-example
+go get github.com/Arize-ai/openinference/go/openinference-instrumentation@v0.1.2 \
+  go.opentelemetry.io/otel@v1.47.0 \
+  go.opentelemetry.io/otel/sdk@v1.47.0 \
+  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0
+```
+
+### Configure and run Go
+
+Set the **full trace endpoint**, including `/tracer/v1/traces` for Cloud. For self-hosted Future AGI, use the trace endpoint on your collector. This example does not call a model and needs no model-provider key.
+
+```bash
+export FI_OTLP_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+```
+
+Save this as `main.go`. It records an order calculation as an agent span with a tool child. It deliberately omits input and output content; use your own non-sensitive session and user identifiers in place of the example IDs.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    instrumentation "github.com/Arize-ai/openinference/go/openinference-instrumentation"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+    "go.opentelemetry.io/otel/sdk/resource"
+    sdktrace "go.opentelemetry.io/otel/sdk/trace"
+    "go.opentelemetry.io/otel/trace"
+)
+
+func main() {
+    for _, name := range []string{"FI_OTLP_ENDPOINT", "FI_API_KEY", "FI_SECRET_KEY"} {
+        if os.Getenv(name) == "" {
+            log.Fatalf("set %s before starting the application", name)
+        }
+    }
+    exporter, err := otlptracehttp.New(context.Background(),
+        otlptracehttp.WithEndpointURL(os.Getenv("FI_OTLP_ENDPOINT")),
+        otlptracehttp.WithHeaders(map[string]string{
+            "X-Api-Key": os.Getenv("FI_API_KEY"),
+            "X-Secret-Key": os.Getenv("FI_SECRET_KEY"),
+        }),
+        otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    provider := sdktrace.NewTracerProvider(
+        sdktrace.WithResource(resource.NewSchemaless(
+            attribute.String("service.name", "go-shop"),
+            attribute.String("project_name", "my-openinference-project"),
+            attribute.String("project_type", "observe"),
+        )),
+        sdktrace.WithBatcher(exporter),
+    )
+    tracer := provider.Tracer("go-shop")
+    ctx := instrumentation.WithSession(context.Background(), "order-123")
+    ctx = instrumentation.WithUser(ctx, "shopper-42")
+
+    ctx, agent := tracer.Start(ctx, "quote_order", trace.WithAttributes(
+        attribute.String("openinference.span.kind", "AGENT"),
+    ))
+    instrumentation.ApplyContextAttributes(ctx, agent)
+    _, tool := tracer.Start(ctx, "calculate_total", trace.WithAttributes(
+        attribute.String("openinference.span.kind", "TOOL"),
+    ))
+    instrumentation.ApplyContextAttributes(ctx, tool)
+    quantity, unitPrice := 3, 10
+    total := quantity * unitPrice
+    tool.End()
+    agent.End()
+    fmt.Printf("Order total: %d USD\n", total)
+
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    if err := provider.Shutdown(shutdownCtx); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+```bash
+go run .
+```
+
+Open **Observe**, select `my-openinference-project`, and open the `quote_order` trace to inspect its `calculate_total` child. Both spans carry `session.id=order-123` and `user.id=shopper-42`.
+
+### Use Go context in your application
+
+- Pass the context returned by `tracer.Start` to child operations to preserve parent links. Span attributes do not automatically inherit: call `ApplyContextAttributes(ctx, span)` for each manual span. OpenInference provider instrumentors apply these context attributes to their own spans.
+- `WithSession`, `WithUser`, `WithMetadata` and `WithTags` store values in the local Go context, not in HTTP baggage. They do not automatically propagate session or user data to another service.
+- If you already configure a tracer provider, add the exporter, batch processor and resource attributes to that provider's setup rather than creating a second tracing pipeline. Keep the same provider for your application and provider instrumentors.
+- For manual LLM spans, use `openinference.span.kind=LLM`, `llm.model_name`, and numeric `llm.token_count.prompt` / `llm.token_count.completion` from the actual response. Do not invent usage for a failed call. Prefer the attributes emitted by your provider instrumentor when it already creates these spans.
+
+**Manual Go spans are not automatically redacted.** `ApplyContextAttributes` only copies context attributes; it does not apply `OPENINFERENCE_HIDE_*` settings to arbitrary `span.SetAttributes` calls, status messages or exceptions. Omit sensitive content from manual spans. OpenInference provider instrumentors have their own `TraceConfig` masking; configure that on the instrumentor before capturing content.
+
+### Record failed Go operations
+
+For a failed manual span, call both `RecordError` and `SetStatus` **before `span.End()`**. `RecordError` only adds an exception event; it does not set the span status to `ERROR`. Import `"go.opentelemetry.io/otel/codes"`, then use this pattern with your operation's `err` and active `span`:
+
+```go
+if err != nil {
+    span.RecordError(err)
+    span.SetStatus(codes.Error, "Order calculation failed")
+}
+```
+
+Use a non-sensitive status message. `RecordError` also exports the error's message in the exception event: sanitize `err` before recording it, or omit `RecordError` if it could contain secrets or personal data and set only the safe error status. A failed child does not automatically mark its parent as failed; set the parent's status too if the overall operation failed.
+
+</Tab>
+<Tab title="TypeScript">
+
+Use [OpenInference Core](https://github.com/Arize-ai/openinference/tree/main/js/packages/openinference-core) to trace application functions with `traceAgent` and class methods with `@observe`. These APIs create OpenTelemetry spans directly; you do not need a tracing adapter or model-provider key for this example.
+
+### Install the TypeScript dependencies
+
+Use Node.js 22.15 or later, TypeScript 5.9.3 or later and OpenInference Core 2.8.0 or later. This example uses TypeScript's standard decorators, not legacy experimental decorators. Run these commands in a new project directory:
+
+```bash
+npm init -y
+npm install @arizeai/openinference-core@2.8.1 @opentelemetry/api@1.10.0 \
+  @opentelemetry/sdk-trace@3.0.0 @opentelemetry/resources@3.0.0 \
+  @opentelemetry/context-async-hooks@3.0.0 @opentelemetry/exporter-trace-otlp-http@0.300.0
+npm install --save-dev typescript@7.0.2 @types/node@22.19.0
+```
+
+### Configure and run the application
+
+Set your collector URL and credentials before starting Node.js:
+
+```bash
+export FI_BASE_URL="https://api.futureagi.com/tracer"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+```
+
+For self-hosted Future AGI, replace `FI_BASE_URL` with your collector base URL. The exporter appends `/v1/traces`. Set `project_name` on the resource as shown: OpenInference's `openinference.project.name` is not a substitute for Future AGI's project routing attribute.
+
+Save this as `app.mts`. Register the provider before calling traced functions. OpenInference captures arguments and return values by default; see [TypeScript content and errors](#typescript-content-and-errors) before processing sensitive data.
+
+```typescript
+import { OITracer, observe, traceAgent } from "@arizeai/openinference-core";
+import { context, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { BatchSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+
+if (!process.env.FI_BASE_URL || !process.env.FI_API_KEY || !process.env.FI_SECRET_KEY) {
+  throw new Error("Set FI_BASE_URL, FI_API_KEY and FI_SECRET_KEY");
+}
+
+const provider = new TracerProvider({
+  resource: resourceFromAttributes({
+    "service.name": "garden-planner",
+    "project_name": "my-openinference-project",
+    "project_type": "observe",
+  }),
+  spanProcessors: [new BatchSpanProcessor({
+    exporter: new OTLPTraceExporter({
+      url: process.env.FI_BASE_URL.replace(/\/+$/, "") + "/v1/traces",
+      headers: {
+        "X-Api-Key": process.env.FI_API_KEY,
+        "X-Secret-Key": process.env.FI_SECRET_KEY,
+      },
+    }),
+  })],
+});
+context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+trace.setGlobalTracerProvider(provider);
+const tracer = new OITracer({
+  tracer: provider.getTracer("garden-app"),
+  traceConfig: {},
+});
+
+class GardenService {
+  private plant = "rosemary";
+
+  @observe({ tracer, name: "choose-plant", kind: "TOOL" })
+  async choosePlant(location: string): Promise<string> {
+    return location === "rooftop" ? this.plant : "mint";
+  }
+}
+
+const garden = new GardenService();
+const planGarden = traceAgent(async (location: string) => {
+  const plant = await garden.choosePlant(location);
+  return `Plant ${plant} in your ${location} garden.`;
+}, { tracer, name: "garden-planner" });
+
+try {
+  console.log(await planGarden("rooftop"));
+} finally {
+  await provider.shutdown();
+}
+```
+
+Save this as `tsconfig.json`. The `.mts` extension produces an ES module and the compiler handles the standard decorator:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "strict": true,
+    "types": ["node"],
+    "outDir": "dist"
+  },
+  "include": ["*.mts"]
+}
+```
+
+Compile and run from the project directory:
+
+```bash
+npx tsc -p .
+node dist/app.mjs
+```
+
+Open **Observe** and select `my-openinference-project`. Each run produces one `garden-planner` agent span with one `choose-plant` tool child, including their inputs and outputs. The application prints a planting suggestion without calling an LLM. Labelling a function `LLM` does not discover model names or token usage; use a provider-specific OpenInference instrumentor for automatic model tracing.
+
+Do not add a second exporter or wrap an operation that your framework already instruments. If your application already has a registered OpenTelemetry provider, configure its existing exporter for Future AGI and reuse that provider rather than creating another one. For servers, call `shutdown()` during graceful process shutdown, not after each request.
+
+### TypeScript content and errors
+
+To hide arguments and return values, set these variables before starting the application:
+
+```bash
+export OPENINFERENCE_HIDE_INPUTS=true
+export OPENINFERENCE_HIDE_OUTPUTS=true
+```
+
+The `OITracer` reads these settings and replaces `input.value` and `output.value` with `__REDACTED__`. Keep `traceConfig: {}` and pass this tracer to both `traceAgent` and `@observe` as shown, so the environment settings also apply on OpenInference Core 2.8.0. Future AGI's `FI_HIDE_*` variables do not configure OpenInference. Hiding inputs and outputs does not redact exception messages: they still appear in the span status and exception events, including stack traces. Keep sensitive values out of exceptions and custom span attributes, or redact them in an OpenTelemetry Collector before export.
+
+### TypeScript troubleshooting
+
+- **No spans.** Pass the configured `OITracer` to both tracing APIs, await asynchronous work, and await `provider.shutdown()` before exiting. Wrappers without an explicit tracer use the registered global provider.
+- **Decorator compile errors.** Compile with TypeScript 5.9.3 or later using the command above. Do not enable `experimentalDecorators` for `@observe`; it uses standard decorators.
+- **HTTP 400 or 401.** Check `project_name`, `FI_BASE_URL`, and both authentication headers. Use `/tracer/v1/traces` for Cloud, not the retired Django route.
+- **Empty input/output fields.** Check `OPENINFERENCE_HIDE_INPUTS` and `OPENINFERENCE_HIDE_OUTPUTS`. These switches do not remove exception details.
+
+</Tab>
+<Tab title="Java">
+
+Use the maintained [OpenInference annotation agent](https://github.com/Arize-ai/openinference/tree/main/java/instrumentation/openinference-instrumentation-annotation) to trace synchronous Java methods with non-void return types using `@Agent`, `@Chain`, `@Tool`, `@LLM` or `@Span`. The agent creates OpenTelemetry spans; one standard exporter sends them to Future AGI. With annotation versions 0.1.1 and 0.1.2, an annotated `void` method prevents instrumentation of its entire class, including other annotated methods. Leave `void` methods unannotated and instrument a supported non-void caller instead.
+
+### Install the Java dependencies
+
+Use JDK 17 or 21 and Maven 3.9. This recipe uses OpenInference annotations 0.1.2 with its published Byte Buddy 1.14.12 dependency; do not assume that agent supports newer JVMs. Run the commands below in a new project directory.
+
+Save this as `pom.xml`:
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId>
+  <artifactId>openinference-example</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <maven.compiler.parameters>true</maven.compiler.parameters>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <openinference.version>0.1.2</openinference.version>
+    <otel.version>1.67.0</otel.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-bom</artifactId>
+        <version>${otel.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.arize</groupId>
+      <artifactId>openinference-instrumentation-annotation</artifactId>
+      <version>${openinference.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.14.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.8.1</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+```
+
+### Configure the exporter
+
+Set your Future AGI credentials and collector base URL. No model-provider key is needed for this example.
+
+```bash
+export FI_BASE_URL="https://api.futureagi.com/tracer"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+mkdir -p src/main/java/example
+```
+
+For self-hosted Future AGI, set `FI_BASE_URL` to your collector base URL. The code appends `/v1/traces` and sets `project_name` and `project_type` on the resource.
+
+Save this as `src/main/java/example/Main.java`. Install the annotation transformer and register its tracer **before loading annotated application classes**.
+
+```java
+package example;
+
+import com.arize.instrumentation.OITracer;
+import com.arize.instrumentation.OpenInferenceAgent;
+import com.arize.instrumentation.TraceConfig;
+import com.arize.instrumentation.annotation.OpenInferenceAgentInstaller;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
+import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+
+public class Main {
+    private static String env(String name) {
+        return Objects.requireNonNull(System.getenv(name), "Set " + name);
+    }
+
+    public static void main(String[] args) {
+        OpenInferenceAgentInstaller.install();
+        var exporter = OtlpHttpSpanExporter.builder()
+                .setEndpoint(env("FI_BASE_URL").replaceAll("/+$", "") + "/v1/traces")
+                .addHeader("X-Api-Key", env("FI_API_KEY"))
+                .addHeader("X-Secret-Key", env("FI_SECRET_KEY"))
+                .build();
+        var provider = SdkTracerProvider.builder()
+                .setResource(Resource.getDefault().merge(Resource.create(Attributes.builder()
+                        .put("service.name", "java-annotations")
+                        .put("project_name", "my-openinference-java-project")
+                        .put("project_type", "observe")
+                        .build())))
+                .addSpanProcessor(BatchSpanProcessor.builder(exporter).build())
+                .build();
+        var config = TraceConfig.builder()
+                .hideInputs(true)
+                .hideOutputs(true)
+                .build();
+        OpenInferenceAgent.register(new OITracer(provider.get("my-app"), config));
+        try {
+            System.out.println(new GardenService().plan("rooftop"));
+        } finally {
+            OpenInferenceAgent.unregister();
+            provider.shutdown().join(10, TimeUnit.SECONDS);
+        }
+    }
+}
+```
+
+Do not add a second exporter or traceAI instrumentation around the same methods. In an application that already has an OpenTelemetry provider, register an `OITracer` backed by that provider instead of creating another one.
+
+### Annotate and run your application
+
+Save this as `src/main/java/example/GardenService.java`:
+
+```java
+package example;
+
+import com.arize.instrumentation.annotation.Agent;
+import com.arize.instrumentation.annotation.Tool;
+
+public class GardenService {
+    @Agent(name = "garden-planner")
+    public String plan(String location) {
+        return "Plant " + choosePlant(location) + " in your " + location + " garden.";
+    }
+
+    @Tool(name = "choose-plant", description = "Choose a plant for a garden location")
+    public String choosePlant(String location) {
+        return location.equals("rooftop") ? "rosemary" : "mint";
+    }
+}
+```
+
+Build and launch from the project directory. Start Byte Buddy's agent at JVM launch so the installer does not need dynamic self-attachment. Keep the annotated service in its separate class as shown.
+
+```bash
+mvn -q package dependency:copy-dependencies
+java -javaagent:target/dependency/byte-buddy-agent-1.14.12.jar \
+  -cp 'target/classes:target/dependency/*' example.Main
+```
+
+On Windows, use `;` instead of `:` in the classpath and double quotes around it. Open **Observe** and select `my-openinference-java-project`. Each run produces one `garden-planner` agent span with a `choose-plant` tool child. The example prints a planting suggestion without calling an LLM.
+
+### Java content and errors
+
+The example hides method inputs and outputs. To capture them, change `.hideInputs(true)` and `.hideOutputs(true)` to `false`. OpenInference then writes method arguments to `input.value` and return values to `output.value`; Future AGI uses these for the input and output fields. `@ExcludeFromSpan` filters automatic argument capture only. Explicit `@SpanMapping` bypasses that exclusion: mapping an excluded parameter to `input.value` still exports its value when input capture is enabled. Never map sensitive or excluded parameters to span attributes, and do not return those values.
+
+Java uses the `TraceConfig` passed to `OITracer`; the Python `OPENINFERENCE_HIDE_*` and Future AGI `FI_HIDE_*` environment variables do not configure this recipe. Hiding inputs and outputs does **not** hide exception details: exception messages appear in the span status and exception events, including stack traces. Keep sensitive values out of exceptions, or redact both status messages and exception events in an OpenTelemetry Collector before export.
+
+Annotations capture synchronous method execution for non-void methods. Both object and primitive return types work. A method returning a future or reactive stream ends its span when it returns, not when that work finishes. An `@LLM` annotation labels a method; it does not discover model names or token usage. Add [OpenInference span mappings](https://github.com/Arize-ai/openinference/tree/main/java/instrumentation/openinference-instrumentation-annotation#spanmapping) when your method exposes those values.
+
+### Java troubleshooting
+
+- **No spans.** Launch with the Byte Buddy agent, install the transformer before loading annotated classes, and register the `OITracer` before invoking them. Use a full JDK with the `java.instrument` module, not a stripped runtime. Remove tracing annotations from `void` methods: `Cannot assign void to class java.lang.Object` in the Byte Buddy log means the entire class was left uninstrumented, even if the application exited successfully. Trace a non-void caller instead.
+- **Export errors.** Check `FI_BASE_URL`, both authentication headers and `project_name`. The exporter sends uncompressed HTTP/protobuf by default; add `.setCompression("gzip")` before its `.build()` only for Future AGI Cloud or self-hosted v1.56.0 and later.
+- **Empty input/output fields.** The example deliberately hides them. Opt in with the Java `TraceConfig`, not the Python environment variables.
+- **Short-lived process loses spans.** Wait for `provider.shutdown()` as shown. For a server, do this during graceful shutdown, not after each request.
+
+</Tab>
+</Tabs>

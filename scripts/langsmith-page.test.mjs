@@ -14,6 +14,22 @@ test("LangSmith offers a pinned native TypeScript route, not a wrapper", () => {
   assert.doesNotMatch(typescript, /@traceai\/langsmith|class\s+\w+Exporter/);
 });
 
+test("native TypeScript support excludes async generators before setup", () => {
+  const prerequisites = typescript.split("## 1. Install")[0];
+  assert.match(prerequisites, /<Warning>[\s\S]*non-streaming functions/);
+  assert.match(prerequisites, /async generators[\s\S]*even when fully consumed/);
+  assert.match(prerequisites, /early cancellation[\s\S]*errors/);
+  assert.match(prerequisites, /\[traceAI LangChain\]\(\/docs\/integrations\/traceai\/langchain\)/);
+  assert.match(prerequisites, /instead of[\s\S]*native.*route/);
+  assert.match(prerequisites, /not a drop-in replacement for arbitrary.*traceable/);
+  assert.match(prerequisites, /consume streams to completion/);
+  assert.match(prerequisites, /Early cancellation can leave spans unfinished there too/);
+  const captured = typescript.split("## What is captured")[1].split("## Privacy")[0];
+  assert.match(captured, /Each traced non-streaming function/);
+  assert.match(captured, /Failed non-streaming functions/);
+  assert.match(typescript, /\*\*Missing streaming spans or errors\.\*\*/);
+});
+
 test("TypeScript shutdown drains the same native client before its provider", () => {
   assert.match(typescript, /tracingMode: "otel"/);
   assert.match(typescript, /run_type: "tool", client/);

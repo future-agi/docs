@@ -1,0 +1,154 @@
+---
+title: "AG2 Classic tracing with Future AGI"
+description: "Send AG2 Classic's native OpenTelemetry agent, model and tool spans to Future AGI with traceAI-ag2-classic."
+---
+
+Trace AG2 Classic conversations, model calls and tools in **Observe**. The maintained `traceAI-ag2-classic` package enables the native `autogen.opentelemetry` instrumentation and maps its spans to Future AGI's span kinds, token usage and sessions.
+
+## Prerequisites
+
+- Python 3.10–3.13 and AG2 Classic (`autogen>=0.14.0,<0.15`).
+- A [Future AGI API key and secret key](https://app.futureagi.com/dashboard/keys).
+- Your own OpenAI API key for the example below.
+
+### Choose the matching integration
+
+| Installed package | Python import | Integration |
+|---|---|---|
+| `autogen` 0.14.x | `autogen` | This guide: `traceAI-ag2-classic` |
+| `ag2` 1.x | `ag2` | `traceAI-ag2` |
+| `autogen-agentchat` | `autogen_agentchat` | [Microsoft AutoGen](/docs/integrations/traceai/autogen): `traceAI-autogen` |
+
+The older `pyautogen` alias is not supported by this package. If the installed layout is incompatible, `setup()` raises `AG2ClassicCompatibilityError` with guidance on the matching package.
+
+## Install
+
+```bash
+pip install "traceAI-ag2-classic==0.1.0" "autogen[openai]==0.14.1" "fi-instrumentation-otel==1.2.3"
+```
+
+The `openai` extra installs the model client used below. You do not need the `autogen[tracing]` extra or a separate exporter.
+
+## Configure credentials
+
+Set these variables in the terminal where you will run the application:
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
+```
+
+Message bodies, tool arguments and tool results are captured by default. To exclude them, set both variables **before calling `setup()`**:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+These content controls do not sanitize native OpenTelemetry error events or status descriptions. See [Content and privacy](#content-and-privacy) before sending sensitive data.
+
+## Run a traced chat
+
+Save the following as `ag2_classic_example.py`. Call `setup()` after `register()` and pass every agent you want to trace.
+
+```python
+import os
+
+from autogen import ConversableAgent
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_ag2_classic import setup
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="ag2-classic-demo",
+)
+
+llm_config = {
+    "config_list": [{"model": "gpt-4o-mini", "api_key": os.environ["OPENAI_API_KEY"]}]
+}
+
+
+def get_weather(city: str) -> str:
+    """Return example weather for a city."""
+    return f"sunny in {city}"
+
+
+assistant = ConversableAgent(
+    "assistant",
+    llm_config=llm_config,
+    human_input_mode="NEVER",
+    is_termination_msg=lambda message: "TERMINATE" in (message.get("content") or ""),
+    system_message="Use the weather tool, answer briefly, then say TERMINATE.",
+)
+user = ConversableAgent(
+    "user",
+    llm_config=False,
+    human_input_mode="NEVER",
+    max_consecutive_auto_reply=3,
+)
+assistant.register_for_llm(description="Get example weather")(get_weather)
+user.register_for_execution()(get_weather)
+
+tracing = setup(tracer_provider=trace_provider, agents=[assistant, user])
+
+try:
+    user.initiate_chat(assistant, message="What is the weather in Paris?", max_turns=3)
+finally:
+    trace_provider.force_flush()
+```
+
+Run it with:
+
+```bash
+python ag2_classic_example.py
+```
+
+`setup()` uses the provider returned by `register()`; it does not create another provider or exporter. Do not also configure AG2's separate gRPC exporter for this chat.
+
+With `fi-instrumentation-otel==1.2.3`, calling `trace_provider.add_span_processor(...)` after `register()` keeps the registered exporter and adds the new processor alongside it.
+
+## View the trace
+
+Open **Observe** in Future AGI, select **ag2-classic-demo**, and expand the conversation trace. Inspect the agent steps, model calls and `get_weather` tool execution. Model spans include token usage when the provider reports it.
+
+| Data | What to expect |
+|---|---|
+| Span kinds | Conversation and speaker-selection spans are CHAIN; agent steps are AGENT; model calls are LLM; tool and code-execution spans are TOOL. |
+| Model and provider | Request model and provider on model, agent and conversation spans; response model on model spans. |
+| Tokens | Input, output and total tokens on LLM spans. Conversation-wide totals move to `ag2.usage.*` attributes to avoid counting each call twice. |
+| Cost | Positive costs from AG2's price table are mapped to `gen_ai.cost.total`. Missing or zero costs are left for Future AGI's token-based pricing. Cached responses can retain the original call's tokens and cost. |
+| Sessions | The outermost conversation's chat ID becomes `session.id`. A session supplied through `using_session(...)` or `using_attributes(...)` takes precedence. |
+| Errors | Model exceptions, failed tools and non-zero code exits produce ERROR status. A tool exception caught by AG2 is identified as `ExecutionError`. |
+
+AG2 Classic does not emit retrieval spans or an outer conversation span for a `GroupChatManager` run. Nested chats keep their own chat IDs but do not receive a separate `session.id`. To group multiple `initiate_chats` conversations into one session, wrap the call in `using_session(...)` from `fi_instrumentation`.
+
+## Add agents and group patterns
+
+Use the handle returned by `setup()` for objects created later:
+
+- `tracing.instrument_agent(agent)` traces an agent. For a `GroupChatManager`, it also instruments the group's members and speaker selection.
+- `tracing.instrument_pattern(pattern)` traces a group pattern. You can also pass `patterns=[...]` to `setup()`.
+- `tracing.instrument_a2a_server(server)` traces an A2A server when the `autogen[a2a]` extra is installed.
+- `tracing.uninstrument()` restores the model-call wrapper. Already-instrumented agents keep tracing because upstream has no per-agent undo.
+
+## Content and privacy
+
+`FI_HIDE_INPUTS` removes input messages, tool arguments and human prompts. `FI_HIDE_OUTPUTS` removes output messages, tool results, code output and chat summaries. Set both to exclude conversation content: a conversation's output messages contain its full history, including the prompt.
+
+The message/text variants (`FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT`) and `setup(..., config=TraceConfig(hide_inputs=True))` are also supported; import `TraceConfig` from `fi_instrumentation`. An explicit `capture_content=False` passed to `setup()` hides both sides, while `capture_content=True` keeps both and overrides the config.
+
+<Warning>
+Keep the default `SynchronousMultiSpanProcessor` used by `register()`. A `ConcurrentMultiSpanProcessor` can export a span before the package removes its content.
+</Warning>
+
+Content hiding does not remove exception messages or stack traces from native OpenTelemetry error events or status descriptions. `FI_HIDE_ERROR_DETAILS` does not sanitize this native route. Keep secrets out of exceptions, agent and tool names, and custom attributes or events; the package's content filtering is not a general-purpose redaction policy.
+
+## Troubleshooting
+
+- **No traces:** confirm the Future AGI credentials and keep `project_name` in `register()`. Flush the provider before a short script exits.
+- **Compatibility error:** check the package/import table above. AG2 1.x, Microsoft AutoGen and `pyautogen` are not interchangeable with AG2 Classic.
+- **OpenAI import error:** install the `autogen[openai]` extra from the install command.
+- **LLM spans go to an earlier provider:** upstream instruments the model-call wrapper once per process. Call `uninstrument()` on the first handle before configuring a different provider.
+- **Content is missing:** check the `FI_HIDE_*` variables, `TraceConfig` and `capture_content` setting before the first `setup()` call. Repeating `setup()` on the same provider keeps its original privacy settings.

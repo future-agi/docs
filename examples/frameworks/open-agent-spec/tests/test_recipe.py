@@ -91,7 +91,8 @@ def test_tool_error_is_exported_as_error(run_app):
     assert len({s["traceId"] for s in spans}) == 1
     tool = by_name(spans, "get_weather")[0]
     assert tool["status"]["code"] == "STATUS_CODE_ERROR"
-    assert tool["status"]["message"] == "RuntimeError('weather service unavailable for Lisbon')"
+    assert not tool["status"].get("message")
+    assert any(event["attributes"].get("exception.type") == "RuntimeError" for event in tool["events"])
     root = [s for s in spans if not s["parentSpanId"]][0]
     assert root["status"]["code"] == "STATUS_CODE_ERROR"
 
@@ -103,5 +104,6 @@ def test_model_error_is_exported_as_error(run_app):
     spans = run.spans()
     llm = [s for s in spans if kind(s) == "LLM"][0]
     assert llm["status"]["code"] == "STATUS_CODE_ERROR"
-    assert llm["status"]["message"].startswith("AuthenticationError(")
+    assert not llm["status"].get("message")
+    assert any(event["attributes"].get("exception.type") == "openai.AuthenticationError" for event in llm["events"])
     assert run.env["MODEL_BAD_API_KEY"].encode() not in run.recorder.raw()

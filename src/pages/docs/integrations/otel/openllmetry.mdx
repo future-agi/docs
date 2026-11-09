@@ -33,7 +33,8 @@ export TRACELOOP_HEADERS="$(python -c 'import os; from urllib.parse import quote
 
 # Does not suppress exception/status text or the OpenAI base URL; see Privacy.
 export TRACELOOP_TRACE_CONTENT=false     # the SDK default is true
-export TRACELOOP_METRICS_ENABLED=false   # the collector serves no /v1/metrics
+export TRACELOOP_METRICS_ENABLED=false   # Future AGI ingests traces, not metrics
+export TRACELOOP_LOGGING_ENABLED=false   # or OpenTelemetry logs
 unset TRACELOOP_API_KEY                  # that key is for Traceloop's own host
 ```
 
@@ -53,6 +54,7 @@ Traceloop.init(
         "project_type": "observe",
     },
     telemetry_enabled=False,
+    use_attributes=True,  # keep any opted-in content on spans, not log events
 )
 ```
 
@@ -103,9 +105,27 @@ Open **Observe** in Future AGI and select `openllmetry_project` to inspect the t
 | OpenAI chat call | `llm` | model, prompt tokens, completion tokens |
 
 - The model call is typed `llm` from `gen_ai.operation.name=chat`. Its model and token counts come from the `gen_ai.*` keys that 0.62.4 emits.
-- The collector does not read `traceloop.span.kind`, so the decorator spans show as `unknown`. Every `traceloop.*` key is kept as a span attribute, so you can still filter on `traceloop.span.kind`.
+- The collector does not read `traceloop.span.kind`, so the decorator spans show as `unknown`. It does not infer a tool type from `gen_ai.tool.name` either. The spans and their attributes are retained; `unknown` is a classification limitation, not a missing span.
 - A failed model call or a decorated function that raises is stored with status `ERROR` on the whole path up to the workflow span.
-- With content on, the text stays in the span attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `traceloop.entity.input`, `traceloop.entity.output`). The Input and Output columns of the trace view stay empty.
+- With content on, model calls emit `gen_ai.input.messages` and `gen_ai.output.messages`. Collectors with GenAI message mapping also use these attributes to populate the Input and Output fields. On older collectors, inspect the attributes directly.
+- Decorated functions emit `traceloop.entity.input` and `traceloop.entity.output` with content on. These remain span attributes; they are not promoted to the Input and Output fields by the same GenAI mapping.
+
+### When you need typed tool spans
+
+This guide deliberately keeps OpenLLMetry's native export rather than adding a conversion layer. The trade-off is no automatic decorator classification: you can inspect the function spans in the trace tree, but an observation-type filter for `tool` will not include the unannotated `lookup_policy.tool` span. Use this route as-is when the trace hierarchy, raw attributes and model-call telemetry are sufficient.
+
+If you need the tool observation type, annotate the **existing** tool span with the standard OpenTelemetry GenAI operation `execute_tool`. Replace `lookup_policy` in step 4 with the following definition, keeping the `@tool` import and the single `Traceloop.init` call unchanged:
+
+```python
+from opentelemetry import trace
+
+@tool(name="lookup_policy")
+def lookup_policy(question: str) -> str:
+    trace.get_current_span().set_attribute("gen_ai.operation.name", "execute_tool")
+    return "Refunds are accepted within 30 days of purchase."
+```
+
+The collector in Future AGI v1.58.0 maps `gen_ai.operation.name=execute_tool` to `tool`. This uses the OpenTelemetry API already installed with Traceloop; it does not create another span, provider or exporter. The other decorator spans remain `unknown`, and tool arguments/results still stay in attributes when content capture is enabled. This annotation changes classification only, not content capture or Input/Output mapping. On an older self-hosted collector, upgrade to a release with this operation mapping before relying on tool-type filters.
 
 ---
 
@@ -126,16 +146,15 @@ The Traceloop SDK captures content unless `TRACELOOP_TRACE_CONTENT` is `false`. 
 - **HTTP 400 from the collector:** the resource has no `project_name`. Add it to `resource_attributes`.
 - **HTTP 401:** check `TRACELOOP_HEADERS`. An unencoded comma in a key cuts the value short, and a value with a space, quote, semicolon or backslash is dropped with a warning that prints the whole pair.
 - **`ModuleNotFoundError: httpx`:** install `httpx` and `requests` next to the SDK.
-- **A `/v1/metrics` request fails:** set `TRACELOOP_METRICS_ENABLED=false`.
-- **No spans in a short script:** the SDK flushes on exit. Make sure the process exits normally, or call `Traceloop.init(disable_batch=True)` while debugging.
+- **A `/v1/metrics` or `/v1/logs` request fails:** set `TRACELOOP_METRICS_ENABLED=false` and `TRACELOOP_LOGGING_ENABLED=false`. Keep `use_attributes=True` in the initialization; Future AGI accepts traces only.
+- **No spans in a short script:** the SDK flushes on exit. Make sure the process exits normally, or add `disable_batch=True` to the initialization above while debugging.
+- **Model input or output appears only in attributes:** on a self-hosted installation, update to a collector with GenAI message mapping. This does not add mappings for decorator payloads. With content capture off, there is no prompt or response body to display.
 - **The SDK switches to gRPC:** a base URL without `http://` or `https://` selects gRPC. Use an HTTP or HTTPS collector origin for this setup.
 
 ---
 
 ## Limitations
 
-- Decorator spans are stored as `unknown`; `traceloop.span.kind` remains available as a filterable attribute.
-- Input and Output columns are empty even with content on, because the collector fills them only from `input.value` and `output.value`.
 - gRPC, Traceloop's hosted dashboard, datasets and prompt registry are not part of this integration.
 - This example covers OpenAI Chat Completions; it does not establish support for every OpenLLMetry instrumentor.
 
@@ -143,4 +162,6 @@ The Traceloop SDK captures content unless `TRACELOOP_TRACE_CONTENT` is `false`. 
 
 ## How this differs from traceAI instrumentors
 
-traceAI packages (for example `traceAI-openai`) wrap the client library and set Future AGI span kinds themselves. OpenLLMetry is a separate instrumentation that exports its own attributes. This recipe sends them as they are, with no mapping of its own, so span kinds follow what the collector reads. If you want Future AGI kinds on every span, use the traceAI instrumentor for your library instead.
+Keep this native route if your app already uses OpenLLMetry. It exports one set of spans directly to Future AGI; you do not need a traceAI package or an application-side converter.
+
+traceAI instrumentors are an alternative for supported clients, not an extra layer for this setup. Do not instrument the same client with both OpenLLMetry and traceAI, or register a second exporter for the same destination: doing so can create duplicate observations.
