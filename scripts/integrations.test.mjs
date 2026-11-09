@@ -1,3 +1,4 @@
+import './ragflow-page.test.mjs';
 import './auto-page.test.mjs';
 import './pi-plugin-page.test.mjs';
 import './openclaw-package-page.test.mjs';

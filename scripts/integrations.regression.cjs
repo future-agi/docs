@@ -220,6 +220,27 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
     }
     return { overview: true, entries: integrations.length };
   });
+  await record('RAGFlow customer guide renders native settings and pinned build', async () => {
+    const context = await createDocsContext(browser, BASE, { viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+    try {
+      const page = await context.newPage();
+      const response = await page.goto(BASE + '/docs/integrations/no-code/ragflow', { waitUntil: 'networkidle' });
+      assert.equal(response.status(), 200);
+      assert.equal((await page.locator('h1').innerText()).trim(), 'RAGFlow');
+      const text = await page.locator('body').innerText();
+      assert.ok(text.includes('Configure trace export'));
+      assert.ok(text.includes('User settings → API'));
+      assert.ok(text.includes('plaintext database columns'));
+      assert.ok(text.includes('ragflow.retrieval'));
+      assert.doesNotMatch(text, /Verified development scope|fork-only prototype|Required before an installation guide/i);
+      const build = page.locator('pre').filter({ hasText: 'docker buildx build' });
+      assert.equal(await build.count(), 1);
+      assert.ok((await build.innerText()).includes('60492deba70ea7431e13c23de271ab10c3aa0aea'));
+      assert.equal(await page.locator('table').count(), 1);
+      await page.screenshot({ path: path.join(OUT, 'ragflow-customer-guide.png'), fullPage: true });
+      return { pathname: new URL(page.url()).pathname, settingsTable: true, pinnedBuild: true };
+    } finally { await context.close(); }
+  });
   await browser.close();
   console.log(JSON.stringify({ tests: results.length, failed: results.filter(r => r.status === 'FAIL').length }));
   if (results.some(r => r.status === 'FAIL')) process.exitCode = 1;
