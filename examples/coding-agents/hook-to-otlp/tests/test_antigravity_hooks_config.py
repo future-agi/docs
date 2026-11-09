@@ -82,12 +82,14 @@ class AntigravityHooksConfigTest(unittest.TestCase):
             for event, command in commands(name):
                 self.assertEqual(command, f"(python3 -B {path} antigravity {event} 2>/dev/null || true)", name)
 
-    def test_page_snippet_matches_the_shipped_commands(self):
+    def test_page_uses_the_maintained_setup_instead_of_a_hook_copy(self):
+        # The page installs the maintained @traceai/antigravity-plugin; it names this
+        # recipe only so earlier installs can remove their registration.
         page = (EXAMPLE.parents[2] / "src/pages/docs/integrations/coding-agents/google-antigravity.mdx").read_text()
+        self.assertIn("npx @traceai/agents setup antigravity --project", page)
         for _, command in commands("hooks.json"):
-            self.assertIn(command, page)
-        self.assertNotIn("antigravity PreToolUse", page)
-        self.assertNotIn("|| true\"", page)
+            self.assertNotIn(command, page)
+        self.assertNotIn("emit.py", page)
 
     def test_missing_emitter_exits_0_with_empty_stdout(self):
         with tempfile.TemporaryDirectory() as empty:

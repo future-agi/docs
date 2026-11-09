@@ -1,183 +1,160 @@
 ---
 title: "OpenClaw agent tracing with Future AGI"
-description: "Trace OpenClaw agent runs in Future AGI with OpenClaw's official diagnostics-otel plugin: one trace per agent run with model calls, tokens, tool executions and errors. Configuration only, no Future AGI code. Prompt and tool content stay off by default."
+description: "Set up local OpenClaw tracing with one command, then inspect each prompt's model calls, tools, token usage and errors in Future AGI."
 ---
 
-## About
+Trace each local OpenClaw prompt in Future AGI, with model calls, token usage and tool results beneath it. The maintained `@traceai/openclaw` integration uses OpenClaw's official [`diagnostics-otel` plugin](https://docs.openclaw.ai/gateway/opentelemetry); no collector or copied instrumentation scripts are required.
 
-Use this guide for local CLI agent turns or CLI turns dispatched through a Gateway on macOS. Channel, TUI, Control UI, and cron execution are outside the scope of this guide.
+## What it traces
 
+| Trace detail | What it shows |
+| --- | --- |
+| One `openclaw.prompt` trace per launcher invocation | The prompt's overall duration and outcome, with retries beneath the same root. |
+| Model calls | Model/provider, input/output when exposed, input/output/cache tokens, reported time to first byte and error status. |
+| Tool calls | Tool names, input/output when exposed, duration and error status. |
+| Sessions | An opaque session identifier groups prompts that use the same `--session-id`; each prompt remains a separate trace. |
+| Native lifecycle spans | Run and context-assembly timings. Subagent and compaction visibility is limited to the spans OpenClaw's official plugin emits. |
 
-OpenClaw ships an official OpenTelemetry exporter, the [`diagnostics-otel` plugin](https://docs.openclaw.ai/gateway/opentelemetry). It exports OTLP/HTTP traces to any endpoint with any headers, so it can send straight to Future AGI. This page is configuration only: no Future AGI plugin, no collector.
+Content is included only when OpenClaw exposes it and your privacy settings allow it. Native timings and internal parent relationships are preserved beneath the prompt root; the integration does not instrument model calls twice.
 
-Each agent run becomes one trace. A turn that succeeds on the first model request is one run:
+Request tokens are counted once. The repeated `openclaw.model.usage` rollup is removed, and usage is not assigned to failed attempts. If an external harness exposes only turn-level usage, the prompt root owns that usage once instead of inventing model calls. OpenClaw exports cost estimates as metrics, which this integration does not send. System prompts and external-harness internals are not available as content.
 
-```text
-openclaw.harness.run              one agent run: outcome, provider, model, agent
-└── openclaw.run                  run lifecycle
-    ├── openclaw.context.assembled    prompt and history sizes, token budget (no text)
-    ├── openclaw.model.call           one model request: model, tokens, cache tokens, time to first byte
-    ├── openclaw.tool.execution       tool name, call id, source, error category
-    ├── openclaw.tool.execution
-    └── openclaw.model.call
-```
+## Before you start
 
-A retried model request can produce more than one trace for a user turn. See [Failures and retries](#failures-and-retries).
+Use **OpenClaw 2026.10.5 or later in the 2026.x line**, **Node 24.16 or newer in the 24.x line**, and macOS or Linux. Configure your agent and model provider in OpenClaw first. Gateway, channels, TUI, Control UI and `agent exec` tracing are **not yet available** through this integration.
 
-This recipe uses OpenClaw 2026.10.5, with the plugin at the same version as OpenClaw. See the [OpenTelemetry plugin documentation](https://docs.openclaw.ai/gateway/opentelemetry).
+## Quick start
 
-## 1. Install the plugin
+<Steps>
+<Step title="Get your Future AGI keys">
 
-Install the plugin at the same version as OpenClaw:
+Create an API key and secret key at [Future AGI → Keys](https://app.futureagi.com/dashboard/keys). Setup asks for both with hidden terminal input. Do not paste them into an agent conversation.
 
-```bash
-openclaw --version    # for example: OpenClaw 2026.10.5 (1b58cb9)
-openclaw plugins install clawhub:@openclaw/diagnostics-otel@2026.10.5
-```
-
-### Version rule
-
-OpenClaw publishes `diagnostics-otel` with each release, under the same version number, and each plugin release needs OpenClaw (its plugin API) at least that version.
-
-- Pin the plugin to the version `openclaw --version` prints. On a newer OpenClaw, put that version after the `@` instead of `2026.10.5`.
-- Do not install it without a version. That takes ClawHub's latest release, which fails on an older OpenClaw with `requires plugin API >=<plugin version>, but this OpenClaw runtime exposes <your version>`.
-- After you upgrade OpenClaw, run `openclaw plugins update diagnostics-otel` and restart the Gateway. `openclaw plugins inspect diagnostics-otel` shows the installed version.
-
-`openclaw plugins install` enables the plugin. If you use a `plugins.allow` list, it adds `diagnostics-otel` to it. Do not create an allow list just for this: it disables every other plugin.
-
-## 2. Point it at Future AGI
-
-Download the example patch and apply it. It sets the `diagnostics.otel` block and one environment variable:
+</Step>
+<Step title="Set up tracing">
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/future-agi/docs/main/examples/coding-agents/openclaw/futureagi.patch.json5
-openclaw config patch --file futureagi.patch.json5
+npx @traceai/agents setup openclaw --project coding-agents
 ```
 
-```json5
-{
-  env: {
-    vars: {
-      OTEL_NODE_RESOURCE_DETECTORS: "env",
-    },
-  },
-  diagnostics: {
-    enabled: true,
-    otel: {
-      enabled: true,
-      tracesEndpoint: "https://api.futureagi.com/tracer/v1/traces",
-      protocol: "http/protobuf",
-      headers: {
-        "X-Api-Key": "${FI_API_KEY}",
-        "X-Secret-Key": "${FI_SECRET_KEY}",
-      },
-      serviceName: "openclaw",
-      traces: true,
-      metrics: false,
-      logs: false,
-      captureContent: false,
-    },
-  },
-}
-```
+Setup validates your credentials, saves private settings and installs the diagnostics and integration plugins through OpenClaw's own installer. Review OpenClaw's source and capability prompts in your terminal. Setup does not accept those prompts or grant conversation-access hooks for you, and preserves existing plugin allowlists and model settings.
 
-- `tracesEndpoint` is an exact URL: OpenClaw does not append a path to it. For a self-hosted Future AGI, replace the host and keep `/tracer/v1/traces`.
-- `metrics` and `logs` are off because Future AGI ingests traces only.
-- `OTEL_NODE_RESOURCE_DETECTORS=env` is required for the privacy default. Without it, OpenClaw's OpenTelemetry SDK also exports the host name, host id, OS user name, the executable and script paths, and the full command line, which for `openclaw agent --local -m "..."` contains the prompt. The patch sets it in OpenClaw's config `env` block, which reaches the Gateway and the CLI. That block does not override: if the variable is already set in the process environment or a `.env` file, that value wins, so keep it `env` there too.
-- Side effect: the `env` block sets the variable in OpenClaw's own process environment, so the commands the agent runs with the `exec` tool inherit it. In OpenClaw 2026.10.3 and 2026.10.5, no setting applies it to the exporter alone. A Node program the agent starts that takes its OpenTelemetry resource detectors from the environment (the default for `@opentelemetry/sdk-node`) then runs only the `env` detector and exports no host or process attributes. To give such a program its detectors back, set `OTEL_NODE_RESOURCE_DETECTORS=all` (or the list it needs) where that program is launched. To remove the side effect instead, run `openclaw config unset env.vars.OTEL_NODE_RESOURCE_DETECTORS`; OpenClaw's own spans then carry the host name, user name and command line again.
-
-Commands run by the agent's `exec` tool can inherit the Future AGI keys from OpenClaw's environment. Use this setup only when those commands and their environment are trusted. Then put the keys and the project name in `~/.openclaw/.env` (OpenClaw's global env file, read by the Gateway and the CLI):
+**Content capture is on by default.** Messages and tool results can include source files or secrets that the agent reads. To keep structure and usage without content, add `--no-capture-content`:
 
 ```bash
-FI_API_KEY=your-futureagi-api-key
-FI_SECRET_KEY=your-futureagi-secret-key
-OTEL_RESOURCE_ATTRIBUTES=project_name=openclaw
+npx @traceai/agents setup openclaw --project coding-agents --no-capture-content
 ```
 
-`OTEL_RESOURCE_ATTRIBUTES` sets the Future AGI project.
-
-Check the config and restart the Gateway:
+</Step>
+<Step title="Run the agent and open the trace">
 
 ```bash
-openclaw config validate
-openclaw gateway restart
+npx @traceai/agents run openclaw -- agent --local --agent main \
+  --session-id readme-review --message "Read README.md and summarize the project."
 ```
 
-## 3. Run a turn
+Replace `main` with your configured agent ID if needed. Reuse `--session-id` for later prompts in the same conversation; without it, the launcher creates a new session ID for each invocation.
 
-Send one message that uses a tool:
+Open your **coding-agents** project in [Future AGI](https://app.futureagi.com) and select an `openclaw.prompt` trace. Expand its model and tool spans to inspect the requests, results, usage and errors.
+
+**Use the launcher for traced runs.** An ordinary `openclaw` launch is not redirected to Future AGI. Setup does not restart a running Gateway.
+
+![An OpenClaw turn in Future AGI: a native model call with model and tokens, among tool executions beneath the prompt](/images/docs/integrations/coding-agents/openclaw-trace.png)
+
+<video
+  autoPlay
+  muted
+  loop
+  playsInline
+  controls
+  className="w-full rounded-xl shadow-lg"
+  src="/images/docs/integrations/coding-agents/openclaw-trace.mp4"
+/>
+*Select a tool call, then the final model call, to see inputs, outputs and token usage*
+
+</Step>
+</Steps>
+
+## Configuration
+
+Content capture is **on by default**: prompts, model responses and tool input/output can include source code and secrets the agent reads. Add `--no-capture-content` to setup to save a content-off preference, or set `FI_AGENT_CAPTURE_CONTENT=false` in the agent's launch environment for a process-level opt-out. Structure and available usage remain visible.
+
+| Setting | Purpose |
+| --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | Override saved credentials as a complete pair. Use hidden setup prompts or secret-manager environment injection, never command arguments. |
+| `FI_PROJECT_NAME` | Future AGI project receiving traces. Rerun setup to approve a changed project when using saved credentials. |
+| `FI_AGENT_CAPTURE_CONTENT=false` | Turn off prompt, response and tool-content capture for the process. Content capture is on by default. |
+| `FI_AGENT_ENABLED=false` | Disable tracing for the process. |
+| `FI_USER_ID` | Set an explicit user identifier; otherwise setup creates an opaque local ID. |
+| `FI_BASE_URL` | Self-hosted API origin. Approve it through setup with `--base-url <origin>`. |
+| `FI_OTLP_ENDPOINT` | Exact OTLP/HTTP traces URL; takes precedence over `FI_BASE_URL`. Saved credentials still require destination approval. |
+| `FI_AGENT_CONFIG_DIR` | Override the shared protected configuration directory, normally `${XDG_CONFIG_HOME:-$HOME/.config}/futureagi/agents`. |
+
+Setup saves user-level settings by default. Credentials are separate from preferences and are never written into your repository.
+
+| File | Purpose |
+| --- | --- |
+| `~/.config/futureagi/agents/credentials.json` | Saved credentials, protected with file mode `0600`. `XDG_CONFIG_HOME` replaces `~/.config`; `FI_AGENT_CONFIG_DIR` overrides the shared directory. |
+| `~/.openclaw/futureagi.json` | User preferences beside OpenClaw's host configuration. Discovery respects `OPENCLAW_CONFIG_PATH`, then `OPENCLAW_STATE_DIR`, then `OPENCLAW_HOME/.openclaw`, before the default path. |
+| `.futureagi/agents.json` | Repository preferences when you choose project scope; contains no credentials. |
+
+### Agent-specific settings
+
+| Setting | Purpose |
+| --- | --- |
+| `FI_HIDE_INPUTS=true` / `FI_HIDE_OUTPUTS=true` | Apply stricter input/output privacy. |
+| `FI_HIDE_ERROR_DETAILS=true` | Keep error status without its details. |
+
+The Cloud destination is `https://api.futureagi.com/tracer/v1/traces`. The integration sends `X-Api-Key`, `X-Secret-Key` and `X-Project-Name`, with resource attributes `project_name` and `project_type=observe`. Metrics and logs stay off.
+
+## User and project scope
+
+Commands read the current directory's project configuration by default. For a separate project destination, run these commands from your repository:
 
 ```bash
-openclaw agent -m "List the files in this folder and read README.md"
+npx @traceai/agents setup openclaw --scope project --project my-project
+npx @traceai/agents run openclaw -- agent --local --agent main --message "Summarize README.md"
 ```
 
-Open **Observe** in Future AGI and select the project (`openclaw` above). The run appears as a trace named **openclaw.harness.run**; open it for the model calls and tool executions. The Gateway batches spans, so allow a few seconds.
+Use `--project-dir /path/to/repo` on setup, run and status commands when working from elsewhere. Use `--user-only` without `--project-dir` to ignore repository settings and use only your user configuration. A repository cannot silently increase content capture or redirect saved credentials to an unapproved destination; rerun setup to approve the intended destination.
 
-## What is captured
+## Manage tracing
 
-| OpenClaw span | Future AGI span kind | Fields |
-| --- | --- | --- |
-| `openclaw.harness.run` | | Trace root. `openclaw.outcome`, provider, model, agent, items started/completed; `openclaw.error` on failure |
-| `openclaw.run` | | outcome, provider, model, trigger; `openclaw.errorCategory` and `openclaw.error` on failure |
-| `openclaw.context.assembled` | | message count, history and prompt sizes in characters, system prompt size, token budget |
-| `openclaw.model.call` | `LLM` | `gen_ai.request.model`, `gen_ai.system` (the provider id), `gen_ai.usage.input_tokens` / `output_tokens`, cache read and write tokens, reasoning tokens, request and response bytes, time to first byte, prompt component sizes (no text); status `ERROR` with the error category when the request fails |
-| `openclaw.tool.execution` | `TOOL` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, tool source and owner, status `ERROR` with `openclaw.errorCategory` when the tool fails (including a tool that returns an error, such as a missing file), `openclaw.outcome=blocked` when policy denies it |
-| `openclaw.exec` | | One per command the agent runs with the `exec` tool, under `openclaw.harness.run`: exec target, mode, outcome, exit code, command length (no command text). |
+```bash
+npx @traceai/agents status openclaw --check
+npx @traceai/agents doctor openclaw
+npx @traceai/agents disable openclaw
+npx @traceai/agents enable openclaw
+npx @traceai/agents update openclaw
+npx @traceai/agents uninstall openclaw
+```
 
-OpenClaw also exports, as separate traces:
+Status reports configuration, plugin registration, credential acceptance and recent exports. After setup, activation remains unobserved until you run a traced prompt. Use `doctor` to check configuration and connectivity.
 
-- `openclaw.model.usage`: run-level accounting for a Gateway run (total tokens, provider, model, channel). Its token counts repeat the `openclaw.model.call` spans. Future AGI stores it as an LLM span too, so project-level token and LLM-call totals count each Gateway run twice. For per-call numbers, filter by span name `openclaw.model.call`.
-- `openclaw.gateway.rpc.*`: Gateway request handling phases.
-- `openclaw.message.processed` and `openclaw.message.delivery` for channel messages, `openclaw.webhook.*` for webhooks.
-- `openclaw.diagnostic.phase`: timings of OpenClaw's internal startup phases, one short trace each.
+Disable works without credentials or network and stops already-running exporters and queued work. It cannot recall data already accepted by a server. After upgrading the CLI, run `update`; if the integration plugin changed, follow OpenClaw's interactive replacement prompts and rerun update. Headless update prints the commands to complete that review.
 
-The full span catalog is in OpenClaw's [spans and events](https://docs.openclaw.ai/gateway/opentelemetry/spans-and-events) page.
-
-### Failures and retries
-
-- A failed model request is marked `ERROR` on its `openclaw.model.call` span. The run's `openclaw.harness.run` and `openclaw.run` can still say `openclaw.outcome=completed` with no error status.
-- A retried turn can appear as several traces. Do not infer success from a root span alone; inspect its model-call and tool spans.
-- To find failed turns, filter for `openclaw.model.call` or `openclaw.tool.execution` spans with status `ERROR`, not by the status of the root.
-
-## What is not available
-
-- **Session grouping.** OpenClaw never exports session ids or session keys, so runs are not grouped into Future AGI sessions.
-- **One trace per user turn when a model request is retried.** Each attempt is a separate trace (see above).
-- **`openclaw agent exec` runs.** They run embedded in the CLI and do not start the exporter. Gateway runs and `openclaw agent --local` do export.
-- **Cost.** `openclaw.model.call` carries tokens, not cost; OpenClaw's cost estimate is exported as a metric, which Future AGI does not ingest.
-- **The system prompt**, even with content capture on.
-- **Tool calls of external harnesses** (Codex, Claude CLI) carry no content, even with content capture on.
-
-## Privacy
-
-With `captureContent: false` (the default), spans carry identifiers, model and provider names, token counts, sizes, durations and outcomes. OpenClaw states they never include prompt text, response text, tool inputs, tool outputs, skill file paths or session keys. With `OTEL_NODE_RESOURCE_DETECTORS=env` (set by the patch), the host name, host id, OS user name, executable paths and command line are not exported either.
-
-One exception: when a run fails, `openclaw.run` and `openclaw.harness.run` carry OpenClaw's error message (`openclaw.error` and the span status message, up to 4 KB, with secrets redacted) even with content capture off. It can contain file paths, URLs or provider error text. `openclaw.webhook.error` spans also carry error text in `openclaw.error` and the status message, and failed channel `openclaw.message.processed` spans carry it in the status message; both are redacted but have no 4 KB cap. OpenClaw has no setting to turn this off.
-
-Commands the agent runs with the `exec` tool inherit OpenClaw's environment, including `FI_API_KEY`, `FI_SECRET_KEY` and `OTEL_RESOURCE_ATTRIBUTES` from `~/.openclaw/.env`. OpenClaw removes only a fixed list of variables such as `NODE_OPTIONS`, and treats provider API keys in that file the same way.
-
-To include content, set `captureContent: true` in `diagnostics.otel`. Model spans then carry bounded, redacted input and output messages (shown as the span's input and output in Future AGI) and tool spans carry `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` (also as `openclaw.content.tool_input` / `tool_output`), which include file paths, command text and file contents. Tool definitions are included; the system prompt stays excluded.
+Uninstall restores only unchanged settings owned by the integration. Shared native plugins remain installed, but do not export through Future AGI without the launcher. Settings you modified after installation are not overwritten.
 
 ## Troubleshooting
 
-**No traces appear.**
-1. `openclaw status --all` or `openclaw doctor` shows the exporter's state per signal, including export failures (without endpoints or headers).
-2. `diagnostics.otel.protocol` must be `http/protobuf`; OpenClaw retired `grpc`.
-3. `${FI_API_KEY}` must resolve: OpenClaw warns about unresolved variables at start. Put the keys in `~/.openclaw/.env` or the Gateway's process environment; a `.env` in the working directory is a lower-trust source.
-4. The Gateway exports from its own process: restart it after changing the config or `.env`.
+**Setup returns `TRUST_REQUIRED`.** Complete OpenClaw's interactive source and capability review for the integration plugin, then rerun setup. Enabling diagnostics does not authorize conversation-access hooks.
 
-**`plugins install` fails with `requires plugin API >=…, but this OpenClaw runtime exposes …`.** The plugin release is newer than your OpenClaw. Install the plugin at your OpenClaw version (see [Version rule](#version-rule)) or upgrade OpenClaw.
+**Registered, but no exports.** Run through `npx @traceai/agents run openclaw -- agent --local ...`, not an ordinary OpenClaw launch or an existing Gateway. Check your agent/provider configuration in OpenClaw, then run `doctor openclaw`.
 
-**`plugins install` fails with `Version not found on ClawHub`.** ClawHub has no `diagnostics-otel` release with exactly your OpenClaw version, for example on a source build. Install the newest plugin release that is not newer than your OpenClaw; [ClawHub](https://clawhub.ai/plugins/@openclaw/diagnostics-otel) lists them.
+**Unsupported host version.** Check `openclaw --version` and `node --version`. Use OpenClaw 2026.10.5 or later in the 2026.x line with Node 24.16 or newer in the 24.x line.
 
-**Traces do not show up in the expected project.** Future AGI files traces under the `project_name` resource attribute. Check that `OTEL_RESOURCE_ATTRIBUTES=project_name=...` reaches the exporting process: set it in `~/.openclaw/.env` or the Gateway's service environment, then restart the Gateway.
+**Existing exporter or preload.** Keep your existing tracing route or explicitly remove it before setup. Do not run two tracing routes together; setup will not disable an existing exporter for you.
 
-**Traces show your host name, user name or command line.** `OTEL_NODE_RESOURCE_DETECTORS` is set to something other than `env` in the exporting process's environment or a `.env` file, which wins over the patch. Set it to `env` there and restart the Gateway.
+**Project config is ignored.** `PROJECT_CONFIG_IGNORED` means the repository settings are malformed or their location is unsafe. Tracing continues with protected user settings. Fix the file or use an owner-controlled directory for project overrides.
 
-**A Node program the agent runs exports no host or process attributes.** It inherited `OTEL_NODE_RESOURCE_DETECTORS=env` from OpenClaw's config `env` block. See the side-effect note in [step 2](#2-point-it-at-future-agi).
+**Destination is not approved or registration changed.** Rerun setup for the intended project and endpoint. Inspect host-config changes before updating; the integration will not overwrite settings you changed after installation.
 
-**A failed turn shows as several successful traces.** Each model retry is its own trace and the roots can say `completed`. Look for `openclaw.model.call` spans with status `ERROR` (see [Failures and retries](#failures-and-retries)).
+**Content is missing.** Check `FI_AGENT_CAPTURE_CONTENT`, input/output privacy settings and OpenClaw's own access policy. The official plugin does not expose system prompts or external-harness internals.
 
-**Many short `openclaw.diagnostic.phase` traces.** These are startup phases; filter the trace list by name `openclaw.harness.run` to see agent runs only. Cron turns are rooted at `openclaw.message.processed` instead.
+## Privacy
 
-**The run's root spans are missing.** `openclaw.harness.run` and `openclaw.run` end after the reply is delivered. If a Gateway or CLI process is killed right after a turn, they may not be flushed.
+Content capture includes what the agent reads or produces. The integration removes host/process metadata, arbitrary attributes, event payloads and tool definitions, bounds captured fields to 20,000 characters and applies best-effort redaction, including known Future AGI credentials. Redaction cannot reliably detect every application secret. Turn content capture off for sensitive work.
+
+Environment-supplied Future AGI keys are removed before the model/tool runtime starts. Programs running as your OS user can still access the credential store. This package does not read `.env` files, shell profiles or keychains; OpenClaw's own environment and access policies still apply.
+
+The launcher handles delivery without a background daemon, local receiver or model proxy. Temporary capture records are encrypted with a per-run, memory-only key in an immediately unlinked private file, capped at 4 MiB per invocation. No plaintext capture file or reusable key is saved. The launcher drains delivery for up to five seconds after the agent exits. Network failures drop telemetry rather than failing model/tool calls; force-killing the launcher can lose queued spans. Delivery is not exactly-once.

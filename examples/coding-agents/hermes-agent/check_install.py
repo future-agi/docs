@@ -20,7 +20,7 @@ def main() -> None:
     route = os.environ["INSTALL_ROUTE"]
     assert route in {"pip", "directory"}, route
     assert version("hermes-agent") == "0.21.5"
-    assert version("traceAI-hermes-agent") == "0.1.0"
+    assert version("traceAI-hermes-agent") == "0.1.1"
     assert set(HOOKS) <= VALID_HOOKS
     assert "pre_tool_call" not in HOOKS
     assert any(
@@ -43,7 +43,9 @@ def main() -> None:
         assert plugin["error"] == (
             "not enabled in config (run `hermes plugins enable futureagi` to activate)"
         ), plugin
-    assert plugin["hooks"] == (len(tuple(HOOKS)) if args.enabled else 0), plugin
+    # 0.1.1 also registers these observer hooks when the installed Hermes defines them.
+    observers = sum(hook in VALID_HOOKS for hook in ("post_compaction", "post_approval_response", "on_stream_delta"))
+    assert plugin["hooks"] == (len(tuple(HOOKS)) + observers if args.enabled else 0), plugin
     print(f"Released {route} plugin: enabled={args.enabled}, hooks={plugin['hooks']}")
 
 
