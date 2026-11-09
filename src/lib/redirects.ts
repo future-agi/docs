@@ -1,6 +1,7 @@
 // Auto-generated redirect map: old Mintlify URLs → new docs URLs
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
+  '/docs/integrations/coding-agents/hook-to-otlp': '/docs/integrations/coding-agents',
   // Prototype was deprecated and removed from the dashboard; its pages now point at Evaluation
   '/docs/prototype': '/docs/evaluation',
   '/docs/prototype/concepts/understanding-prototype': '/docs/evaluation',
@@ -70,6 +71,7 @@ export const redirectMap: Record<string, string> = {
   // Evaluation features/ pages folded into guides/ (revamp); redirect the retired paths
   '/docs/evaluation/features/cicd': '/docs/evaluation/guides/cicd',
   '/docs/evaluation/features/custom': '/docs/evaluation/guides/custom-evals',
+  '/docs/evaluation/features/custom-models': '/docs/evaluation/guides/custom-models',
   '/docs/evaluation/features/evaluate': '/docs/evaluation/guides/running-evaluations',
   '/docs/evaluation/features/futureagi-models': '/docs/evaluation/concepts/evaluator-models',
   '/docs/evaluation/concepts/eval-results': '/docs/evaluation/reference/output-types',

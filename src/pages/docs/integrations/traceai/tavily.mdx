@@ -1,0 +1,132 @@
+---
+title: "Tavily Integration with Future AGI"
+description: "Trace Tavily search, extraction, mapping, crawling and research calls in Future AGI with the maintained traceAI-tavily Python package."
+---
+
+Trace calls from `TavilyClient` and `AsyncTavilyClient` with `traceAI-tavily`. See each operation's duration, status and result counts in Future AGI without recording response content.
+
+## Choose your integration
+
+| How you use Tavily | Integration |
+|---|---|
+| Direct calls through the [`tavily-python`](https://github.com/tavily-ai/tavily-python) client | `traceAI-tavily`, described below. |
+| LangChain or LangGraph tools such as `langchain_tavily.TavilySearch` | Use [LangChain tracing](/docs/integrations/traceai/langchain). These tools make their own HTTP requests rather than calling `TavilyClient`. |
+| The `tavily-mcp` server | Use the [MCP integration](/docs/integrations/traceai/mcp). |
+
+## Prerequisites
+
+- Python 3.10–3.13.
+- A Tavily API key.
+- A Future AGI API key and secret key from [API keys](/docs/admin-settings/api-keys).
+
+## 1. Install the packages
+
+```bash
+pip install 'traceAI-tavily==0.1.1' 'tavily-python==0.8.5' 'fi-instrumentation-otel==1.2.3'
+```
+
+The instrumentor supports `tavily-python>=0.8.4,<1`. The commands on this page pin the client and tracing packages so the documented behavior stays consistent.
+
+## 2. Configure credentials
+
+Set these variables in the shell where you run your application:
+
+```bash
+export TAVILY_API_KEY="your-tavily-api-key"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+```
+
+Queries and research prompts are recorded by default. To hide them, set `FI_HIDE_INPUTS=true` before starting the application; see [Privacy](#privacy) for the effect on errors and request IDs.
+
+## 3. Instrument and run your application
+
+Save this as `tavily_example.py`:
+
+```python
+import os
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from tavily import TavilyClient
+from traceai_tavily import TavilyInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="tavily-search",
+)
+TavilyInstrumentor().instrument(tracer_provider=trace_provider)
+
+client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+try:
+    client.search("What is OpenTelemetry?", max_results=2)
+    client.extract(["https://opentelemetry.io/docs/"])
+finally:
+    trace_provider.force_flush()
+```
+
+```bash
+python tavily_example.py
+```
+
+Register the provider and instrument once, before the first Tavily call. The same instrumentation covers `AsyncTavilyClient`; await its methods as usual. Each call is a child of the active OpenTelemetry span, or a root span when none is active.
+
+## 4. View the traces
+
+Open **Observe** in Future AGI, select the `tavily-search` project, and open a `tavily.search` or `tavily.extract` trace. Inspect its duration, status and result counts. This example produces separate root traces; calls made inside an active application span appear beneath that span instead.
+
+## What is captured
+
+Both synchronous and asynchronous clients have the following coverage:
+
+| Call | Span name | `gen_ai.span.kind` |
+|---|---|---|
+| `search` | `tavily.search` | `RETRIEVER` |
+| `extract` | `tavily.extract` | `TOOL` |
+| `map` | `tavily.map` | `TOOL` |
+| `crawl` | `tavily.crawl` | `TOOL` |
+| `research` | `tavily.research` | `TOOL` |
+| `get_research` | `tavily.get_research` | `TOOL` |
+
+| Attribute | Value |
+|---|---|
+| `input.value` | The search query, optional extraction query, or research `input`, capped at 1,024 UTF-8 bytes. |
+| `gen_ai.retrieval.query` | The search query only, omitted when inputs are hidden. |
+| `gen_ai.tool.name` | The operation name, such as `tavily.crawl`. |
+| `tavily.url_count` | The number of URLs passed to `extract`, or `1` for a string URL passed to `map` or `crawl`. |
+| `tavily.result_count` | The length of `results` when the response contains a list; absent otherwise. |
+| `tavily.failed_result_count` | The length of `failed_results` on a successful extraction response, when present as a list. |
+| `tavily.request_id` | A bounded, validated request ID from map, crawl or research responses, or the ID passed to `get_research`. Omitted when inputs are hidden; search and extract do not record it. |
+| `tavily.cancelled` | `true` when a call is cancelled. |
+| `tavily.stream.closed` | `true` when a research stream is closed before completion. |
+
+A non-streaming `research` span measures task submission, not the entire background research job. Each `get_research` call has its own span; use `tavily.request_id` to correlate calls when it is available.
+
+With `research(..., stream=True)`, the span stays open until the stream finishes, fails or is closed. Consume the stream fully, or call `close()` (synchronous) or `await stream.aclose()` (asynchronous) when stopping early. Early closure ends the span with `ERROR` status and `tavily.stream.closed=true`; it does not mean the vendor returned an error. Stream chunks are not recorded.
+
+## Privacy
+
+These rules apply to spans created by `traceAI-tavily`, not to separate LangChain, MCP or HTTP-client instrumentation:
+
+- Response content, result titles, answers, images, extracted pages, URL arguments and map/crawl instructions are not captured. Model names, token usage and credits are not captured either.
+- Queries and research prompts are recorded by default. Tavily keys found in the client are redacted from captured text. Redaction matches literal key values, not encoded or transformed copies.
+- Set `FI_HIDE_INPUTS=true` before instrumentation to replace captured `input.value` with `__REDACTED__`, omit `gen_ai.retrieval.query` and `tavily.request_id`, and retain operation names and counts.
+- With the pinned tracing core, hidden inputs also hide error messages, stack traces and error status descriptions by default, unless `FI_HIDE_ERROR_DETAILS=false` explicitly overrides that behavior. Set `FI_HIDE_ERROR_DETAILS=true` to hide error details independently of input capture.
+- Without error-detail hiding, search API errors can include a key-redacted message and a one-line exception summary, not raw Python traceback frames. Transport errors and errors from the other five methods record only the exception type. `FI_PII_REDACTION=true` additionally masks recognized personal information in captured text.
+
+For a setup that keeps counts but hides inputs and error details, set both variables before running the example:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_ERROR_DETAILS=true
+```
+
+Errors end spans with `ERROR` status, and the original exception still reaches your application. Cancellation sets `tavily.cancelled=true` without an exception event.
+
+## Troubleshooting
+
+- **No spans appear.** Check `FI_API_KEY` and `FI_SECRET_KEY`, call `instrument()` before Tavily, and flush before a short-lived process exits. `register()` alone does not instrument the Tavily client.
+- **A method is missing or a dependency conflict is logged.** Use the pinned client above. The instrumentor requires `tavily-python>=0.8.4,<1`; a missing method is skipped while the remaining methods stay instrumented.
+- **A research span has not appeared.** Finish consuming the stream or close it explicitly before flushing. For non-streaming research, expect one span per submission or polling call, not a single span covering the whole job.
+
+The deprecated `get_search_context`, `qna_search` and `get_company_info` helpers are not wrapped. Use the supported methods in the table above when you need tracing.
