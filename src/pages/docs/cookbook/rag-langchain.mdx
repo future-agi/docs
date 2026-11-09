@@ -94,7 +94,11 @@ Indexed 187 chunks from 3 pages
 </Step>
 <Step title="Configure tracing and evaluation">
 
-Register a trace provider with `traceai-langchain` so every LLM call, retrieval, and chain step is captured, and set up an `Evaluator` to score answers after the fact.
+Register a trace provider with `traceai-langchain` so every LLM call, retrieval, and chain step is captured, and set up an `Evaluator` to score answers after the fact. This recipe uses explicit `Evaluator` calls rather than span evaluation tags; the scores are returned to the script, not attached to the traced spans.
+
+<Note>
+This example registers an `EXPERIMENT` project. Its former **Prototype** dashboard viewer is unavailable. Use the scored results in the script to inspect this comparison; the separate **Tracing** page is not a replacement viewer for this experiment setup.
+</Note>
 
 ```python
 from getpass import getpass
@@ -102,14 +106,7 @@ import os
 
 from fi.evals import Evaluator
 from fi_instrumentation import register
-from fi_instrumentation.fi_types import (
-    ProjectType,
-    EvalName,
-    EvalSpanKind,
-    EvalTag,
-    EvalTagType,
-    ModelChoices,
-)
+from fi_instrumentation.fi_types import ProjectType
 from traceai_langchain import LangChainInstrumentor
 
 os.environ["FI_API_KEY"] = os.environ.get("FI_API_KEY") or getpass("Enter your FI API key: ")
@@ -117,27 +114,10 @@ os.environ["FI_SECRET_KEY"] = os.environ.get("FI_SECRET_KEY") or getpass("Enter 
 
 evaluator = Evaluator(fi_base_url="https://api.futureagi.com")
 
-# Tag every LLM span for context adherence and groundedness as it's traced
-eval_tags = [
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.LLM,
-        eval_name=EvalName.CONTEXT_ADHERENCE,
-        model=ModelChoices.TURING_FLASH,
-    ),
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.LLM,
-        eval_name=EvalName.GROUNDEDNESS,
-        model=ModelChoices.TURING_FLASH,
-    ),
-]
-
 trace_provider = register(
     project_type=ProjectType.EXPERIMENT,
     project_name="RAG-Cookbook",
     project_version_name="v1",
-    eval_tags=eval_tags,
 )
 
 LangChainInstrumentor().instrument(tracer_provider=trace_provider)
@@ -146,7 +126,29 @@ LangChainInstrumentor().instrument(tracer_provider=trace_provider)
 Confirm the wiring works end to end before building the full comparison: retrieve for one question, answer it, and score the answer with `fi.evals`.
 
 ```python
+from math import isfinite
 from fi.evals.templates import ContextRelevance
+
+
+def numeric_score(batch):
+    if not batch.eval_results or batch.eval_results[0] is None:
+        raise ValueError("Evaluation returned no result")
+    result = batch.eval_results[0]
+    if result.output is None:
+        raise ValueError(result.reason or "Evaluation returned no output")
+    if result.output_type == "boolean":
+        if isinstance(result.output, bool):
+            return float(result.output)
+        if isinstance(result.output, str) and result.output.lower() in {"true", "false"}:
+            return float(result.output.lower() == "true")
+        raise ValueError("Expected a boolean evaluation output")
+    if result.output_type != "score" or isinstance(result.output, bool):
+        raise ValueError("Expected a score or boolean evaluation output")
+    score = float(result.output)
+    if not isfinite(score) or not 0 <= score <= 1:
+        raise ValueError("Expected a finite score between 0 and 1")
+    return score
+
 
 sample_docs = recursive_retriever.invoke("What is a transformer?")
 sample_context = "\n\n".join(doc.page_content for doc in sample_docs)
@@ -156,13 +158,13 @@ sample_answer = llm.invoke(
 
 check = evaluator.evaluate(
     eval_templates=[ContextRelevance(config={"check_internet": False})],
-    inputs=[{"input": "What is a transformer?", "context": sample_context}],
+    inputs={"input": "What is a transformer?", "context": sample_context},
     model_name="turing_flash",
 )
-print(check.eval_results[0].metrics[0].value)
+print(numeric_score(check))
 ```
 
-You should see a single score between 0 and 1, for example `0.9`. That confirms the chain, the tracer, and the evaluator are all wired correctly before the three-strategy comparison in the next steps.
+You should see a single score between 0 and 1, for example `0.9`. The helper reads `EvalResult.output` according to `output_type`: numeric scores stay on the 0–1 scale, and boolean results become 1 for true or 0 for false. It stops on missing, failed, or unexpected outputs instead of averaging them. A successful score confirms the evaluation request worked, not that traces are visible in the dashboard.
 
 </Step>
 <Step title="Run the baseline and score it">
@@ -205,14 +207,14 @@ def score_pipeline(rows, model="turing_flash"):
     scored = []
     for row in rows:
         inputs = {"input": row["query"], "context": row["context"], "output": row["answer"]}
-        relevance = evaluator.evaluate(eval_templates=[relevance_template], inputs=[inputs], model_name=model)
-        utilization = evaluator.evaluate(eval_templates=[utilization_template], inputs=[inputs], model_name=model)
-        grounded = evaluator.evaluate(eval_templates=[groundedness_template], inputs=[inputs], model_name=model)
+        relevance = evaluator.evaluate(eval_templates=[relevance_template], inputs=inputs, model_name=model)
+        utilization = evaluator.evaluate(eval_templates=[utilization_template], inputs=inputs, model_name=model)
+        grounded = evaluator.evaluate(eval_templates=[groundedness_template], inputs=inputs, model_name=model)
         scored.append({
             **row,
-            "context_relevance": relevance.eval_results[0].metrics[0].value,
-            "chunk_utilization": utilization.eval_results[0].metrics[0].value,
-            "groundedness": grounded.eval_results[0].metrics[0].value,
+            "context_relevance": numeric_score(relevance),
+            "chunk_utilization": numeric_score(utilization),
+            "groundedness": numeric_score(grounded),
         })
     return scored
 
@@ -351,15 +353,11 @@ You should see a bar chart with three groups (illustrative values, from the runs
 *Context relevance stays nearly flat across all three strategies; chunk utilization and groundedness are what actually move*
 
 </Step>
-<Step title="Inspect the traces in the dashboard">
+<Step title="Inspect individual results">
 
-Every `llm.invoke()` and `retriever.invoke()` call from the three runs was captured by `LangChainInstrumentor`. Open the Future AGI dashboard to inspect them.
+Review `recursive_scored`, `semantic_scored`, and `subq_scored` to compare individual answers rather than only the averages. Each row contains the question (`query`), retrieved `context`, generated `answer`, and the three scores returned by the explicit `Evaluator` calls.
 
-Open the **Prototype** tab and find the `RAG-Cookbook` project → open any trace to see the retrieval span, the LLM call, and the `context_adherence` and `groundedness` eval scores attached to it. This span-attached `groundedness` score is computed independently of the printed averages from Step 3-5, so the two don't need to match.
-
-<img src="/images/docs/cookbook-rag-langchain/experiment.webp" alt="Future AGI dashboard showing traced spans for the RAG-Cookbook experiment with retrieval and LLM steps" style={{ borderRadius: '5px' }} />
-
-*Each row is one trace: expand it to see the exact chunks retrieved and the eval score attached to the LLM span*
+The old **Prototype** trace-inspection step is unavailable. This recipe does not attach evaluation scores to spans or require that viewer to complete the comparison.
 
 </Step>
 </Steps>
@@ -375,6 +373,6 @@ Open the **Prototype** tab and find the `RAG-Cookbook` project → open any trac
 | `score_pipeline` scores look identical across `recursive_avg`, `semantic_avg`, and `subq_avg` | `chroma_recursive` or `chroma_semantic` already had vectors from a previous run, so the new documents were appended instead of replacing them | Delete the `chroma_recursive/` and `chroma_semantic/` directories before each fresh comparison run |
 | `openai.RateLimitError` mid-run on `run_pipeline` | Three questions run back to back against the OpenAI API with no delay | Add `time.sleep(1)` between questions, or lower `test_questions` to 1-2 while iterating |
 | `evaluator.evaluate(...)` raises an authentication error | `FI_API_KEY` or `FI_SECRET_KEY` missing or unexported | Re-run the `export` block, then re-run the script |
-| No traces appear under the `RAG-Cookbook` project | `LangChainInstrumentor().instrument()` ran after the chain was already built | Call `instrument()` right after `register()`, before defining or invoking any chain |
+| Cannot find the `RAG-Cookbook` experiment in a Prototype tab | The Prototype viewer is unavailable | Inspect `recursive_scored`, `semantic_scored`, and `subq_scored` in the script; the Tracing page is not an alias for the experiment viewer |
 
 Next: read how the platform scores retrieval and groundedness in [Evaluate a RAG pipeline](/docs/cookbook/evaluate-rag).
