@@ -25,6 +25,9 @@ test('RAGFlow guide pins the hardened fork and its matching deployment dependenc
   assert.ok(build.includes(`checkout --detach ${source}`));
   assert.ok(build.includes("sed -i 's#https://registry\\.npmmirror\\.com#https://registry.npmjs.org#g' ragflow-futureagi/web/.npmrc ragflow-futureagi/web/package-lock.json"));
   assert.match(page, /without changing locked package versions or integrity hashes/);
+  const targets = [...build.matchAll(/--target (\S+)/g)].map(match => match[1]);
+  assert.deepEqual(targets, ['go-builder', 'web-builder', 'production']);
+  assert.match(page, /Build the Go and web targets in sequence to reduce peak memory use/);
   assert.ok(build.includes('docker buildx build --load --network host --build-arg GOPROXY=https://proxy.golang.org,direct --target production --tag ragflow-futureagi:9b2bcb1d --file ragflow-futureagi/Dockerfile ragflow-futureagi'));
   assert.ok(page.includes('https://github.com/future-agi/ragflow/tree/contrib/futureagi-tracing'));
   assert.ok(page.includes(`https://github.com/future-agi/ragflow/tree/${source}/docker`));
