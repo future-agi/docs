@@ -25,6 +25,7 @@ const [cmd, sub] = args;
 const flag = (name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
 const open = () => state.prs.filter((p) => p.state === 'open');
 if (cmd === 'pr' && sub === 'list') {
+  if (process.env.FAKE_LIST_FAILS === '1') { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
   const head = flag('--head');
   const hits = open().filter((p) => p.head === head);
   const jq = flag('--jq');
@@ -69,14 +70,14 @@ function harness() {
   fs.writeFileSync(stateFile, JSON.stringify({ next: 100, prs: [] }));
   fs.writeFileSync(logFile, '');
   const base = { SHA: 'a'.repeat(40), REF: 'python-v0.7.0', PY: '0.7.0', TS: '0.2.0', BACKEND: 'v1.58.0', SOURCE: 'test' };
-  /** @param {{STAGE: string, PUBLISH: string, BRANCH?: string, SHA?: string, diff?: boolean, readyFails?: boolean}} ev */
+  /** @param {{STAGE: string, PUBLISH: string, BRANCH?: string, SHA?: string, diff?: boolean, readyFails?: boolean, listFails?: boolean}} ev */
   const run = (ev) => {
     const env = {
       ...process.env, ...base, SHA: ev.SHA ?? base.SHA,
       BRANCH: ev.BRANCH ?? 'sdk-reference/python-v0.7.0-typescript-v0.2.0',
       STAGE: ev.STAGE, PUBLISH: ev.PUBLISH,
       PATH: `${bin}:${process.env.PATH}`, FAKE_PR_STATE: stateFile, FAKE_LOG: logFile,
-      FAKE_DIFF: ev.diff === false ? '0' : '1', FAKE_READY_FAILS: ev.readyFails ? '1' : '0', GH_TOKEN: 'fake',
+      FAKE_DIFF: ev.diff === false ? '0' : '1', FAKE_READY_FAILS: ev.readyFails ? '1' : '0', FAKE_LIST_FAILS: ev.listFails ? '1' : '0', GH_TOKEN: 'fake',
     };
     const result = spawnSync('bash', [SCRIPT], { env, encoding: 'utf-8' });
     return { status: result.status, out: result.stdout + result.stderr };
@@ -122,6 +123,32 @@ test('a stale candidate after released is ignored: the ready PR keeps its state,
   assert.ok(!calls.some((c) => c.startsWith('git push')), 'the released branch was not rewritten');
   assert.ok(!calls.some((c) => c.startsWith('gh pr edit')), 'the released title/body were not rewritten');
   assert.ok(!calls.some((c) => c.startsWith('gh pr ready') || c.startsWith('gh pr create')));
+});
+
+test('a failed PR lookup stops before any mutation: no push, no create, no edit, no close', () => {
+  const h = harness();
+  assert.equal(h.run({ STAGE: 'released', PUBLISH: 'ready' }).status, 0);
+  h.resetLog();
+  const r = h.run({ STAGE: 'candidate', PUBLISH: 'draft', SHA: 'b'.repeat(40), listFails: true });
+  assert.notEqual(r.status, 0, 'a lookup error must not be read as "no PR"');
+  assert.match(r.out, /could not look up the open PR/);
+  const calls = h.calls();
+  assert.ok(!calls.some((c) => c.startsWith('git push') || c.startsWith('git switch') || c.startsWith('git commit')), 'branch untouched');
+  assert.ok(!calls.some((c) => /^gh pr (create|edit|close|ready)/.test(c)), 'PR untouched');
+  assert.deepEqual(h.prs().map((p) => [p.number, p.isDraft, p.state]), [[100, false, 'open']], 'the released PR is still ready');
+});
+
+test('a stale candidate whose pages match main cannot close or delete the ready release PR', () => {
+  const h = harness();
+  assert.equal(h.run({ STAGE: 'released', PUBLISH: 'ready' }).status, 0);
+  h.resetLog();
+  const r = h.run({ STAGE: 'candidate', PUBLISH: 'draft', SHA: 'b'.repeat(40), diff: false });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /stale candidate event ignored/);
+  const calls = h.calls();
+  assert.ok(!calls.some((c) => c.startsWith('gh pr close')), 'the no-diff cleanup did not run');
+  assert.ok(!calls.some((c) => c.startsWith('git push')), 'the released branch was not touched');
+  assert.deepEqual(h.prs().map((p) => [p.number, p.isDraft, p.state]), [[100, false, 'open']], 'released PR open and ready');
 });
 
 test('a failed promotion fails the run instead of reporting ready', () => {

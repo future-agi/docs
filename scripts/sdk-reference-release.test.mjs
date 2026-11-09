@@ -1,7 +1,7 @@
 // @ts-check
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decide, newestPythonTag, resolve } from './sdk-reference-release.mjs';
+import { decide, newestPythonTag, newestRelease, newestTag, resolve } from './sdk-reference-release.mjs';
 
 const SHA = 'd4631b0b5208e11ef55706b531609be427888704';
 const files = {
@@ -9,11 +9,12 @@ const files = {
   'sdkgen/contracts/BACKEND_VERSION': 'v1.58.0\n',
 };
 
-/** @param {{pypi?: boolean, npm?: boolean, tags?: string[]}} world */
+/** @param {{pypi?: boolean, npm?: boolean, tags?: string[], shas?: Record<string, string>, dates?: Record<string, string>}} world */
 function io(world = {}) {
   return {
-    resolveSha: async (/** @type {string} */ ref) => (ref === 'missing' ? Promise.reject(new Error('404')) : SHA),
+    resolveSha: async (/** @type {string} */ ref) => (ref === 'missing' ? Promise.reject(new Error('404')) : (world.shas?.[ref] ?? SHA)),
     fileAt: async (/** @type {string} */ path) => files[path],
+    commitDate: async (/** @type {string} */ sha) => world.dates?.[sha] ?? '2026-11-05T03:41:58Z',
     tags: async () => (world.tags ?? ['python-v0.6.9', 'python-v0.7.0', 'python-v0.6.14', 'typescript-v0.2.0']).map((t) => ({ ref: `refs/tags/${t}` })),
     onPyPI: async () => world.pypi ?? false,
     onNpm: async () => world.npm ?? false,
@@ -24,6 +25,28 @@ test('newest python tag is chosen by version, not by string order', () => {
   const tags = ['python-v0.9.1', 'python-v0.10.0', 'python-v0.9.12'].map((t) => ({ ref: `refs/tags/${t}` }));
   assert.equal(newestPythonTag(tags), 'python-v0.10.0');
   assert.throws(() => newestPythonTag([{ ref: 'refs/tags/typescript-v0.2.0' }]), /no python-v\* release tag/);
+});
+
+test('the scheduled default follows both release streams: a newer TypeScript-only release wins', async () => {
+  const A = 'a'.repeat(40); // python-v0.7.0 and typescript-v0.2.0 shipped here
+  const B = 'b'.repeat(40); // typescript-v0.2.1 shipped later, from a newer SDK commit with newer pages
+  const world = {
+    tags: ['python-v0.7.0', 'typescript-v0.2.0', 'typescript-v0.2.1'],
+    shas: { 'python-v0.7.0': A, 'typescript-v0.2.0': A, 'typescript-v0.2.1': B },
+    dates: { [A]: '2026-11-05T03:41:58Z', [B]: '2026-11-09T10:00:00Z' },
+  };
+  const chosen = await newestRelease(io(world).tags && (await io(world).tags()), io(world).resolveSha, io(world).commitDate);
+  assert.deepEqual(chosen, { ref: 'typescript-v0.2.1', sha: B }, 'the later commit, not the newest Python tag');
+  const resolved = await resolve({}, io({ ...world, pypi: true, npm: true }));
+  assert.equal(resolved.sha, B);
+  assert.equal(resolved.ref, 'typescript-v0.2.1');
+  // The other way round too: a newer Python-only release is not shadowed by TypeScript.
+  const flipped = { ...world, dates: { [A]: '2026-11-09T10:00:00Z', [B]: '2026-11-05T03:41:58Z' } };
+  assert.equal((await resolve({}, io({ ...flipped, pypi: true, npm: true }))).sha, A);
+  // One stream only is still a release; no stream at all fails closed.
+  assert.equal(newestTag([{ ref: 'refs/tags/typescript-v0.2.0' }], 'python-'), null);
+  assert.equal((await newestRelease([{ ref: 'refs/tags/typescript-v0.2.0' }], async () => B, async () => '2026-11-09T10:00:00Z')).sha, B);
+  await assert.rejects(newestRelease([{ ref: 'refs/tags/v1' }], async () => A, async () => ''), /no python-v\* or typescript-v\* release tag/);
 });
 
 test('one branch per SDK version pair; preview branches are keyed by commit', () => {

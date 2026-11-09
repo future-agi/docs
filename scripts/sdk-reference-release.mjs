@@ -5,8 +5,11 @@
  *
  *   node scripts/sdk-reference-release.mjs [--ref <sha|tag|branch>] [--stage released|candidate|preview] [--json]
  *
- * Without --ref it picks the newest published SDK release: the commit of the
- * newest `python-v*` tag. The result (printed as `key=value` lines, or JSON with
+ * Without --ref it picks the newest published SDK release: the SDK versions and
+ * publishes its Python and TypeScript packages independently, so it takes the newest
+ * `python-v*` tag and the newest `typescript-v*` tag and keeps whichever commit is
+ * later, so a TypeScript-only release is never missed and older pages are never
+ * proposed over newer ones. The result (printed as `key=value` lines, or JSON with
  * --json) carries the full commit SHA, the Python/TypeScript versions from the
  * SDK's release manifest at that commit, the backend release the contract was
  * synced from, and `branch`, the docs branch for this release: one branch (so one
@@ -43,16 +46,46 @@ async function github(path) {
   return fetchJson(`https://api.github.com/repos/${SDK_REPO}/${path}`, { headers });
 }
 
-/** The newest python-v* tag's name (by semantic version, not by push order). */
-export function newestPythonTag(/** @type {{ref: string}[]} */ refs) {
+/**
+ * The newest `<prefix>vX.Y.Z` tag's name (by semantic version, not by push order), or
+ * null when that package has no release tag yet.
+ * @param {{ref: string}[]} refs @param {'python-' | 'typescript-'} prefix
+ */
+export function newestTag(refs, prefix) {
+  const pattern = new RegExp(`^${prefix}v(\\d+)\\.(\\d+)\\.(\\d+)$`);
   const versions = refs
     .map((ref) => ref.ref.replace('refs/tags/', ''))
-    .map((tag) => ({ tag, match: /^python-v(\d+)\.(\d+)\.(\d+)$/.exec(tag) }))
+    .map((tag) => ({ tag, match: pattern.exec(tag) }))
     .filter((entry) => entry.match)
     .map((entry) => ({ tag: entry.tag, version: entry.match.slice(1, 4).map(Number) }))
     .sort((a, b) => a.version[0] - b.version[0] || a.version[1] - b.version[1] || a.version[2] - b.version[2]);
-  if (!versions.length) throw new Error(`${SDK_REPO} has no python-v* release tag yet`);
-  return versions[versions.length - 1].tag;
+  return versions.length ? versions[versions.length - 1].tag : null;
+}
+
+/** Kept for callers of the old name: the newest python-v* tag, or an error when none. */
+export function newestPythonTag(/** @type {{ref: string}[]} */ refs) {
+  const tag = newestTag(refs, 'python-');
+  if (!tag) throw new Error(`${SDK_REPO} has no python-v* release tag yet`);
+  return tag;
+}
+
+/**
+ * The newest published SDK commit across both package release streams: the newest
+ * Python tag and the newest TypeScript tag, resolved to commits, the later commit wins.
+ * @param {{ref: string}[]} refs
+ * @param {(ref: string) => Promise<string>} resolveSha
+ * @param {(sha: string) => Promise<string>} commitDate ISO 8601 committer date
+ * @returns {Promise<{ref: string, sha: string}>}
+ */
+export async function newestRelease(refs, resolveSha, commitDate) {
+  const tags = [newestTag(refs, 'python-'), newestTag(refs, 'typescript-')].filter((t) => t !== null);
+  if (!tags.length) throw new Error(`${SDK_REPO} has no python-v* or typescript-v* release tag yet`);
+  const candidates = await Promise.all(tags.map(async (tag) => {
+    const sha = await resolveSha(tag);
+    return { ref: tag, sha, date: Date.parse(await commitDate(sha)) };
+  }));
+  candidates.sort((a, b) => b.date - a.date || a.ref.localeCompare(b.ref));
+  return { ref: candidates[0].ref, sha: candidates[0].sha };
 }
 
 /** @param {string} ref a tag, branch or commit; returns the full commit SHA. */
@@ -60,6 +93,12 @@ async function resolveSha(ref) {
   const commit = await github(`commits/${encodeURIComponent(ref)}`);
   if (!/^[0-9a-f]{40}$/.test(commit.sha)) throw new Error(`cannot resolve ${ref} to a commit`);
   return commit.sha;
+}
+
+/** @param {string} sha */
+async function commitDate(sha) {
+  const commit = await github(`commits/${sha}`);
+  return commit.commit.committer.date;
 }
 
 /** @param {string} path @param {string} sha */
@@ -96,23 +135,27 @@ export function decide({ stage, sha, python, typescript, installable }) {
 
 /**
  * @param {{ref?: string, stage?: string}} options
- * @param {{resolveSha?: typeof resolveSha, fileAt?: typeof fileAt, tags?: () => Promise<{ref: string}[]>, onPyPI?: typeof onPyPI, onNpm?: typeof onNpm}} [io]
+ * @param {{resolveSha?: typeof resolveSha, fileAt?: typeof fileAt, commitDate?: typeof commitDate, tags?: () => Promise<{ref: string}[]>, onPyPI?: typeof onPyPI, onNpm?: typeof onNpm}} [io]
  */
 export async function resolve(options, io = {}) {
   const get = {
     resolveSha: io.resolveSha ?? resolveSha,
     fileAt: io.fileAt ?? fileAt,
-    tags: io.tags ?? (() => github('git/matching-refs/tags/python-v')),
+    commitDate: io.commitDate ?? commitDate,
+    // Both package release streams; the SDK versions Python and TypeScript independently.
+    tags: io.tags ?? (async () => [...(await github('git/matching-refs/tags/python-v')), ...(await github('git/matching-refs/tags/typescript-v'))]),
     onPyPI: io.onPyPI ?? onPyPI,
     onNpm: io.onNpm ?? onNpm,
   };
   let ref = options.ref?.trim() || '';
   let stage = options.stage?.trim() || (ref ? 'preview' : 'released');
+  let sha;
   if (!ref) {
-    ref = newestPythonTag(await get.tags());
+    ({ ref, sha } = await newestRelease(await get.tags(), get.resolveSha, get.commitDate));
     stage = options.stage?.trim() || 'released';
+  } else {
+    sha = await get.resolveSha(ref);
   }
-  const sha = await get.resolveSha(ref);
   const manifest = JSON.parse(await get.fileAt('.release-please-manifest.json', sha));
   const python = manifest['python'];
   const typescript = manifest['typescript/futureagi'];
