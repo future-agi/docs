@@ -220,6 +220,39 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
     }
     return { overview: true, entries: integrations.length };
   });
+  await record('RAGFlow customer guide renders native settings and pinned build', async () => {
+    const context = await createDocsContext(browser, BASE, { viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+    try {
+      const page = await context.newPage();
+      const response = await page.goto(BASE + '/docs/integrations/no-code/ragflow', { waitUntil: 'networkidle' });
+      assert.equal(response.status(), 200);
+      assert.equal((await page.locator('h1').innerText()).trim(), 'RAGFlow');
+      const text = await page.locator('body').innerText();
+      assert.ok(text.includes('Configure trace export'));
+      assert.ok(text.includes('avatar menu → API'));
+      assert.ok(text.includes('Upstream status:'));
+      assert.ok(text.includes('under review'));
+      assert.equal(await page.locator('blockquote a[href="https://github.com/infiniflow/ragflow/pull/22183"]').count(), 1);
+      assert.ok(text.includes('ALLOW_ANY_HOST=true'));
+      assert.ok(text.includes('deployment-wide'));
+      assert.ok(text.includes('Provider error bodies are never exported'));
+      assert.ok(text.includes('plaintext database columns'));
+      assert.ok(text.includes('ragflow.retrieval'));
+      assert.doesNotMatch(text, /Verified development scope|fork-only prototype|Required before an installation guide/i);
+      const build = page.locator('pre').filter({ hasText: 'docker buildx build' });
+      assert.equal(await build.count(), 1);
+      assert.ok((await build.innerText()).includes('9b2bcb1d1864c75e35ed7d06d3e750725547290e'));
+      assert.ok((await build.innerText()).includes('tag v1.0.0'));
+      assert.ok((await build.innerText()).includes('https://registry.npmjs.org'));
+      for (const target of ['go-builder', 'web-builder', 'production']) {
+        assert.ok((await build.innerText()).includes(`--target ${target}`));
+      }
+      assert.ok(text.includes('Infinity v0.7.5'));
+      assert.equal(await page.locator('table').count(), 1);
+      await page.screenshot({ path: path.join(OUT, 'ragflow-customer-guide.png'), fullPage: true });
+      return { pathname: new URL(page.url()).pathname, settingsTable: true, pinnedBuild: true };
+    } finally { await context.close(); }
+  });
   await browser.close();
   console.log(JSON.stringify({ tests: results.length, failed: results.filter(r => r.status === 'FAIL').length }));
   if (results.some(r => r.status === 'FAIL')) process.exitCode = 1;
