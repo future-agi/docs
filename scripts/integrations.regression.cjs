@@ -1,6 +1,7 @@
 // Regressions adapted from verify-scripts/{acceptance,matrix,race-proof}.cjs.
 // Run against the actual built docs shell, never a standalone logo atlas.
 const { chromium } = require('playwright');
+const { createDocsContext } = require('./docs-browser.cjs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
@@ -55,7 +56,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
   const manifest = JSON.parse(await fs.readFile(path.join(__dirname, '../public/images/integrations/manifest.json')));
   const browser = await chromium.launch({ headless: true });
   for (const width of [1440, 768, 390, 375]) {
-    const context = await browser.newContext({ viewport: { width, height: 1000 }, colorScheme: 'dark', reducedMotion: 'reduce' });
+    const context = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 }, colorScheme: 'dark', reducedMotion: 'reduce' });
     const page = await context.newPage();
     await record(`F1 logo navigation unobscured and scrollable ${width}`, async () => {
       await page.goto(BASE + '/docs/integrations', { waitUntil: 'networkidle' });
@@ -89,7 +90,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
     await record(`F4 slow uncached navigation cannot inherit pending query ${width}`, async () => {
       // New context ensures no FastNav/prefetch cache. Hold the network response
       // for 1s exactly as the independent real-fill/real-click reproduction did.
-      const c = await browser.newContext({ viewport: { width, height: 1000 } });
+      const c = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 } });
       try {
         const p = await c.newPage(), href = '/docs/integrations/traceai/anthropic';
         await p.route('**' + href, async r => { await new Promise(resolve => setTimeout(resolve, 1000)); await r.continue(); });
@@ -113,7 +114,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
       } finally { await c.close(); }
     });
     for (const javaScriptEnabled of [true, false]) await record(`F5 legacy fragments ${width} JS=${javaScriptEnabled}`, async () => {
-      const c = await browser.newContext({ viewport: { width, height: 1000 }, javaScriptEnabled });
+      const c = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 }, javaScriptEnabled });
       try {
         const p = await c.newPage(), rows = [];
         for (const [fragment, target] of Object.entries({ traceai: 'directory-setup', 'llm-models': 'providers', 'orchestration-frameworks': 'frameworks', other: 'apps', 'import-traces': 'import', 'export--alerts': 'export' })) {
@@ -145,7 +146,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
     });
     if (width < 1024) for (const cached of [false, true]) for (const href of ['/docs/integrations/traceai/bedrock', '/docs', '/docs/cookbook', '/docs/sdk', '/docs/api']) {
       await record(`F2 mobile dismissal ${width} ${cached ? 'cached' : 'uncached'} ${href}`, async () => {
-        const c = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
+        const c = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
         try {
           const p = await c.newPage(); let permit = false, actualRequests = 0;
           await p.route('**' + href, async route => {
@@ -196,7 +197,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
       const source = await fs.readFile(path.join(__dirname, '../public', asset.file), 'utf8');
       if (source.includes('prefers-color-scheme')) rows.push({ key, tile: asset.tile });
     }
-    const c = await browser.newContext({ colorScheme: 'dark' });
+    const c = await createDocsContext(browser, BASE,{ colorScheme: 'dark' });
     try {
       const p = await c.newPage(); await p.goto(BASE + '/docs/integrations', { waitUntil: 'networkidle' });
       for (const row of rows) {

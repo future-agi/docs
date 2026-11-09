@@ -25,10 +25,20 @@ import asyncio
 import os
 import sys
 
-from futureagi_tracing import setup_tracing
+from fi_instrumentation import TraceConfig, register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_langchain import LangChainInstrumentor
 
 # Tracing first, before the agent is loaded and run.
-tracer_provider = setup_tracing(project_name=os.environ.get("FI_PROJECT_NAME", "open-agent-spec"))
+tracer_provider = register(
+    project_name=os.environ.get("FI_PROJECT_NAME", "open-agent-spec"),
+    project_type=ProjectType.OBSERVE,
+    verbose=False,
+)
+LangChainInstrumentor().instrument(
+    tracer_provider=tracer_provider,
+    config=TraceConfig(hide_error_details=True),
+)
 
 import weather_agent  # noqa: E402
 
