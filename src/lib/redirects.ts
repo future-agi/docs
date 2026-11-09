@@ -1,6 +1,7 @@
 // Auto-generated redirect map: old Mintlify URLs → new docs URLs
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
+  '/docs/integrations/coding-agents/hook-to-otlp': '/docs/integrations/coding-agents',
   // Prototype was deprecated and removed from the dashboard; its pages now point at Evaluation
   '/docs/prototype': '/docs/evaluation',
   '/docs/prototype/concepts/understanding-prototype': '/docs/evaluation',

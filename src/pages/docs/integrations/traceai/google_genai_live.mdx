@@ -1,0 +1,176 @@
+---
+title: "Gemini Live tracing with Future AGI"
+description: "Trace Gemini Live sessions from the Google GenAI Python SDK in Future AGI, including conversation turns, tool calls, token usage and resumed connections."
+---
+
+Use the maintained `traceAI-google-genai-live` package to trace sessions your application opens with `client.aio.live.connect(...)`. Each session becomes one Future AGI trace with setup, user turns, model turns and tool calls.
+
+For `generate_content` and `generate_content_stream`, use [Google GenAI tracing](/docs/integrations/traceai/google_genai). If a framework manages the Live connection, use its [LiveKit](/docs/integrations/traceai/livekit) or [Pipecat](/docs/integrations/traceai/pipecat) integration instead.
+
+## Prerequisites
+
+- Python 3.10–3.13 and `google-genai>=2.28,<3`.
+- A Gemini Developer API key and access to a [Live API model](https://ai.google.dev/gemini-api/docs/live-api/capabilities) that supports audio responses.
+- [Future AGI API credentials](/docs/admin-settings/api-keys).
+
+<Warning>
+This integration traces the Gemini Developer API, not Vertex AI Live or ephemeral-token clients. Native-audio models require `response_modalities: ["AUDIO"]`; requesting `TEXT` can close the connection with an API error.
+</Warning>
+
+## Install
+
+```bash
+pip install "traceAI-google-genai-live==0.1.0" "google-genai==2.31.0" "fi-instrumentation-otel==1.2.3"
+```
+
+## Configure credentials and content capture
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export GEMINI_API_KEY="your-gemini-api-key"
+export GEMINI_LIVE_MODEL="your-live-audio-model"
+```
+
+Replace `your-live-audio-model` with a model available to your Gemini account from the [Live API model list](https://ai.google.dev/gemini-api/docs/live-api/capabilities).
+
+Text content is captured by default, including system instructions, transcriptions, tool arguments and tool results. For metadata-only traces, set these before starting your application:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+With both settings enabled, model names, timings, tool names, token counts and close codes remain available, but conversation text and raw error messages are omitted. See [privacy](#privacy) for the capture boundaries.
+
+## Run a session
+
+Save this as `gemini_live.py`. It registers tracing before opening a Live connection, sends a typed question and prints the transcription of the audio response. It does not play or save audio.
+
+```python
+import asyncio
+import os
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from google import genai
+from traceai_google_genai_live import instrument
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-voice-agent",
+)
+instrument(tracer_provider=trace_provider)
+
+
+async def main():
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    async with client.aio.live.connect(
+        model=os.environ["GEMINI_LIVE_MODEL"],
+        config={
+            "response_modalities": ["AUDIO"],
+            "output_audio_transcription": {},
+        },
+    ) as session:
+        await session.send_client_content(
+            turns={
+                "role": "user",
+                "parts": [{"text": "Suggest one thing to see in Paris."}],
+            },
+            turn_complete=True,
+        )
+        async for message in session.receive():
+            content = message.server_content
+            if content and content.output_transcription:
+                print(content.output_transcription.text or "", end="", flush=True)
+    print()
+
+
+try:
+    asyncio.run(asyncio.wait_for(main(), timeout=60))
+finally:
+    trace_provider.force_flush()
+```
+
+```bash
+python gemini_live.py
+```
+
+`session.receive()` yields one complete model turn. Applications with tools must answer calls using `send_tool_response` and continue receiving subsequent turns. The maintained [voice and tool example](https://github.com/future-agi/traceAI/blob/main/python/frameworks/google-genai-live/examples/voice_tool.py) shows tool responses, PCM input and session resumption.
+
+To stream microphone audio, use `send_realtime_input` with 16 kHz, 16-bit mono PCM and enable `input_audio_transcription` in the Live configuration. See Google's [Live API guide](https://ai.google.dev/gemini-api/docs/live) for audio input handling.
+
+## Inspect the trace
+
+Open **Observe**, select **my-voice-agent**, and open the session trace after the connection closes. The example produces this span structure:
+
+```text
+gemini.live.session
+├── gemini.live.setup
+├── gemini.live.user_turn
+└── gemini.live.model_turn
+```
+
+Inspect the model turn for the model name, token counts supplied by Gemini and response text when output capture is enabled. Tool-enabled applications also produce `gemini.live.tool` spans beneath model turns.
+
+Audio sessions have a `CONVERSATION` root with `call.duration`, completed-turn count and a transcript when both content directions are enabled. `call.talk_ratio` is present only when user and model speech durations can both be measured; a typed question has no user speech. Text-only sessions use a `CHAIN` root instead. The integration does not attach audio recordings.
+
+## Captured data
+
+| Span | Data |
+| --- | --- |
+| Session | Model, session ID, optional user ID, response modalities, voice and tool names, input count, reconnect count and close code |
+| Setup | WebSocket path without host or query string; system instruction when input capture is enabled |
+| User turn | Turn boundaries and user text or input transcription when input capture is enabled |
+| Model turn | Model, prompt/completion/total token counts, interruption flags, audio duration and captured prompt or response text |
+| Tool | Tool name, call ID, cancellation state, and arguments or results when the corresponding content capture is enabled |
+
+`turnComplete` closes a model turn; `generationComplete` alone does not. An interruption closes it immediately with `gemini.interrupted=true`. Audio chunks are counted rather than traced individually. Usage values are copied from Gemini, not summed: the latest usage message on a model turn sets that turn's token counts.
+
+To group calls or associate an end user, wrap `connect` in `fi_instrumentation.using_session("call-42")` or `fi_instrumentation.using_user("user-42")`. Without a supplied session ID, the integration uses a server-provided ID or generates one. It does not invent a user ID.
+
+## Privacy
+
+The standard `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS` switches control this integration. You can instead replace the example's `instrument(...)` call with:
+
+```python
+from fi_instrumentation import TraceConfig
+
+instrument(
+    tracer_provider=trace_provider,
+    config=TraceConfig(hide_inputs=True, hide_outputs=True),
+)
+```
+
+| Data | Default | Both hide settings enabled |
+| --- | --- | --- |
+| System instruction, user text, transcriptions, model text, tool arguments and results | Captured | Omitted |
+| Conversation transcript and raw API error text | Captured | Omitted |
+| Model, voice name, timings, tool names, IDs, flags, token counts and close codes | Captured | Captured |
+| Raw audio, connection credentials, WebSocket host/query, resumption handle and stack traces | Not copied into trace fields | Not copied into trace fields |
+
+Set just one hide setting to omit that direction. `FI_HIDE_INPUT_MESSAGES` / `FI_HIDE_INPUT_TEXT` and their output equivalents also suppress the corresponding direction. The combined conversation transcript and raw error text require both directions to allow capture.
+
+These controls apply to this instrumentor, not your application logs or custom span attributes. The example still prints the response locally when trace content is hidden. Keep sensitive data out of tool names and session/user IDs, which remain metadata, and do not put credentials or resumption handles into captured text or tool results.
+
+## Dropped connections and resumption
+
+Enable `session_resumption` in the Live configuration and save the latest resumable handle from `session_resumption_update`. Your application must reconnect with that handle; the instrumentor does not reconnect for you. See Google's [session management guide](https://ai.google.dev/gemini-api/docs/live-session).
+
+After `goAway` or a dropped connection, a session with a resumable handle waits up to `resume_window_seconds` (default 30). A reconnect in the same process with that stored handle continues the trace and adds `gemini.live.reconnect`. An unknown handle or an expired window starts a new trace. A clean exit without `goAway` closes the session immediately.
+
+Treat handles as credentials: they can resume the conversation. The instrumentor keeps them in memory, not in span attributes or log messages.
+
+## Compatibility and troubleshooting
+
+This package does not instrument `google-genai` 3.x, the deprecated `send()` / `start_stream()` methods, or the Node.js SDK. Use `send_client_content`, `send_realtime_input`, `send_tool_response` and `receive` with the supported Python SDK. Evaluations that require an audio recording need a separate recording attachment; this integration supplies no recording or currency-cost value.
+
+| Symptom | Action |
+| --- | --- |
+| No spans and an unsupported-client warning | Use a Gemini Developer API key, not Vertex AI or an ephemeral token. |
+| No session in the project | Call `register()` before `instrument()` and both before `connect`. Flush the provider before a short script exits. |
+| Setup fails with `setup_rejected` | Check the Gemini key and model name. The SDK error is re-raised to your application. |
+| Connection closes with `socket_closed` | Inspect `gemini.close_code` and check that the model supports the requested response modality. |
+| No transcript | Enable input/output audio transcription as needed. Allow both input and output capture only if your privacy policy permits it. |
+| Two traces after a reconnect | Reconnect in the same process with the latest stored resumable handle before the resume window expires. |
+| Session span appears late | It may be waiting for a reconnect. Set `resume_window_seconds` on `instrument()` to match your application's retry window. |
