@@ -1,4 +1,5 @@
 const {chromium} = require('playwright');
+const {createDocsContext} = require('./docs-browser.cjs');
 const fs=require('node:fs/promises');
 const assert=require('node:assert/strict');
 const path=require('node:path');
@@ -20,7 +21,7 @@ async function record(name, fn) { try {const detail=await fn();results.push({nam
  const browser=await chromium.launch({headless:true});
  for(const [name,width,height] of [['desktop',1440,1000],['tablet',768,1024],['mobile390',390,844],['mobile375',375,812]]) {
   await record(name+' responsive directory',async()=>{
-   const ctx=await browser.newContext({viewport:{width,height},colorScheme:'dark'});const page=await ctx.newPage();
+   const ctx=await createDocsContext(browser,BASE,{viewport:{width,height},colorScheme:'dark'});const page=await ctx.newPage();
 
    await page.goto(BASE+'/docs/integrations',{waitUntil:'networkidle'});await page.locator('[data-integration-directory][data-ready]').waitFor();await page.screenshot({path:OUT+'/after-'+name+'.png'});
    assert.equal(await page.locator('[data-integration-card]:visible').count(),integrations.length);
@@ -29,12 +30,14 @@ async function record(name, fn) { try {const detail=await fn();results.push({nam
    await ctx.close();return {width,height,firstCard:first};
   });
  }
- const ctx=await browser.newContext({viewport:{width:1440,height:1000}});const page=await ctx.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+ const ctx=await createDocsContext(browser,BASE,{viewport:{width:1440,height:1000}});const page=await ctx.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
  await page.goto(BASE+'/docs/integrations',{waitUntil:'networkidle'});
  const search=()=>page.locator('#integration-search');
  async function query(q,n=1) {await search().fill(q);await page.waitForTimeout(450);assert.equal(await page.locator('[data-integration-card]:visible').count(),n,'query: '+q);}
  await record('new names and historical aliases',async()=>{
-  for(const [q,part] of [['LobeChat','LobeHub'],['LobeHub','LobeHub'],['grafi','Graphite'],['Google ADK Java','Google ADK for Java'],['Apollo','Apollo Server'],['Novita','Novita AI'],['watsonx','watsonx Orchestrate ADK']]) {await query(q,q==='watsonx'?2:1);assert.ok((await page.locator('[data-integration-card]:visible').allInnerTexts()).join(' ').includes(part));}
+  for(const [q,part] of [['LobeChat','LobeHub'],['LobeHub','LobeHub'],['grafi','Graphite'],['Google ADK Java','Google ADK for Java'],['Apollo Server','Apollo Server'],['Apollo Router','Apollo Router'],['GraphOS Router','Apollo Router'],['Novita','Novita AI'],['watsonx','watsonx Orchestrate ADK']]) {await query(q,q==='watsonx'?2:1);assert.ok((await page.locator('[data-integration-card]:visible').allInnerTexts()).join(' ').includes(part));}
+  await query('Apollo',2);
+  assert.deepEqual((await page.locator('[data-integration-card]:visible').evaluateAll(cards=>cards.map(card=>card.getAttribute('href')))).sort(),['/docs/integrations/frameworks/apollo-graphql','/docs/integrations/frameworks/apollo-router']);
   await page.screenshot({path:OUT+'/search-alias.png'});
  });
  await record('category intersection, empty state and reset',async()=>{
@@ -90,11 +93,11 @@ async function record(name, fn) { try {const detail=await fn();results.push({nam
   await page.goto(BASE+'/docs/integrations/google-adk',{waitUntil:'networkidle'});assert.equal(await page.locator('.integration-sidebar a[aria-current="page"]').innerText(),'Google ADK');
  });
  await record('reduced motion and light preference retain site dark tokens',async()=>{
-  const c=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',colorScheme:'light'});const p=await c.newPage();await p.goto(BASE+'/docs/integrations',{waitUntil:'networkidle'});
+  const c=await createDocsContext(browser,BASE,{viewport:{width:1440,height:1000},reducedMotion:'reduce',colorScheme:'light'});const p=await c.newPage();await p.goto(BASE+'/docs/integrations',{waitUntil:'networkidle'});
   assert.equal(await p.locator('[data-integration-card]').first().evaluate(e=>getComputedStyle(e).transitionDuration),'0s');const background=await p.locator('body').evaluate(e=>getComputedStyle(e).backgroundColor);await p.screenshot({path:OUT+'/after-light-reduced-motion.png'});await c.close();return {background};
  });
  await record('JavaScript disabled: all cards, category anchors and direct navigation',async()=>{
-  const c=await browser.newContext({viewport:{width:375,height:812},javaScriptEnabled:false});const p=await c.newPage();await p.goto(BASE+'/docs/integrations',{waitUntil:'networkidle'});assert.equal(await p.locator('[data-integration-card]:visible').count(),integrations.length);assert.equal(await p.locator('.directory-controls').isVisible(),false);await p.screenshot({path:OUT+'/no-js-mobile.png'});
+  const c=await createDocsContext(browser,BASE,{viewport:{width:375,height:812},javaScriptEnabled:false});const p=await c.newPage();await p.goto(BASE+'/docs/integrations',{waitUntil:'networkidle'});assert.equal(await p.locator('[data-integration-card]:visible').count(),integrations.length);assert.equal(await p.locator('.directory-controls').isVisible(),false);await p.screenshot({path:OUT+'/no-js-mobile.png'});
   await p.locator('noscript a[href="#java"]').click();await p.locator('[href="/docs/integrations/traceai/java/google-adk"][data-integration-card]').click();await p.waitForURL('**/java/google-adk');assert.equal(await p.locator('h1').count(),1);await c.close();
  });
  await record('no application JavaScript errors',async()=>{assert.deepEqual(errors,[]);});

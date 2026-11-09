@@ -1,0 +1,191 @@
+---
+title: "Pi Coding Agent SDK tracing with Future AGI"
+description: "Trace Pi Coding Agent SDK runs, turns, model calls, tools, and compaction with @traceai/pi-coding-agent. Prompt, code, and error text stay off by default."
+---
+
+Trace your [Pi Coding Agent SDK](https://pi.dev/docs/latest/sdk) sessions with the maintained `@traceai/pi-coding-agent` package. Each agent run becomes a Future AGI trace with turns, model calls, token usage, tools, and context compaction.
+
+This guide is for Node.js applications that call `createAgentSession()`. For interactive terminal sessions, use the [Pi CLI guide](/docs/integrations/coding-agents/pi) or the separate [Oh My Pi guide](/docs/integrations/coding-agents/oh-my-pi).
+
+## Prerequisites
+
+- Node.js 22.19 or newer.
+- Future AGI API and secret keys from [Settings → API Keys](https://app.futureagi.com/dashboard/settings/api-keys).
+- A model configured in Pi with your own provider credentials. The SDK uses Pi's configuration in `~/.pi/agent`, or `PI_CODING_AGENT_DIR` when set. See [Pi model configuration](https://pi.dev/docs/latest/models) for provider keys and custom endpoints.
+
+<Note>
+Use only one tracing integration for each session. If the Pi CLI extension (`futureagi-otlp.ts`) is installed and your SDK application binds extensions, disable that extension for the SDK process to avoid duplicate traces. See [Troubleshooting](#troubleshooting).
+</Note>
+
+## 1. Install
+
+```bash
+npm install @traceai/pi-coding-agent@0.1.0 @traceai/fi-core@1.1.1 @earendil-works/pi-coding-agent@1.2.0
+```
+
+Pi's current npm scope is `@earendil-works/*`; do not install the older `@mariozechner/pi-coding-agent` package for this example.
+
+## 2. Configure Future AGI
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-pi-agent"
+```
+
+The keys authenticate the exporter and are not added to spans. For [self-hosted Future AGI](/docs/self-hosting), also set `FI_BASE_URL` to your collector's base URL, for example `http://localhost:4318`. The exporter appends `/tracer/v1/traces`.
+
+If you store these variables in a local `.env` file, load it with `node --env-file=.env app.mjs`; Node does not load it automatically. Keep credentials out of source control.
+
+## 3. Trace a session
+
+Save this as `app.mjs`. Wrap `createAgentSession()` once and create sessions through the wrapper. The example enables only the `read` and `ls` tools; run it in a project you want the model to inspect.
+
+```javascript
+import { register, ProjectType } from "@traceai/fi-core";
+import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { PiCodingAgentInstrumentation } from "@traceai/pi-coding-agent";
+
+const tracerProvider = register({ projectType: ProjectType.OBSERVE });
+const instrumentation = new PiCodingAgentInstrumentation({ tracerProvider });
+const createTracedSession = instrumentation.wrapCreateAgentSession(createAgentSession);
+
+let session;
+try {
+  ({ session } = await createTracedSession({
+    sessionManager: SessionManager.inMemory(),
+    tools: ["read", "ls"],
+  }));
+  await session.prompt("List the files in this folder and read README.md");
+  console.log(session.getLastAssistantText() ?? "");
+  const last = session.messages.findLast((message) => message.role === "assistant");
+  if (last?.stopReason === "error" || last?.stopReason === "aborted") {
+    process.exitCode = 1;
+  }
+} finally {
+  session?.dispose();
+  await tracerProvider.shutdown();
+}
+```
+
+Run it with your Pi model credentials available in the same process:
+
+```bash
+node app.mjs
+```
+
+The [runnable application example](https://github.com/future-agi/docs/tree/main/examples/coding-agents/pi-sdk) also accepts a prompt argument, `PI_CWD`, and an explicit `PI_PROVIDER` / `PI_MODEL`. From that example directory, run `npm install`, then `node trace_session.mjs "List the files here"`.
+
+## 4. Open the trace
+
+In Future AGI, open **Observe**, select `my-pi-agent`, and open the newest `invoke_agent pi` trace. Runs from the same Pi session share `session.id` and group under **Sessions**.
+
+```text
+invoke_agent pi
+├── pi.turn
+│   ├── chat <model>
+│   └── execute_tool ls
+├── pi.turn
+│   ├── chat <model>
+│   └── execute_tool read
+└── pi.turn
+    └── chat <model>
+```
+
+The exact number of turns and tool calls depends on the model's response. A `pi.compaction` span appears when Pi compacts context.
+
+## What is captured
+
+| Span | Captured by default |
+| --- | --- |
+| `invoke_agent pi` (`AGENT`) | Session ID, attempt and retry counts, turn/model/tool counts, run token and cost totals under `pi.agent.*`, retry events |
+| `pi.turn` (`CHAIN`) | Turn index, stop reason, tool-result count |
+| `chat <model>` (`LLM`) | Model, provider, response ID, token counts including cached tokens, priced cost, finish reason, tool names, request timing |
+| `execute_tool <tool>` (`TOOL`) | Tool name, call ID, duration, error flag; nested tools are children of their calling tool |
+| `pi.compaction` (`CHAIN`) | Compaction reason, tokens before and estimated after, summarization token usage and cost |
+
+Compaction during a run is a child of that run. `session.compact()` outside a run creates a separate trace in the same session. Run totals use `pi.agent.*`, not `gen_ai.usage.*`, so they do not duplicate the child spans' token counts.
+
+Failed or aborted model calls and their turns have `ERROR` status. A run is `ERROR` if it ends aborted or its last model call failed; a successful retry leaves the failed call's span as `ERROR` and the run as `OK`. Failed tools and compactions also have `ERROR` status. By default, error spans retain `error.type` but have no status message. Disposing a session mid-run closes open spans with `pi.incomplete=true`.
+
+## Privacy
+
+Prompts, tool arguments, tool results, assistant text, session names, compaction summaries, and error text are hidden by default. Structure and metadata such as session IDs, model/provider names, tool names, token counts, durations, status codes, and `error.type` remain visible.
+
+Content capture and error details have independent controls:
+
+| Setting | When set to `false` |
+| --- | --- |
+| `FI_HIDE_INPUTS` / `hideInputs` | Captures prompts on run spans, tool arguments, tool-call arguments, and session names |
+| `FI_HIDE_OUTPUTS` / `hideOutputs` | Captures successful assistant output, tool results, and compaction summaries; does not enable error text by itself |
+| `FI_HIDE_ERROR_DETAILS` / `hideErrorDetails` | Enables error status messages. With outputs still hidden, messages contain only a limited summary; raw provider, failed-tool, and compaction error text requires both `hideOutputs: false` and `hideErrorDetails: false` |
+
+To capture ordinary content while keeping error details hidden, set these variables before starting the application:
+
+```bash
+export FI_HIDE_INPUTS=false
+export FI_HIDE_OUTPUTS=false
+export FI_HIDE_ERROR_DETAILS=true
+```
+
+To include raw error text as well, also set `FI_HIDE_ERROR_DETAILS=false`. Error messages can contain request fragments, account details, source code, and local paths. Enable this only for data you intend to send to Future AGI.
+
+Alternatively, configure the instrumentation explicitly:
+
+```javascript
+const instrumentation = new PiCodingAgentInstrumentation({
+  tracerProvider,
+  traceConfig: {
+    hideInputs: false,
+    hideOutputs: false,
+    hideErrorDetails: true, // Keep error text hidden independently of outputs.
+  },
+});
+```
+
+Only the environment value `false` (case-insensitive, surrounding spaces ignored) enables each capture option. Explicit `traceConfig` values take precedence. Captured content is truncated at 16,384 characters by default (`maxContentLength`); raw error status text is truncated at 1,000 characters.
+
+The instrumentation does not read the system prompt or add the working directory as an attribute. When content capture is enabled, file paths and source code can still appear in prompts, tool arguments, and results. These controls affect this instrumentation's spans, not the data Pi sends to your model provider.
+
+## Existing sessions and compatibility
+
+If another component creates the session, subscribe before the first prompt:
+
+```javascript
+const stop = instrumentation.instrumentSession(session);
+// Later, stop tracing this session:
+stop();
+```
+
+A session is traced once: repeated `instrumentSession()` calls return the same stop function until tracing stops. An `AgentSessionRuntime` creates a new session on new, resume, fork, or import; call `instrumentSession(runtime.session)` again after each replacement.
+
+Pi 0.80.5 and later emit `agent_settled`, which preserves one trace across retries and continuations. Older versions end the trace at an `agent_end` without an announced retry, so continuations can split into separate traces. Use the Pi version in the install command for this guide.
+
+Session events do not expose the full model request, system prompt, streaming deltas, time to first token, or compaction model identity. Cost appears only when Pi has pricing for the model; custom models without prices have no cost attribute.
+
+## Troubleshooting
+
+**No trace appears.** Check `FI_API_KEY`, `FI_SECRET_KEY`, and `FI_PROJECT_NAME` in the Node process. For self-hosting, check `FI_BASE_URL`. Instrument before calling `prompt()` and await `tracerProvider.shutdown()` before a short script exits.
+
+**Every prompt appears twice.** Disable the Pi CLI tracing extension for SDK sessions. To keep other extensions, supply a resource loader that excludes only `futureagi-otlp.ts`:
+
+```javascript
+import { DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
+
+const resourceLoader = new DefaultResourceLoader({
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
+  extensionsOverride: (base) => ({
+    ...base,
+    extensions: base.extensions.filter((extension) => !extension.path.endsWith("futureagi-otlp.ts")),
+  }),
+});
+await resourceLoader.reload();
+// Pass resourceLoader to createTracedSession() in your application.
+```
+
+**Every model call appears twice.** Do not instrument Pi's provider SDK calls separately in the same process. This package already traces model calls from Pi's session events.
+
+**Error text is missing even though outputs are enabled.** Error details are hidden independently. Keep that privacy default unless you intend to export them; see [Privacy](#privacy) for the two settings required for raw error text.
+
+**The run is not a child of my request span.** Register an OpenTelemetry context manager in your application before creating the active request span. Without one, Pi runs start their own traces.

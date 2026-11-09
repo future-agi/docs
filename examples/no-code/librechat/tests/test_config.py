@@ -100,7 +100,10 @@ def test_page_env_block_is_the_shipped_file():
 
 
 def test_page_collector_block_is_the_shipped_file():
-    assert (HERE / "otelcol" / "otelcol.yaml").read_text().strip() in _page_blocks()
+    # Compare every configuration value, without requiring internal test-history comments.
+    page_configs = [yaml.safe_load(block) for block in _page_blocks() if block.startswith("# OpenTelemetry Collector")]
+    assert page_configs == [OTELCOL]
+    assert "# Tested with" not in PAGE.read_text()
 
 
 def test_page_compose_block_is_the_shipped_file():

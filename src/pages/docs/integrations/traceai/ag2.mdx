@@ -1,0 +1,126 @@
+---
+title: "Trace AG2 1.x with Future AGI"
+description: "Trace AG2 agent turns, model calls and tools in Future AGI using AG2's native telemetry middleware and the maintained traceAI-ag2 package."
+---
+
+Trace AG2 agent turns, model calls and tools in Future AGI. The maintained `traceAI-ag2` package attaches AG2's native `TelemetryMiddleware` and maps its spans, token usage and content to Future AGI.
+
+## Prerequisites
+
+Use Python 3.10–3.13, Future AGI API credentials and an OpenAI API key for the example. This guide uses `ag2` 1.1.2; it is a different package from Microsoft AutoGen and AG2 Classic:
+
+| Package | Import | Guide |
+|---|---|---|
+| `ag2` 1.x | `ag2` | This page (`traceAI-ag2`) |
+| `autogen-agentchat` | `autogen_agentchat` | [AutoGen](/docs/integrations/traceai/autogen) (`traceAI-autogen`) |
+| `autogen` 0.14.x (AG2 Classic) | `autogen` | Not supported by `traceAI-ag2` |
+
+## 1. Install
+
+```bash
+pip install "traceAI-ag2==0.1.0" "ag2[openai]==1.1.2" "fi-instrumentation-otel==1.2.3"
+```
+
+The `openai` extra supplies the model client used by `OpenAIConfig`.
+
+## 2. Configure credentials and capture
+
+Set credentials in your shell, not in source code. Get your Future AGI keys from [API keys](/docs/admin-settings/api-keys).
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export OPENAI_API_KEY="YOUR_OPENAI_KEY"
+```
+
+Prompts, replies, tool arguments and tool results are captured by default. Use non-sensitive sample data. To hide this content from AG2 spans, set both variables **before initializing tracing**:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+These controls do not redact arbitrary custom attributes, agent names or tool names. Keep sensitive data out of those fields. Use the provider returned by `register()` with its default synchronous processor chain; a custom concurrent processor can export spans before content filtering runs.
+
+## 3. Run an instrumented agent
+
+Save this as `ag2_example.py`. The weather tool returns sample data without calling a weather service. Choose a model available to your OpenAI account.
+
+```python
+import asyncio
+
+from ag2 import Agent
+from ag2.config import OpenAIConfig
+from fi_instrumentation import register, using_session
+from fi_instrumentation.fi_types import ProjectType
+from traceai_ag2 import setup
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-ag2-app",
+)
+
+
+def get_weather(city: str) -> str:
+    """Return sample weather for a city."""
+    return f"sunny in {city}"
+
+
+agent = Agent(
+    "weather_bot",
+    "You answer weather questions. Always call get_weather.",
+    config=OpenAIConfig(model="gpt-4o-mini"),
+    tools=[get_weather],
+)
+setup(agent, tracer_provider=trace_provider)
+
+
+async def main():
+    with using_session("weather-example"):
+        reply = await agent.ask("What's the weather in Paris?")
+        print(reply.body)
+
+
+try:
+    asyncio.run(main())
+finally:
+    trace_provider.force_flush()
+    trace_provider.shutdown()
+```
+
+```bash
+python ag2_example.py
+```
+
+AG2 attaches middleware per agent. Pass each agent to `setup(agent, tracer_provider=trace_provider)` before using it; multiple agents can share one provider. Do not attach a second `TelemetryMiddleware` to the same agent. `using_session` groups the turn under a session ID; use a distinct ID for each conversation in your application.
+
+## 4. View the trace
+
+Open **Observe**, select `my-ag2-app`, and open the `invoke_agent weather_bot` trace. Inspect the model and tool spans beneath it, their duration and token usage. Inputs and outputs are omitted when the hide flags are enabled.
+
+## What is captured
+
+| Span | Future AGI kind | Details |
+|---|---|---|
+| `invoke_agent <name>` | AGENT | The agent turn, with its first model input and final reply when content capture is enabled |
+| `chat <model>` | LLM | Request and response model, input and output tokens, and messages |
+| `execute_tool <name>` | TOOL | Tool name, call ID, arguments and result |
+| `record_usage <kind>` | No mapped kind | Usage bookkeeping; duplicate model-call tokens are kept under `ag2.usage.*` instead of counted twice |
+
+An instrumented turn parents its model and tool spans. A tool failure marks its `execute_tool` span as `ERROR`. If AG2 returns the error to the model and the model answers, the agent turn is not marked as failed. The `invoke_agent` span is marked `ERROR` when the turn itself raises, such as a failed provider call.
+
+Cache and thinking-token fields are mapped when AG2 reports them. AG2 does not emit cost. For Anthropic calls, the adapter includes cached input tokens in the input-token total, so it can exceed AG2's `UsageReport` total.
+
+## Privacy and compatibility
+
+- The adapter removes raw exception messages and stack traces from AG2 span status and exception events. In captured content, it replaces recognized Python tracebacks and local-path patterns. This is not general personal-data redaction; use the content controls above for sensitive prompts and tool results.
+- Give sub-agents distinct names so their usage rollups can be matched to the correct instrumented agent.
+- Middleware that returns without calling the next handler can bypass telemetry for that call. Keep the telemetry middleware in the execution path.
+- When calling `setup()` without a provider, the package registers one provider and reuses it. Pass `tracer_provider=` explicitly to send agents to a different project.
+
+## Troubleshooting
+
+- **No traces:** check the Future AGI keys and the project name passed to `register()`. Flush the provider before a short script exits, including when a turn fails.
+- **Model or tool spans appear without their parent:** the agent span ends after the turn completes, so it may arrive in a later export batch. Wait for the turn and flush to finish, then refresh the trace.
+- **Spans without a kind:** use the provider returned by `register()` with its default synchronous processor chain, rather than a `ConcurrentMultiSpanProcessor`.
+- **Content missing:** check the `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` and finer-grained `FI_HIDE_*` settings before creating the provider and calling `setup()`.

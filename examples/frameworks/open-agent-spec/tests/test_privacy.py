@@ -1,6 +1,6 @@
 """Privacy on the wire.
 
-* default (traceAI's default): content is captured; a stack trace is still never exported;
+* content is captured by default; explicit error privacy hides messages and stack traces;
 * FI_HIDE_INPUTS=true + FI_HIDE_OUTPUTS=true: the marker (in the question, the tool
   arguments, the tool result, the tool error and the answer) never leaves the process,
   and neither does the system prompt or the error text.
@@ -70,7 +70,8 @@ def test_hidden_keeps_the_metadata(run_app, marker):
     run = run_app("tool-error", question(marker), **HIDE)
     spans = run.spans()
     tool = by_name(spans, "get_weather")[0]
-    assert tool["status"] == {"code": "STATUS_CODE_ERROR", "message": "RuntimeError"}
+    assert tool["status"] == {"code": "STATUS_CODE_ERROR"}
+    assert any(event["attributes"].get("exception.type") == "RuntimeError" for event in tool["events"])
     llm = [s for s in spans if kind(s) == "LLM"][0]
     assert llm["attributes"]["gen_ai.request.model"] == "fake-model"
     assert llm["attributes"]["gen_ai.usage.input_tokens"] == 17

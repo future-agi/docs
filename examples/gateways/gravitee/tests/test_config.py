@@ -12,7 +12,7 @@ def test_gateway_exporter_speaks_what_the_collector_accepts():
     assert GW["enabled"] is True
     exp = GW["exporter"]
     assert exp["protocol"] == "http/protobuf"          # grpc is Gravitee's default; "http" would be OTLP/JSON
-    assert exp["compression"] == "none"                # Future AGI rejects gzip bodies
+    assert exp["compression"] == "none"                # what was tested, and Gravitee's default
     # Gravitee appends /v1/traces itself; a URL that already ends in it is posted to /v1/traces/v1/traces
     assert not exp["endpoint"].rstrip("/").endswith("/v1/traces")
 

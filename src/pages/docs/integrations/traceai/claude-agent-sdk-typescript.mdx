@@ -1,0 +1,140 @@
+---
+title: "Trace the Claude Agent SDK (TypeScript) with Future AGI"
+description: "Wrap query() from @anthropic-ai/claude-agent-sdk with @traceai/claude-agent-sdk to send conversation, assistant-turn, tool, MCP and subagent spans, tokens and cost to Future AGI."
+---
+
+Trace Claude Agent SDK conversations, assistant turns, tools and subagents in Future AGI with the maintained `@traceai/claude-agent-sdk` package. It wraps `query()` from the TypeScript [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) in your Node.js application.
+
+For direct Messages API calls, use the [Anthropic integration](/docs/integrations/traceai/anthropic). For terminal or IDE sessions, use [Claude Code tracing](/docs/integrations/coding-agents/claude-code). A provider instrumentor in your application does not trace the Agent SDK's model calls: they run in its CLI subprocess.
+
+## Prerequisites
+
+- Node.js 22 or later in an environment that can launch the SDK's CLI subprocess. This guide uses Node.js, not a browser or edge runtime.
+- A Future AGI API key and secret key, and your own Anthropic API key.
+- An ESM application. The example below uses a `.mjs` file; the same imports and calls work in an ESM TypeScript project.
+
+## 1. Install
+
+```bash
+npm install @traceai/claude-agent-sdk@0.1.0 @traceai/fi-core@1.1.1 @anthropic-ai/claude-agent-sdk@0.3.302
+```
+
+The wrapper requires `@anthropic-ai/claude-agent-sdk` 0.3.277 or a later 0.3.x release so resumed and forked sessions report cumulative usage. Install the SDK separately as shown; it is a peer dependency governed by Anthropic Commercial Terms, and the wrapper does not bundle it or its CLI.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_FUTURE_AGI_API_KEY"
+export FI_SECRET_KEY="YOUR_FUTURE_AGI_SECRET_KEY"
+export ANTHROPIC_API_KEY="YOUR_ANTHROPIC_API_KEY"
+```
+
+`FI_API_KEY` and `FI_SECRET_KEY` authenticate exports to Future AGI. Content is captured by default, including prompts and file contents returned by tools. Before using sensitive data, configure the [privacy controls](#privacy).
+
+## 3. Register and wrap `query()`
+
+Save this as `agent.mjs`. Call the wrapped function instead of the SDK's original `query()`:
+
+```javascript
+import { register, ProjectType } from "@traceai/fi-core";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { wrapQuery, shutdown } from "@traceai/claude-agent-sdk";
+
+const tracerProvider = register({
+  projectType: ProjectType.OBSERVE,
+  projectName: "my-agent", // or FI_PROJECT_NAME
+});
+
+const tracedQuery = wrapQuery(query, { tracerProvider });
+
+try {
+  for await (const message of tracedQuery({
+    prompt: "Read notes.txt and summarize it in one sentence.",
+    options: { tools: ["Read"], allowedTools: ["Read"], maxTurns: 5 },
+  })) {
+    if (message.type === "result" && message.subtype === "success") {
+      console.log(message.result);
+    }
+  }
+} finally {
+  await shutdown(); // flush spans even if the query throws
+}
+```
+
+Create a sample file in the same directory and run the example:
+
+```bash
+printf '%s\n' 'The release adds CSV exports and fixes a search timeout.' > notes.txt
+node agent.mjs
+```
+
+The wrapper preserves the SDK's messages, options and control methods. `close()` and `await using` end open spans before closing the query. `shutdown()` flushes the tracer provider; it does not shut down a provider shared with other parts of your application.
+
+### Through a gateway or proxy
+
+There is no `baseURL` option. Set `ANTHROPIC_BASE_URL` for the CLI subprocess. `options.env` **replaces** the subprocess environment, so spread `process.env`:
+
+```typescript
+options: { env: { ...process.env, ANTHROPIC_BASE_URL: "https://my-gateway.example.com" } }
+```
+
+The model provider is then recorded as `custom` instead of `anthropic`.
+
+## 4. View the trace
+
+Open **Observe** in Future AGI, select the `my-agent` project and open the latest trace. Expand `claude_agent.conversation` to inspect assistant turns and the `tool.Read` span. The conversation span holds the query's token usage and cost; the SDK session ID groups resumed queries.
+
+## What is captured
+
+| Span | Future AGI kind | `claude_agent.span_kind` | Parent |
+|---|---|---|---|
+| `claude_agent.conversation` | CHAIN | `conversation` | your active span, if any |
+| `claude_agent.assistant_turn` | LLM | `assistant_turn` | conversation, or the subagent span |
+| `tool.<name>` | TOOL | `tool_execution`, or `mcp_tool` for `mcp__<server>__<tool>` | the assistant turn that called it |
+| `claude_agent.subagent.<type>` | AGENT | `subagent` | the `tool.Agent` / `tool.Task` span |
+
+Each `query()` call creates one conversation span. Without an active parent span, it starts a new trace; otherwise it joins the caller's trace. A subagent's turns and tools nest under its subagent span; a background subagent stays open until its task notification or the query ends.
+
+| Field | Attributes |
+|---|---|
+| Model | `gen_ai.request.model`, `claude_agent.model` (from `options.model`, the init message and each assistant message) |
+| Provider | `gen_ai.provider.name`: `anthropic`, or `custom` when `ANTHROPIC_BASE_URL` is not an `anthropic.com` host |
+| Tokens | `gen_ai.usage.input_tokens`, `output_tokens`, `total_tokens`, `cache_read_tokens`, `cache_creation_tokens`, on the conversation span |
+| Cost | `gen_ai.cost.total` and `claude_agent.cost.total_usd` from the SDK's `total_cost_usd` (never computed by the wrapper), on the conversation span |
+| Session | `session.id` = the SDK session id (unless you set one with fi-core's context helpers), `claude_agent.session.*`; a resumed session's traces group under one session |
+| Tools | `gen_ai.tool.name`, `claude_agent.tool.name`, `use_id`, `source` (`builtin` / `mcp` / `custom`), `is_error`, `duration_ms`, input and output |
+| Errors | status `ERROR`; `claude_agent.error.type`, `error.message`; an `exception` event; `claude_agent.cancelled=true` on abort or `close()` mid-run |
+
+**Tokens and cost are counted once.** The SDK reports running totals for the whole session. The wrapper writes only the spend that is new in each `query()` call, on the conversation span, so trace and session totals in Future AGI are not double-counted when you resume, continue or fork a session. The running totals are also on `claude_agent.cumulative.*`. The baseline for a resumed session is kept in memory, so keep one session on one process; a resume in a fresh process writes no promoted usage keys and sets `claude_agent.usage.baseline_unknown=true`.
+
+## Privacy
+
+This package captures content by default: the prompt, system prompt, tool inputs, tool outputs, assistant text, the final result and error text. The Claude Agent SDK can read files and run commands, so tool input and output can contain source code or secrets. Hide it with the standard variables:
+
+```bash
+export FI_HIDE_INPUTS=true    # prompt, system prompt, tool input, subagent prompt
+export FI_HIDE_OUTPUTS=true   # assistant text, tool output, final result, error text
+# finer: FI_HIDE_INPUT_MESSAGES / FI_HIDE_INPUT_TEXT (prompt text only),
+#        FI_HIDE_OUTPUT_MESSAGES / FI_HIDE_OUTPUT_TEXT (assistant text and result only)
+```
+
+or in code: `wrapQuery(query, { tracerProvider, traceConfig: { hideInputs: true, hideOutputs: true } })`. The option wins over the variable; a variable hides only when its value is `true`. With both flags on, none of the prompt, tool input, tool output, assistant text or error text is stored; span structure, model, tokens, cost and status remain.
+
+When content is captured, the wrapper rewrites the working directory as `[cwd]`, the home directory as `~` and recognized absolute local paths as `[path]`. It removes recognized stack traces; error text also has emails and this machine's user and host names replaced. These substitutions do not remove arbitrary secrets or all personal data from file contents. Use both hide flags to exclude content, or `FI_PII_REDACTION=true` for additional regex-based redaction. Span names, tool names, session IDs and other structural metadata remain.
+
+## Limits
+
+- `startup()` (pre-warmed queries) is not wrapped.
+- Streaming input: one `query()` with an async-iterable prompt is one conversation span covering every turn, and the prompts from your input stream are not recorded (the wrapper does not read your stream).
+- Assistant-turn spans carry no tokens; the per-query total is on the conversation span (the SDK reports usage as session totals, not per call).
+- Usage baseline is per process (see above). A `/clear` inside one query can undercount that query's promoted usage.
+- An abort right after your app sends a new streaming prompt, before the SDK yields anything for it, is recorded as a normal end.
+
+## Troubleshooting
+
+- **No traces:** `register()` needs `projectName` or `FI_PROJECT_NAME`; the collector drops a batch without a project name.
+- **Zero spans from a short script:** `await shutdown()` before the process exits.
+- **The CLI cannot find `node` or your key after setting `options.env`:** `env` replaces the whole subprocess environment; spread `process.env` into it.
+- **Content missing:** a `FI_HIDE_*` variable or a `traceConfig` hide flag is set.
+- **Duplicate model spans:** another instrumentor is tracing the same model calls.
+- **Abort or early close:** cancelling an active query ends its open spans with status `ERROR` and `claude_agent.cancelled=true`. Closing an idle query after its result is a normal end.
