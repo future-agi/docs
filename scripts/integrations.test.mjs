@@ -1,5 +1,6 @@
 import './ragflow-page.test.mjs';
 import './auto-page.test.mjs';
+import './autogen-page.test.mjs';
 import './pi-plugin-page.test.mjs';
 import './openclaw-package-page.test.mjs';
 import './goose-page.test.mjs';
