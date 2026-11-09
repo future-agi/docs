@@ -23,6 +23,8 @@ test('RAGFlow guide pins the hardened fork and its matching deployment dependenc
   assert.ok(build.includes(`fetch --depth 200 origin ${source}\n`));
   assert.ok(build.includes('fetch --depth 200 https://github.com/infiniflow/ragflow.git tag v1.0.0\n'));
   assert.ok(build.includes(`checkout --detach ${source}`));
+  assert.ok(build.includes("sed -i 's#https://registry\\.npmmirror\\.com#https://registry.npmjs.org#g' ragflow-futureagi/web/.npmrc ragflow-futureagi/web/package-lock.json"));
+  assert.match(page, /without changing locked package versions or integrity hashes/);
   assert.ok(build.includes('docker buildx build --load --network host --build-arg GOPROXY=https://proxy.golang.org,direct --target production --tag ragflow-futureagi:9b2bcb1d --file ragflow-futureagi/Dockerfile ragflow-futureagi'));
   assert.ok(page.includes('https://github.com/future-agi/ragflow/tree/contrib/futureagi-tracing'));
   assert.ok(page.includes(`https://github.com/future-agi/ragflow/tree/${source}/docker`));

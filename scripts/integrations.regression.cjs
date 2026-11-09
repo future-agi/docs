@@ -243,6 +243,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
       assert.equal(await build.count(), 1);
       assert.ok((await build.innerText()).includes('9b2bcb1d1864c75e35ed7d06d3e750725547290e'));
       assert.ok((await build.innerText()).includes('tag v1.0.0'));
+      assert.ok((await build.innerText()).includes('https://registry.npmjs.org'));
       assert.ok(text.includes('Infinity v0.7.5'));
       assert.equal(await page.locator('table').count(), 1);
       await page.screenshot({ path: path.join(OUT, 'ragflow-customer-guide.png'), fullPage: true });
