@@ -1,82 +1,111 @@
 ---
-title: "Workers AI REST tracing in local workerd"
-description: "Run a local workerd handler against the real Workers AI REST API and export request spans to Future AGI. This guide does not deploy a Worker or use an AI binding."
+title: "Cloudflare Workers AI"
+description: "Trace Workers AI REST calls from Node.js with the maintained traceAI preload. Inspect model requests, responses, latency and token usage in Future AGI."
 ---
 
-## Scope
+Trace your Node.js application's Workers AI chat completions in Future AGI with one startup preload and no tracing code in your application.
 
-This recipe runs **local `workerd` with a REST-backed adapter**, not a deployed Worker and not Cloudflare's native `ai` binding. `src/live-entry.ts` calls the [Workers AI REST API](https://developers.cloudflare.com/workers-ai/get-started/rest-api/), then passes the result to the shared handler and tracer. A successful HTTP request creates a `worker.fetch` root and a `workers_ai.run` child.
+## Before you start
 
-The 2026-10-19 qualification used real Workers AI responses, usage, and a rejected model, with local `workerd` and a self-hosted Future AGI collector. That evidence applies to this REST path only. Native AI bindings, deployed request lifecycles, streaming, tools, scheduled/queue handlers, Durable Objects, `ctx.waitUntil` flushing, and hosted collector delivery are outside this guide. There are no deployment steps here.
+- **Node.js 20.6 or later**, running on the server.
+- A Cloudflare account ID and API token with **Account → Workers AI → Read** permission for that account. See [Workers AI REST setup](https://developers.cloudflare.com/workers-ai/get-started/rest-api/).
+- A Future AGI **API key and secret key** from [API keys](https://app.futureagi.com/dashboard/keys).
 
-## 1. Install the example
+This guide uses Cloudflare's [OpenAI-compatible REST endpoint](https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/) from Node.js. You do not need to deploy a Worker or configure AI Gateway. The Node preload does not run inside a deployed Worker or instrument `env.AI.run` bindings.
 
-Use the [example folder](https://github.com/future-agi/docs/tree/main/examples/runtimes/cloudflare-workers-ai), which contains `src/live-entry.ts`, `src/index.ts`, `src/tracing.ts`, `wrangler.live.jsonc`, and the lockfile:
+## Connect your application
 
-```bash
-git clone --depth 1 https://github.com/future-agi/docs.git fi-docs
-cd fi-docs/examples/runtimes/cloudflare-workers-ai
-npm ci
-npm test
-npm run typecheck
-```
+<Steps>
+<Step title="Install the package">
 
-Published dependency pins: `@opentelemetry/api` 1.9.1, `@opentelemetry/sdk-trace-base` and `@opentelemetry/resources` 2.12.0, `@opentelemetry/otlp-transformer` 0.223.0, and `wrangler` 4.151.1. The recipe uses `compatibility_date: 2026-10-01` and was qualified with Node 26 tooling.
-
-The default `wrangler.jsonc` is a development reference for a native-binding variant. **Use `wrangler.live.jsonc` for this guide**, not that default configuration.
-
-## 2. Set local credentials
-
-Create an ignored `.dev.vars` file in the example folder, using your own values:
-
-```dotenv
-CLOUDFLARE_ACCOUNT_ID=your-account-id
-CLOUDFLARE_API_TOKEN=your-workers-ai-token
-FI_API_KEY=your-futureagi-api-key
-FI_SECRET_KEY=your-futureagi-secret-key
-FI_BASE_URL=http://127.0.0.1:14338
-FI_PROJECT_NAME=workers-ai-rest-local
-FI_CAPTURE_CONTENT=false
-```
-
-Use a Cloudflare token authorized to call Workers AI and a reachable self-hosted Future AGI collector. `FI_BASE_URL` is your collector's origin; the exporter appends `/tracer/v1/traces`. Inside local `workerd`, use `127.0.0.1` rather than `localhost` if the latter fails to connect.
-
-Keep the file out of version control. Both Future AGI keys are required; if either is missing, tracing is disabled while model calls can still run. The project comes from local configuration, never from a caller-controlled request header.
-
-## 3. Run locally
+Run in your Node.js application's directory:
 
 ```bash
-npx wrangler dev --local --config wrangler.live.jsonc --port 8787
+npm install @traceai/auto@0.1.2
 ```
 
-In a second terminal:
+The maintained package observes supported model calls through Node's global `fetch`. You do not need a custom exporter, Wrangler or an instrumentation helper.
+
+</Step>
+<Step title="Set credentials and project">
+
+Provide these variables through your deployment's secret manager or shell environment. Replace the placeholders and keep credentials out of version control:
 
 ```bash
-curl -sS http://127.0.0.1:8787/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"Reply with one short greeting."}'
+export CLOUDFLARE_ACCOUNT_ID="your-account-id"
+export CLOUDFLARE_API_TOKEN="your-workers-ai-token"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="workers-ai"
 ```
 
-This makes one real Workers AI call using `@cf/meta/llama-3.1-8b-instruct`, capped at 40 output tokens. It creates no Cloudflare deployment. The `/bad-model` route exercises a real rejected model and returns HTTP 502.
+<Warning>
+Prompts and responses are **captured by default**. For sensitive workloads, set `FI_HIDE_INPUTS=true`, `FI_HIDE_OUTPUTS=true` and `FI_HIDE_ERROR_DETAILS=true` before starting the application. These controls apply to traceAI's export, not your application's own logs.
+</Warning>
 
-Open the configured Observe project. The trace contains the request and model-call spans. Model and provider are set by the wrapper; token counts are copied only when the REST result supplies usage. No token values are invented.
+</Step>
+<Step title="Make a chat completion">
 
-## Delivery and flush budget
+Save this ordinary application code as **app.mjs**. It uses Cloudflare's Llama 3.2 1B model and limits the response to 16 tokens:
 
-The handler ends both spans and **awaits export before returning the response**, on success and error. The batch processor's timer is not the delivery mechanism.
+```javascript
+const { CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN } = process.env;
+if (!CLOUDFLARE_ACCOUNT_ID || !CLOUDFLARE_API_TOKEN) {
+  throw new Error("Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN.");
+}
 
-The local recipe uses a **20-second maximum flush wait**. A collector slower than the old two-second bound caused trace loss in the historical run. Regression tests now cover a three-second collector response (export finishes before the handler returns) and a hung collector (bounded wait, application response preserved). This is a tested local timeout policy, not a production delivery guarantee or latency target.
+const response = await fetch(
+  `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "@cf/meta/llama-3.2-1b-instruct",
+      messages: [{ role: "user", content: "Say hello in one word." }],
+      max_tokens: 16,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  },
+);
+const result = await response.json();
+if (!response.ok) {
+  console.error(`Workers AI request failed (HTTP ${response.status}).`);
+  process.exitCode = 1;
+} else {
+  console.log(result.choices[0].message.content);
+}
+```
 
-A failed or timed-out export can still lose the trace. The handler prints only `Future AGI trace export failed or timed out`, without payloads or credentials; it keeps the application's HTTP response unchanged. There is no retry queue or durable delivery. A process killed before flush completes can lose spans.
+Start with the preload:
 
-## Privacy
+```bash
+node --import @traceai/auto/register app.mjs
+```
 
-With `FI_CAPTURE_CONTENT=false`, the exporter includes span names, method, URL path, model, provider, available token usage, status, and error class. It omits the query string, prompt, response and raw exception text. Avoid sensitive data in the path itself.
+Read the response body as in the example so the observer can finish the span. Let the process exit naturally; completed spans are flushed on exit. Do not replace this with an immediate `process.exit()`. For long-running servers or invocation-based runtimes, see the [lifecycle guidance](/docs/integrations/traceai/auto#frameworks-and-deployment).
 
-`FI_CAPTURE_CONTENT=true` opts into prompt/result JSON (truncated to 4,000 characters each) and raw error messages. Those values can themselves contain personal data or paths. The switch does not sanitize application content. It is a setting of this example, not a traceAI `FI_HIDE_*` variable.
+</Step>
+<Step title="Open the trace">
 
-## Separate Cloudflare features
+Open [Future AGI](https://app.futureagi.com), select **Observe → workers-ai**, then open the model-call span. Inspect the model, provider, request and response, duration, and token usage supplied by Cloudflare.
 
-[Cloudflare's native OpenTelemetry destinations](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/) are a separate export mechanism. This guide supplies no destination configuration or compatibility claim for them. Likewise, the existence of an `env.AI.run` interface in the shared handler is not evidence that a native binding or deployed Worker passed this recipe's checks.
+The example creates a client-side model-call span. It does not add a Worker request span or reproduce Cloudflare's internal execution tree. Missing usage is not estimated.
 
-`src/e2e-entry.ts` and `run_e2e.sh` use a named model stand-in for local regression checks. They are distinct from the real REST-backed entry point above.
+</Step>
+</Steps>
+
+## Troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| Workers AI returns 401 or 403 | Check that the token has Workers AI Read permission on the configured account. An AI Gateway management token alone is not sufficient. |
+| Model output appears but no trace does | Set both Future AGI keys in the same process environment, use the preload, and consume the response body. Check that `OTEL_SDK_DISABLED` is not enabled. |
+| A REST call is not captured | Use the `/ai/v1/chat/completions` endpoint and Node's global `fetch`, as above. The `/ai/run/<model>` endpoint and direct `undici.fetch` are not this recipe's capture path. |
+| Inputs or outputs are hidden | Check your `FI_HIDE_INPUTS` and `FI_HIDE_OUTPUTS` settings. Keep hiding enabled if the content is sensitive. |
+| Traces disappear when the process stops | Allow a natural exit or flush at your invocation boundary. Hard termination and collector failures can lose spans; delivery is best effort. |
+
+For diagnostics, other runtimes and configuration options, see [zero-code Node.js tracing](/docs/integrations/traceai/auto). [Cloudflare Workers native OpenTelemetry export](https://developers.cloudflare.com/workers/observability/opentelemetry-export/) and [AI Gateway OpenTelemetry export](https://developers.cloudflare.com/ai-gateway/observability/otel-integration/) are separate mechanisms configured in Cloudflare, not required by this client-side recipe.

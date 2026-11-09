@@ -26,7 +26,7 @@ export const integrationCategories = [
 
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
-  { id: 'cloudflare-workers-ai', name: 'Workers AI REST', href: '/docs/integrations/runtimes/cloudflare-workers-ai', category: 'providers', summary: 'Trace REST-backed local workerd requests, not deployed AI bindings.', method: 'Local REST wrapper', logo: 'generic-cloud', aliases: ['Cloudflare'] },
+  { id: 'cloudflare-workers-ai', name: 'Cloudflare Workers AI', href: '/docs/integrations/runtimes/cloudflare-workers-ai', category: 'providers', summary: 'Trace Node.js chat completions through the Workers AI REST API.', method: 'traceAI preload', logo: 'generic-cloud', aliases: ['Workers AI', 'Cloudflare'] },
   { id: 'traceai-auto', name: 'Zero-code Node.js', href: '/docs/integrations/traceai/auto', category: 'frameworks', summary: 'Trace supported Node.js AI calls with one startup preload and no tracing imports.', method: 'traceAI preload', logo: 'generic-framework', aliases: ['@traceai/auto', 'Node.js', 'TypeScript', 'JavaScript', 'zero code', 'auto instrumentation'] },
   { id: 'a2a-go', name: 'A2A Go', href: '/docs/integrations/traceai/go/a2a', category: 'frameworks', summary: 'Trace Go agent-to-agent calls on clients and servers.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'vitest', name: 'Vitest', href: '/docs/integrations/frameworks/vitest', category: 'frameworks', summary: 'Trace test runs and workers with native OpenTelemetry.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['Vitest tests'] },
