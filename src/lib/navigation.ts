@@ -313,6 +313,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add rows', href: '/docs/dataset/guides/add-rows' },
               { title: 'Add columns', href: '/docs/dataset/guides/add-columns' },
               { title: 'Run a prompt on every row', href: '/docs/dataset/guides/run-a-prompt-on-every-row' },
+              { title: 'Use splits', href: '/docs/dataset/guides/use-splits' },
               { title: 'Run an experiment', href: '/docs/dataset/guides/run-an-experiment' },
               { title: 'Manage datasets', href: '/docs/dataset/guides/manage-datasets' },
             ]
@@ -642,6 +643,7 @@ export const tabNavigation: NavTab[] = [
               },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
+              { title: 'Share a trace', href: '/docs/observe/guides/share-a-trace' },
               { title: 'Instant eval', href: '/docs/observe/features/instant-eval' },
               { title: 'Insights', href: '/docs/observe/features/insights' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
@@ -735,6 +737,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Evaluate prompt outputs', href: '/docs/prompt/guides/evaluate-prompt-outputs' },
               { title: 'Track prompt performance', href: '/docs/prompt/guides/track-prompt-performance' },
               { title: 'Organize prompts in folders', href: '/docs/prompt/guides/organize-prompts-in-folders' },
+              { title: 'Fetch prompts in production', href: '/docs/prompt/guides/fetch-prompts-in-production' },
             ]
           },
           {
@@ -1229,6 +1232,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'table',
         items: [
           { title: 'Overview', href: '/docs/sdk/datasets' },
+          { title: 'Experiments', href: '/docs/sdk/experiments' },
         ]
       },
       {

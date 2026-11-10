@@ -334,7 +334,22 @@ export const apiNavigation: ApiNavGroup[] = [
       { "title": "Add Rows from HuggingFace", "href": "/docs/api/datasets/add-rows-from-huggingface", "method": "POST" },
       { "title": "Duplicate Rows", "href": "/docs/api/datasets/duplicate-rows", "method": "POST" },
       { "title": "Delete Rows", "href": "/docs/api/datasets/delete-rows", "method": "DELETE" },
-      { "title": "Update Cell Value", "href": "/docs/api/datasets/update-cell-value", "method": "PUT" }
+      { "title": "Update Cell Value", "href": "/docs/api/datasets/update-cell-value", "method": "POST" },
+      { "title": "Dataset Splits", "href": "/docs/api/datasets/splits", "method": "GET" }
+    ]
+  },
+  {
+    "title": "Experiments",
+    "items": [
+      { "title": "Experiments Overview", "href": "/docs/api/experiments", "method": "" },
+      { "title": "Create Experiment", "href": "/docs/api/experiments/create-experiment", "method": "POST" },
+      { "title": "Read Experiments", "href": "/docs/api/experiments/read-experiments", "method": "GET" },
+      { "title": "Update Experiment", "href": "/docs/api/experiments/update-experiment", "method": "PUT" },
+      { "title": "Rerun Experiments", "href": "/docs/api/experiments/rerun-experiments", "method": "POST" },
+      { "title": "Rerun Experiment Cells", "href": "/docs/api/experiments/rerun-cells", "method": "POST" },
+      { "title": "Stop Experiment", "href": "/docs/api/experiments/stop-experiment", "method": "POST" },
+      { "title": "Delete Experiments", "href": "/docs/api/experiments/delete-experiments", "method": "DELETE" },
+      { "title": "Compare Configurations", "href": "/docs/api/experiments/compare-experiments", "method": "POST" }
     ]
   },
   {
