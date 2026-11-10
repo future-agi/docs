@@ -762,12 +762,22 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'Versions and labels', href: '/docs/skills/versions-and-labels' },
+              { title: 'Agent contexts', href: '/docs/skills/agent-contexts' },
+              { title: 'Compatibility', href: '/docs/skills/compatibility' },
             ]
           },
           {
             title: 'Guides',
             items: [
               { title: 'Import skills', href: '/docs/skills/import-skills' },
+              { title: 'Retained migration', href: '/docs/skills/migration' },
+              { title: 'Reversible pilot', href: '/docs/skills/reversible-pilot' },
+              { title: 'Tests and evidence', href: '/docs/skills/tests' },
+              { title: 'Reviewed releases', href: '/docs/skills/reviewed-releases' },
+              { title: 'Safe installation', href: '/docs/skills/safe-installation' },
+              { title: 'SDK and CLI', href: '/docs/skills/sdk-cli' },
+              { title: 'Updates and recovery', href: '/docs/skills/rollout-recovery' },
+              { title: 'Repository campaigns', href: '/docs/skills/campaigns' },
               { title: 'Use skills in your agents', href: '/docs/skills/use-in-agents' },
               { title: 'MCP tools', href: '/docs/skills/mcp-tools' },
             ]
@@ -776,7 +786,8 @@ export const tabNavigation: NavTab[] = [
             title: 'Reference',
             items: [
               { title: 'Checks reference', href: '/docs/skills/checks-reference' },
-              { title: 'API reference', href: '/docs/skills/api-reference' },
+              { title: 'Original leaf API examples', href: '/docs/skills/api-reference' },
+              { title: 'Complete sealed API', href: '/docs/skills/sealed-api' },
             ]
           },
           { title: 'Troubleshooting', href: '/docs/skills/troubleshooting' },
