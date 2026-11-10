@@ -1434,6 +1434,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Duplicate Rows', href: '/docs/api/datasets/duplicate-rows' },
               { title: 'Delete Rows', href: '/docs/api/datasets/delete-rows' },
               { title: 'Update Cell Value', href: '/docs/api/datasets/update-cell-value' },
+              { title: 'Dataset Splits', href: '/docs/api/datasets/splits' },
             ]
           },
           {
@@ -1468,6 +1469,20 @@ export const tabNavigation: NavTab[] = [
               { title: 'Eval Stats', href: '/docs/api/datasets/analytics/eval-stats' },
               { title: 'Annotation Summary', href: '/docs/api/datasets/analytics/annotation-summary' },
               { title: 'Explanation Summary', href: '/docs/api/datasets/analytics/explanation-summary' },
+            ]
+          },
+          {
+            title: 'Experiments',
+            items: [
+              { title: 'Experiments Overview', href: '/docs/api/experiments' },
+              { title: 'Create Experiment', href: '/docs/api/experiments/create-experiment' },
+              { title: 'Read Experiments', href: '/docs/api/experiments/read-experiments' },
+              { title: 'Update Experiment', href: '/docs/api/experiments/update-experiment' },
+              { title: 'Rerun Experiments', href: '/docs/api/experiments/rerun-experiments' },
+              { title: 'Rerun Experiment Cells', href: '/docs/api/experiments/rerun-cells' },
+              { title: 'Stop Experiment', href: '/docs/api/experiments/stop-experiment' },
+              { title: 'Delete Experiments', href: '/docs/api/experiments/delete-experiments' },
+              { title: 'Compare Configurations', href: '/docs/api/experiments/compare-experiments' },
             ]
           },
           {
