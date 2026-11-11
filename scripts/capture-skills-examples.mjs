@@ -37,7 +37,9 @@ async function request(method, route, body, required = false) {
     const matched = routes.filter(r => r.method === method.toLowerCase() && r.expression.test(pathname))
       .sort((a,b) => (a.route.match(/\{/g)?.length ?? 0) - (b.route.match(/\{/g)?.length ?? 0))[0];
     captures.push({ method, path: route, contract_path: matched?.route ?? null,
-      request: { ...(body === undefined ? {} : { body: scrub(body) }), idempotency_key: idempotencyKey },
+      request: { ...(body === undefined ? {} : { body: scrub(body) }), idempotency_key: idempotencyKey,
+        authentication: headers.Authorization?.startsWith('Context ') ? 'Context (credential omitted)' : 'Bearer (token omitted)',
+        ...(headers['X-Context-Resolution'] ? { resolution_header: headers['X-Context-Resolution'] } : {}) },
       status: response.status, response: scrub(value) });
     console.log(`${method} ${matched?.route ?? pathname} ${response.status}`);
     fs.writeFileSync(path.join(out, 'http-examples.json'), JSON.stringify({
@@ -74,7 +76,7 @@ try {
   await get('contexts/');
   await get(`contexts/${cid}/`);
   draft = await get(`contexts/${cid}/draft/`,true);
-  await get(`contexts/${cid}/draft/files/?path=AGENTS.md`);
+  await get(`contexts/${cid}/draft/files/?path=AGENTS.md&revision=${draft.revision}`);
   draft = await put(`contexts/${cid}/draft/`, {revision:draft.revision,base_version:draft.base_version,files:ownedFiles,description:'Synthetic documentation context',note:'Reviewed root'}, true);
   const input = { revision:draft.revision, links:[{skill_id:sid,selector:{label:'production'}}], refresh_skill_ids:[] };
   const preview = await post(`contexts/${cid}/dependencies/preview/`,input,true);
@@ -91,8 +93,44 @@ try {
   await post(`contexts/${cid}/draft/start/`,{revision:0,from_version:1});
   draft = await get(`contexts/${cid}/draft/`,true);
   const review = await post(`contexts/${cid}/draft/head-review/`,{revision:draft.revision},true);
-  await post(`contexts/${cid}/draft/checkpoints/`,{revision:draft.revision,expected_digest:review.candidate_digest,reason:'manual',suspend:false});
+  const checkpoint = await post(`contexts/${cid}/draft/checkpoints/`,{revision:draft.revision,expected_digest:draft.recovery_digest,reason:'manual',suspend:false},true);
   await get(`contexts/${cid}/draft/checkpoints/`);
+  await post(`contexts/${cid}/draft/checkpoints/${checkpoint.checkpoint.id}/restore/`,{revision:draft.revision,expected_digest:draft.recovery_digest},true);
+  draft = await get(`contexts/${cid}/draft/`,true);
+  await post(`contexts/${cid}/release/review/`,{operation:'publish',revision:draft.revision});
+  await get(`${sid}/test-evidence/?candidate=version&version=1`);
+  const suite = await get(`${sid}/tests/`);
+  await put(`${sid}/tests/`,{revision:suite.revision,cases:[]});
+  await request('PATCH',prefix+`${sid}/`,{tags:['documentation']});
+  const bindingInput = {name:'Synthetic documentation binding',kind:'repository',selector:{version:1},update_mode:'repository_lock',profile:'codex',profile_version:'unqualified-docs-fixture',repository:{provider:'github',repository_id:`synthetic/docs-${run}`,default_branch:'main',project_scope:''},expected_report_interval_seconds:3600};
+  let binding = await post(`contexts/${cid}/bindings/`,bindingInput,true);
+  if (binding.id) binding = await request('PATCH',prefix+`contexts/bindings/${binding.id}/`,{revision:binding.revision,binding:{...bindingInput,name:'Reviewed synthetic documentation binding'}},true);
+  const humanHeaders = {...headers};
+  const contextVersion = await get(`contexts/${cid}/versions/1/`,true);
+  const leafVersion = await get(`${sid}/versions/1/`,true);
+  const credential = await post('contexts/credentials/',{purpose:'consume',grants:[{kind:'agent_context',resource_id:cid,labels:[],version_ids:[contextVersion.id]},{kind:'skill',resource_id:sid,labels:[],version_ids:[leafVersion.id]}],binding_ids:[],expires_at:new Date(Date.now()+3600000).toISOString()},true);
+  try {
+    headers={Authorization:`Context ${credential.secret}`};
+    const resolution=await get(`contexts/resolve/?name=${ctxName}&version=1`,true);
+    headers['X-Context-Resolution']=resolution.resolution_id;
+    await get(`contexts/${cid}/versions/1/manifest/`,true);
+    await get(`contexts/${cid}/versions/1/files/?path=AGENTS.md`,true);
+    await post(`contexts/${cid}/versions/1/access-check/`,{},true);
+    delete headers['X-Context-Resolution'];
+    const leafResolution=await get(`consumption/resolve/?name=${name}&version=1`,true);
+    headers['X-Context-Resolution']=leafResolution.resolution_id;
+    await get(`consumption/${sid}/versions/1/manifest/`,true);
+    await get(`consumption/${sid}/versions/1/files/?path=SKILL.md`,true);
+    await post(`consumption/${sid}/versions/1/access-check/`,{},true);
+  } finally {
+    headers=humanHeaders;
+    await request('DELETE',prefix+`contexts/credentials/${credential.id}/`,undefined,true);
+  }
+  if (binding.id) await request('DELETE',prefix+`contexts/bindings/${binding.id}/`,{revision:binding.revision},true);
+  const release = await post('release-requests/preview/',{resource_id:sid,kind:'skill',candidate_version_id:leafVersion.id,label:'staging',target:null,evidence:[],external_pipeline:null});
+  assert.ok(release.packet);
+  await post(`${sid}/versions/1/restore/`,{note:'Explicit synthetic restoration, not promotion'});
+  await get(`${sid}/compare/?from=1&to=2`);
   fs.writeFileSync(path.join(out,'fixture-state.json'),JSON.stringify({sid,cid,published},null,2));
   // Capture missing UI subjects in the VM browser; never persist authentication.
   const { chromium } = await import('playwright');
