@@ -1,11 +1,11 @@
 ---
 title: "Request Logging and Observability in Agent Command Center"
-description: "Log every LLM request automatically with token counts, cost, latency, cache status, and guardrail results. Export metrics to Prometheus and OpenTelemetry."
+description: "Log every LLM request automatically with token counts, cost, latency, cache status, and guardrail results. Export metrics to Prometheus and traces over OpenTelemetry."
 ---
 
 ## About
 
-Agent Command Center logs every request and response, exports metrics to Prometheus and OpenTelemetry, and propagates trace IDs for distributed tracing. No additional setup needed for basic logging - it's on by default.
+Agent Command Center logs every request and response, exports metrics to Prometheus, can export OpenTelemetry traces from self-hosted gateways, and propagates trace IDs for distributed tracing. No additional setup needed for basic logging - it's on by default.
 
 ---
 
@@ -102,18 +102,78 @@ curl -i https://gateway.futureagi.com/v1/chat/completions \
 
 If you don't set a trace ID, Agent Command Center generates one automatically. Use it for correlating gateway logs with your application logs.
 
-### OpenTelemetry integration
+### OpenTelemetry export
 
-Self-hosted deployments can export traces to any OpenTelemetry-compatible backend:
+Self-hosted gateways can also emit one OpenTelemetry span per request (model, provider, latency, token counts, cost, cache status and caller metadata, named with the `gen_ai.*` semantic conventions) to any OTLP-compatible backend. This is separate from the request log above: request logs always go to **Agent Command Center > Logs**, while spans are only exported when you turn on the `otel` block in the gateway's `config.yaml`. It is off by default.
 
 ```yaml
-telemetry:
-  traces:
-    enabled: true
-    exporter: otlp
-    endpoint: "http://otel-collector:4317"
-    service_name: "agentcc-gateway"
+otel:
+  enabled: true
+  exporter: otlp                         # default is stdout: spans go to the gateway's own output
+  endpoint: "http://otel-collector:4318" # /v1/traces is appended when the URL has no path
+  protocol: "http/protobuf"              # the only supported transport
+  service_name: "agentcc-gateway"
+  headers:                               # sent on every export request
+    Authorization: "Bearer ${OTEL_TOKEN}"
 ```
+
+<Warning>
+The gateway speaks OTLP over **HTTP with protobuf** only, so point it at your collector's OTLP/HTTP port (usually **4318**), not the gRPC port 4317. With `exporter: otlp`, `protocol: grpc` and `protocol: http/json` stop the gateway at startup. Setting `enabled: true` without `exporter: otlp` prints spans to stdout instead of exporting them.
+</Warning>
+
+When `exporter` is `otlp`, the gateway refuses to start with no `endpoint`, an endpoint that is not an absolute `http(s)` URL, or a header whose value is empty (usually a `${VAR}` that is not set). Spans are queued and sent in the background, so a slow or unreachable collector never adds latency to a request. Each span carries the gateway's trace ID as `agentcc.trace_id`, so you can match it to its row in the request log.
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Turns span creation on |
+| `exporter` | `stdout` | `stdout` or `otlp` |
+| `endpoint` | none | Collector base URL; required for `otlp` |
+| `protocol` | `http/protobuf` | The only supported value |
+| `headers` | none | Headers sent with every export, for collector authentication. Use `${VAR}` to keep credentials out of the file |
+| `service_name` | `agentcc-gateway` | `service.name` resource attribute |
+| `sample_rate` | `1.0` | Fraction of requests that get a span. `0` or unset means every request |
+| `attributes` | none | Extra OTLP resource attributes |
+| `include_bodies` | `false` | Attach the prompt and completion (`input.value` / `output.value`). Redacted with the organization's privacy settings, like the request log |
+| `trace_propagation` | `false` | Honor an inbound W3C `traceparent` so the gateway span nests under the caller's span |
+| `metadata_attributes` | `true` | Also emit each caller metadata key as `agentcc.metadata.<key>` |
+| `body_attributes` | `true` | Emit unknown scalar request-body fields as `agentcc.body.<key>` |
+| `capture_headers` | none | Allowlist of request headers to copy onto the span; credential headers are never copied |
+
+### Send gateway spans to self-hosted Observe
+
+When you self-host Future AGI alongside the gateway, point the `otel` block at your install's `fi-collector` to see gateway spans in Observe. In Docker Compose the gateway reads the config file named by `AGENTCC_CONFIG_PATH` in `.env` (default `agentcc-gateway/config.example.yaml`); with Helm, set the block under `agentccGateway.config.otel`.
+
+```yaml
+otel:
+  enabled: true
+  exporter: otlp
+  endpoint: "http://127.0.0.1:4318"   # see the table below for your setup
+  protocol: "http/protobuf"
+  headers:
+    X-Api-Key: "${FI_API_KEY}"
+    X-Secret-Key: "${FI_SECRET_KEY}"
+  attributes:
+    project_name: "my-chatbot"        # Observe project the spans land in
+    project_type: "observe"
+  include_bodies: false               # decide deliberately; see below
+  trace_propagation: true             # only if your app sends traceAI spans to the same project
+```
+
+1. **Endpoint.** `fi-collector` takes OTLP/HTTP on port 4318. Use the address the gateway can reach it on:
+
+   | Setup | `endpoint` |
+   |---|---|
+   | Standalone (`docker-compose.yml`), where the gateway runs in the same `app` container as the collector | `http://127.0.0.1:4318` |
+   | Distributed (`docker-compose.distributed.yml`) | `http://fi-collector:4318` |
+   | Helm | `http://<fullname>-fi-collector:4318`. `<fullname>` is the release name when it contains `futureagi` (for example `futureagi-fi-collector`), otherwise `<release>-futureagi`; `kubectl get svc` shows the name |
+
+2. **Credentials.** The collector rejects spans without an `X-Api-Key` and `X-Secret-Key` pair. Create one in your install under **Build → Keys** and give it to the gateway as `FI_API_KEY` and `FI_SECRET_KEY`: in `.env` for either Compose setup, or in `agentccGateway.extraEnv` with Helm. If a variable is unset, the gateway refuses to start rather than send unauthenticated spans.
+
+3. **Project.** The collector files spans by the `project_name` resource attribute and rejects the whole export request (HTTP 400) if it is missing. If the project doesn't exist yet, it is created as an Observe project on first use. Set `project_type: "observe"` next to it.
+
+4. **Prompt and completion bodies.** `include_bodies` is off by default, so spans carry metrics and metadata but not message content. Turning it on sends prompts and completions to Observe, redacted with the organization's privacy settings. Decide this separately from `logging.request_logging.include_bodies`.
+
+5. **Nesting under traceAI spans.** If your application is instrumented with traceAI, set `trace_propagation: true` and use the same `project_name` as the application. The gateway then adopts the trace ID from the inbound W3C `traceparent` header and becomes a child of the caller's span, instead of starting a second root trace. Only a `traceparent` marked as sampled is honored. Leave it off if the caller's spans go somewhere else: the gateway span would point at a parent that Observe never receives.
 
 ---
 
