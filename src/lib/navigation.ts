@@ -1276,6 +1276,26 @@ export const tabNavigation: NavTab[] = [
     ]
   },
   {
+    tab: 'CLI',
+    icon: 'zap',
+    href: '/docs/cli',
+    groups: [
+      {
+        group: 'CLI',
+        icon: 'zap',
+        items: [
+          { title: 'CLI Overview', href: '/docs/cli' },
+          { title: 'Quickstart', href: '/docs/cli/quickstart' },
+          { title: 'Install and auth', href: '/docs/cli/install-and-auth' },
+          { title: 'Environments', href: '/docs/cli/environments' },
+          { title: 'Runs', href: '/docs/cli/runs' },
+          { title: 'Agents', href: '/docs/cli/agents' },
+          { title: 'API', href: '/docs/cli/api' },
+        ]
+      },
+    ]
+  },
+  {
     tab: 'API',
     icon: 'webhook',
     href: '/docs/api',
