@@ -33,6 +33,7 @@ import './kiro-cli-page.test.mjs';
 import './google-genai-live-page.test.mjs';
 import './elevenlabs-agents-page.test.mjs';
 import './gemini-go-page.test.mjs';
+import './anthropic-go-page.test.mjs';
 import './typesafe-page.test.mjs';
 import './ag2-classic-page.test.mjs';
 import './firecrawl-page.test.mjs';

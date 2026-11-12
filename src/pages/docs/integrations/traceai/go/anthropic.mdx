@@ -1,0 +1,205 @@
+---
+title: "Anthropic Go SDK"
+description: "Trace Claude Messages calls, streaming responses, tool requests and errors from Go in Future AGI."
+---
+
+Trace calls from the official Anthropic Go SDK in Future AGI with model names, token usage, prompts, responses and tool requests. The maintained traceAI middleware enriches the SDK's existing OpenTelemetry span rather than creating a duplicate.
+
+## Prerequisites
+
+- Go **1.26.0 or later**.
+- An Anthropic API key with access to the model you use.
+- Your Future AGI API key and secret key.
+
+This guide uses `anthropic-sdk-go` **v1.82.0** and traceAI **v0.1.0**. Keep the SDK's v1 import path shown below; the `/v2` SDK has a different middleware type and is not a drop-in replacement.
+
+## Install
+
+In a new directory, initialize a Go module and install the released packages:
+
+```bash
+go mod init example.com/anthropic-tracing
+go get github.com/future-agi/traceAI/go/anthropic@v0.1.0
+go get github.com/anthropics/anthropic-sdk-go@v1.82.0
+go get go.opentelemetry.io/otel/sdk@v1.33.0 go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.33.0
+```
+
+Skip `go mod init` in an existing Go module. If your application already configures OpenTelemetry, reuse its tracer provider and add the exporter to that setup.
+
+## Configure credentials
+
+```bash
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export FI_PROJECT_NAME="my-chatbot"
+```
+
+The Anthropic SDK reads `ANTHROPIC_API_KEY`; the Future AGI keys go only to the trace exporter. Leave `ANTHROPIC_BASE_URL` unset to call Anthropic directly.
+
+<Warning>
+Prompts, responses and tool arguments are captured by default. Use the [privacy settings](#privacy) before sending sensitive content.
+</Warning>
+
+## Trace a Messages call
+
+Save this as `main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	traceaianthropic "github.com/future-agi/traceAI/go/anthropic"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func main() {
+	// run returns before log.Fatal, so the deferred exporter shutdown runs.
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx := context.Background()
+	base := strings.TrimRight(os.Getenv("FI_BASE_URL"), "/")
+	if base == "" {
+		base = "https://api.futureagi.com"
+	}
+	exporter, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			"X-Api-Key":    os.Getenv("FI_API_KEY"),
+			"X-Secret-Key": os.Getenv("FI_SECRET_KEY"),
+		}),
+		otlptracehttp.WithCompression(otlptracehttp.NoCompression),
+	)
+	if err != nil {
+		return err
+	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewSchemaless(
+			attribute.String("project_name", os.Getenv("FI_PROJECT_NAME")),
+			attribute.String("project_type", "observe"),
+			attribute.String("service.name", "anthropic-go-chatbot"),
+		)),
+	)
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Printf("trace export: %v", err)
+		}
+	}()
+	otel.SetTracerProvider(tp)
+
+	client := anthropic.NewClient(option.WithMiddleware(traceaianthropic.Middleware()))
+	ctx = traceaianthropic.ContextWithSessionID(ctx, "session-123")
+	ctx = traceaianthropic.ContextWithUserID(ctx, "user-42")
+
+	msg, err := client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     "claude-haiku-5-5",
+		MaxTokens: 64,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("What is the capital of France? Answer in one sentence.")),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	for _, block := range msg.Content {
+		if block.Type == "text" {
+			fmt.Println(block.Text)
+		}
+	}
+	return nil
+}
+```
+
+Run the program:
+
+```bash
+go run .
+```
+
+For self-hosted Future AGI, set `FI_BASE_URL` to your instance's base URL. Both this program and the example below append `/tracer/v1/traces`.
+
+Open **Observe > Tracing**, select your `my-chatbot` project, and open the `anthropic.messages.create` span. Its Input and Output contain the request and response; model and token fields describe the Claude call. The optional context helpers group calls by [session](/docs/observe/features/session) and [user](/docs/observe/features/users).
+
+## Streaming and tool calls
+
+Run the [packaged weather example](https://github.com/future-agi/traceAI/tree/go/anthropic/v0.1.0/go/anthropic/example) with the same credentials:
+
+```bash
+go run github.com/future-agi/traceAI/go/anthropic/example@v0.1.0 -model claude-haiku-5-5 -stream -fail -session demo-1
+```
+
+The example asks Claude to call `get_weather`, returns sample weather data, and streams the final answer. It opens its own agent and tool spans around the two model calls. The `-fail` flag adds a separate request with an invalid model to demonstrate an error span.
+
+The weather trace contains an agent span, two LLM spans and a tool span. The rejected request appears in a separate trace with status ERROR. Tool requests are captured on the LLM span; the middleware does not automatically trace tool code running in your application.
+
+A streaming response produces one LLM span, not one per event. Consume the stream to completion or close it so the span can finish and export.
+
+## What is captured
+
+| Field | Contents |
+| --- | --- |
+| `gen_ai.span.kind`, `gen_ai.provider.name` | `LLM`, `anthropic` |
+| `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id` | Requested model and returned model/message identifiers |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | Token usage from the response, including the final streamed usage |
+| `gen_ai.response.finish_reasons` | Stop reason, such as `end_turn` or `tool_use` |
+| `input.value`, `output.value` | Request and response JSON, including the assembled streaming response |
+| `gen_ai.input.messages`, `gen_ai.output.messages` | Conversation content, including tool calls and tool results |
+| `gen_ai.tool.definitions`, `gen_ai.request.parameters` | Offered tools and generation settings |
+| `session.id`, `user.id` | Values supplied through the context helpers |
+| `error.type`, status ERROR | The API failure type; with content capture enabled, `output.value` also contains the API error body |
+
+Cached input is included in `gen_ai.usage.input_tokens`. Cache reads and writes are also recorded separately as `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.cache_write.input_tokens` when returned by the API. Do not add these counts to the total again. Observe's input-token cost calculation does not reflect prompt-cache discounts.
+
+The middleware enriches the SDK's existing Messages span. If you disable the SDK's tracing with `ANTHROPIC_OPEN_TELEMETRY=false`, the middleware creates its own span per HTTP attempt; retries can then produce additional spans. The module targets Messages requests, not token counting, batches, files or models endpoints. Use this recipe for direct Anthropic API calls, not Bedrock's binary streaming transport.
+
+## Privacy
+
+Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before constructing the client to omit prompt, response and tool content. The corresponding Input and Output values become `__REDACTED__`; model names, token counts, finish reasons and error types remain available.
+
+Additional [TraceConfig](/docs/sdk/tracing/trace-config) settings supported by this module:
+
+| Variable | Effect |
+| --- | --- |
+| `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES` | Omit structured input messages/system instructions or output messages |
+| `FI_HIDE_INPUT_TEXT`, `FI_HIDE_OUTPUT_TEXT` | Replace message-part text with `__REDACTED__` |
+| `FI_HIDE_INPUT_IMAGES` | Omit image data and image parts |
+| `FI_BASE64_IMAGE_MAX_LENGTH` | Maximum captured base64 image length; defaults to 32000 |
+| `FI_HIDE_LLM_INVOCATION_PARAMETERS` | Omit `gen_ai.request.parameters` |
+
+Boolean settings accept `true` or `false` and are read when `Middleware()` is created. Request headers are not captured by the middleware. Treat prompts, tool arguments and error bodies as application content: do not put credentials in them.
+
+<Warning>
+Leave `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE` unset. Setting it to `content`, or enabling the equivalent SDK client option, lets the SDK export content independently of traceAI's `FI_HIDE_*` settings.
+</Warning>
+
+The SDK's own span includes the API endpoint (`url.full`, `server.address`). If you use an internal gateway and must hide its address, disable the SDK's tracing with `ANTHROPIC_OPEN_TELEMETRY=false`; the middleware still traces Messages calls without those endpoint fields.
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| No traces | Ensure `tp.Shutdown` runs before exit. Check both Future AGI headers and the `project_name` resource attribute. |
+| Empty Input and Output | Add the traceAI middleware to the client; the SDK's default metadata-only spans do not populate these fields. |
+| Two spans per call | Reuse the OpenTelemetry Go SDK tracer provider. The middleware recognizes the SDK's existing span through that provider. |
+| Missing streamed call | Read the stream to the end or close it before shutting down the tracer provider. |
+| Content remains visible | Leave the SDK's content mode unset and set `FI_HIDE_*` before constructing the middleware. |
+| Exporter rejects requests | Use uncompressed OTLP/HTTP protobuf and the full `/tracer/v1/traces` path. |
+
+For other languages, see [Anthropic Python and TypeScript](/docs/integrations/traceai/anthropic) or [Anthropic Java](/docs/integrations/traceai/java/anthropic).
