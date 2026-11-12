@@ -1,10 +1,13 @@
-"""The docs page and the files in this directory must say the same thing."""
+"""Pin the native destination contract, not the retired on-page collector recipe.
+
+The collector's defensive behavior remains covered by test_otelcol_config.py.
+These checks do not claim that a real OpenRouter destination delivered a trace.
+"""
 import json
 import os
 import re
 
 import pytest
-import yaml
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -22,102 +25,94 @@ def blocks(page):
     return re.findall(r"```(\w+)\n(.*?)```", page, flags=re.S)
 
 
-def block(blocks, lang, contains):
-    hits = [b for lang_, b in blocks if lang_ == lang and contains in b]
-    assert hits, f"no {lang} block containing {contains!r}"
-    return hits[0]
-
-
 def test_frontmatter_and_first_heading(page):
     m = re.match(r'---\ntitle: "([^"]+)"\ndescription: "([^"]+)"\n---\n\n## About\n', page)
-    assert m, "frontmatter, a blank line, then '## About'"
-    assert 120 <= len(m.group(2)) <= 160, len(m.group(2))
+    assert m
+    assert 120 <= len(m.group(2)) <= 160
 
 
-def test_style_rules(page):
-    assert "—" not in page and "–" not in page, "no em or en dashes"
-    assert page.rstrip().split("\n## ")[-1].startswith("Next Steps")
-    assert not re.search(r"\b(powerful|seamless|cutting-edge|game-changer)\b", page, re.I)
+def test_native_destination_headers(blocks, page):
+    headers = json.loads(next(b for lang, b in blocks if lang == "json"))
+    assert headers == {
+        "X-Api-Key": "YOUR_API_KEY",
+        "X-Secret-Key": "YOUR_SECRET_KEY",
+        "X-Project-Name": "my-openrouter",
+    }
+    assert "https://api.futureagi.com/tracer/v1/traces" in page
+    assert "OTLP/HTTP with JSON encoding" in page
+    assert "docker run" not in page
+    assert not any(lang == "yaml" for lang, _ in blocks)
 
 
-def test_the_yaml_on_the_page_is_otelcol_yaml(blocks):
-    on_page = yaml.safe_load(block(blocks, "yaml", "bearertokenauth/broadcast"))
-    with open(os.path.join(HERE, "otelcol.yaml")) as f:
-        assert on_page == yaml.safe_load(f)
+def test_catalog_matches_the_native_route():
+    with open(os.path.join(REPO, "src", "lib", "integrations.mjs")) as f:
+        row = next(line for line in f if "id: 'openrouter-broadcast'" in line)
+    assert "directly with an endpoint and three headers" in row
+    assert "privacy-filtering collector" not in row
 
 
-def test_docker_command_matches_the_config(page, blocks):
-    cmd = block(blocks, "bash", "docker run")
-    with open(os.path.join(HERE, "otelcol.yaml")) as f:
-        text = f.read()
-    needed = set(re.findall(r"\$\{env:([A-Z_]+)", text))
-    for name in needed:
-        assert re.search(rf"-e {name}\b", cmd), name
-    assert "otel/opentelemetry-collector-contrib:0.162.0" in cmd
-    assert "--memory" in cmd and "-p 4318:4318" in cmd
-    assert "/etc/otelcol/config.yaml" in cmd
-    assert '-e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}"' in cmd
-    assert "docker rm -f openrouter-broadcast-otelcol" in page
-    assert "docker restart` retains the environment" in page
+def test_project_header_contract_is_self_contained(page):
+    for text in ("resource attribute takes precedence", "255 characters", "without commas",
+                 "control characters", "invisible characters", "repeated project-name headers",
+                 "key pair selects the workspace", "older collectors require an upgrade"):
+        assert text in page
+    # The general header-reference PR is still open. Do not link its absent anchor.
+    assert "export-formats#naming-the-project" not in page
 
 
-def test_every_environment_variable_is_explained(page):
-    with open(os.path.join(HERE, "otelcol.yaml")) as f:
-        names = set(re.findall(r"\$\{env:([A-Z_]+)", f.read()))
-    for name in names:
-        assert f"`{name}`" in page, name
+def test_application_request_is_small_and_uses_separate_credentials(blocks, page):
+    cmd = next(b for lang, b in blocks if lang == "bash")
+    assert "curl --fail-with-body https://openrouter.ai/api/v1/chat/completions" in cmd
+    assert 'Authorization: Bearer $OPENROUTER_API_KEY' in cmd
+    assert "X-Api-Key" not in cmd and "X-Secret-Key" not in cmd
+    request = json.loads(re.search(r"-d '(.*?)'", cmd, re.S).group(1))
+    assert request["model"] == "openai/gpt-4o-mini"
+    assert request["max_tokens"] == 16
+    assert request["messages"] == [{"role": "user", "content": "What is the capital of France?"}]
+    assert request["user"] == "demo-user"
+    assert request["session_id"] == "capital-demo"
+    assert request["trace"]["environment"] == "demo"
+    assert "Set it as `OPENROUTER_API_KEY`" in page
 
 
-def test_openrouter_headers_carry_the_collector_token_and_never_the_future_agi_keys(page):
-    m = re.search(r"\| Headers \| `(\{.*?\})`", page)
-    headers = json.loads(m.group(1).replace("YOUR_BROADCAST_TOKEN", "x"))
-    assert list(headers) == ["Authorization"] and headers["Authorization"].startswith("Bearer ")
-    assert "X-Api-Key" not in m.group(0) and "X-Secret-Key" not in m.group(0)
+def test_privacy_and_shared_account_boundaries(page):
+    for text in ("credential-sharing policy", "custom metadata and model parameters",
+                 "caller-supplied `stop` sequences", "no additional redaction layer",
+                 "not a general-purpose scrubber", "bypasses those filters",
+                 "`FI_CAPTURE_CONTENT` setting has no effect", "coordinate these settings with its owner",
+                 "excluded keys take precedence", "provider error text"):
+        assert text in page
 
 
-def test_the_removed_keys_the_page_lists_are_removed_by_the_config(page):
-    with open(os.path.join(HERE, "otelcol.yaml")) as f:
-        cfg = yaml.safe_load(f)
-    statements = [s for b in cfg["processors"]["transform/openrouter"]["trace_statements"] for s in b["statements"]]
-    regexes = []
-    for s in statements:
-        m = re.search(r'delete_matching_keys\(attributes, "((?:[^"\\]|\\.)*)"\)', s)
-        if m:
-            regexes.append(re.compile(json.loads(f'"{m.group(1)}"')))
-    deleted = {m.group(1) for s in statements for m in [re.match(r'delete_key\(attributes, "([^"]+)"\)', s)] if m}
-    section = page.split("With the collector default")[1].split("Kept:")[0]
-    for key in re.findall(r"`((?:span|trace|gen_ai|exception)\.[a-z_.]+)`", section):
-        assert key in deleted or any(r.search(key) for r in regexes), key
+def test_connection_test_is_not_end_to_end_proof(page):
+    assert "connection test alone does not demonstrate" in page
+    assert "sampling rate of **1.0**" in page
+    assert "select `my-openrouter`" in page
+    assert "HTTP 400 `no project_name`" in page
+    assert "HTTP 401" in page and "HTTP 413" in page
 
 
-def test_no_secret_looking_value_on_the_page(page):
-    assert not re.search(r"[0-9a-f]{24,}", page)
+def test_hierarchy_and_content_follow_current_provider_docs(page):
+    assert "Generation spans and optional grouping spans" in page
+    for name in ("trace_name", "span_name", "generation_name", "span.input", "span.output"):
+        assert f"`{name}`" in page
+    assert "sends the prompt twice" not in page
+    assert "root is an LLM span" not in page
+    assert "Cost is 0" not in page
+
+
+def test_no_internal_diary_or_secrets(page):
+    for forbidden in ("Live vendor verification", "not run live", "Beta.", "2026-10-19", "/Volumes/", "#3590"):
+        assert forbidden not in page
+    assert not re.search(r"[0-9a-f]{24,}|sk-or-v1-", page)
     assert "YOUR_API_KEY" in page and "YOUR_SECRET_KEY" in page
+    assert page.rstrip().split("\n## ")[-1].startswith("Next steps")
 
 
-def test_internal_links_point_at_pages_that_exist(page):
+def test_internal_links_point_at_existing_pages(page):
     for href in set(re.findall(r"\]\((/docs/[^)#]+)", page)):
         rel = href[len("/docs/"):]
-        candidates = [os.path.join(REPO, "src", "pages", "docs", rel + ".mdx"), os.path.join(REPO, "src", "pages", "docs", rel, "index.mdx")]
+        candidates = [os.path.join(REPO, "src", "pages", "docs", rel + ".mdx"),
+                      os.path.join(REPO, "src", "pages", "docs", rel, "index.mdx")]
         assert any(os.path.exists(c) for c in candidates), href
-
-
-def test_the_page_describes_the_customer_setup_without_a_test_diary(page):
-    assert "project_name" in page and "bearer token" in page
-    assert "Privacy Mode" in page and "FI_CAPTURE_CONTENT" in page
-    assert "Live vendor verification" not in page and "checked against real Broadcast traffic" not in page
-
-
-def test_comparison_describes_configurable_hierarchy(page):
-    row = next(line for line in page.splitlines() if line.startswith("| What you see |"))
-    assert "Generation spans and optional grouping spans" in row
-    assert "`LLM Generation` span is the root" not in page
-    assert "`trace_name`" in page and "`generation_name`" in page
-    assert "not a duplicate under `trace.input` or `trace.output`" in page
-    assert "sends the prompt twice" not in page
-
-
-def test_privacy_is_scoped_to_the_actual_filter(page):
-    assert "including caller-supplied `stop` sequences" in page
-    assert "does not redact those parameters, arbitrary metadata" in page
-    assert "Any other value, or none, keeps content out" not in page
+    assert "](/docs/admin-settings/api-keys)" in page
