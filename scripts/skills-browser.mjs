@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const dist=path.join(root,'dist');
+// Every Skills page, so each guide's images, links, and mobile layout are checked.
+const skillSlugs=fs.readdirSync(path.join(root,'src/pages/docs/skills')).filter(file=>file.endsWith('.mdx')).map(file=>file.replace('.mdx','')).sort();
 const out=process.argv[2] ?? path.join(root,'evidence','docs-browser.json');
 const mime={'.html':'text/html','.css':'text/css','.js':'text/javascript','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2'};
 const server=createServer((req,res)=>{
@@ -26,8 +28,8 @@ try {
   const page=await browser.newPage();
   for (const width of [1440,390]) {
     await page.setViewportSize({width,height:900});
-    for (const slug of ['agent-contexts','import-skills','migration','tests','reviewed-releases','sdk-cli','campaigns','sealed-api']) {
-      const response=await page.goto(`${origin}/docs/skills/${slug}/`,{waitUntil:'networkidle'});
+    for (const slug of skillSlugs) {
+      const response=await page.goto(`${origin}/docs/skills/${slug==='index'?'':`${slug}/`}`,{waitUntil:'networkidle'});
       assert.equal(response.status(),200,slug);
       if (slug==='sealed-api') {
         // This long static page can still be parsing after network quiescence on a cached revisit.
