@@ -32,7 +32,7 @@ try {
       if (slug==='sealed-api') {
         // This long static page can still be parsing after network quiescence on a cached revisit.
         // Assert readiness of the complete contract before checking every anchor.
-        await page.waitForFunction(()=>document.querySelectorAll('.api-schema').length===438 && document.getElementById('schema-skillsversionpageresponse'));
+        await page.waitForFunction(()=>document.querySelectorAll('.api-schema').length===494 && document.getElementById('schema-skillsversionpageresponse'));
       }
       const result=await page.evaluate(()=>({
         title:document.title,
@@ -46,7 +46,7 @@ try {
       assert.ok(result.scrollWidth<=width+1,`${slug} at ${width}: page overflow ${result.scrollWidth}`);
       assert.deepEqual(result.brokenImages,[],slug);
       assert.deepEqual(result.missingAnchors,[],slug);
-      if (slug==='sealed-api') {assert.equal(result.operations,154);assert.ok(result.liveExamples>=64);}
+      if (slug==='sealed-api') {assert.equal(result.operations,174);assert.ok(result.liveExamples>=64);}
       records.push({slug,...result});
     }
   }

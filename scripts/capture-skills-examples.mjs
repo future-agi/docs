@@ -26,9 +26,10 @@ function scrub(value) {
 }
 async function request(method, route, body, required = false) {
   const idempotencyKey = crypto.randomUUID();
+  const multipart = body instanceof FormData;
   const response = await fetch(`${origin}${route}`, { method,
-    headers: { ...headers, 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(60000) });
+    headers: { ...headers, ...(multipart ? {} : { 'Content-Type': 'application/json' }), 'Idempotency-Key': idempotencyKey },
+    ...(body === undefined ? {} : { body: multipart ? body : JSON.stringify(body) }), signal: AbortSignal.timeout(60000) });
   const raw = await response.text();
   let value;
   try { value = JSON.parse(raw); } catch { value = { non_json: true, bytes: Buffer.byteLength(raw) }; }
@@ -37,7 +38,7 @@ async function request(method, route, body, required = false) {
     const matched = routes.filter(r => r.method === method.toLowerCase() && r.expression.test(pathname))
       .sort((a,b) => (a.route.match(/\{/g)?.length ?? 0) - (b.route.match(/\{/g)?.length ?? 0))[0];
     captures.push({ method, path: route, contract_path: matched?.route ?? null,
-      request: { ...(body === undefined ? {} : { body: scrub(body) }), idempotency_key: idempotencyKey,
+      request: { ...(body === undefined ? {} : { body: multipart ? '[multipart form: files and fields omitted]' : scrub(body) }), idempotency_key: idempotencyKey,
         authentication: headers.Authorization?.startsWith('Context ') ? 'Context (credential omitted)' : 'Bearer (token omitted)',
         ...(headers['X-Context-Resolution'] ? { resolution_header: headers['X-Context-Resolution'] } : {}) },
       status: response.status, response: scrub(value) });
@@ -129,8 +130,52 @@ try {
   if (binding.id) await request('DELETE',prefix+`contexts/bindings/${binding.id}/`,{revision:binding.revision},true);
   const release = await post('release-requests/preview/',{resource_id:sid,kind:'skill',candidate_version_id:leafVersion.id,label:'staging',target:null,evidence:[],external_pipeline:null});
   assert.ok(release.packet);
+  // Sealed-head additions: unified context Tests, application targets, release options/inspection.
+  const ctxSuite = await get(`contexts/${cid}/tests/`);
+  if (ctxSuite?.revision !== undefined) await put(`contexts/${cid}/tests/`,{revision:ctxSuite.revision,cases:[]});
+  await get(`contexts/${cid}/native/targets/`);
+  const nativeTarget = await post(`contexts/${cid}/native/targets/`,{version:1});
+  const runtimeConfiguration = await get(`contexts/${cid}/native/runtime-configuration/`);
+  if (nativeTarget?.binding_id && runtimeConfiguration?.configuration) await put(`contexts/${cid}/native/targets/${nativeTarget.binding_id}/`,{revision:nativeTarget.revision,configuration:runtimeConfiguration.configuration});
+  await get(`contexts/${cid}/native/runs/`);
+  await get(`release-requests/options/?resource_id=${sid}&kind=skill&candidate_version_id=${leafVersion.id}`);
+  await post('release-requests/inspection/',{resource_id:sid,kind:'skill',candidate_version_id:leafVersion.id,label:'staging',target:null,evidence:[],external_pipeline:null,expected_fingerprint:release.fingerprint});
   await post(`${sid}/versions/1/restore/`,{note:'Explicit synthetic restoration, not promotion'});
   await get(`${sid}/compare/?from=1&to=2`);
+  // Leaf-skill lifecycle (the routes the original API examples describe), on its own skill.
+  {
+    const leafName = `docs-lifecycle-${run}`;
+    const leafFiles = (extra='') => [{ path:'SKILL.md', content:`---\nname: ${leafName}\ndescription: Use when reviewing the synthetic lifecycle policy.\n---\nRequire an observed tool result before claiming completion.${extra}\n` }];
+    const created = await post('', { name:leafName, description:'Use when reviewing the synthetic lifecycle policy.', tags:['docs'], template_id:'support-policy' });
+    const lid = created?.id ?? created?.skill?.id;
+    if (lid) {
+      let d = await get(`${lid}/draft/`);
+      d = await put(`${lid}/draft/`, { files:leafFiles(), base_version:null, revision:d?.revision ?? 0, note:'Synthetic draft' });
+      await post(`${lid}/draft/publish/`, { note:'Synthetic first release', labels:[], acknowledge_warnings:true, force:false });
+      await post(`${lid}/versions/`, { files:leafFiles(' Never promise an unapproved refund.'), base_version:1, note:'Synthetic clarification', labels:[], acknowledge_warnings:true, force:false });
+      await get(`${lid}/versions/1/files/?path=SKILL.md`);
+      await get(`${lid}/versions/1/download/`);
+      await put(`${lid}/labels/staging/`, { version:1, expected_version:null, note:'Synthetic first label' });
+      await get(`download/?names=${leafName}&label=staging`);
+      await request('DELETE', prefix+`${lid}/labels/staging/`, { expected_version:1 });
+      const started = await put(`${lid}/draft/`, { files:leafFiles(' Draft change.'), base_version:2, revision:0, note:'Synthetic second draft' });
+      await get(`${lid}/draft/checkpoints/`);
+      await request('DELETE', prefix+`${lid}/draft/`);
+      const form = new FormData();
+      form.append('files', new Blob([`---\nname: docs-import-${run}\ndescription: Use when importing a synthetic policy.\n---\nBody.\n`]), `docs-import-${run}/SKILL.md`);
+      const previewed = await post('import/preview/', form);
+      const bundleKey = previewed?.bundles?.[0]?.key ?? `docs-import-${run}`;
+      const form2 = new FormData();
+      form2.append('files', new Blob([`---\nname: docs-import-${run}\ndescription: Use when importing a synthetic policy.\n---\nBody.\n`]), `docs-import-${run}/SKILL.md`);
+      form2.append('selected', JSON.stringify([bundleKey]));
+      form2.append('labels', '[]');
+      form2.append('acknowledge_warnings', 'true');
+      await post('import/', form2);
+      await request('DELETE', prefix+`${lid}/`);
+    }
+    const spend = await get('spend-policy/');
+    if (spend?.revision !== undefined) await put('spend-policy/', { revision:spend.revision, enabled:true, period_limit_usd:'20.00' });
+  }
   fs.writeFileSync(path.join(out,'fixture-state.json'),JSON.stringify({sid,cid,published},null,2));
   // Capture missing UI subjects in the VM browser; never persist authentication.
   const { chromium } = await import('playwright');

@@ -9,9 +9,9 @@ const contract = JSON.parse(read('public/api/skills-sealed.json'));
 const pages = fs.readdirSync(path.join(root,'src/pages/docs/skills')).filter(f=>f.endsWith('.mdx'));
 
 test('Skills API subset is pinned and has no dangling schema references', () => {
-  assert.equal(contract.provenance.product_commit,'12576311b77d22f00c8ca1471c7f051eed96889a');
-  assert.equal(contract.provenance.sha256,'c06b8610ccba9ffe52b1a428e5f481f8a016cbb8f8f94250583d3ff47da58230');
-  assert.equal(Object.keys(contract.paths).length,129);
+  assert.equal(contract.provenance.product_commit,'e503da41fd21655c94b7d46e64d202c44a886a47');
+  assert.equal(contract.provenance.sha256,'0d34c29112eb3571cfc0d436d3e113127de1a07eddd112bd7fb3a69154cecbe7');
+  assert.equal(Object.keys(contract.paths).length,144);
   function visit(value) {
     if (!value || typeof value!=='object') return;
     if (value.$ref) assert.ok(contract.definitions[value.$ref.replace('#/definitions/','')],value.$ref);
@@ -51,7 +51,7 @@ test('Skills page links and screenshots exist', () => {
 });
 
 test('new product captures retain the requested 1440 by 900 viewport', () => {
-  for (const name of ['context-linked-skills','context-accepted-lock','exact-release-review','durable-release-receipt','context-historical-editor','campaign-boundary','retained-migration','github-import','context-detail','context-use']) {
+  for (const name of ['context-linked-skills','context-tests','context-recovery','rollback-review','release-renewal','target-registration','context-accepted-lock','exact-release-review','durable-release-receipt','context-historical-editor','campaign-boundary','retained-migration','github-import','context-detail','context-use']) {
     const bytes=fs.readFileSync(path.join(root,`public/images/docs/skills/${name}.png`));
     assert.equal(bytes.readUInt32BE(16),1440,name);
     assert.equal(bytes.readUInt32BE(20),900,name);
@@ -60,7 +60,7 @@ test('new product captures retain the requested 1440 by 900 viewport', () => {
 
 test('observed gates and distinct restoration semantics remain explicit', () => {
   assert.match(read('src/pages/docs/skills/campaigns.mdx'),/Repository rollouts \(unavailable\)/);
-  assert.match(read('src/pages/docs/skills/tests.mdx'),/Tests\*\* disabled/);
+  assert.match(read('src/pages/docs/skills/tests.mdx'),/Application verification unavailable\. This deployment has no hosted application runtime\./);
   assert.match(read('src/pages/docs/skills/versions-and-labels.mdx'),/creates a new version even when those bytes match latest/);
   assert.match(read('src/pages/docs/skills/use-in-agents.mdx'),/not safe managed updaters/);
   assert.doesNotMatch(read('src/pages/docs/skills/index.mdx'),/does not include model test runs|no Skills methods/);
