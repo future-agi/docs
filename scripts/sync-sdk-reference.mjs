@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PAGES_DIR = path.join(ROOT, 'src/pages/docs/sdk/reference');
@@ -26,7 +27,18 @@ if (fromIndex === -1 || !args[fromIndex + 1]) {
   console.error('usage: node scripts/sync-sdk-reference.mjs --from <path to a futureagi-sdk checkout>');
   process.exit(2);
 }
-const source = path.resolve(args[fromIndex + 1], 'docs/sdk-reference');
+const sdkRoot = path.resolve(args[fromIndex + 1]);
+const source = path.join(sdkRoot, 'docs/sdk-reference');
+const sdkCommit = execFileSync('git', ['-C', sdkRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+if (!/^[0-9a-f]{40}$/.test(sdkCommit)) throw new Error('SDK checkout has no immutable commit');
+const manifest = JSON.parse(fs.readFileSync(path.join(sdkRoot, '.release-please-manifest.json'), 'utf8'));
+const provenance = {
+  sdk_commit: sdkCommit,
+  python: manifest.python,
+  typescript: manifest['typescript/futureagi'],
+  backend: fs.readFileSync(path.join(sdkRoot, 'sdkgen/contracts/BACKEND_VERSION'), 'utf8').trim(),
+};
+if (!provenance.python || !provenance.typescript || !provenance.backend) throw new Error('Incomplete SDK reference provenance');
 const navSource = path.join(source, 'navigation.json');
 if (!fs.existsSync(path.join(source, 'index.mdx')) || !fs.existsSync(navSource)) {
   console.error(`${source} does not hold a generated reference (index.mdx + navigation.json); run python sdkgen/generate.py in the SDK checkout first`);
@@ -82,5 +94,6 @@ const navModule = `// @ts-check
 export const sdkReferenceNavigation = ${JSON.stringify(nav, null, 2)};
 `;
 fs.writeFileSync(NAV_FILE, navModule);
+fs.writeFileSync(path.join(ROOT, 'src/lib/sdk-reference-source.json'), `${JSON.stringify(provenance, null, 2)}\n`);
 
 console.log(`sdk reference: ${pages.length} pages copied, ${removed} stale removed, ${[...walk(nav.items)].length} nav links`);

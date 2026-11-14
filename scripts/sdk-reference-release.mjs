@@ -16,9 +16,11 @@
  * PR) per SDK version pair, however many times the sync runs.
  *
  * `stage` is what the caller claims; `publish` is what the registries confirm.
- * A `released` claim is downgraded to `candidate` unless BOTH packages at those
- * versions are installable from PyPI and npm, so a docs PR never leaves draft
- * for an SDK users cannot install yet. `preview` (any ref, usually dev) is
+ * A `released` claim is downgraded to `candidate` unless its commit matches a
+ * component release tag AND BOTH manifest versions are installable from PyPI
+ * and npm. Any package not tagged at that commit must have an identical source
+ * tree to its own release tag. Published version strings alone are not enough.
+ * `preview` (any ref, usually dev) is
  * always a draft and gets its own branch keyed by commit.
  *
  * Reads only public endpoints (api.github.com, pypi.org, registry.npmjs.org);
@@ -101,6 +103,21 @@ async function commitDate(sha) {
   return commit.commit.committer.date;
 }
 
+/** Content identity of a package directory; non-recursive trees cannot truncate a file diff.
+ * @param {string} sha @param {string} directory
+ */
+async function packageTree(sha, directory) {
+  let tree = sha;
+  for (const part of directory.split('/')) {
+    const result = await github(`git/trees/${tree}`);
+    if (result.truncated) throw new Error(`truncated tree for ${directory} at ${sha}`);
+    const entry = result.tree.find((item) => item.path === part && item.type === 'tree');
+    if (!entry) throw new Error(`missing package ${directory} at ${sha}`);
+    tree = entry.sha;
+  }
+  return tree;
+}
+
 /** @param {string} path @param {string} sha */
 async function fileAt(path, sha) {
   const file = await github(`contents/${path}?ref=${sha}`);
@@ -135,13 +152,14 @@ export function decide({ stage, sha, python, typescript, installable }) {
 
 /**
  * @param {{ref?: string, stage?: string}} options
- * @param {{resolveSha?: typeof resolveSha, fileAt?: typeof fileAt, commitDate?: typeof commitDate, tags?: () => Promise<{ref: string}[]>, onPyPI?: typeof onPyPI, onNpm?: typeof onNpm}} [io]
+ * @param {{resolveSha?: typeof resolveSha, fileAt?: typeof fileAt, commitDate?: typeof commitDate, packageTree?: typeof packageTree, tags?: () => Promise<{ref: string}[]>, onPyPI?: typeof onPyPI, onNpm?: typeof onNpm}} [io]
  */
 export async function resolve(options, io = {}) {
   const get = {
     resolveSha: io.resolveSha ?? resolveSha,
     fileAt: io.fileAt ?? fileAt,
     commitDate: io.commitDate ?? commitDate,
+    packageTree: io.packageTree ?? packageTree,
     // Both package release streams; the SDK versions Python and TypeScript independently.
     tags: io.tags ?? (async () => [...(await github('git/matching-refs/tags/python-v')), ...(await github('git/matching-refs/tags/typescript-v'))]),
     onPyPI: io.onPyPI ?? onPyPI,
@@ -162,8 +180,29 @@ export async function resolve(options, io = {}) {
   if (!python || !typescript) throw new Error(`release manifest at ${sha} lacks the python or typescript/futureagi version`);
   const backend = (await get.fileAt('sdkgen/contracts/BACKEND_VERSION', sha)).trim();
   const installable = stage === 'released' ? (await get.onPyPI(python)) && (await get.onNpm(typescript)) : false;
-  const decision = decide({ stage, sha, python, typescript, installable });
-  return { ref, sha, python, typescript, backend, installable, ...decision };
+  // A dev/candidate commit can retain already-published version strings while
+  // adding methods. Registry existence alone must not make its pages stable.
+  // Independent releases are valid only if the other package is byte-identical
+  // to its own release tag. Otherwise a chore-only source change could hide behind
+  // an unchanged, already-installable version while the other package releases.
+  let releaseCommit = false;
+  if (installable) {
+    const refs = new Set((await get.tags()).map((tag) => tag.ref.replace('refs/tags/', '')));
+    let tagged = false;
+    let aligned = true;
+    for (const [tag, directory] of [[`python-v${python}`, 'python'], [`typescript-v${typescript}`, 'typescript/futureagi']]) {
+      if (!refs.has(tag)) { aligned = false; break; }
+      const releasedSha = await get.resolveSha(tag);
+      if (releasedSha === sha) {
+        tagged = true;
+      } else if (await get.packageTree(releasedSha, directory) !== await get.packageTree(sha, directory)) {
+        aligned = false;
+      }
+    }
+    releaseCommit = tagged && aligned;
+  }
+  const decision = decide({ stage, sha, python, typescript, installable: installable && releaseCommit });
+  return { ref, sha, python, typescript, backend, installable, releaseCommit, ...decision };
 }
 
 function parseArgs(argv) {

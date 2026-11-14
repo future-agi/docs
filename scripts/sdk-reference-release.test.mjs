@@ -9,12 +9,20 @@ const files = {
   'sdkgen/contracts/BACKEND_VERSION': 'v1.58.0\n',
 };
 
-/** @param {{pypi?: boolean, npm?: boolean, tags?: string[], shas?: Record<string, string>, dates?: Record<string, string>}} world */
+/** @param {{pypi?: boolean, npm?: boolean, tags?: string[], shas?: Record<string, string>, dates?: Record<string, string>, trees?: Record<string, string>}} world */
 function io(world = {}) {
   return {
     resolveSha: async (/** @type {string} */ ref) => (ref === 'missing' ? Promise.reject(new Error('404')) : (world.shas?.[ref] ?? SHA)),
-    fileAt: async (/** @type {string} */ path) => files[path],
+    fileAt: async (/** @type {string} */ path, /** @type {string} */ sha) => {
+      if (path === '.release-please-manifest.json') {
+        const tag = Object.entries(world.shas ?? {}).find(([tag, commit]) => tag.startsWith('typescript-') && commit === sha)?.[0];
+        const pythonTag = Object.entries(world.shas ?? {}).find(([tag, commit]) => tag.startsWith('python-') && commit === sha)?.[0];
+        return JSON.stringify({ python: pythonTag?.replace('python-v', '') ?? '0.7.0', 'typescript/futureagi': tag?.replace('typescript-v', '') ?? '0.2.0' });
+      }
+      return files[path];
+    },
     commitDate: async (/** @type {string} */ sha) => world.dates?.[sha] ?? '2026-11-05T03:41:58Z',
+    packageTree: async (/** @type {string} */ sha, /** @type {string} */ directory) => world.trees?.[`${sha}:${directory}`] ?? `${directory}-unchanged`,
     tags: async () => (world.tags ?? ['python-v0.6.9', 'python-v0.7.0', 'python-v0.6.14', 'typescript-v0.2.0']).map((t) => ({ ref: `refs/tags/${t}` })),
     onPyPI: async () => world.pypi ?? false,
     onNpm: async () => world.npm ?? false,
@@ -40,6 +48,8 @@ test('the scheduled default follows both release streams: a newer TypeScript-onl
   const resolved = await resolve({}, io({ ...world, pypi: true, npm: true }));
   assert.equal(resolved.sha, B);
   assert.equal(resolved.ref, 'typescript-v0.2.1');
+  assert.equal(resolved.publish, 'ready');
+  assert.equal(resolved.releaseCommit, true);
   // The other way round too: a newer Python-only release is not shadowed by TypeScript.
   const flipped = { ...world, dates: { [A]: '2026-11-09T10:00:00Z', [B]: '2026-11-05T03:41:58Z' } };
   assert.equal((await resolve({}, io({ ...flipped, pypi: true, npm: true }))).sha, A);
@@ -70,6 +80,37 @@ test('a released claim stays a draft until both packages are installable', async
   assert.equal(onlyPython.publish, 'draft');
   assert.equal(onlyPython.stage, 'candidate');
   assert.equal((await resolve(claim, io({ pypi: false, npm: true }))).publish, 'draft');
+});
+
+test('published version strings on an unreleased commit do not authorize stable docs', async () => {
+  const released = 'a'.repeat(40);
+  const result = await resolve({ ref: 'dev', stage: 'released' }, io({
+    pypi: true, npm: true,
+    shas: { dev: SHA, 'python-v0.7.0': released, 'typescript-v0.2.0': released },
+  }));
+  assert.equal(result.installable, true);
+  assert.equal(result.releaseCommit, false);
+  assert.equal(result.publish, 'draft');
+  assert.equal(result.stage, 'candidate');
+});
+
+test('independent releases require unchanged source for the package that did not release', async () => {
+  const A = 'a'.repeat(40);
+  const B = 'b'.repeat(40);
+  const world = { pypi: true, npm: true, tags: ['python-v0.8.0', 'typescript-v0.2.0'], shas: { release: B, 'python-v0.8.0': B, 'typescript-v0.2.0': A } };
+  assert.equal((await resolve({ ref: 'release', stage: 'released' }, io(world))).publish, 'ready');
+  const changedTS = { ...world, trees: { [`${A}:typescript/futureagi`]: 'published', [`${B}:typescript/futureagi`]: 'unreleased' } };
+  assert.equal((await resolve({ ref: 'release', stage: 'released' }, io(changedTS))).publish, 'draft');
+  const changedPython = { pypi: true, npm: true, tags: ['python-v0.7.0', 'typescript-v0.2.0'], shas: { release: B, 'python-v0.7.0': A, 'typescript-v0.2.0': B }, trees: { [`${A}:python`]: 'published', [`${B}:python`]: 'unreleased' } };
+  assert.equal((await resolve({ ref: 'release', stage: 'released' }, io(changedPython))).publish, 'draft');
+  await assert.rejects(resolve({ ref: 'release', stage: 'released' }, { ...io(world), packageTree: async () => { throw new Error('tree lookup failed'); } }), /tree lookup failed/);
+});
+
+test('missing release tags cannot authorize stable docs and lookup errors fail closed', async () => {
+  assert.equal((await resolve({ ref: SHA, stage: 'released' }, io({ pypi: true, npm: true, tags: [] }))).publish, 'draft');
+  await assert.rejects(resolve({ ref: SHA, stage: 'released' }, {
+    ...io({ pypi: true, npm: true }), tags: async () => { throw new Error('HTTP 502'); },
+  }), /HTTP 502/);
 });
 
 test('no ref means the newest published release; a ref without a stage is a preview', async () => {

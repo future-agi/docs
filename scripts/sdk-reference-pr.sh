@@ -26,7 +26,7 @@ done
 : "${SOURCE:=manual run}"
 short=${SHA:0:12}
 sdk="https://github.com/future-agi/futureagi-sdk"
-pages="src/pages/docs/sdk/reference src/lib/sdk-reference.mjs"
+pages="src/pages/docs/sdk/reference src/lib/sdk-reference.mjs src/lib/sdk-reference-source.json"
 
 # The open PR for this release, if any: "<number> <true|false>" (isDraft) or empty.
 existing() {
@@ -59,7 +59,8 @@ if [ "$PUBLISH" = draft ] && [ -n "$number" ] && [ "$is_draft" = false ]; then
 fi
 
 # shellcheck disable=SC2086
-if git diff --quiet -- $pages; then
+changes=$(git status --porcelain --untracked-files=all -- $pages)
+if [ -z "$changes" ]; then
   if [ -z "$number" ]; then
     echo "main already carries the reference of futureagi-sdk@$short; nothing to open"
     exit 0

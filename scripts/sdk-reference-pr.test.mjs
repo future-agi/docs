@@ -50,12 +50,16 @@ if (cmd === 'pr' && sub === 'close') { pr.state = 'closed'; save(); process.exit
 process.stderr.write('fake gh: unexpected ' + args.join(' ') + '\\n'); process.exit(64);
 `;
 
-/** The fake `git`: `diff --quiet` answers from FAKE_DIFF, pushes are recorded, the rest is a no-op. */
+/** The fake `git`: status includes tracked/untracked changes; pushes are recorded. */
 const FAKE_GIT = `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_LOG, 'git ' + args.join(' ') + '\\n');
 if (args[0] === 'diff' && args.includes('--quiet')) process.exit(process.env.FAKE_DIFF === '0' ? 0 : 1);
+if (args[0] === 'status') {
+  if (process.env.FAKE_DIFF !== '0') process.stdout.write(' M src/pages/docs/sdk/reference/index.mdx\\n');
+  if (process.env.FAKE_UNTRACKED === '1') process.stdout.write('?? src/lib/sdk-reference-source.json\\n');
+}
 process.exit(0);
 `;
 
@@ -70,13 +74,14 @@ function harness() {
   fs.writeFileSync(stateFile, JSON.stringify({ next: 100, prs: [] }));
   fs.writeFileSync(logFile, '');
   const base = { SHA: 'a'.repeat(40), REF: 'python-v0.7.0', PY: '0.7.0', TS: '0.2.0', BACKEND: 'v1.58.0', SOURCE: 'test' };
-  /** @param {{STAGE: string, PUBLISH: string, BRANCH?: string, SHA?: string, diff?: boolean, readyFails?: boolean, listFails?: boolean}} ev */
+  /** @param {{STAGE: string, PUBLISH: string, BRANCH?: string, SHA?: string, diff?: boolean, untracked?: boolean, readyFails?: boolean, listFails?: boolean}} ev */
   const run = (ev) => {
     const env = {
       ...process.env, ...base, SHA: ev.SHA ?? base.SHA,
       BRANCH: ev.BRANCH ?? 'sdk-reference/python-v0.7.0-typescript-v0.2.0',
       STAGE: ev.STAGE, PUBLISH: ev.PUBLISH,
       PATH: `${bin}:${process.env.PATH}`, FAKE_PR_STATE: stateFile, FAKE_LOG: logFile,
+      FAKE_UNTRACKED: ev.untracked ? '1' : '0',
       FAKE_DIFF: ev.diff === false ? '0' : '1', FAKE_READY_FAILS: ev.readyFails ? '1' : '0', FAKE_LIST_FAILS: ev.listFails ? '1' : '0', GH_TOKEN: 'fake',
     };
     const result = spawnSync('bash', [SCRIPT], { env, encoding: 'utf-8' });
@@ -170,6 +175,15 @@ test('no diff against main: nothing is opened, and an open PR for the release is
   r = h.run({ STAGE: 'released', PUBLISH: 'ready', diff: false });
   assert.equal(r.status, 0, r.out);
   assert.deepEqual(h.prs().map((p) => p.state), ['closed']);
+});
+
+test('an untracked provenance file alone is an update, not a no-op', () => {
+  const h = harness();
+  const r = h.run({ STAGE: 'released', PUBLISH: 'ready', diff: false, untracked: true });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(h.prs().length, 1);
+  assert.ok(h.calls().some(c => c.startsWith('git push')));
+  assert.ok(!h.calls().some(c => c.startsWith('gh pr close')));
 });
 
 test('a preview is its own draft PR on its own branch and never touches a release PR', () => {
