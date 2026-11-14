@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const contract = JSON.parse(read('public/api/skills-sealed.json'));
@@ -58,9 +59,25 @@ test('new product captures retain the requested 1440 by 900 viewport', () => {
   }
 });
 
+test('every referenced UI capture matches the refreshed source manifest', () => {
+  const manifest=JSON.parse(read('public/images/docs/skills/capture-manifest.json'));
+  assert.equal(manifest.product_commit,'4351c9302f7c936cec70d6bc02759364a903f155');
+  assert.equal(manifest.synthetic,true);
+  const references=new Set(pages.flatMap(page=>[...read(`src/pages/docs/skills/${page}`).matchAll(/\/images\/docs\/skills\/([\w-]+\.png)/g)].map(match=>match[1])));
+  assert.deepEqual(manifest.images.map(image=>image.file).sort(),[...references].sort());
+  for (const image of manifest.images) {
+    const bytes=fs.readFileSync(path.join(root,'public/images/docs/skills',image.file));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'),image.sha256,image.file);
+    assert.equal(bytes.readUInt32BE(16),image.width,image.file);
+    assert.equal(bytes.readUInt32BE(20),image.height,image.file);
+    assert.equal(image.width,1440,image.file);
+    assert.equal(image.height,900,image.file);
+  }
+});
+
 test('observed gates and distinct restoration semantics remain explicit', () => {
-  assert.match(read('src/pages/docs/skills/campaigns.mdx'),/Repository rollouts \(unavailable\)/);
-  assert.match(read('src/pages/docs/skills/tests.mdx'),/Application verification unavailable\. This deployment has no hosted application runtime\./);
+  assert.match(read('src/pages/docs/skills/campaigns.mdx'),/Repository rollouts are off/);
+  assert.match(read('src/pages/docs/skills/tests.mdx'),/Application verification is off/);
   assert.match(read('src/pages/docs/skills/versions-and-labels.mdx'),/creates a new version even when those bytes match latest/);
   assert.match(read('src/pages/docs/skills/use-in-agents.mdx'),/not safe managed updaters/);
   assert.doesNotMatch(read('src/pages/docs/skills/index.mdx'),/does not include model test runs|no Skills methods/);

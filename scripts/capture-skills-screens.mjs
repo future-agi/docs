@@ -176,24 +176,31 @@ await shot('skills-editor-checks', async () => {
   await page.getByRole('button', { name: 'Open editor', exact: true }).click();
   await page.waitForURL(/\/dashboard\/skills\/[0-9a-f-]+\/edit/);
   quickId = page.url().match(/skills\/([0-9a-f-]{36})/)[1];
-  await page.getByText('Saved', { exact: true }).first().waitFor();
-  await page.waitForTimeout(6500);
+  const instructions = page.getByRole('textbox', { name: 'Instructions', exact: true });
+  await instructions.fill(`${await instructions.inputValue()}\n\nEscalate policy exceptions to a human reviewer.`);
+  await page.getByRole('status').filter({ hasText: /^Saved$/ }).waitFor();
+  await page.getByText('No issues found.', { exact: true }).waitFor();
+  await page.getByText('Skill created', { exact: true }).waitFor({ state: 'hidden' });
+  await instructions.evaluate((element) => { element.scrollTop = 0; });
+  await instructions.blur();
+  await page.waitForFunction(() => [...document.querySelectorAll('button')].some((button) => button.textContent === 'Publish' && !button.disabled));
 });
 await shot('skills-publish', async () => {
   await page.getByRole('button', { name: 'Publish', exact: true }).click();
-  await page.getByText(/After publishing, move label/).first().waitFor();
+  await page.getByText('Release labels (optional)', { exact: true }).waitFor();
   await page.getByRole('checkbox', { name: 'production' }).check();
   const note = page.getByRole('textbox', { name: /note/i }).first();
   await note.fill('Initial reviewed support policy').catch(() => undefined);
   await page.locator('[role=dialog] *').evaluateAll((els) => els.forEach((e) => { if (e.scrollHeight > e.clientHeight + 4) e.scrollTop = e.scrollHeight; }));
 });
 await shot('skills-use-claude-code', async () => {
-  await page.getByRole('button', { name: 'Publish', exact: true }).last().click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Publish and move production', exact: true }).click();
   await page.waitForTimeout(3000);
   await go(`/dashboard/skills/${quickId}`);
   await page.getByRole('tab', { name: 'Use', exact: true }).click();
-  await page.getByRole('combobox', { name: /Use label or version/ }).click().catch(() => undefined);
-  await page.getByRole('option', { name: /production/ }).click().catch(() => undefined);
+  // The published fixture defaults to production. The current MUI selector has
+  // no associated accessible label, so assert its displayed selection directly.
+  await page.getByRole('combobox').filter({ hasText: /^Production \(currently v1\)$/ }).waitFor();
   await page.waitForTimeout(1000);
   await hostFix();
 });
@@ -208,7 +215,7 @@ await shot('skills-label-history', async () => {
   await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Versions', exact: true }).click();
   await page.getByRole('button', { name: 'Label history', exact: true }).click();
 });
-await shot('skills-usage', async () => { await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Usage', exact: true }).click(); await page.waitForTimeout(1500); });
+await shot('skills-usage', async () => { await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Activity', exact: true }).click(); await page.waitForTimeout(1500); });
 await shot('skills-use-clients', async () => {
   await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Use', exact: true }).click();
   await hostFix();
@@ -220,21 +227,31 @@ await shot('github-import', async () => {
   await page.getByRole('tab', { name: 'GitHub', exact: true }).click();
   await page.getByRole('textbox', { name: 'Public repository URL', exact: true }).waitFor();
 });
-await shot('skills-dependents', async () => { await go(`/dashboard/skills/${chargeback.id}`); await page.getByRole('tab', { name: 'Dependents', exact: true }).click(); await page.waitForTimeout(1500); });
+await shot('skills-dependents', async () => { await go(`/dashboard/skills/${chargeback.id}`); await page.getByRole('tab', { name: 'Used by', exact: true }).click(); await page.waitForTimeout(1500); });
 await shot('skills-context-library', async () => { await go('/dashboard/skills/contexts'); await page.getByText('support-desk').first().waitFor(); });
 await shot('context-detail', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).waitFor(); });
 await shot('context-linked-skills', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('tab', { name: 'Linked skills', exact: true }).click(); });
 await shot('context-accepted-lock', async () => { await go(ctxUrl(returns.context_id, 1)); await page.getByRole('tab', { name: 'Linked skills', exact: true }).click(); await page.waitForTimeout(1500); });
-await shot('context-historical-editor', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).click(); await page.getByRole('button', { name: 'Start selected draft', exact: true }).waitFor(); });
+await shot('context-historical-editor', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).click(); await page.getByRole('button', { name: 'Start selected draft', exact: true }).click(); await page.getByRole('button', { name: 'Review changes', exact: true }).waitFor(); await page.getByText(/The content origin remains v1/).waitFor(); });
 await shot('context-versions', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Versions', exact: true }).click(); await page.waitForTimeout(1500); });
-await shot('context-tests', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Tests', exact: true }).click(); await page.waitForTimeout(1500); });
+await shot('context-tests', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Tests', exact: true }).click(); await page.getByRole('radio', { name: /Verify on the application/ }).check(); await page.getByRole('button', { name: 'Add application target', exact: true }).waitFor(); });
 await shot('context-consumers', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Consumers', exact: true }).click(); await page.waitForTimeout(1500); });
-await shot('context-recovery', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Recovery', exact: true }).click(); await page.waitForTimeout(6000); });
+await shot('context-recovery', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Rollback', exact: true }).click(); await page.waitForTimeout(6000); });
 await shot('context-use', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('tab', { name: 'Use', exact: true }).click(); });
 await shot('campaign-boundary', async () => { await go('/dashboard/skills/contexts/rollouts'); });
 await shot('skills-reviews', async () => { await go('/dashboard/skills/reviews'); await page.waitForTimeout(1500); });
 await shot('skills-allowance', async () => { await go('/dashboard/skills/allowance'); await page.waitForTimeout(1500); });
-await shot('context-historical-draft', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).click(); await page.getByRole('button', { name: 'Start selected draft', exact: true }).click(); await page.waitForTimeout(3000); });
+await shot('context-historical-draft', async () => {
+  await go(ctxUrl(cid, 1));
+  const resume = page.getByRole('button', { name: 'Resume your draft', exact: true });
+  if (await resume.isVisible()) await resume.click();
+  else {
+    await page.getByRole('button', { name: /Edit viewed v1/ }).click();
+    await page.getByRole('button', { name: 'Start selected draft', exact: true }).click();
+  }
+  await page.getByRole('button', { name: 'Review changes', exact: true }).waitFor();
+  await page.waitForTimeout(1000);
+});
 await shot('context-draft-review', async () => { await go(`/dashboard/skills/contexts/${cid}/review`); await page.waitForTimeout(3000); });
 await shot('skills-import-preview', async () => {
   await importZip('team-skills.zip', importEntries);
@@ -251,3 +268,4 @@ await shot('skills-import-result', async () => {
 await browser.close();
 fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(results, null, 2));
 console.log(results.map((r) => r.join(' ')).join('\n'));
+if (results.some(([, result]) => result !== 'ok')) process.exitCode = 1;
