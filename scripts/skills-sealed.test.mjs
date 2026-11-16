@@ -77,11 +77,25 @@ test('every referenced UI capture matches the refreshed source manifest', () => 
 
 test('observed gates and distinct restoration semantics remain explicit', () => {
   assert.match(read('src/pages/docs/skills/campaigns.mdx'),/Repository rollouts are off/);
-  assert.match(read('src/pages/docs/skills/tests.mdx'),/Application verification is off/);
+  assert.match(read('src/pages/docs/skills/tests.mdx'),/Application tests are off/);
   assert.match(read('src/pages/docs/skills/versions-and-labels.mdx'),/creates a new version even when those bytes match latest/);
   assert.match(read('src/pages/docs/skills/use-in-agents.mdx'),/not safe managed updaters/);
   assert.doesNotMatch(read('src/pages/docs/skills/index.mdx'),/does not include model test runs|no Skills methods/);
   assert.match(read('src/pages/docs/skills/sealed-api.mdx'),/schema-derived/);
+});
+
+test('current UI guidance preserves explicit review and restoration decisions', () => {
+  const context=read('src/pages/docs/skills/agent-contexts.mdx');
+  assert.match(context,/I reviewed these changes against the current published version/);
+  assert.match(context,/Publish version/);
+  assert.match(context,/draft or published head changed/);
+  const renewal=read('src/pages/docs/skills/reviewed-releases.mdx');
+  for (const label of ['Connect an app','Approve again','Renew and decide later',"I've checked every change since the last approval"]) assert.ok(renewal.includes(label),label);
+  const recovery=read('src/pages/docs/skills/rollout-recovery.mdx');
+  assert.match(recovery,/workspace admin opens \*\*More → Archived skills/);
+  assert.match(recovery,/I've checked which labels come back with this skill/);
+  const all=pages.map(page=>read(`src/pages/docs/skills/${page}`)).join('\n');
+  for (const stale of ['**Choose inventory packet**','**Create credential**','**Register application target**','**Preview whole-context test**','**Run whole-context test**','**Approve renewed revision**','**Verify on the application**']) assert.ok(!all.includes(stale),`Stale UI label: ${stale}`);
 });
 
 test('live examples retain statuses, source provenance, and secret redaction', () => {
