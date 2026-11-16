@@ -10,9 +10,12 @@ const contract = JSON.parse(read('public/api/skills-sealed.json'));
 const pages = fs.readdirSync(path.join(root,'src/pages/docs/skills')).filter(f=>f.endsWith('.mdx'));
 
 test('Skills API subset is pinned and has no dangling schema references', () => {
-  assert.equal(contract.provenance.product_commit,'e503da41fd21655c94b7d46e64d202c44a886a47');
-  assert.equal(contract.provenance.sha256,'0d34c29112eb3571cfc0d436d3e113127de1a07eddd112bd7fb3a69154cecbe7');
-  assert.equal(Object.keys(contract.paths).length,144);
+  assert.equal(contract.provenance.product_commit,'8254acd488c074ec30f660c68619e4039f52bb90');
+  assert.equal(contract.provenance.sha256,'bd4a06a0a88e95b6a05b86e81dd2f2bff3a7b584e24e013a945f9d031a3b71b8');
+  assert.equal(Object.keys(contract.paths).length,147);
+  assert.equal(Object.keys(contract.definitions).length,508);
+  const methods=new Set(['get','post','put','patch','delete','head','options']);
+  assert.equal(Object.values(contract.paths).reduce((count,item)=>count+Object.keys(item).filter(method=>methods.has(method)).length,0),177);
   function visit(value) {
     if (!value || typeof value!=='object') return;
     if (value.$ref) assert.ok(contract.definitions[value.$ref.replace('#/definitions/','')],value.$ref);
@@ -21,13 +24,34 @@ test('Skills API subset is pinned and has no dangling schema references', () => 
   visit(contract);
 });
 
-test('every sealed Skills operation is retained without rewriting its contract', () => {
-  assert.ok(process.env.SKILLS_SOURCE_SWAGGER,'Set SKILLS_SOURCE_SWAGGER to the sealed product Swagger file');
-  const source=JSON.parse(fs.readFileSync(process.env.SKILLS_SOURCE_SWAGGER,'utf8'));
+test('every current Skills operation is retained without rewriting its contract', () => {
+  assert.ok(process.env.SKILLS_SOURCE_SWAGGER,'Set SKILLS_SOURCE_SWAGGER to the pinned product Swagger file');
+  const sourceBytes=fs.readFileSync(process.env.SKILLS_SOURCE_SWAGGER);
+  assert.equal(createHash('sha256').update(sourceBytes).digest('hex'),contract.provenance.sha256);
+  const source=JSON.parse(sourceBytes);
   for (const field of ['basePath','consumes','produces','securityDefinitions','security']) assert.deepEqual(contract[field],source[field],field);
   const paths=Object.fromEntries(Object.entries(source.paths).filter(([route])=>route.startsWith('/model-hub/skills/')));
   assert.deepEqual(contract.paths,paths);
   for (const [name,schema] of Object.entries(contract.definitions)) assert.deepEqual(schema,source.definitions[name],name);
+});
+
+test('current contract and screenshot provenance are disclosed without relabeling historical captures', () => {
+  const overview=read('src/pages/docs/skills/index.mdx');
+  const reference=read('src/pages/docs/skills/sealed-api.mdx');
+  for (const text of [overview,reference]) {
+    assert.ok(text.includes(contract.provenance.product_commit));
+    assert.ok(text.includes('e503da41fd21655c94b7d46e64d202c44a886a47'));
+  }
+  const guide=read('src/pages/docs/skills/api-reference.mdx');
+  for (const [method,route] of [
+    ['get','/model-hub/skills/archived/'],
+    ['get','/model-hub/skills/archived/{resource_id}/restore-review/'],
+    ['post','/model-hub/skills/archived/{resource_id}/restore/'],
+  ]) {
+    assert.ok(contract.paths[route]?.[method],route);
+    assert.ok(guide.includes(`${method.toUpperCase()} ${route}`),route);
+  }
+  assert.match(guide,/included in the \[refreshed generated contract\]/);
 });
 
 test('every Skills page is reachable from navigation', () => {
@@ -61,8 +85,9 @@ test('new product captures retain the requested 1440 by 900 viewport', () => {
 
 test('every referenced UI capture matches the refreshed source manifest', () => {
   const manifest=JSON.parse(read('public/images/docs/skills/capture-manifest.json'));
-  assert.equal(manifest.product_commit,'03e18d08abdcc177c98415d6f3f2292d53c1661c');
+  assert.equal(manifest.product_commit,contract.provenance.product_commit);
   assert.equal(manifest.synthetic,true);
+  assert.equal(manifest.images.length,36);
   const references=new Set(pages.flatMap(page=>[...read(`src/pages/docs/skills/${page}`).matchAll(/\/images\/docs\/skills\/([\w-]+\.png)/g)].map(match=>match[1])));
   assert.deepEqual(manifest.images.map(image=>image.file).sort(),[...references].sort());
   for (const image of manifest.images) {
@@ -92,7 +117,7 @@ test('current UI guidance preserves explicit review and restoration decisions', 
   const renewal=read('src/pages/docs/skills/reviewed-releases.mdx');
   for (const label of ['Connect an app','Approve again','Renew and decide later',"I've checked every change since the last approval"]) assert.ok(renewal.includes(label),label);
   const recovery=read('src/pages/docs/skills/rollout-recovery.mdx');
-  assert.match(recovery,/workspace admin opens \*\*More → Archived skills/);
+  assert.match(recovery,/current workspace or organization admin opens the Skills library's \*\*More > Archived skills/);
   assert.match(recovery,/I've checked which labels come back with this skill/);
   const all=pages.map(page=>read(`src/pages/docs/skills/${page}`)).join('\n');
   for (const stale of ['**Choose inventory packet**','**Create credential**','**Register application target**','**Preview whole-context test**','**Run whole-context test**','**Approve renewed revision**','**Verify on the application**','**Use** tab','**Consumers** tab','**Delivery: see Consumers**']) assert.ok(!all.includes(stale),`Stale UI label: ${stale}`);
@@ -100,7 +125,11 @@ test('current UI guidance preserves explicit review and restoration decisions', 
 
 test('live examples retain statuses, source provenance, and secret redaction', () => {
   const evidence=JSON.parse(read('public/api/skills-examples.json'));
-  assert.equal(evidence.product_commit,contract.provenance.product_commit);
+  // HTTP captures remain historical evidence; refreshing the schema must not relabel them.
+  assert.equal(evidence.product_commit,'e503da41fd21655c94b7d46e64d202c44a886a47');
+  assert.match(read('src/pages/docs/skills/sealed-api.mdx'),new RegExp(evidence.product_commit));
+  assert.match(read('src/pages/docs/skills/sealed-api.mdx'),/not execution evidence for the current head/);
+  assert.match(read('src/components/SkillsApiReference.astro'),/evidence\.product_commit/);
   assert.equal(evidence.synthetic,true);
   const successful=new Set();
   function visit(value) {

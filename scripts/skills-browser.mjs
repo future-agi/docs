@@ -8,6 +8,10 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const dist=path.join(root,'dist');
+const contract=JSON.parse(fs.readFileSync(path.join(root,'public/api/skills-sealed.json'),'utf8'));
+const schemaCount=Object.keys(contract.definitions).length;
+const methods=new Set(['get','post','put','patch','delete','head','options']);
+const operationCount=Object.values(contract.paths).reduce((count,item)=>count+Object.keys(item).filter(method=>methods.has(method)).length,0);
 // Every Skills page, so each guide's images, links, and mobile layout are checked.
 const skillSlugs=fs.readdirSync(path.join(root,'src/pages/docs/skills')).filter(file=>file.endsWith('.mdx')).map(file=>file.replace('.mdx','')).sort();
 const out=process.argv[2] ?? path.join(root,'evidence','docs-browser.json');
@@ -34,7 +38,7 @@ try {
       if (slug==='sealed-api') {
         // This long static page can still be parsing after network quiescence on a cached revisit.
         // Assert readiness of the complete contract before checking every anchor.
-        await page.waitForFunction(()=>document.querySelectorAll('.api-schema').length===494 && document.getElementById('schema-skillsversionpageresponse'));
+        await page.waitForFunction(count=>document.querySelectorAll('.api-schema').length===count && document.getElementById('schema-skillsversionpageresponse'),schemaCount);
       }
       const result=await page.evaluate(()=>({
         title:document.title,
@@ -48,7 +52,7 @@ try {
       assert.ok(result.scrollWidth<=width+1,`${slug} at ${width}: page overflow ${result.scrollWidth}`);
       assert.deepEqual(result.brokenImages,[],slug);
       assert.deepEqual(result.missingAnchors,[],slug);
-      if (slug==='sealed-api') {assert.equal(result.operations,174);assert.ok(result.liveExamples>=64);}
+      if (slug==='sealed-api') {assert.equal(result.operations,operationCount);assert.ok(result.liveExamples>=64);}
       records.push({slug,...result});
     }
   }

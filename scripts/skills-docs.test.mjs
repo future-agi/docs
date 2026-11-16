@@ -123,7 +123,7 @@ test('screenshots have either explicit placeholders or existing image files', ()
   }
 });
 
-test('all 28 cURL operation examples send the documented verb, route, headers, and multipart field', async () => {
+test('all 31 cURL operation examples send the documented verb, route, headers, and multipart field', async () => {
   const page = read('api-reference');
   const requests = [];
   const server = createServer((req, res) => {
@@ -132,7 +132,9 @@ test('all 28 cURL operation examples send the documented verb, route, headers, a
     req.on('end', () => {
       requests.push({ method: req.method, url: req.url, headers: req.headers, body });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('{"status":true,"result":{}}');
+      res.end(JSON.stringify({ status: true, result: req.url.endsWith('/restore-review/')
+        ? { name_collision: false, resource: { release_revision: 7 }, review_fingerprint: `sha256:${'a'.repeat(64)}` }
+        : {} }));
     });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -142,13 +144,13 @@ test('all 28 cURL operation examples send the documented verb, route, headers, a
     for (const [index, file] of ['files.json', 'version.json', 'draft.json'].entries()) writeFileSync(join(cwd, file), json[index]);
     writeFileSync(join(cwd, 'team-skills.zip'), 'Synthetic transport fixture, not an archive-parser test.');
     const sections = page.split(/(?=^`(?:GET|POST|PUT|PATCH|DELETE) \/model-hub\/skills\/)/m).slice(1);
-    assert.equal(sections.length, 28);
+    assert.equal(sections.length, 31);
     for (const section of sections) {
       const [, method, path] = section.match(/^`(\w+) (\/model-hub\/skills\/[^`]+|\/model-hub\/skills\/)`/);
       const [, code] = section.match(/```bash\n([\s\S]*?)```/);
       const child = spawn('bash', ['-e', '-c', `BASE="$HOST_API/model-hub/skills"\nAUTH=(-H "X-Api-Key: $FI_API_KEY" -H "X-Secret-Key: $FI_SECRET_KEY" -H "X-Workspace-Id: $FI_WORKSPACE_ID")\nJSON=(-H 'Content-Type: application/json')\n${code}`], {
         cwd,
-        env: { ...process.env, HOST_API: `http://127.0.0.1:${server.address().port}`, FI_API_KEY: 'synthetic-key', FI_SECRET_KEY: 'synthetic-secret', FI_WORKSPACE_ID: 'synthetic-workspace', SKILL_ID: 'synthetic-id', SELECTED_KEYS: '["reviewed-key"]' },
+        env: { ...process.env, HOST_API: `http://127.0.0.1:${server.address().port}`, FI_API_KEY: 'synthetic-key', FI_SECRET_KEY: 'synthetic-secret', FI_WORKSPACE_ID: 'synthetic-workspace', SKILL_ID: 'synthetic-id', ARCHIVED_SKILL_ID: '00000000-0000-4000-8000-000000000001', RESTORE_OPERATION_ID: '00000000-0000-4000-8000-000000000002', SELECTED_KEYS: '["reviewed-key"]' },
         timeout: 15000,
       });
       let stderr = '';
@@ -158,7 +160,7 @@ test('all 28 cURL operation examples send the documented verb, route, headers, a
       assert.equal(exit, 0, stderr);
       const request = requests.at(-1);
       assert.equal(request.method, method);
-      const expected = path.replace('{skill_id}', 'synthetic-id').replace('{number}', '1').replace('{label}', method === 'DELETE' ? 'staging' : 'production');
+      const expected = path.replace('{skill_id}', 'synthetic-id').replace('{resource_id}', '00000000-0000-4000-8000-000000000001').replace('{number}', '1').replace('{label}', method === 'DELETE' ? 'staging' : 'production');
       assert.equal(new URL(request.url, 'http://localhost').pathname, expected);
       assert.equal(request.headers['x-api-key'], 'synthetic-key');
       assert.equal(request.headers['x-secret-key'], 'synthetic-secret');
@@ -168,8 +170,19 @@ test('all 28 cURL operation examples send the documented verb, route, headers, a
         assert.match(request.body, /name="files"; filename="team-skills.zip"/);
         assert.doesNotMatch(request.body, /name="files\[\]"/);
       } else if (request.body) assert.doesNotThrow(() => JSON.parse(request.body));
+      if (path === '/model-hub/skills/archived/') {
+        assert.deepEqual(Object.fromEntries(new URL(request.url, 'http://localhost').searchParams), { page: '1', page_size: '25' });
+      }
+      if (path === '/model-hub/skills/archived/{resource_id}/restore/') {
+        assert.equal(request.headers['idempotency-key'], '00000000-0000-4000-8000-000000000002');
+        assert.deepEqual(JSON.parse(request.body), {
+          expected_release_revision: 7,
+          expected_review_fingerprint: `sha256:${'a'.repeat(64)}`,
+          note: 'Restore the reviewed original skill',
+        });
+      }
     }
-    assert.equal(requests.length, 28);
+    assert.equal(requests.length, 31);
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
