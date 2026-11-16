@@ -1,11 +1,11 @@
 ---
 title: "Skills API reference"
-description: "Reference the original leaf-skill REST examples and find the complete sealed API contract for contexts, reviews, testing, migration, and campaigns."
+description: "Reference leaf-skill REST examples, post-seal archived-skill recovery, and the pinned API contract for contexts, reviews, testing, migration, and campaigns."
 ---
 
 ## About
 
-Use the Skills REST API to manage a workspace library and retrieve immutable file sets. All paths start with `/model-hub/skills/` and retain the trailing slash. Examples use Bash and cURL; [Python requests and TypeScript fetch examples](/docs/skills/use-in-agents#fetch-files-in-an-application) show full-text resolution and hash verification. The [complete sealed API reference](/docs/skills/sealed-api) includes every registered Skills operation and its request/response schemas, including agent contexts, tests, GitHub, migration, reviews, scoped credentials, and gated campaigns. [SDK and CLI interfaces](/docs/skills/sdk-cli) are documented separately; package availability is not implied.
+Use the Skills REST API to manage a workspace library and retrieve immutable file sets. All paths start with `/model-hub/skills/` and retain the trailing slash. Examples use Bash and cURL; [Python requests and TypeScript fetch examples](/docs/skills/use-in-agents#fetch-files-in-an-application) show full-text resolution and hash verification. The [complete sealed API reference](/docs/skills/sealed-api) includes the Skills operations registered at its pinned product head and their request/response schemas, including agent contexts, tests, GitHub, migration, reviews, scoped credentials, and gated campaigns. The [archived-skill operations below](#restore-an-archived-skill) were added after that seal and are documented separately. [SDK and CLI interfaces](/docs/skills/sdk-cli) are documented separately; package availability is not implied.
 
 ## Authentication and example setup
 
@@ -80,7 +80,7 @@ Paged results have `results`, `count`, `page`, `page_size`, and `total_pages`. `
 
 Actor objects above have `id` and `name`. IDs are UUIDs; version numbers are integers starting at 1; timestamps use UTC. `source` describes provenance such as blank, template, import, or API. Checks use the [ChecksResult shape](/docs/skills/checks-reference#check-result-and-token-estimates).
 
-These examples describe the original leaf API. Protected-label operations require current protection/release preconditions; context drafts have their own head-review protocol and no force-publication shortcut. The generated sealed reference is authoritative for registered fields and status codes. Its contract entries are not live response examples.
+Unless marked as post-seal, these examples describe the original leaf API. Protected-label operations require current protection/release preconditions; context drafts have their own head-review protocol and no force-publication shortcut. The generated sealed reference records fields and status codes at its pinned head; it does not include later additions. Its contract entries are not live response examples.
 
 ## List skills
 
@@ -224,6 +224,111 @@ Archives the skill and returns 204. It becomes unavailable to consumers. This is
 ```bash
 curl -fsS -X DELETE "${AUTH[@]}" "$BASE/$SKILL_ID/"
 ```
+
+## Restore an archived skill
+
+**Post-seal addition.** These three operations post-date the [sealed contract](/docs/skills/sealed-api). This section follows `api_contracts/openapi/swagger.json`, the mounted routes, serializers, recovery service, and archived-restore API tests at product commit `8254acd488c074ec30f660c68619e4039f52bb90`. It does not change the sealed reference or its pinned provenance, and does not establish deployment enablement.
+
+All three operations require a current workspace or organization administrator, authenticated as a real user or with a user-bound key. Ordinary members cannot list, review, or restore archived skills. Broad system keys are refused with 403 `principal_not_supported`; isolated Context credentials are refused at authentication with 401 `credential_operation_forbidden`. The selected organization and workspace must be accessible. Use the setup above with an eligible administrator's credentials, not an application consumption credential.
+
+These routes handle **standalone skills only**, not archived agent contexts. Use the original resource UUID from the archived list, not the UUID of a newer resource with the same name. Each success returns HTTP 200 with `{"status": true, "result": ...}`.
+
+### List archived skills
+
+`GET /model-hub/skills/archived/`
+
+| Query | Type and limits | Default |
+| --- | --- | --- |
+| `page` | Integer, at least 1 | 1 |
+| `page_size` | Integer, 1–100 inclusive; out-of-range values are rejected, not clamped | 25 |
+
+There is no search, tag, label, or sort parameter. Results are ordered by name, then UUID, and exclude live skills and agent contexts. A page beyond the last returns an empty `results` array with the same total count.
+
+```bash
+curl -fsS "${AUTH[@]}" "$BASE/archived/?page=1&page_size=25"
+```
+
+`result` is an `ArchivedSkillPage`: `results` (array of ArchivedSkill objects), `count` (nonnegative total), `page`, `page_size`, and `total_pages` (0 for an empty inventory). It has no library `stats` field.
+
+| Object | Required response fields |
+| --- | --- |
+| `ArchivedSkillSummary` | `id` (UUID), `kind` (`skill` on these routes), `name` (string), `description` (string, may be blank), `tags` (string array), `latest_version` (positive integer or null), `release_revision` and `security_revision` (nonnegative integers), `protected_label_names` (string array), `archived` (boolean) |
+| `ArchivedSkill` | All summary fields plus `archived_at` (date-time or null for older records) and `labels` (array of `{name: string, version: positive integer}`) |
+
+The shared summary schema also permits `kind: agent_context`, but these mounted skill routes do not return or restore that kind. An unpublished archived skill has `latest_version: null`; retained label versions need not equal latest.
+
+### Review the retained labels
+
+`GET /model-hub/skills/archived/{resource_id}/restore-review/`
+
+Path: required `resource_id` (the archived skill's UUID). No request body or query parameters are required. This is a read-only review; it does not restore anything.
+
+```bash
+: "${ARCHIVED_SKILL_ID:?Set the original archived skill UUID}"
+curl -fsS "${AUTH[@]}" "$BASE/archived/$ARCHIVED_SKILL_ID/restore-review/" \
+  -o restore-review.json
+```
+
+| Field in `result` | Meaning |
+| --- | --- |
+| `resource` | `ArchivedSkillSummary`, including the current release/security revisions and protected-label names |
+| `retained_labels` | Array ordered by label name; each entry has `name`, `version`, `version_id` (UUID), `digest` (`sha256:` plus 64 lowercase hex characters), and `is_protected` (boolean) |
+| `review_fingerprint` | `sha256:` plus 64 lowercase hex characters, binding the resource summary and retained labels to this review |
+| `name_collision` | Boolean: a live resource in this workspace already uses the name, blocking restore |
+
+Review every label and its exact version, including protected labels. Restoring can make those retained pointers available on the next fetch; it is not a proposal to move them to latest. A name collision is checked again during restore even though it is not part of the fingerprint. Resolve it explicitly rather than overwriting the live namesake.
+
+### Restore the reviewed identity
+
+`POST /model-hub/skills/archived/{resource_id}/restore/`
+
+Path: required `resource_id` (UUID). Header: required `Idempotency-Key` (UUID). JSON body:
+
+| Field | Required | Type and meaning |
+| --- | --- | --- |
+| `expected_release_revision` | Yes | Nonnegative integer copied from the reviewed `resource.release_revision` |
+| `expected_review_fingerprint` | Yes | Nonempty string copied unchanged from the reviewed `review_fingerprint` |
+| `note` | No | String, at most 2,000 characters; defaults to `""`, which is allowed |
+
+Prepare the body from the review **only after inspecting it**. This Bash example uses `jq`; keep the body and operation key unchanged if the restore's outcome is unknown.
+
+```bash
+# Inspect restore-review.json and its retained labels before proceeding.
+# Refuse this preparation if a live resource already uses the name.
+jq -e '.result.name_collision == false' restore-review.json >/dev/null || exit 1
+jq '{expected_release_revision: .result.resource.release_revision,
+     expected_review_fingerprint: .result.review_fingerprint,
+     note: "Restore the reviewed original skill"}' \
+  restore-review.json > restore.json
+
+: "${RESTORE_OPERATION_ID:?Set a new UUID once for this reviewed restore; retain it for retries}"
+curl -fsS -X POST "${AUTH[@]}" "${JSON[@]}" \
+  -H "Idempotency-Key: $RESTORE_OPERATION_ID" \
+  --data-binary @restore.json "$BASE/archived/$ARCHIVED_SKILL_ID/restore/"
+```
+
+Returns `ArchivedSkillSummary` with `archived: false` and `release_revision` increased by one. The archive timestamp is cleared and the skill disappears from the archived list. The original UUID, immutable versions, label targets, label history, protection policy, and security revision are retained. Restore does **not** publish a new version, move a label to latest, clear quarantine, reinstall files, or update running application threads. Existing quarantined versions remain blocked from managed loads.
+
+Replaying the same key and request under the same principal and workspace returns the saved result without restoring twice or incrementing the revision again. Reusing that key with a different request returns 409 `idempotency_conflict`. After a confirmed stale-review refusal, inspect a fresh review before preparing a new operation; do not silently substitute new preconditions.
+
+### Archived recovery errors
+
+| HTTP status | Code | Meaning and recovery |
+| --- | --- | --- |
+| 400 | `invalid_selector` | Invalid pagination, missing/invalid body fields, unsupported fields, or a malformed idempotency UUID. Send the declared parameters and types. |
+| 401 | `credential_operation_forbidden` | A Context credential cannot use these human administration routes. |
+| 403 | `quarantine_forbidden` | Current workspace or organization administrator access is required, including for list and review. |
+| 403 | `principal_not_supported` | A broad system key is not a user-bound administrator credential. |
+| 403 | `workspace_required`, `access_revoked`, or `permission_denied` | Resolve an accessible active workspace and current user/key permissions before retrying. |
+| 404 | `resource_not_found` | The original archived skill is absent from this scope, is already live for a fresh review/restore, or is an agent context rather than a skill. A replay of a successful operation with the same key still returns its saved result. |
+| 409 | `release_conflict` | Release state changed after review; review again. |
+| 409 | `impact_changed` | The resource or retained-label consequences changed, including intervening safety-policy changes; review again. |
+| 409 | `name_taken` | A live resource uses the name. Restore never replaces that resource. Resolve the collision deliberately. |
+| 409 | `idempotency_conflict` | The operation key belongs to a different request. Recover the original request rather than altering a retry. |
+| 413 | `payload_too_large` | The note exceeds 2,000 characters. |
+| 428 | `context_precondition_required` | The required `Idempotency-Key` header is missing. |
+
+The generated OpenAPI entries also declare shared 410, 422, 503, and default management-error responses; those shared declarations are not additional archive-specific recovery outcomes. Other authentication failures can occur before this flow. See the [UI recovery steps](/docs/skills/rollout-recovery#restore-an-archived-skill) for the same review-and-restore decision in the library.
 
 ## List or publish versions
 
@@ -427,7 +532,7 @@ A fetch does not prove an agent used the skill. These counts describe requests, 
 
 ## Errors and limits
 
-[The error table](/docs/skills/troubleshooting#error-codes-and-recovery) covers every public Skills error code and recovery action. Publishing errors include 422 `checks_failed` and `warnings_unacknowledged`, whose detail is ChecksResult. Concurrency errors are 409 `stale_base`, `draft_conflict`, and `label_conflict`. Invalid requests include 400 `invalid_selector`, `invalid_name`, `invalid_label`, `invalid_tags`, and `import_invalid`; over-limit payloads return 413 `payload_too_large`.
+[The error table](/docs/skills/troubleshooting#error-codes-and-recovery) covers the original leaf API's common error codes and recovery actions; [archived recovery errors](#archived-recovery-errors) are listed separately above. Publishing errors include 422 `checks_failed` and `warnings_unacknowledged`, whose detail is ChecksResult. Concurrency errors are 409 `stale_base`, `draft_conflict`, and `label_conflict`. Invalid requests include 400 `invalid_selector`, `invalid_name`, `invalid_label`, `invalid_tags`, and `import_invalid`; over-limit payloads return 413 `payload_too_large`.
 
 Apply the [file, name, tag, label, and chunk limits](/docs/skills/checks-reference#limits) and the [ZIP and upload limits](/docs/skills/import-skills#limits-and-rejected-entries) before sending content. Text files only are supported; uploaded scripts are never run by import or checks.
 
