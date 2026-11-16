@@ -61,7 +61,7 @@ test('new product captures retain the requested 1440 by 900 viewport', () => {
 
 test('every referenced UI capture matches the refreshed source manifest', () => {
   const manifest=JSON.parse(read('public/images/docs/skills/capture-manifest.json'));
-  assert.equal(manifest.product_commit,'4351c9302f7c936cec70d6bc02759364a903f155');
+  assert.equal(manifest.product_commit,'03e18d08abdcc177c98415d6f3f2292d53c1661c');
   assert.equal(manifest.synthetic,true);
   const references=new Set(pages.flatMap(page=>[...read(`src/pages/docs/skills/${page}`).matchAll(/\/images\/docs\/skills\/([\w-]+\.png)/g)].map(match=>match[1])));
   assert.deepEqual(manifest.images.map(image=>image.file).sort(),[...references].sort());
@@ -95,7 +95,7 @@ test('current UI guidance preserves explicit review and restoration decisions', 
   assert.match(recovery,/workspace admin opens \*\*More → Archived skills/);
   assert.match(recovery,/I've checked which labels come back with this skill/);
   const all=pages.map(page=>read(`src/pages/docs/skills/${page}`)).join('\n');
-  for (const stale of ['**Choose inventory packet**','**Create credential**','**Register application target**','**Preview whole-context test**','**Run whole-context test**','**Approve renewed revision**','**Verify on the application**']) assert.ok(!all.includes(stale),`Stale UI label: ${stale}`);
+  for (const stale of ['**Choose inventory packet**','**Create credential**','**Register application target**','**Preview whole-context test**','**Run whole-context test**','**Approve renewed revision**','**Verify on the application**','**Use** tab','**Consumers** tab','**Delivery: see Consumers**']) assert.ok(!all.includes(stale),`Stale UI label: ${stale}`);
 });
 
 test('live examples retain statuses, source provenance, and secret redaction', () => {

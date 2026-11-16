@@ -197,7 +197,7 @@ await shot('skills-use-claude-code', async () => {
   await page.getByRole('dialog').getByRole('button', { name: 'Publish and move production', exact: true }).click();
   await page.waitForTimeout(3000);
   await go(`/dashboard/skills/${quickId}`);
-  await page.getByRole('tab', { name: 'Use', exact: true }).click();
+  await page.getByRole('tab', { name: 'Install', exact: true }).click();
   // The published fixture defaults to production. The current MUI selector has
   // no associated accessible label, so assert its displayed selection directly.
   await page.getByRole('combobox').filter({ hasText: /^Production \(currently v1\)$/ }).waitFor();
@@ -217,7 +217,7 @@ await shot('skills-label-history', async () => {
 });
 await shot('skills-usage', async () => { await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Activity', exact: true }).click(); await page.waitForTimeout(1500); });
 await shot('skills-use-clients', async () => {
-  await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Use', exact: true }).click();
+  await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Install', exact: true }).click();
   await hostFix();
   await page.getByRole('combobox', { name: 'Coding client' }).click();
 });
@@ -232,12 +232,12 @@ await shot('skills-context-library', async () => { await go('/dashboard/skills/c
 await shot('context-detail', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).waitFor(); });
 await shot('context-linked-skills', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('tab', { name: 'Linked skills', exact: true }).click(); });
 await shot('context-accepted-lock', async () => { await go(ctxUrl(returns.context_id, 1)); await page.getByRole('tab', { name: 'Linked skills', exact: true }).click(); await page.waitForTimeout(1500); });
-await shot('context-historical-editor', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).click(); await page.getByRole('button', { name: 'Start selected draft', exact: true }).click(); await page.getByRole('button', { name: 'Review changes', exact: true }).waitFor(); await page.getByText(/The content origin remains v1/).waitFor(); });
+await shot('context-historical-editor', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).click(); await page.getByRole('button', { name: 'Start selected draft', exact: true }).click(); await page.getByRole('button', { name: 'Continue to publish', exact: true }).waitFor(); await page.getByText(/The content origin remains v1/).waitFor(); });
 await shot('context-versions', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Versions', exact: true }).click(); await page.waitForTimeout(1500); });
 await shot('context-tests', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Tests', exact: true }).click(); await page.getByRole('radio', { name: /Test on the application/ }).check(); await page.getByRole('button', { name: 'Add application target', exact: true }).waitFor(); });
-await shot('context-consumers', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Consumers', exact: true }).click(); await page.waitForTimeout(1500); });
+await shot('context-consumers', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Connected apps', exact: true }).click(); await page.waitForTimeout(1500); });
 await shot('context-recovery', async () => { await go(ctxUrl(cid, 2)); await page.getByRole('tab', { name: 'Rollback', exact: true }).click(); await page.waitForTimeout(6000); });
-await shot('context-use', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('tab', { name: 'Use', exact: true }).click(); });
+await shot('context-use', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('tab', { name: 'Install', exact: true }).click(); });
 await shot('campaign-boundary', async () => { await go('/dashboard/skills/contexts/rollouts'); });
 await shot('skills-reviews', async () => { await go('/dashboard/skills/reviews'); await page.waitForTimeout(1500); });
 await shot('skills-allowance', async () => { await go('/dashboard/skills/allowance'); await page.waitForTimeout(1500); });
@@ -249,7 +249,7 @@ await shot('context-historical-draft', async () => {
     await page.getByRole('button', { name: /Edit viewed v1/ }).click();
     await page.getByRole('button', { name: 'Start selected draft', exact: true }).click();
   }
-  await page.getByRole('button', { name: 'Review changes', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Continue to publish', exact: true }).waitFor();
   await page.waitForTimeout(1000);
 });
 await shot('context-draft-review', async () => { await go(`/dashboard/skills/contexts/${cid}/review`); await page.waitForTimeout(3000); });
