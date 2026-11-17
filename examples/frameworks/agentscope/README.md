@@ -22,7 +22,7 @@ Python 3.11, 3.12 or 3.13.
 
 ```bash
 python3.13 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt     # pins agentscope 2.0.10
+pip install -r requirements.txt     # pins agentscope 2.0.11
 ```
 
 ## Run

@@ -109,7 +109,7 @@ def test_tool_exception_does_not_fail_the_tool_span(run_app, collector):
     spans = spans_of(collector)
     _, _, tools = tree(spans)
     assert tools[0]["status"]["code"] == "STATUS_CODE_OK"
-    assert "ToolResultState.ERROR" in tools[0]["_attrs"]["gen_ai.tool.call.result"]
+    assert '"state": "error"' in tools[0]["_attrs"]["gen_ai.tool.call.result"]
     assert not tools[0].get("events")
 
 
