@@ -155,8 +155,8 @@ test('LlamaIndex distinguishes deprecated TypeScript from the supported Python g
 
 test('LlamaIndex guide installs the released current-core compatibility fix', () => {
   const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
-  assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.10'/);
-  assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.10\/json/);
+  assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.11'/);
+  assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.11\/json/);
 });
 
 test('OpenAI C# guide uses native chat tracing with authenticated traces-only export', () => {
