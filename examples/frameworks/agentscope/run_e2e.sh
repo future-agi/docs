@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end run of the AgentScope 2.x recipe against a Future AGI collector.
 #
-#   FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:4318 ./run_e2e.sh
+#   FI_API_KEY=... FI_SECRET_KEY=... ./run_e2e.sh      (FI_BASE_URL defaults to https://api.futureagi.com)
 #
 # What it does
 #   1. creates ./.venv (Python 3.11 to 3.13) and installs requirements.txt
