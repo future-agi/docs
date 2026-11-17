@@ -1,0 +1,251 @@
+---
+title: "See which agents load a skill"
+description: "Record verified skill loads, separate retrieval from runtime evidence, and follow version comparisons to the traces they counted."
+---
+
+## Start with loads, not fetches
+
+**Preview contract, not a package-release or deployment claim.** This guide describes the skill-trace integration. It requires a compatible Python or TypeScript SDK, tracing provider, backend, and the `skillTraces` UI feature. The SDK helpers and shared runtime API contract are pending final integration verification; the examples below describe that contract, not the older sealed SDK. Check [package prerequisites](/docs/skills/sdk-cli#package-and-deployment-prerequisites) before copying them. Existing screenshots elsewhere in Skills predate these runtime views.
+
+**A load is recorded on the first read of any file of a skill version inside a trace.** No code to record the load. One line to stamp every span and name the agent—with the provider and timing limits below. Recording a load means the application received verified bytes, not that a model followed the instructions.
+
+Start with two controls and two helpers:
+
+| Interface | Purpose |
+| --- | --- |
+| `FI_SKILLS_TRACING` | `on` (default), `load_only` (load spans only), or `off` (no skill telemetry). |
+| `configure` | Select the mode or supply an existing tracer provider; programmatic configuration wins over the environment. |
+| Python `agent_scope` / TypeScript `withAgentScope` | Name an agent and optionally attach its context for spans created in the scope. |
+| Python `declare_skill` / TypeScript `declareSkill` | Explicitly report a verified snapshot or lock entry; evidence is **Reported by the app**, not an observed read. |
+
+The application owns provider setup, exporters, credentials, and its active trace. The SDK never creates an exporter, registers a global provider, or installs a context manager. Without OpenTelemetry it does no tracing work; setting up OpenTelemetry later allows the next load to discover it.
+
+```bash
+# Environment alternative to configure(); set before starting the application.
+export FI_SKILLS_TRACING=on
+# Use load_only for load spans without propagation, or off to disable both.
+```
+
+The following examples assume the application already has an active tracing setup, a tracer from that provider, and a high-level skill snapshot resolved as `snapshot`. Resolution alone is not a load.
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    from fi.telemetry import agent_scope, configure, declare_skill, status
+
+    configure(skills_tracing="on", tracer_provider=provider)
+    with agent_scope(agent="refund-agent"):
+        with tracer.start_as_current_span("refund-request"):
+            instructions = snapshot.read_file("SKILL.md")
+            # Start model/tool spans here, after the verified read.
+
+    # For an explicit report instead of a read hook, inside an active trace:
+    # declare_skill(verified_snapshot_or_lock_entry)
+    diagnostics = status()
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    import {
+      configure, declareSkill, status, withAgentScope,
+    } from "@futureagi/sdk/telemetry";
+
+    configure({ skillsTracing: "on", tracerProvider: provider });
+    await withAgentScope({ agent: "refund-agent" }, async () => {
+      await tracer.startActiveSpan("refund-request", async (span) => {
+        try {
+          const instructions = await snapshot.readFile("SKILL.md");
+          // Start model/tool spans here, after the verified read.
+        } finally {
+          span.end();
+        }
+      });
+    });
+
+    // For an explicit report instead of a read hook, inside an active trace:
+    // declareSkill(verifiedSnapshotOrLockEntry);
+    const diagnostics = status();
+    ```
+  </Tab>
+</Tabs>
+
+### Check that a load arrived
+
+1. Read the first-load `INFO` line from the `futureagi.telemetry` logger. It reports the provider, whether later spans are stamped, and how the agent is named, or why tracing cannot record. It logs once per process; `off` silences it.
+2. Call `fi.telemetry.status()` in Python or `status()` from `@futureagi/sdk/telemetry` in TypeScript **in the application process**. Inspect the provider, mode, processor, agent-name source, and last load.
+3. Run `python -m fi.telemetry doctor` or `npx futureagi-telemetry doctor` for a text diagnosis. A separate CLI process cannot inspect a provider or last load held in the running application's memory; use in-process status for those facts.
+4. In the skill's **Install** tab, choose **Check tracing**, then make a real traced request that reads the skill. The check waits for a new load, polling every five seconds for up to ten minutes. It reports the version, agent, and receipt time, or the latest fetch's SDK/tracing diagnosis. It does not run the agent for you. Context Install checks wait for `context.load` instead.
+
+Status and doctor expose `otel_found`, `provider`, `processor_installed`, `mode`, `truth_table_row`, `agent_name`, `agent_name_source`, `rule`, and `last_load`. They must not print credentials, file contents, or local paths. **Check tracing** is disabled with an explanation for viewers; lack of permission is not evidence of zero loads.
+
+## What each fact proves
+
+| Fact | Evidence | What it does not prove |
+| --- | --- | --- |
+| Fetched | Server retrieval accounting, including successful SDK resolutions | A read inside a traced request, agent delivery, or successful behavior |
+| Installed / discovered / delivered | Connected-app receipts with their stage and timestamp | A successful request or that the model followed a skill |
+| Linked | The context's immutable accepted dependency lock | A runtime read of that skill |
+| Loaded: **Given to the app** | `delivered`: the SDK returned verified bytes to application code | The agent itself read the file |
+| Loaded: **Read by the agent** | `agent_read`: an adapter observed the agent's own file-tool read | Compliance with the instructions |
+| Loaded: **Reported by the app** | `declared`: an explicit declaration | An independently observed file read |
+| **Ran after loading** | A span started after a load and received `fi.skills.*` attributes | Causation or exclusive attribution of that span's cost |
+| **Load failed** | A failed `skill.load` span | Any verified version identity or a successful load |
+
+A stronger evidence level can produce another load for the same version. De-duplication is per version **and evidence** in each agent scope (at most three successful loads per version); trace counts are distinct, not sums of those loads.
+
+### Reads that record, and reads that do not
+
+- High-level skill `read_file` / `readFile` records the first read of **any** file. `fi.skill.load.root_file` distinguishes `SKILL.md` from a supporting-file read. Skill `read_all` / `readAll` records one load with `root_file: true`.
+- Reading a context's `AGENTS.md`, or its entire snapshot, records `context.load`. A whole-context read suppresses the inner file hooks: its linked skills stay **Linked**, not Loaded.
+- A direct context read of `skills/<name>/<file>` records that child's verified identity from the accepted lock, with **Given to the app** evidence. Python Deep Agents reads/downloads under `/fi_context/skills/<name>/` record **Read by the agent**. Mounting, listing, searching, and globbing do not.
+- Resolve, manifest pages, access checks, installation, materialization, CLI operations, authoring, testing, and release operations do not emit customer loads. Generated low-level platform reads are untraced; choose the high-level snapshot clients for these hooks.
+- Internal product tests disable skill tracing and do not count as customer loads or SDK fetch adoption. Do not interpret a test pass as production runtime evidence.
+
+### Failed loads
+
+Integrity, authorization, lease, not-found, and other read failures end a `skill.load` span with status `ERROR`. The row says **Load failed**, lists the requested selector and error type, and opens the failed span. It is **matched to a skill by the name the app reported**.
+
+A failed span carries no `fi.skill.id`, `fi.skill.version_id`, or `fi.skill.digest`: unverified bytes never acquire a verified identity. Agent/context scope identity can still identify who attempted the read. Failures do not enter successful-load cohorts. A load failure and a failed request are different facts: **Failed requests** counts traces whose root span failed.
+
+## Provider coverage and scope limits
+
+The following table assumes `on` mode and an active recording span at read time. A scope can provide agent/context identity to a newly created root; it cannot stamp future skill loads retroactively onto all earlier spans.
+
+| Setup | Load span | Current span enriched | Spans started later |
+| --- | --- | --- | --- |
+| Python traceAI `register()`, non-global or global | Yes, via the provider registry | Yes | Yes; the SDK installs its processor once |
+| Python vanilla global OTel SDK provider | Yes | Yes | Yes; the SDK installs its processor once |
+| Python non-global provider not passed to `configure` | No; provider cannot be discovered | Yes | No; pass the provider explicitly |
+| TypeScript traceAI `register()` | Yes | Yes | Yes, with its runtime-attributes processor enabled |
+| TypeScript vanilla OTel provider | Yes | Yes | Only when `FutureAGISkillsSpanProcessor` is in the provider's constructor `spanProcessors` list |
+| OpenTelemetry absent / no provider | No | No | No |
+
+Python selects the configured provider first, then the most recently registered traceAI provider, then the OTel global provider. TypeScript selects the configured provider, then the OTel API global. For a vanilla OTel JS 2.x provider, add `new FutureAGISkillsSpanProcessor()` to its constructor's `spanProcessors` alongside the existing exporter processor. Do not call `addSpanProcessor` on traceAI's provider; that can replace its default exporter behavior. See [register](/docs/sdk/tracing/register#skill-and-context-propagation).
+
+Use `agent_scope(agent="refund-agent", context=ctx_snapshot)` or `withAgentScope({ agent: "refund-agent", context: ctxSnapshot }, callback)` **outside the creation of the request's root span** for agent/context identity from the beginning. A context defaults the agent name to its name. Otherwise a service name is the fallback; without either, the row reads **Unnamed agent in your project**. Set `OTEL_SERVICE_NAME` before provider setup, provide a `service.name` resource, or name the scope. Python traceAI `register()` does not itself assign a service name.
+
+- Automatic mode shares one list across agents interleaved in a trace. Explicit scopes separate agents. A nested context replaces context identity and starts a fresh skill list; a nested plain scope inherits and appends.
+- The current span is updated after a load. Other spans already started cannot be retroactively updated. Head-sampled-out spans and spans from providers without the processor are not stamped. Trace-level queries use load records, not a root's skill attributes.
+- Explicit attributes already on a span win. Span names and resources are not overwritten.
+- Scope lists cap at 32 versions and mark truncation. Strings cap at 256 bytes, with at most 64 added attributes per span. The automatic registry retains at most 4,096 traces for one hour; it is not durable history.
+- Python scopes restore context after success, failure, or cancellation and support functions, coroutines, and async generators. Wrap a sync generator's **body** explicitly. Capture context for thread pools (`contextvars.copy_context()`) and bind OTel context for callbacks; propagate it explicitly across process boundaries. See [context helpers](/docs/sdk/tracing/context-helpers#skill-and-agent-context-scopes).
+
+## Find the agents and the exact traces
+
+### Skill Runtime tab
+
+Open **Runtime → Loaded by**. One time window (24 hours, 7 days, or 30 days; default 7 days) and the readable-project picker drive the summary and table. **Viewing vN** in the page header marks that version's row; it is not another runtime version filter.
+
+Failed loads and content-mismatch warnings appear before the summary. Mismatched contents are excluded from the performance numbers. Version rows expand to agent rows; the production version is open by default. The default columns show Agent, Version, Traces, Failed requests, p95, Cost per trace, the most-run eval with coverage, and Last loaded. Additional metrics and the historical **Asked for** mix live in the column chooser.
+
+Each metric opens its evidence in Observe, in the same tab:
+
+- **Traces** opens the entire counted cohort.
+- **Failed requests** opens those traces with failed root spans.
+- **p95** opens the cohort sorted slowest first, not only traces above a percentile cutoff.
+- An **eval cell** opens the cohort with that eval failing.
+
+An agent row already identifies one project. A version spanning multiple projects opens a project menu with counts; choosing a project preserves the window and filters. Agent names open the **agent panel**, showing that agent's loaded skills/versions for the same window. This runtime identity is project + service + agent name, not an API-key principal or an inferred match to the sidebar's Agents object.
+
+The library distinguishes **Fetched (7 days)** from **Loaded (7 days)**. Loaded is a distinct trace count: `—` means consumers cannot record loads yet, while `0` means they can but none arrived. Activity remains **Retrieval (fetches)** with its separate 7/30/90-day window. SDK resolves begin counting as fetches from the accounting deployment date; an increase then is not evidence of increased runtime loading.
+
+### Observe and trace detail
+
+In Observe, select **Skills**, then a skill and versions. **More** exposes Asked for, Agent, Context, Evidence, Load result, Contents, and Service. Values within one Skill chip must match the **same load**. Choose **and also loaded…** for another skill; the separate groups are ANDed. **Load result: Failed** hides Version, Evidence, and Contents because the failed read has no verified identity. **Ran after loading** is a span-tab filter.
+
+A selector is historical: **Asked for production** describes the request; **production now** describes the version that holds the label today. **No recorded load** is not proof of absence of a read in an uninstrumented application.
+
+With a Skill filter active, the cohort strip shows Traces, Failed requests, p95, and Cost per trace for the **whole filter**, and the graph offers **Split by skill version**. Links from Runtime bring a source bar describing the metric, agent, and window, with a way back and the paired before/after link. Editing filters removes the source bar so it cannot misdescribe the new results. Existing saved-view columns are not rewritten.
+
+Open a trace and expand **Skills loaded** in its header. Rows show evidence, requested selector, agent, and failures in load-time order. Select a row to locate its `skill.load` span. **Linked in this context and not loaded in this trace** is separate from actual loads. If a selected span predates the first load, the UI explains why that span has no skill attributes; it does not claim the whole trace has no load.
+
+### Agent contexts
+
+A context's **Runtime → Skills loaded at runtime** uses the header's selected context version. It separates loaded-and-linked skills, **Loaded but not linked here**, and **Linked, no loads recorded**, each with the applicable diagnosis. The **Linked skills** tab's **Loaded (7 days)** column always uses seven days, regardless of the Runtime window, and identifies a loaded version that differs from the accepted link.
+
+Context Activity reports **Retrieval (fetches)**. Connected apps continues to report installation/delivery stages; its **Runtime traces** action opens context/binding-filtered traces without replacing those receipts. Reading a complete context or mounting it does not imply that the agent read every linked skill.
+
+## Read the production move before rolling back
+
+From a header/library move chip or Label history's **How it went**, open the Runtime move card. Its stable page query is `?tab=runtime&move=<event_id>&window=24h`. Context release cards use the same comparison and list changed linked skills.
+
+The default window is 24 hours on each side of the move (allowed range: one hour to seven days). The after-window ends at the current time until complete. If an earlier move overlaps the before-window, the card says where that window was cut.
+
+Read **same agents** first, then the old-version **same-period control** when present, then **All agents** and individual agents. A pooled change can reflect a changed traffic mix. Every number links to its counted traces; the Observe source bar switches between the paired before/after windows.
+
+| Move state | Meaning |
+| --- | --- |
+| `watching` | The window is open and the regression rule has not fired. Before enough samples arrive, counts appear with **Collecting**, not delta arrows. |
+| `worse_so_far` | Enough samples meet the regression rule, but the window is still open; deltas say **so far**. |
+| `worse` | The completed window meets the rule; the warning chip remains for seven days after the window closes. |
+| `better` | The completed same-agent comparison meets the inverse improvement rule with no metric worse. |
+| `no_change` | Enough data, but the completed comparison meets neither rule. |
+| `not_enough_data` | The window ended without enough data for a verdict. This is not a successful release. |
+
+The default rule requires at least 30 traces per side for the same agent. It flags worse when failed requests rise by at least one percentage point **and** 1.5×, or p95 rises by at least 25%, or eval pass rate falls by at least five points with at least 30 evaluated traces on each side. At least one qualifying agent triggers the worse state. These are associations **after the move**, not effects proven to be **because of** it.
+
+Adoption explains **Got v4**, **Still on v3: the app asks for v3**, **pinned in a context**, **waiting for a context release**, **Got v3 after the move**, or **Not seen after this move**. A cached-copy explanation appears only when recorded; silence is not evidence of a cache or a pin.
+
+For `worse` or `worse_so_far`, **Review failed requests** is the primary action; rollback is secondary. Inspect evidence first, then follow [Updates and recovery](/docs/skills/rollout-recovery#read-runtime-evidence-before-a-rollback). A runtime verdict never approves a release, clears a lock, or bypasses the independent reviewer, explicit acknowledgments, quarantine, or stale/ABA checks.
+
+## No loads recorded: diagnose before concluding
+
+| Diagnosis | Next action |
+| --- | --- |
+| No tracing project | Set up tracing in the workspace. |
+| Never fetched | Open Install and perform an authorized retrieval. |
+| Older SDK consumers | Check each reported SDK version and upgrade to the deployment-compatible release with skill tracing. No minimum released version is asserted here. |
+| Tracing off | Inspect environment and programmatic configuration; enable tracing deliberately. |
+| No OpenTelemetry or provider | Configure the application's tracing provider and confirm it with in-process status. |
+| MCP, download, or raw API retrieval only | Fetch counts alone cannot record runtime loads; choose a supported high-level Python/TypeScript integration. |
+| Consumers can record, but none arrived | Check the window and project, make a traced file read, inspect exporter/sampling behavior, and run Check tracing. |
+| Mixed consumers | Inspect which consumers cannot record; the visible agents are not complete adoption coverage. |
+| Agent has neither a name nor a service | Use **Name it**, `agent_scope` / `withAgentScope`, or `OTEL_SERVICE_NAME`. |
+| No eval results | Configure an eval; absence of evaluation is not a pass. |
+| Root spans missing | The incomplete traces are excluded from root-based failed-request rates and latency; inspect ingestion. |
+| Contents do not match | Open the warning's traces and compare identity/digest; those loads are excluded from the performance numbers. |
+| Project cap or unreadable projects | Choose projects or ask for access; the view reports partial coverage and never reveals another project's agent names. |
+| Query took too long | Retry with a shorter window. |
+
+Loading skeletons, unavailable data, and denied access are not zero counts. Runtime errors leave skills and versions unchanged and offer Retry. A trace-detail **Skills unavailable** chip means enrichment failed, not that no skill was loaded. At narrow widths the tables become cards and the agent panel a full-screen sheet; metric links remain links. Theme changes do not change the evidence or the meaning of a warning.
+
+## About the numbers
+
+- A cohort contains distinct traces with a matching successful load in the window. Cohorts overlap across skills and versions: **do not add them together**.
+- Failed requests use the root's `ERROR` status, excluding missing roots from the rate. A child error alone is not a failed root request. Failed loads are separate counts, not a failure rate over successful loads.
+- Latency uses root p50/p95. Cost/tokens per trace cover live spans in the whole trace, not only the load span. Load overhead is the load span's own latency.
+- **Cost after loading** sums stamped spans and is offered only when at least half of cohort traces have a stamped span. Multiple skills can attribute the same span; this is not additive cost allocation.
+- Eval cells always show evaluated-trace coverage. A result on any span can count for the trace. Low-sample cells (fewer than 30 traces) retain their counts but show no delta arrow.
+- No loads recorded does not mean unused. Delivery does not mean compliance. Correlation after a release is not causation.
+
+## Reference
+
+### Additional tracing switches
+
+These are narrower alternatives to the environment and `configure`, not extra steps required for setup. They belong to the preview SDK contract and require the compatible package.
+
+| Boundary | Python | TypeScript |
+| --- | --- | --- |
+| Client | `SkillsClient(..., tracing=False)` or `ContextClient(..., tracing=False)` | Client option `{ tracing: false }` |
+| One read | `snapshot.read_file(path, trace=False)` | `snapshot.readFile(path, { trace: false })` |
+
+`load_only` records `skill.load` / `context.load` with available agent/context identity but performs no current-span enrichment, registry update, or processor propagation. `off` disables all skill telemetry; neither mode changes integrity or authorization checks. Telemetry failures do not change consumption results.
+
+### Fetch diagnostics on the wire
+
+Successful high-level SDK resolution records one **Fetched** event for either resource kind; manifest/file continuations and access checks do not add fetches. The SDK sends a versioned user agent (`futureagi-python/<version>` or `futureagi-typescript/<version>`) and `X-FI-Skills-Tracing: on | load_only | off | no_otel` on resolve. `no_otel` means OpenTelemetry is absent or no provider was found. Unknown values are not treated as proof that a consumer can record.
+
+Activity's diagnosis uses the last SDK version and tracing mode in each fetch bucket. That capability signal is not proof of exported loads, and it does not identify a runtime agent. SDK fetch accounting begins at deployment, not retroactively. Credentials, file content, and local paths are not included in these diagnostic headers.
+
+### Language parity
+
+| Capability | Python | TypeScript |
+| --- | --- | --- |
+| High-level snapshot reads, explicit scopes, declarations, status/doctor | Sync/async reads | Async reads |
+| Skill/context load spans and optional processor | Supported integration | Supported integration; vanilla OTel needs the constructor processor |
+| Installer/materializer | Available separately; no load emission | No installer in this scope |
+| Context session binding/receipt identity | Attached to a session snapshot; attachment alone emits nothing | No session adapter in this scope |
+| Deep Agents observed file read | Adapter path | No Deep Agents adapter in this scope |
+| Java, C#, Go, Ruby | Manual span attributes only in this phase | No automatic SDK parity claim |
+
+See [semantic conventions](/docs/sdk/tracing/semantic-conventions#skills-and-agent-contexts) for the exact keys, [context helpers](/docs/sdk/tracing/context-helpers#skill-and-agent-context-scopes) for propagation, and the [runtime API boundary](/docs/skills/api-reference#runtime-reads-preview-contract) for shared usage, comparison, and load reads. Do not synthesize a load from a fetch or a linked dependency.
