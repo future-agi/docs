@@ -94,7 +94,7 @@ test('every referenced UI capture matches the refreshed source manifest', () => 
   const manifest=JSON.parse(read('public/images/docs/skills/capture-manifest.json'));
   assert.equal(manifest.product_commit,contract.provenance.product_commit);
   assert.equal(manifest.synthetic,true);
-  assert.equal(manifest.images.length,36);
+  assert.equal(manifest.images.length,39);
   // Every image is recaptured at the contract head except explicitly retained, labeled earlier captures.
   const retained=manifest.images.filter(image=>image.product_commit!==contract.provenance.product_commit);
   assert.deepEqual(retained.map(image=>image.file),['skills-use-clients.png']);
