@@ -1147,6 +1147,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'List of SDKs',
             items: [
+              { title: 'Agent Learning Kit', href: '/docs/sdk/agent-learning-kit' },
               { title: 'Evaluation', href: '/docs/sdk/list/evaluation' },
               { title: 'TraceAI', href: '/docs/sdk/list/traceai' },
               { title: 'Core SDKs', href: '/docs/sdk/list/core' },
