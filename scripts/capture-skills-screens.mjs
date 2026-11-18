@@ -216,11 +216,7 @@ await shot('skills-label-history', async () => {
   await page.getByRole('button', { name: 'Label history', exact: true }).click();
 });
 await shot('skills-usage', async () => { await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Activity', exact: true }).click(); await page.waitForTimeout(1500); });
-await shot('skills-use-clients', async () => {
-  await go(`/dashboard/skills/${refund.id}`); await page.getByRole('tab', { name: 'Install', exact: true }).click();
-  await hostFix();
-  await page.getByRole('combobox', { name: 'Coding client' }).click();
-});
+// skills-use-clients is retained from an earlier product commit: the current Install tab has no five-client download.
 await shot('github-import', async () => {
   await go('/dashboard/skills');
   await page.getByRole('button', { name: /^(Import|Import a folder or ZIP)$/ }).click();
