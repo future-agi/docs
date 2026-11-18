@@ -12,8 +12,10 @@ if (!source || !/^[a-f0-9]{40}$/.test(revision ?? '')) {
 }
 const raw = fs.readFileSync(source);
 const contract = JSON.parse(raw);
-const paths = Object.fromEntries(Object.entries(contract.paths)
-  .filter(([route]) => route.startsWith('/model-hub/skills/')));
+// Every Skills route plus the one trace projection the Skills runtime views read.
+const TRACE_PROJECTION_ROUTES = ['/tracer/trace/skill-projection/'];
+const isSkillsRoute = (route) => route.startsWith('/model-hub/skills/') || TRACE_PROJECTION_ROUTES.includes(route);
+const paths = Object.fromEntries(Object.entries(contract.paths).filter(([route]) => isSkillsRoute(route)));
 const definitions = {};
 function collect(value) {
   if (!value || typeof value !== 'object') return;

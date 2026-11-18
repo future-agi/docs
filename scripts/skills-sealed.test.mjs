@@ -10,12 +10,12 @@ const contract = JSON.parse(read('public/api/skills-sealed.json'));
 const pages = fs.readdirSync(path.join(root,'src/pages/docs/skills')).filter(f=>f.endsWith('.mdx'));
 
 test('Skills API subset is pinned and has no dangling schema references', () => {
-  assert.equal(contract.provenance.product_commit,'8254acd488c074ec30f660c68619e4039f52bb90');
-  assert.equal(contract.provenance.sha256,'bd4a06a0a88e95b6a05b86e81dd2f2bff3a7b584e24e013a945f9d031a3b71b8');
-  assert.equal(Object.keys(contract.paths).length,147);
-  assert.equal(Object.keys(contract.definitions).length,508);
+  assert.equal(contract.provenance.product_commit,'cb00e2f29d7bbce14b861d021542cf3bf989a237');
+  assert.equal(contract.provenance.sha256,'de2ead8fb5a73cdc6e263f5f255e36da4a47a94456fa693cc2207f0b47f00250');
+  assert.equal(Object.keys(contract.paths).length,152);
+  assert.equal(Object.keys(contract.definitions).length,534);
   const methods=new Set(['get','post','put','patch','delete','head','options']);
-  assert.equal(Object.values(contract.paths).reduce((count,item)=>count+Object.keys(item).filter(method=>methods.has(method)).length,0),177);
+  assert.equal(Object.values(contract.paths).reduce((count,item)=>count+Object.keys(item).filter(method=>methods.has(method)).length,0),182);
   function visit(value) {
     if (!value || typeof value!=='object') return;
     if (value.$ref) assert.ok(contract.definitions[value.$ref.replace('#/definitions/','')],value.$ref);
@@ -30,7 +30,8 @@ test('every current Skills operation is retained without rewriting its contract'
   assert.equal(createHash('sha256').update(sourceBytes).digest('hex'),contract.provenance.sha256);
   const source=JSON.parse(sourceBytes);
   for (const field of ['basePath','consumes','produces','securityDefinitions','security']) assert.deepEqual(contract[field],source[field],field);
-  const paths=Object.fromEntries(Object.entries(source.paths).filter(([route])=>route.startsWith('/model-hub/skills/')));
+  // Same route selection as scripts/generate-skills-reference.mjs.
+  const paths=Object.fromEntries(Object.entries(source.paths).filter(([route])=>route.startsWith('/model-hub/skills/')||route==='/tracer/trace/skill-projection/'));
   assert.deepEqual(contract.paths,paths);
   for (const [name,schema] of Object.entries(contract.definitions)) assert.deepEqual(schema,source.definitions[name],name);
 });
@@ -47,6 +48,12 @@ test('current contract and screenshot provenance are disclosed without relabelin
     ['get','/model-hub/skills/archived/'],
     ['get','/model-hub/skills/archived/{resource_id}/restore-review/'],
     ['post','/model-hub/skills/archived/{resource_id}/restore/'],
+    // Lean runtime reads and the trace projection the Runtime views use.
+    ['get','/model-hub/skills/usage/'],
+    ['get','/model-hub/skills/comparison/'],
+    ['get','/model-hub/skills/loads/'],
+    ['get','/model-hub/skills/filter-values/'],
+    ['post','/tracer/trace/skill-projection/'],
   ]) {
     assert.ok(contract.paths[route]?.[method],route);
     assert.ok(guide.includes(`${method.toUpperCase()} ${route}`),route);
@@ -111,7 +118,7 @@ test('observed gates and distinct restoration semantics remain explicit', () => 
 
 test('current UI guidance preserves explicit review and restoration decisions', () => {
   const context=read('src/pages/docs/skills/agent-contexts.mdx');
-  assert.match(context,/I reviewed these changes against the current published version/);
+  assert.match(context,/I've checked the 2 changed files against v1 and the 2 check warnings/);
   assert.match(context,/Publish version/);
   assert.match(context,/draft or published head changed/);
   const renewal=read('src/pages/docs/skills/reviewed-releases.mdx');
@@ -120,7 +127,18 @@ test('current UI guidance preserves explicit review and restoration decisions', 
   assert.match(recovery,/current workspace or organization admin opens the Skills library's \*\*More > Archived skills/);
   assert.match(recovery,/I've checked which labels come back with this skill/);
   const all=pages.map(page=>read(`src/pages/docs/skills/${page}`)).join('\n');
-  for (const stale of ['**Choose inventory packet**','**Create credential**','**Register application target**','**Preview whole-context test**','**Run whole-context test**','**Approve renewed revision**','**Verify on the application**','**Use** tab','**Consumers** tab','**Delivery: see Consumers**']) assert.ok(!all.includes(stale),`Stale UI label: ${stale}`);
+  for (const stale of ['**Choose inventory packet**','**Create credential**','**Register application target**','**Preview whole-context test**','**Run whole-context test**','**Approve renewed revision**','**Verify on the application**','**Use** tab','**Consumers** tab','**Delivery: see Consumers**','**Used by**','I reviewed these changes against the current published version',"I've read the check warnings for this version",'**Request release review**','**Share evidence and prepare packet**','**Restore as a new version**','**Check updates**']) assert.ok(!all.includes(stale),`Stale UI label: ${stale}`);
+});
+
+test('CLI and SDK install guidance stays npm-only and makes no availability claim', () => {
+  const sdk=read('src/pages/docs/skills/sdk-cli.mdx');
+  assert.match(sdk,/npm install -g @future-agi\/cli/);
+  assert.match(sdk,/npx -p @future-agi\/cli fagi/);
+  assert.match(sdk,/Node\.js 22\.15 or later/);
+  const all=[...pages.map(page=>read(`src/pages/docs/skills/${page}`)),...['register','context-helpers','semantic-conventions'].map(page=>read(`src/pages/docs/sdk/tracing/${page}.mdx`))].join('\n');
+  for (const banned of ['brew install','Homebrew','install.sh','install.ps1','futureagi-cli/releases','fagi skills','@futureagi/sdk','npx futureagi-telemetry']) assert.ok(!all.includes(banned),`Unsupported install guidance: ${banned}`);
+  assert.match(read('src/pages/docs/skills/trace-skills.mdx'),/SDK 0\.8\.0 or later/);
+  assert.doesNotMatch(all,/(?:futureagi|@future-agi\/sdk) (?:0\.8\.0|0\.3\.0) (?:is|are) (?:now )?(?:released|available|published)/);
 });
 
 test('live examples retain statuses, source provenance, and secret redaction', () => {
