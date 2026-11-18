@@ -782,6 +782,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Updates and recovery', href: '/docs/skills/rollout-recovery' },
               { title: 'Repository campaigns', href: '/docs/skills/campaigns' },
               { title: 'Use skills in your agents', href: '/docs/skills/use-in-agents' },
+              { title: 'See which agents load a skill', href: '/docs/skills/trace-skills' },
               { title: 'MCP tools', href: '/docs/skills/mcp-tools' },
             ]
           },

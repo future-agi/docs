@@ -227,7 +227,7 @@ await shot('github-import', async () => {
   await page.getByRole('tab', { name: 'GitHub', exact: true }).click();
   await page.getByRole('textbox', { name: 'Public repository URL', exact: true }).waitFor();
 });
-await shot('skills-dependents', async () => { await go(`/dashboard/skills/${chargeback.id}`); await page.getByRole('tab', { name: 'Used by', exact: true }).click(); await page.waitForTimeout(1500); });
+await shot('skills-dependents', async () => { await go(`/dashboard/skills/${chargeback.id}`); await page.getByRole('tab', { name: 'Linked contexts', exact: true }).click(); await page.waitForTimeout(1500); });
 await shot('skills-context-library', async () => { await go('/dashboard/skills/contexts'); await page.getByText('support-desk').first().waitFor(); });
 await shot('context-detail', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('button', { name: /Edit viewed v1/ }).waitFor(); });
 await shot('context-linked-skills', async () => { await go(ctxUrl(cid, 1)); await page.getByRole('tab', { name: 'Linked skills', exact: true }).click(); });

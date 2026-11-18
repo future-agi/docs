@@ -4,7 +4,6 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 
 const root = new URL('../', import.meta.url);
@@ -77,7 +76,9 @@ test('checks and error references retain the complete public code inventory', ()
 test('consumption docs preserve selector, installation, and MCP safety contracts', () => {
   const page = read('use-in-agents');
   for (const dir of ['.claude/skills', '~/.claude/skills', '.agents/skills', '~/.agents/skills', '.cursor/skills', '~/.cursor/skills', '.gemini/skills', '~/.gemini/skills', '.github/skills', '~/.copilot/skills']) assert.ok(page.includes(dir));
-  for (const field of ['.futureagi-skills.lock.json', 'X-Api-Key', 'X-Secret-Key', 'requests', 'fetch(', 'version_id', 'digest']) assert.ok(page.includes(field));
+  // Application reads use the read-only Context credential and the SDK, matching the Install tab.
+  for (const field of ['FI_CONTEXT_CREDENTIAL', 'FI_CONTEXT_ORIGIN', 'FI_CONTEXT_ORGANIZATION_ID', 'FI_CONTEXT_WORKSPACE_ID', 'SkillsClient', 'ContextAuth', '/model-hub/skills/consumption/resolve/', 'version_id', 'digest']) assert.ok(page.includes(field), field);
+  assert.ok(read('quickstart').includes('.futureagi-skills.lock.json'));
   const versions = read('versions-and-labels');
   assert.match(versions, /neither.*`production`/);
   assert.match(versions, /missing label.*404/);
@@ -111,7 +112,8 @@ test('screenshots have either explicit placeholders or existing image files', ()
   const images = [...all.matchAll(/!\[([^\]]+)\]\(\/images\/docs\/skills\/([a-z-]+\.png)\)/g)];
   // The sealed guides replace obsolete label-dialog instructions with exact release review.
   // Preserve all original assets while validating every currently referenced screenshot.
-  assert.equal(shots.length + images.length, 10);
+  // use-in-agents now links (rather than embeds) its two earlier captures.
+  assert.equal(shots.length + images.length, 8);
   assert.equal(new Set([...shots.map(([, file]) => file), ...images.map(([, , file]) => file)]).size, shots.length + images.length);
   for (const file of ['skills-library', 'skills-create', 'skills-editor-checks', 'skills-publish', 'skills-import-preview', 'skills-import-result', 'skills-compare', 'skills-move-label', 'skills-label-history', 'skills-use-clients', 'skills-use-claude-code', 'skills-usage']) {
     assert.ok(existsSync(new URL(`public/images/docs/skills/${file}.png`, root)), `Missing retained original capture ${file}`);
@@ -190,58 +192,41 @@ test('all 31 cURL operation examples send the documented verb, route, headers, a
   }
 });
 
-// Execute the exact published HTTP snippets against a synthetic local server.
-// This checks consumer behavior, not deployment availability or backend conformance.
-for (const language of ['python', 'typescript']) {
-  for (const scenario of ['valid', 'tampered', 'http-error']) {
-    test(`${language} consumption example: ${scenario}`, async () => {
-      const content = '---\nname: support-policy\n---\nSynthetic policy: café and 😀.\n';
-      const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
-      let request;
-      const server = createServer((req, res) => {
-        request = { url: req.url, headers: req.headers };
-        res.writeHead(scenario === 'http-error' ? 404 : 200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(scenario === 'http-error' ? { status: false, code: 'label_not_found' } : {
-          status: true,
-          result: {
-            version_id: '00000000-0000-4000-8000-000000000001',
-            digest: 'sha256:synthetic-manifest',
-            files: [{ path: 'SKILL.md', content: scenario === 'tampered' ? `${content}changed` : content, sha256 }],
-          },
-        }));
-      });
-      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-      try {
-        const code = [...read('use-in-agents').matchAll(/```(python|typescript)\n([\s\S]*?)```/g)]
-          .find(([, name]) => name === language)[2];
-        const executable = language === 'python' ? (process.env.SKILLS_DOCS_PYTHON ?? 'python3') : process.execPath;
-        const args = language === 'python' ? ['-I', '-c', code] : ['--input-type=module', '-e', code];
-        const child = spawn(executable, args, {
-          env: { ...process.env, HOST_API: `http://127.0.0.1:${server.address().port}`, FI_API_KEY: 'synthetic-key', FI_SECRET_KEY: 'synthetic-secret', FI_WORKSPACE_ID: 'synthetic-workspace' },
-          timeout: 15000,
-        });
-        let stdout = '', stderr = '';
-        child.stdout.on('data', data => { stdout += data; });
-        child.stderr.on('data', data => { stderr += data; });
-        const codeResult = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
-        assert.ok(request, `Example did not make a request: ${stderr}`);
-        const url = new URL(request.url, 'http://localhost');
-        assert.equal(url.pathname, '/model-hub/skills/resolve/');
-        assert.deepEqual(Object.fromEntries(url.searchParams), { name: 'support-policy', label: 'production', include_content: 'true' });
-        assert.equal(request.headers['x-api-key'], 'synthetic-key');
-        assert.equal(request.headers['x-secret-key'], 'synthetic-secret');
-        assert.equal(request.headers['x-workspace-id'], 'synthetic-workspace');
-        if (scenario === 'valid') {
-          assert.equal(codeResult, 0, stderr);
-          assert.match(stdout, /00000000-0000-4000-8000-000000000001 sha256:synthetic-manifest/);
-        } else {
-          assert.notEqual(codeResult, 0);
-          assert.match(stderr, scenario === 'tampered' ? /Digest mismatch/ : /404/);
-        }
-      } finally {
-        server.closeAllConnections();
-        await new Promise(resolve => server.close(resolve));
-      }
-    });
+// The application examples are the Install tab's SDK snippets. Statically, they must use the
+// read-only Context credential, resolve once, and read verified files; with
+// SKILLS_DOCS_LIVE=1 they run unmodified against an isolated localhost stack with the SDK installed.
+const appExamples = () => Object.fromEntries([...read('use-in-agents').matchAll(/```(python|typescript)\n([\s\S]*?)```/g)]
+  .filter(([, , code]) => code.includes('SkillsClient')).map(([, language, code]) => [language, code]));
+
+test('application examples use the read-only SDK client, never broad keys', () => {
+  const { python, typescript } = appExamples();
+  assert.ok(python && typescript);
+  for (const code of [python, typescript]) {
+    for (const name of ['FI_CONTEXT_CREDENTIAL', 'FI_CONTEXT_ORIGIN', 'FI_CONTEXT_WORKSPACE_ID', 'FI_CONTEXT_ORGANIZATION_ID']) assert.ok(code.includes(name), name);
+    assert.doesNotMatch(code, /FI_API_KEY|FI_SECRET_KEY|X-Api-Key|X-Secret-Key/);
+    assert.match(code, /resolve\("support-policy", \{? ?label: ?"production"|resolve\("support-policy", label="production"\)/);
   }
+  assert.match(python, /from fi\.platform import Client, ContextAuth/);
+  assert.match(python, /skill\.read_file\("SKILL\.md"\)/);
+  assert.match(typescript, /from "@future-agi\/sdk"/);
+  assert.match(typescript, /auth: \{ type: "context", credential \}/);
+  assert.match(typescript, /await skill\.readFile\("SKILL\.md"\)/);
+});
+
+for (const language of ['python', 'typescript']) {
+  test(`${language} application example runs against the isolated stack`, { skip: process.env.SKILLS_DOCS_LIVE === '1' ? false : 'set SKILLS_DOCS_LIVE=1 on the cloud lane' }, async () => {
+    for (const name of ['FI_CONTEXT_CREDENTIAL', 'FI_CONTEXT_ORIGIN', 'FI_CONTEXT_WORKSPACE_ID', 'FI_CONTEXT_ORGANIZATION_ID']) assert.ok(process.env[name], name);
+    assert.equal(new URL(process.env.FI_CONTEXT_ORIGIN).hostname, 'localhost', 'Only the isolated localhost stack is permitted');
+    const code = appExamples()[language];
+    const executable = language === 'python' ? (process.env.SKILLS_DOCS_PYTHON ?? 'python3') : process.execPath;
+    const args = language === 'python' ? ['-I', '-c', code] : ['--input-type=module', '-e', code];
+    const child = spawn(executable, args, { cwd: process.env.SKILLS_DOCS_NODE_CWD ?? process.cwd(), env: process.env, timeout: 60000 });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', data => { stdout += data; });
+    child.stderr.on('data', data => { stderr += data; });
+    const exit = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+    assert.equal(exit, 0, stderr.split('\n').filter(line => /Error|error/.test(line)).slice(-3).join('\n'));
+    assert.match(stdout, /^[0-9a-f-]{36} sha256:[0-9a-f]{64}$/m);
+    if (process.env.SKILLS_DOCS_EXPECT_VERSION_ID) assert.ok(stdout.includes(process.env.SKILLS_DOCS_EXPECT_VERSION_ID));
+  });
 }
