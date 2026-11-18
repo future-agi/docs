@@ -95,6 +95,14 @@ test('every referenced UI capture matches the refreshed source manifest', () => 
   assert.equal(manifest.product_commit,contract.provenance.product_commit);
   assert.equal(manifest.synthetic,true);
   assert.equal(manifest.images.length,36);
+  // Every image is recaptured at the contract head except explicitly retained, labeled earlier captures.
+  const retained=manifest.images.filter(image=>image.product_commit!==contract.provenance.product_commit);
+  assert.deepEqual(retained.map(image=>image.file),['skills-use-clients.png']);
+  for (const image of retained) {
+    assert.equal(image.product_commit,'8254acd488c074ec30f660c68619e4039f52bb90');
+    assert.ok(image.retained && image.retained.length>20,image.file);
+  }
+  assert.match(read('src/pages/docs/skills/use-in-agents.mdx'),/\[earlier five-client download capture\]\(\/images\/docs\/skills\/skills-use-clients\.png\)[^\n]*8254acd488c074ec30f660c68619e4039f52bb90/);
   const references=new Set(pages.flatMap(page=>[...read(`src/pages/docs/skills/${page}`).matchAll(/\/images\/docs\/skills\/([\w-]+\.png)/g)].map(match=>match[1])));
   assert.deepEqual(manifest.images.map(image=>image.file).sort(),[...references].sort());
   for (const image of manifest.images) {

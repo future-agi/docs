@@ -78,7 +78,7 @@ test('consumption docs preserve selector, installation, and MCP safety contracts
   for (const dir of ['.claude/skills', '~/.claude/skills', '.agents/skills', '~/.agents/skills', '.cursor/skills', '~/.cursor/skills', '.gemini/skills', '~/.gemini/skills', '.github/skills', '~/.copilot/skills']) assert.ok(page.includes(dir));
   // Application reads use the read-only Context credential and the SDK, matching the Install tab.
   for (const field of ['FI_CONTEXT_CREDENTIAL', 'FI_CONTEXT_ORIGIN', 'FI_CONTEXT_ORGANIZATION_ID', 'FI_CONTEXT_WORKSPACE_ID', 'SkillsClient', 'ContextAuth', '/model-hub/skills/consumption/resolve/', 'version_id', 'digest']) assert.ok(page.includes(field), field);
-  assert.ok(read('quickstart').includes('.futureagi-skills.lock.json'));
+  assert.ok(read('quickstart').includes('python -m fi.skills plan --name support-policy --label production'));
   const versions = read('versions-and-labels');
   assert.match(versions, /neither.*`production`/);
   assert.match(versions, /missing label.*404/);
@@ -112,8 +112,8 @@ test('screenshots have either explicit placeholders or existing image files', ()
   const images = [...all.matchAll(/!\[([^\]]+)\]\(\/images\/docs\/skills\/([a-z-]+\.png)\)/g)];
   // The sealed guides replace obsolete label-dialog instructions with exact release review.
   // Preserve all original assets while validating every currently referenced screenshot.
-  // use-in-agents now links (rather than embeds) its two earlier captures.
-  assert.equal(shots.length + images.length, 8);
+  // use-in-agents embeds the current Activity capture and links its one earlier capture.
+  assert.equal(shots.length + images.length, 9);
   assert.equal(new Set([...shots.map(([, file]) => file), ...images.map(([, , file]) => file)]).size, shots.length + images.length);
   for (const file of ['skills-library', 'skills-create', 'skills-editor-checks', 'skills-publish', 'skills-import-preview', 'skills-import-result', 'skills-compare', 'skills-move-label', 'skills-label-history', 'skills-use-clients', 'skills-use-claude-code', 'skills-usage']) {
     assert.ok(existsSync(new URL(`public/images/docs/skills/${file}.png`, root)), `Missing retained original capture ${file}`);
