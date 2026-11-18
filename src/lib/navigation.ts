@@ -7,6 +7,7 @@
  */
 
 import { integrationNavigation } from './integrations.mjs';
+import { sdkReferenceNavigation } from './sdk-reference.mjs';
 
 export interface NavItem {
   title: string;
@@ -1149,6 +1150,8 @@ export const tabNavigation: NavTab[] = [
           },
         ]
       },
+      // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
+      sdkReferenceNavigation,
       {
         group: 'Evaluation',
         icon: 'chart',
