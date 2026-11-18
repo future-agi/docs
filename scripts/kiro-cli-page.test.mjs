@@ -13,7 +13,8 @@ test('Kiro CLI is discoverable with an explicit platform boundary and shared ins
   assert.equal(entry?.method, 'Hook-to-OTLP');
   assert.match(page, /2\.31\.1 on macOS \(Apple silicon\)/);
   assert.match(page, /Linux, WSL, native Windows, cloud sessions, and Kiro IDE are outside/);
-  assert.match(page, /\]\(\/docs\/integrations\/coding-agents\/hook-to-otlp\)/);
+  assert.match(page, /\]\(https:\/\/github\.com\/future-agi\/docs\/tree\/main\/examples\/coding-agents\/hook-to-otlp\)/);
+  assert.doesNotMatch(page, /\/docs\/integrations\/coding-agents\/hook-to-otlp/);
   for (const scope of ['/path/to/your/project', '--user', '--agent-profile']) {
     assert.ok(page.includes(`fi-docs/examples/coding-agents/kiro-cli/install.sh ${scope}`));
   }
