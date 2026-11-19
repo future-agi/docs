@@ -947,6 +947,8 @@ export const tabNavigation: NavTab[] = [
             title: 'References',
             items: [
               { title: 'Supported agents', href: '/docs/environments/reference/supported-agents' },
+              { title: 'Agent versions & limits', href: '/docs/environments/reference/agent-versions-and-limits' },
+              { title: 'Agents API', href: '/docs/environments/reference/agents-api' },
             ]
           },
           {
