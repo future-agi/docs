@@ -83,7 +83,12 @@ test('consumption docs preserve selector, installation, and MCP safety contracts
   assert.match(versions, /neither.*`production`/);
   assert.match(versions, /missing label.*404/);
   const mcp = read('mcp-tools');
-  for (const tool of ['list_skills', 'get_skill', 'read_skill_file', 'publish_skill', 'set_skill_label', 'update_skill_tags']) assert.ok(mcp.includes(`\`${tool}\``));
+  const readTools = ['list_skills', 'get_skill', 'read_skill_file', 'list_skill_versions', 'list_agent_contexts', 'get_agent_context', 'list_agent_context_versions', 'get_agent_context_snapshot', 'get_skill_usage', 'get_latest_skill_load'];
+  const writeTools = ['publish_skill', 'set_skill_label', 'update_skill_tags'];
+  const toolRows = [...mcp.matchAll(/^\| `([a-z_]+)` \| (Read|Write) \|/gm)];
+  for (const [access, expected] of [['Read', readTools], ['Write', writeTools]]) {
+    assert.deepEqual(toolRows.filter(row => row[2] === access).map(row => row[1]).sort(), [...expected].sort());
+  }
   for (const field of ['next_offset', 'eof', 'sha256', '24000', 'character offsets', 'standalone']) assert.ok(mcp.includes(field));
   assert.match(read('index'), /fetch.*does not prove.*used/i);
 });

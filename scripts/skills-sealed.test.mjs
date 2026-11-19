@@ -10,8 +10,8 @@ const contract = JSON.parse(read('public/api/skills-sealed.json'));
 const pages = fs.readdirSync(path.join(root,'src/pages/docs/skills')).filter(f=>f.endsWith('.mdx'));
 
 test('Skills API subset is pinned and has no dangling schema references', () => {
-  assert.equal(contract.provenance.product_commit,'cb00e2f29d7bbce14b861d021542cf3bf989a237');
-  assert.equal(contract.provenance.sha256,'de2ead8fb5a73cdc6e263f5f255e36da4a47a94456fa693cc2207f0b47f00250');
+  assert.equal(contract.provenance.product_commit,'0ab87b7456f647e342ce47e1b7d46f4d77d0f606');
+  assert.equal(contract.provenance.sha256,'f29db8803df172774690eea3ff1d3cc99cd91d1a53a77202b57a22848fdc81fd');
   assert.equal(Object.keys(contract.paths).length,152);
   assert.equal(Object.keys(contract.definitions).length,534);
   const methods=new Set(['get','post','put','patch','delete','head','options']);
@@ -92,16 +92,16 @@ test('new product captures retain the requested 1440 by 900 viewport', () => {
 
 test('every referenced UI capture matches the refreshed source manifest', () => {
   const manifest=JSON.parse(read('public/images/docs/skills/capture-manifest.json'));
-  assert.equal(manifest.product_commit,contract.provenance.product_commit);
+  // API changes and capture batches have independent immutable provenance. Do not relabel old images.
+  assert.equal(manifest.product_commit,'cb00e2f29d7bbce14b861d021542cf3bf989a237');
   assert.equal(manifest.synthetic,true);
-  assert.equal(manifest.images.length,39);
-  // Every image is recaptured at the contract head except explicitly retained, labeled earlier captures.
-  const retained=manifest.images.filter(image=>image.product_commit!==contract.provenance.product_commit);
-  assert.deepEqual(retained.map(image=>image.file),['skills-use-clients.png']);
-  for (const image of retained) {
-    assert.equal(image.product_commit,'8254acd488c074ec30f660c68619e4039f52bb90');
-    assert.ok(image.retained && image.retained.length>20,image.file);
-  }
+  assert.equal(manifest.images.length,40);
+  const reviewedHead='cbeba5587af48f8dd7d293cfb89e9172ff58cc15';
+  const overrides={'skills-use-clients.png':'8254acd488c074ec30f660c68619e4039f52bb90', 'trace-skills-loaded.png':reviewedHead, 'context-release-latency.png':reviewedHead};
+  for (const image of manifest.images) assert.equal(image.product_commit, overrides[image.file] ?? manifest.product_commit, image.file);
+  const historical=manifest.images.find(image=>image.file==='skills-use-clients.png');
+  assert.ok(historical.retained && historical.retained.length>20);
+  assert.ok(read('src/pages/docs/skills/trace-skills.mdx').includes(reviewedHead));
   assert.match(read('src/pages/docs/skills/use-in-agents.mdx'),/\[earlier five-client download capture\]\(\/images\/docs\/skills\/skills-use-clients\.png\)[^\n]*8254acd488c074ec30f660c68619e4039f52bb90/);
   const references=new Set(pages.flatMap(page=>[...read(`src/pages/docs/skills/${page}`).matchAll(/\/images\/docs\/skills\/([\w-]+\.png)/g)].map(match=>match[1])));
   assert.deepEqual(manifest.images.map(image=>image.file).sort(),[...references].sort());
