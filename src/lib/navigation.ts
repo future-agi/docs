@@ -924,6 +924,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
               { title: 'Scenarios & Trials', href: '/docs/environments/concepts/scenarios-and-trials' },
               { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
+              { title: 'Epoch', href: '/docs/environments/concepts/epoch' },
             ]
           },
           {
@@ -932,10 +933,13 @@ export const tabNavigation: NavTab[] = [
               { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
               { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
               { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
+              { title: 'Import evidence', href: '/docs/environments/guides/import-evidence' },
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
+              { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
+              { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
             ]
           },
           {
