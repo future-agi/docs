@@ -4,6 +4,8 @@ export const redirectMap: Record<string, string> = {
   '/docs/integrations/coding-agents/hook-to-otlp': '/docs/integrations/coding-agents',
   // Scenario rows live in a dataset; this endpoint is documented under Datasets
   '/docs/api/scenarios/addemptyrowstodataset': '/docs/api/datasets/add-empty-rows',
+  // Fix My Agent became Epoch; the old guide's readers land on starting one
+  '/docs/simulation/guides/fix-my-agent': '/docs/environments/guides/run-epoch',
   // Prototype was deprecated and removed from the dashboard; its pages now point at Evaluation
   '/docs/prototype': '/docs/evaluation',
   '/docs/prototype/concepts/understanding-prototype': '/docs/evaluation',
@@ -355,7 +357,7 @@ export const redirectMap: Record<string, string> = {
   '/product/simulation/agent-definition': '/docs/simulation/concepts/agent-definitions',
   '/product/simulation/how-to/chat-simulation-using-sdk': '/docs/simulation/guides/run-chat-simulation',
   '/product/simulation/how-to/evaluate-tool-calling': '/docs/simulation/guides/evaluate-tool-calls',
-  '/product/simulation/how-to/fix-my-agent': '/docs/simulation/guides/fix-my-agent',
+  '/product/simulation/how-to/fix-my-agent': '/docs/environments/guides/run-epoch',
   '/product/simulation/how-to/observe-to-simulate': '/docs/simulation/guides/replay-chat',
   '/product/simulation/how-to/prompt-simulation': '/docs/simulation/guides/prompt-simulation',
   '/product/simulation/how-to/voice-observability': '/docs/simulation/guides/replay-voice',
@@ -387,7 +389,7 @@ export const redirectMap: Record<string, string> = {
   '/docs/simulation/features/prompt-simulation': '/docs/simulation/guides/prompt-simulation',
   '/docs/simulation/features/evaluate-tool-calling': '/docs/simulation/guides/evaluate-tool-calls',
   '/docs/simulation/features/view-results': '/docs/simulation/guides/explore-results',
-  '/docs/simulation/features/fix-my-agent': '/docs/simulation/guides/fix-my-agent',
+  '/docs/simulation/features/fix-my-agent': '/docs/environments/guides/run-epoch',
 
   // Product docs revamp: Features-shaped sections replaced by Concepts/Guides/Reference/Troubleshooting.
   '/docs/agent-playground/features/build-workflow': '/docs/agent-playground/guides/build-workflow',
