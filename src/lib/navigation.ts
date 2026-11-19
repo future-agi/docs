@@ -353,6 +353,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Triage issues', href: '/docs/error-feed/guides/triage-issues' },
               { title: 'Investigate an issue', href: '/docs/error-feed/guides/investigate-an-issue' },
               { title: 'Run a root cause analysis', href: '/docs/error-feed/guides/run-root-cause-analysis' },
+              { title: 'Run Epoch from an issue', href: '/docs/error-feed/guides/run-epoch-from-an-issue' },
               { title: 'Create a Linear issue', href: '/docs/error-feed/guides/create-linear-issue' },
             ]
           },
