@@ -884,7 +884,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Analytics & metrics', href: '/docs/simulation/guides/explore-results/analytics' },
                 ]
               },
-              { title: 'Fix My Agent', href: '/docs/simulation/guides/fix-my-agent' },
               {
                 title: 'Optimize using simulate',
                 items: [
@@ -1012,7 +1011,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Session-Based Observability', href: '/docs/cookbook/quickstart/session-observability' },
               { title: 'LangGraph Agent Observability', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
               { title: 'Chat Simulation with Personas', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
-              { title: 'Chat Simulation & Fix My Agent', href: '/docs/cookbook/chat-simulation-fix-agent' },
+              { title: 'Chat Simulation & Debug Failures', href: '/docs/cookbook/chat-simulation-fix-agent' },
               { title: 'Prompt Workbench Simulation', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
               { title: 'End-to-End Agent Testing', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
             ]
