@@ -29,7 +29,9 @@ const env = { ...process.env, SKILLS_DOCS_LIVE: '1', SKILLS_DOCS_PYTHON: python,
   FI_CONTEXT_CREDENTIAL: issued.secret, FI_CONTEXT_ORIGIN: api, FI_CONTEXT_WORKSPACE_ID: info.default_workspace_id,
   FI_CONTEXT_ORGANIZATION_ID: info.organization.id, SKILLS_DOCS_EXPECT_VERSION_ID: published.version.id };
 const run = spawnSync(process.execPath, ['--test', '--test-name-pattern=application example', 'scripts/skills-docs.test.mjs'], { cwd: docs, env, encoding: 'utf8' });
-await call('DELETE', `/model-hub/skills/contexts/credentials/${issued.id}/`, undefined, h).catch(() => undefined);
-const out = (run.stdout + run.stderr).split('\n').filter((l) => /^(ok|not ok|# (pass|fail|skipped))/.test(l) || /error:/.test(l));
-console.log(JSON.stringify({ product_version_id: published.version.id, digest: published.version.digest, exit: run.status, summary: out }, null, 2));
-process.exitCode = run.status;
+await call('DELETE', `/model-hub/skills/contexts/credentials/${issued.id}/`, undefined, h);
+// A child killed by a signal or unable to start has no exit status. It did not pass.
+const exit = run.status ?? 1;
+const out = (run.stdout ?? '').split('\n').filter((l) => /^(ok |not ok |# (pass|fail|skipped) )/.test(l));
+console.log(JSON.stringify({ product_version_id: published.version.id, digest: published.version.digest, exit, summary: out }, null, 2));
+process.exitCode = exit;

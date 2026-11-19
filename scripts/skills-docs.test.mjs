@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -98,7 +98,9 @@ test('amendments use files multipart field and workspace-wide list stats', () =>
 
 test('skill links point to real headings, not just existing pages', () => {
   const slug = heading => heading.toLowerCase().replace(/[`*_]/g, '').replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
-  for (const name of names) {
+  const guides = readdirSync(new URL('src/pages/docs/skills/', root)).filter(file => file.endsWith('.mdx'));
+  for (const file of guides) {
+    const name = file.slice(0, -4);
     for (const [, target, anchor] of read(name).matchAll(/\]\(\/docs\/skills(?:\/([a-z-]+))?#([a-z-]+)\)/g)) {
       const headings = [...read(target ?? 'index').matchAll(/^##+ (.+)$/gm)].map(([, heading]) => slug(heading));
       assert.ok(headings.includes(anchor), `${name}: missing anchor ${target}#${anchor}`);
