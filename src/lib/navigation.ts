@@ -830,7 +830,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'Understanding Simulation', href: '/docs/simulation/concepts/understanding-simulation' },
-              { title: 'Agent definitions & versions', href: '/docs/simulation/concepts/agent-definitions' },
               { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
               { title: 'Personas', href: '/docs/simulation/concepts/personas' },
               { title: 'Runs & results', href: '/docs/simulation/concepts/runs-and-results' },
@@ -841,7 +840,6 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Guides',
             items: [
-              { title: 'Connect your agent', href: '/docs/simulation/guides/connect-your-agent' },
               { title: 'Create scenarios', href: '/docs/simulation/guides/create-scenarios' },
               { title: 'Create personas', href: '/docs/simulation/guides/create-personas' },
               {
@@ -920,6 +918,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Concepts',
             items: [
               { title: 'Understanding Environments', href: '/docs/environments/concepts/understanding-environments' },
+              { title: 'Agents & versions', href: '/docs/environments/concepts/agents-and-versions' },
               { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
               { title: 'Scenarios & Trials', href: '/docs/environments/concepts/scenarios-and-trials' },
               { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
@@ -929,6 +928,7 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Guides',
             items: [
+              { title: 'Connect your agent', href: '/docs/environments/guides/connect-your-agent' },
               { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
               { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
               { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
@@ -939,12 +939,16 @@ export const tabNavigation: NavTab[] = [
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
+              { title: 'Manage agent versions', href: '/docs/environments/guides/manage-agent-versions' },
+              { title: 'Sync a hosted agent', href: '/docs/environments/guides/sync-a-hosted-agent' },
             ]
           },
           {
             title: 'References',
             items: [
               { title: 'Supported agents', href: '/docs/environments/reference/supported-agents' },
+              { title: 'Agent versions & limits', href: '/docs/environments/reference/agent-versions-and-limits' },
+              { title: 'Agents API', href: '/docs/environments/reference/agents-api' },
             ]
           },
           {
