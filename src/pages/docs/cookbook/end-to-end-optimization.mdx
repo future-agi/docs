@@ -42,7 +42,7 @@ export OPENROUTER_API_KEY
 
 1. Keep the two `holdout` rows out of `optimize()`. They represent new requests with the same two queue labels.
 2. Give random search only `train`. Afterward, score a fresh generator with the original template and the returned generator on `holdout`. Pass only `ticket` to each generator, not the answer key.
-3. Reject a candidate that does not take exactly `ticket` as its template input. Otherwise, save it only if its holdout score is higher. Reload it and check that its next reply is actually a queue name before using it.
+3. Reject a rewrite before calling the routing model unless it uses `{ticket}` and no other replacement field. Otherwise, save it only if its holdout score is higher. Reload it and check that its next reply is actually a queue name before using it.
 
 Save as `end_to_end.py` and run `python end_to_end.py` in a directory where the script can write `ridgeline-router.txt`. Running it again replaces that file.
 
@@ -86,7 +86,23 @@ def accuracy(generator, rows):
     return sum(item.score for item in scores) / len(rows)
 
 
-generator = LiteLLMGenerator(MODEL, seed)
+def accepts_ticket(template):
+    try:
+        fields = [(name, spec, conversion) for _, name, spec, conversion
+                  in Formatter().parse(template) if name is not None]
+    except ValueError:  # Unmatched braces in a rewrite.
+        return False
+    return bool(fields) and all(field == ("ticket", "", None) for field in fields)
+
+
+class TicketRouter(LiteLLMGenerator):
+    def generate(self, row):
+        if not accepts_ticket(self.get_prompt_template()):
+            return ""  # An invalid rewrite cannot match either queue.
+        return super().generate({"ticket": row["ticket"]})
+
+
+generator = TicketRouter(MODEL, seed)
 optimizer = RandomSearchOptimizer(
     generator=generator, teacher_model=MODEL, num_variations=2
 )
@@ -95,8 +111,7 @@ result = optimizer.optimize(evaluator=evaluator, data_mapper=mapper, dataset=tra
 # Random Search changes its generator in place. Rebuild the original for comparison.
 before = accuracy(LiteLLMGenerator(MODEL, seed), holdout)
 candidate = result.best_generator.get_prompt_template()
-fields = {name for _, name, _, _ in Formatter().parse(candidate) if name is not None}
-after = accuracy(result.best_generator, holdout) if fields == {"ticket"} else None
+after = accuracy(result.best_generator, holdout) if accepts_ticket(candidate) else None
 promote = after is not None and after > before
 chosen = candidate if promote else seed
 Path("ridgeline-router.txt").write_text(chosen, encoding="utf-8")
@@ -118,12 +133,12 @@ print("New ticket:", prediction if prediction in {"REPAIRS", "RETURNS"} else "ma
 The file contains the chosen template, including its `{ticket}` placeholder, rather than a rendered reply. Here are the decision and routing lines from one run:
 
 ```text
-Holdout: baseline=50%, candidate=0%
-Saved: baseline
+Holdout: baseline=50%, candidate=100%
+Saved: candidate
 New ticket: REPAIRS
 ```
 
-Here the original routed one of the two held-out requests correctly and the candidate routed neither. The script kept the original and sent the new repair request to `REPAIRS`.
+The original routed one held-out ticket correctly; the candidate routed both. The script saved the candidate and got `REPAIRS` for the new ticket. A tie would have kept the original.
 
 ## Limits and troubleshooting
 
