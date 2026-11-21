@@ -1,0 +1,147 @@
+---
+title: "Zero-code Java tracing"
+description: "Attach the traceAI Java agent to a Java 17+ application, check its collector connection, and find a model call in Future AGI without changing your code."
+---
+
+## About
+
+Add `-javaagent` to your startup command to trace model calls without changing your Java application. The agent watches the JDK `HttpClient` and OkHttp for supported AI requests, including requests to OpenAI-compatible gateways. It does not trace every HTTP request or Java method.
+
+## Attach the agent to your application
+
+Use Java 17 or later and an executable application JAR. If you don't have an app handy, [build the support example below](#example-trace-a-support-request) to get `ridgeline-support.jar`. You need a Future AGI key pair for tracing; your application still needs its usual model provider credentials.
+
+<Steps>
+<Step title="Download the agent JAR">
+
+Download `com.futureagi:traceai-javaagent:1.4.1` from Maven Central. Keep the agent separate from your application JAR. You don't need to add a Maven dependency or change the application classpath.
+
+```bash
+AGENT="$PWD/traceai-javaagent-1.4.1.jar"
+curl -fL -o "$AGENT" https://repo.maven.apache.org/maven2/com/futureagi/traceai-javaagent/1.4.1/traceai-javaagent-1.4.1.jar
+```
+
+</Step>
+<Step title="Set both keys and choose a project">
+
+Get your key pair from [API keys](https://app.futureagi.com/dashboard/keys). Set both values in the same environment, preferably through your secret manager. For example, set these variables in the shell that starts the JVM:
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_PROJECT_NAME="ridgeline-support"
+```
+
+The default `FI_BASE_URL` is `https://api.futureagi.com`. For a self-hosted deployment, set it to the origin that serves trace ingestion. The agent appends `/tracer/v1/traces` and sends OTLP/HTTP JSON, so don't include the trace path in the base URL.
+
+<Warning>
+Prompt and response content is captured by default. Before handling customer conversations, set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` in the process environment if you don't want their content in spans. You can still inspect timing, model and reported token usage.
+</Warning>
+
+</Step>
+<Step title="Check the connection">
+
+Run these commands in the same shell. The first prints the masked configuration and integration inventory without sending data. The second attaches the agent to its own diagnostic command and sends one diagnostic span, not a model request.
+
+```bash
+java -jar "$AGENT" doctor
+java -javaagent:"$AGENT" -jar "$AGENT" doctor --check
+```
+
+In the first report, `active: false` is expected because you didn't attach the agent. In the second, look for `"collector":"accepted"`. This confirms the collector accepted the diagnostic span; it does not establish that your application's HTTP client is covered.
+
+</Step>
+<Step title="Restart your app and inspect a model call">
+
+Replace `ridgeline-support.jar` with your application's JAR. Put `-javaagent` **before** `-jar`: after the application JAR name, the JVM passes it to the application as an argument instead.
+
+```bash
+java -javaagent:"$AGENT" -jar ridgeline-support.jar
+```
+
+Make one supported model request and consume the response. In **Observe**, open **ridgeline-support**, select **Trace**, and open the model-call span. Look for the model, duration and token counts if the provider returned usage. With content capture enabled, you can also inspect the messages.
+
+{/* MEDIA: The ridgeline-support project's Trace tab with a completed model-call span open, showing the synthetic return question, model and token usage. */}
+
+</Step>
+</Steps>
+
+## Example: trace a support request
+
+Ridgeline Outfitters wants to see how its support app answers a return question. This example uses only JDK classes and makes one real OpenRouter chat request per run. Set `OPENROUTER_API_KEY` in your environment; it is separate from the two Future AGI keys. Save the following as `RidgelineSupport.java` in the directory where you downloaded the agent.
+
+```java
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.Objects;
+
+public class RidgelineSupport {
+    public static void main(String[] args) throws Exception {
+        String key = Objects.requireNonNull(System.getenv("OPENROUTER_API_KEY"),
+                "Set OPENROUTER_API_KEY before starting the app");
+        String body = """
+                {"model":"openai/gpt-4.1-mini","messages":[
+                  {"role":"system","content":"Ridgeline Outfitters accepts unused gear within 30 days. Answer in one sentence."},
+                  {"role":"user","content":"Can I return an unused tent I bought 12 days ago?"}
+                ]}
+                """;
+        var request = HttpRequest.newBuilder(URI.create("https://openrouter.ai/api/v1/chat/completions"))
+                .timeout(Duration.ofSeconds(60))
+                .header("Authorization", "Bearer " + key)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+        var response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("Model request returned HTTP " + response.statusCode());
+        }
+        System.out.println(response.body());
+    }
+}
+```
+
+Build once with JDK 17 or later. Start the same JAR twice, keeping your tracing and provider variables set in the same shell:
+
+```bash
+javac --release 17 RidgelineSupport.java
+jar --create --file ridgeline-support.jar --main-class RidgelineSupport RidgelineSupport.class
+java -jar ridgeline-support.jar
+java -javaagent:"$AGENT" -jar ridgeline-support.jar
+```
+
+Both runs print a model response. Only the second adds `chat openai/gpt-4.1-mini` to **ridgeline-support**. Open that span to see the tent question and the provider's token usage. If you enabled the hide switches, the span still has usage but not the conversation text. The separate `traceai.auto.doctor` span came from `doctor --check`.
+
+## Choose what to trace
+
+By default the agent enables all supported integrations. Choose them at JVM startup:
+
+| Setting | When to use it |
+| --- | --- |
+| `FI_INSTRUMENTATIONS` | Supply a comma-separated allowlist. Include `wire` to capture supported provider HTTP calls. |
+| `FI_DISABLED_INSTRUMENTATIONS` | Exclude integrations even if allowed. `wire` disables all provider HTTP tracing; `java.net.http` or `okhttp` disables just that transport. `servlet` disables joining incoming servlet trace context. |
+| `FI_AUTO_DEBUG=true` | Print masked configuration and integration statuses at application startup. Use this to inspect the actual application instead of the standalone doctor JVM. |
+
+For example, keep tracing the JDK client used by `ridgeline-support.jar`, but skip OkHttp:
+
+```bash
+FI_INSTRUMENTATIONS=wire FI_DISABLED_INSTRUMENTATIONS=okhttp \
+  java -javaagent:"$AGENT" -jar ridgeline-support.jar
+```
+
+## Limits and troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| The app starts but the agent is inactive. | Use Java 17+ and supply `FI_API_KEY` and `FI_SECRET_KEY` as a complete pair from one source. On Java 8 through 16 the app runs untraced. `OTEL_SDK_DISABLED=true` also turns the agent off. |
+| The collector accepts the diagnostic, but a model call is missing. | Check the **transport**, not just the SDK name. The agent covers the JDK `java.net.http.HttpClient` and OkHttp (tested versions: 3.14.9, 4.12.0 and 5.0.0). Apache HttpClient, Reactor Netty, gRPC and WebSockets are not covered. OkHttp in a nested class loader, such as a Spring Boot executable JAR, may not be visible to the agent. |
+| You already start the OpenTelemetry Java **agent**. | Choose one startup agent. With both in the same JVM, the traceAI agent warns and stays off regardless of flag order. An application-owned OpenTelemetry **SDK** is different: it can keep its own provider, exporter and spans. The traceAI agent exports only its own spans. |
+| A wrapper reports `manual`, or a call appears twice. | A `traceai-java-*` wrapper uses its own exporter. The agent skips a call when an LLM, EMBEDDING, RERANKER or GUARDRAIL span is active on the sending thread. If the SDK sends on another thread or a plain child span is active, both can record the call. Choose one tracing path for that traffic. |
+| Spans are missing when a short-lived app exits. | Let the JVM exit normally so the agent's shutdown hook can drain its queue. If you manage the lifecycle in code, `TraceAIAuto.flush()` and `TraceAIAuto.shutdown()` wait up to five seconds by default. Your application's `forceFlush()` does not flush the agent's separate queue. |
+
+## Next steps
+
+- [Explore the Observe dashboard](/docs/observe/guides/explore-dashboard) to compare model calls across requests.
+- [Set up Java client wrappers](/docs/integrations/traceai/java) if you want to instrument specific client operations in code.
+- See the [Java agent configuration reference](https://github.com/future-agi/traceAI/blob/java-v1.4.1/java/traceai-javaagent/README.md#configuration) for sampling, privacy switches and config file precedence.
