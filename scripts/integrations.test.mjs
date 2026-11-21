@@ -71,7 +71,9 @@ test('VoltAgent uses the released processor and a discoverable Node.js example',
   assert.match(page, /setGlobalTracerProvider: false/);
   assert.match(page, /spanProcessors: \[new FIVoltAgentSpanProcessor\(\{ tracerProvider \}\)\]/);
   assert.match(page, /node voltagent\.mjs/);
-  assert.match(page, /Open \*\*Observe\*\*/);
+  assert.match(page, /\*\*Tracing\*\*/);
+  assert.match(page, /\*\*Attributes\*\*/);
+  assert.match(page, /`gen_ai\.tool\.call\.id`/);
   assert.doesNotMatch(page, /tested with|live run|unit tests|end-to-end runs|2026-10-16/i);
 });
 
