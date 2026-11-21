@@ -1,0 +1,173 @@
+---
+title: "Evaluate saved runs and catch regressions"
+description: "Grade a saved agent reply against two policy requirements, turn a failure into a replayable case, and compare the next build against a known-good baseline in CI."
+---
+
+## About
+
+You can test a new rule against a reply your agent has already given. Ridgeline Outfitters promises a 30-day return window for unused boots, but its support agent quoted 90 days. This guide checks the original reply without calling the agent, then uses the same check on a corrected reply.
+
+| If you have… | Use | What it checks |
+| --- | --- | --- |
+| A set of exact requirements | `alk eval` | Runs a suite manifest: each provider, prompt, and test combination produces one case. An `artifact` provider reads a saved file instead of calling a model. |
+| Raw evidence from one task | `alk eval-task` | Turns messages, tool calls, and other recorded evidence into a case and scores it with agent-report metrics. |
+| A saved run with a report | `alk eval-artifact` | Scores the report with agent-report metrics and a task configuration. The new verdict is separate from the original run. |
+
+## 1. Save the replies
+
+Start in an empty directory with Python 3.10 or later. The example needs no API keys.
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7
+```
+
+Run this Python script to create three small run artifacts: the previously approved reply, the incident, and a reply from after the fix. In your project, use actual saved runs instead. Keep the approved and incident files unchanged.
+
+```python
+import json
+from pathlib import Path
+
+question = "How long do I have to return unused boots?"
+replies = {
+    "approved": "Return unused boots within 30 days. Bring your receipt.",
+    "incident": "Return unused boots within 90 days. Bring your receipt.",
+    "fixed": "With your receipt, you can return unused boots within 30 days.",
+}
+for version, reply in replies.items():
+    case = {"messages": [
+        {"role": "user", "content": question},
+        {"role": "assistant", "content": reply},
+    ]}
+    run = {"kind": "agent-learning.run.v1", "name": "boot-return", "report": {"results": [case]}}
+    Path(f"{version}.json").write_text(json.dumps(run, indent=2))
+```
+
+## 2. Check two requirements on the incident
+
+Save this manifest as `suite.json` next to the replies. `current.json` is the evidence file you want to grade; its path is relative to the manifest. In these two-message runs, the reply is at `report.results[0].messages[1]`. The first assertion checks that the speaker is the assistant. The next two look for the receipt reminder and the return window in that same message. For longer conversations, point all three paths at the turn you want to grade.
+
+```json
+{
+  "version": "agent-learning.eval.v1",
+  "name": "boot-return-policy",
+  "threshold": 1.0,
+  "providers": [{"id": "saved-reply", "type": "artifact", "path": "current.json"}],
+  "prompts": [{"id": "return-policy", "template": "Check the saved return instructions."}],
+  "tests": [{
+    "id": "receipt-and-window",
+    "assert": [
+      {"type": "json_path_equals", "path": "report.results[0].messages[1].role", "value": "assistant"},
+      {"type": "json_path_contains", "path": "report.results[0].messages[1].content", "value": "receipt"},
+      {"type": "json_path_contains", "path": "report.results[0].messages[1].content", "value": "within 30 days"}
+    ]
+  }]
+}
+```
+
+Run the suite and save the verdict. Python returns a result you can inspect; the CLI writes the same verdict and exits `1` for this incident.
+
+<CodeGroup titles={["Python", "CLI"]}>
+
+```python
+import json
+from pathlib import Path
+from shutil import copyfile
+from fi.alk import evals
+
+copyfile("incident.json", "current.json")
+result = evals.run_eval_suite_file("suite.json")
+Path("incident-eval.json").write_text(json.dumps(result, indent=2))
+for check in result["eval_suite"]["cases"][0]["assertions"]:
+    print(check["expected"], check["passed"])
+print(result["status"], result["summary"]["score"])
+```
+
+```bash
+cp incident.json current.json &&
+  alk eval suite.json --output incident-eval.json
+```
+
+</CodeGroup>
+
+The speaker and receipt checks return `True`. The window check returns `False`. Two of three assertions passed, so Python prints `failed 0.6667`. A suite passes only if its score reaches `threshold` **and** every case passes. Lowering the threshold to `0.5` would not excuse the failed assertion. Use `alk eval suite.json --dry-run` to check the manifest's shape without reading the provider output or testing either requirement.
+
+## 3. Compare with a baseline and promote the failure
+
+Freeze the verdict from the **approved** reply, not from the incident. `baseline.json` is the reference for future comparisons. You do not regenerate it on each build.
+
+```bash
+cp approved.json current.json &&
+  alk eval suite.json --output approved-eval.json &&
+  alk baseline approved-eval.json --output baseline.json
+```
+
+Compare the incident verdict you saved in step 2. This command **should exit 1**: the score dropped from `1.0` to `0.6667`. In `incident-compare.json`, `summary.score_delta` is `-0.3333` and `summary.new_finding_count` is `1`. By default, `compare` allows neither a score drop nor a new finding.
+
+```bash
+alk compare baseline.json incident-eval.json --output incident-compare.json
+```
+
+Use `report` to write a readable summary for review. `promote-to-regression` turns the failed assertion's finding into a manifest; pass that manifest, not the promotion summary, to `replay`.
+
+```bash
+alk report incident-eval.json --markdown incident.md &&
+  alk promote-to-regression incident-eval.json --output promotion.json --manifest regression.json &&
+  alk replay regression.json --output replay.json
+```
+
+For this fixture, `promotion.json` records one promoted finding and `replay.json` records one passed manifest. The generated manifest puts the finding in a red-team scenario and runs a scripted agent. It records the expected phrase and the actual reply as evidence; it does not rerun the return-window assertion. Use the original suite to test your support agent’s next reply.
+
+## 4. Gate the next build on its own reply
+
+Select `fixed.json` to stand in for evidence captured from the new build. Run this block as a CI step. It checks the candidate against the two requirements and compares its score and findings to the frozen reference. The corrected reply has different wording but passes all three assertions: the score is `1.0`, the delta is `0.0`, and there are no new findings.
+
+```bash
+cp fixed.json current.json &&
+  alk eval suite.json --output current-eval.json &&
+  alk compare baseline.json current-eval.json --output current-compare.json
+```
+
+In CI, replace `cp` with a capture step that writes `current.json` and exits nonzero if it cannot capture a fresh reply. Keep the `&&` chain so a failed capture cannot grade a leftover file. Version the suite and its reviewed baseline together. Before committing a promoted manifest, check the captured reply and source paths for private data. Don't use the fixed example reply as input to every build: that would keep testing yesterday's response.
+
+## Example: score the same evidence with agent-report metrics
+
+Use `evaluate_artifact` when you want a breakdown by metric rather than an exact phrase check. It takes a loaded artifact and a configuration describing the task and what success looks like. The artifact-evaluation threshold defaults to `0.7`; it applies to the report score, not to each phrase. A passing overall score does not certify the 30-day promise. Keep the exact assertion for that rule.
+
+```python
+import json
+from pathlib import Path
+from fi.alk import evals
+
+run = json.loads(Path("incident.json").read_text())
+config = {
+    "task_description": "Explain the return policy for unused boots.",
+    "expected_result": "Return unused boots within 30 days. Bring your receipt.",
+    "success_criteria": ["mention the receipt", "state the 30-day return window"],
+}
+result = evals.evaluate_artifact(run, config=config, threshold=0.7, source_path="incident.json")
+print(result["status"], result["summary"]["score"])
+print("Task completion:", result["summary"]["metric_averages"]["task_completion"])
+Path("criteria.json").write_text(json.dumps(config))
+Path("task.json").write_text(json.dumps(run["report"]["results"][0]))
+```
+
+For the incident, the metric evaluation passes with an overall score of `0.9107`, even though the exact window assertion failed. To save the full metric report from the CLI, choose the command that matches your input. Here `task.json` contains just the messages; `incident.json` wraps those same messages in a run report.
+
+```bash
+alk eval-task task.json --config criteria.json --output task-metrics.json
+alk eval-artifact incident.json --config criteria.json --output run-metrics.json
+```
+
+## Limits and errors
+
+- **Missing observation:** If a message or field is missing at the specified path, its assertion fails. Inspect `error` and `path` on that assertion in `eval_suite.cases[0].assertions`. If the path exists but the value is wrong, compare `actual` with `expected` instead. A missing message means the reply was not recorded at that path, not that the agent quoted the wrong policy. Capture the missing evidence or correct the path before changing a threshold.
+- **Wrong input shape:** `eval-artifact` looks for `report.results`, top-level `results`, or a report in `optimization.history`. A bare task transcript is not a run report; use `eval-task` for that input.
+- **Literal matching:** `json_path_contains` uses a case-sensitive substring check on this reply. It does not recognize equivalent wording or detect a sentence that negates the policy. If the contract is a structured value, use `json_path_equals` on that field instead.
+- **Project CI versus kit releases:** `alk release-check` verifies the Agent Learning Kit's own release gates against a kit source checkout. `alk release-proof` also runs checks such as lint, tests, and package builds there. Neither command evaluates your agent's latest reply. Use your project suite and baseline for that.
+
+## Next steps
+
+- [Run evaluations on model outputs](/docs/sdk/evals/evaluate) when you need a metric for an individual reply rather than a suite of saved cases.
+- [Evaluate in CI/CD](/docs/evaluation/guides/cicd) to submit versioned evaluations from your pipeline.

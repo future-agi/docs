@@ -1,0 +1,146 @@
+---
+title: "Use LangChain and LangGraph as Agent Learning Kit targets"
+description: "Probe a LangChain runnable, execute a compiled LangGraph with a local inventory tool, and read the Agent Learning Kit evidence for each run."
+---
+
+## About
+
+Use an adapter probe to check what your LangChain runnable receives and returns. Then run the same Ridgeline Outfitters stock request through a compiled LangGraph to see a local inventory tool execute, without provider keys.
+
+## Test a stock request
+
+<Steps>
+<Step title="Install the framework extra">
+
+In a Python 3.12 virtual environment, install the `langchain` extra. It includes both `langchain-core` and `langgraph`. A probe against a plain Python stand-in needs only the base kit; these examples use the actual framework classes.
+
+```bash
+python -m pip install 'agent-learning-kit[langchain]==0.3.7'
+```
+
+</Step>
+<Step title="Probe a LangChain runnable">
+
+Ridgeline's support desk submits a product code. Before connecting the inventory tool, check that the runnable receives `TRAIL-22` as text, not a stringified message dictionary. `method="invoke"` selects the entry point; `input_mode="text"` selects what the kit passes to it. Replace `RunnableLambda(preview)` with your own text-input runnable to check the same contract.
+
+<CodeGroup titles={["Python"]}>
+
+```python
+from fi.alk import simulate
+from langchain_core.runnables import RunnableLambda
+
+
+def preview(sku: str) -> str:
+    return f"Stock lookup requested for {sku}."
+
+
+probe = simulate.run_framework_adapter_probe(
+    "langchain",
+    RunnableLambda(preview),
+    method="invoke",
+    input_mode="text",
+    cases=[{
+        "id": "trail-pack",
+        "input": "TRAIL-22",
+        "expected_contains": ["Stock lookup requested for TRAIL-22."],
+    }],
+)
+print(probe["kind"], probe["status"])
+print(probe["cases"][0]["response"]["content"])
+```
+
+</CodeGroup>
+
+Expect `agent-learning.framework-adapter-probe.v1 passed` and `Stock lookup requested for TRAIL-22.` The kit called `invoke` and checked the returned content. It did not look up stock. Even a probe that checks `required_tools` only checks the tool names in the response, not whether those tools executed.
+
+</Step>
+<Step title="Run a compiled LangGraph with a real tool">
+
+Save the following as `stock_graph.py`. The first node makes a tool request from the incoming SKU. LangGraph's `ToolNode` executes `check_stock`, whose return value becomes the last message. The kit checks that message against `expect.contains`. The route is scripted so you can exercise the graph without paying for a model call.
+
+<CodeGroup titles={["Python"]}>
+
+```python
+import json
+from pathlib import Path
+from tempfile import mkdtemp
+
+from fi.alk.live import run_lane
+from langchain_core.messages import AIMessage
+from langchain_core.tools import tool
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode
+
+
+@tool
+def check_stock(sku: str) -> str:
+    """Look up a product in Ridgeline Outfitters' local inventory."""
+    print(f"check_stock received {sku}")
+    stock = {"TRAIL-22": 4}
+    return f"{sku}: {stock.get(sku, 0)} available"
+
+
+def request_stock(state: MessagesState):
+    sku = state["messages"][-1].content
+    call = {"name": "check_stock", "args": {"sku": sku}, "id": "stock-1"}
+    return {"messages": [AIMessage(content="", tool_calls=[call])]}
+
+
+builder = StateGraph(MessagesState)
+builder.add_node("request_stock", request_stock)
+builder.add_node("tools", ToolNode([check_stock]))
+builder.add_edge(START, "request_stock")
+builder.add_edge("request_stock", "tools")
+builder.add_edge("tools", END)
+
+run_dir = Path(mkdtemp(prefix="ridgeline-run-", dir="."))
+result = run_lane(
+    "langchain",
+    builder.compile(),
+    {"turns": [{"user": "TRAIL-22", "expect": {"contains": "TRAIL-22: 4 available"}}]},
+    repeats=1,
+    artifacts_dir=run_dir,
+)
+artifact = run_dir / "run.json"
+artifact.write_text(json.dumps(result, indent=2), encoding="utf-8")
+print(result["kind"], result["evidence_class"], result["summary"]["verdict"])
+print(result["workflow_trace"]["items"][-1]["text"])
+print(artifact)
+```
+
+</CodeGroup>
+
+To test your own graph, pass its compiled object in place of `builder.compile()`. A `user` turn becomes a `messages` list with one user message. If your graph expects different state keys, put the exact graph input in the turn's `input` field instead.
+
+Opt in for this command only. Use the `langchain` lane and its flag even though the target is a LangGraph graph.
+
+```bash
+AGENT_LEARNING_LIVE_LANGCHAIN=1 python stock_graph.py
+```
+
+`check_stock received TRAIL-22` comes from inside the tool. The next two lines show the verdict (`agent-learning.run.v1 live_lane pass`) and the final reply (`TRAIL-22: 4 available`). Change the inventory count to `3` without changing the expectation and run the command again. The tool still runs, but the verdict changes to `fail`.
+
+</Step>
+</Steps>
+
+## Interpret the evidence
+
+Open the `run.json` path printed by the script. Each run gets a fresh directory so its transcript stays separate. `metadata.execution_model` is `in_process` because you passed the compiled object. `live_lane.framework_version` identifies the installed LangGraph version; `live_lane.per_repeat[0].transcript_path` points to the turn transcript. The transcript records the graph's final reply as an agent message, not a separate tool span.
+
+| What you ran | What to inspect | What it proves |
+|---|---|---|
+| Adapter probe | `agent-learning.framework-adapter-probe.v1`, `status`, and the case's `checks` and `response` | The selected method accepted the input and returned the expected content or tool declarations. A stand-in with the same method can pass. |
+| Local simulation with a shim and a `framework_trace` fixture | `agent-learning.run.v1`, the run manifest's `local_text` engine, and the supplied spans | The adapter handled the simulated runtime data. A span named after a graph node is not proof that LangGraph executed that node. |
+| Opt-in run with your compiled graph | `agent-learning.run.v1`, `evidence_class` of `live_lane`, the observed reply, and `summary.verdict` | The framework ran the graph in this process. The verdict tells you whether its final reply met your check, not whether a hosted deployment works. |
+
+## Limits and troubleshooting
+
+- A probe **calls** the object you pass. To keep it offline, use a local callable with no network or provider dependencies. In a notebook with an active event loop, use `await simulate.probe_framework_adapter(...)` instead of the synchronous wrapper.
+- If a probe fails a check, read `findings` for the expected and observed values. Match the method and input mode to your target rather than weakening the expectation.
+- A missing live-lane flag raises `LaneDisabledError`. The scripted example uses the default `rung=1`. If your graph calls a provider, use `rung=2`, supply its credentials, and also set `AGENT_LEARNING_LIVE_CREDENTIALED=1`. The flags do not configure a model for you.
+- Local adapter support is not a list of agents you can connect to hosted Environments. Check the [supported agent sources](/docs/environments/reference/supported-agents) before choosing a deployment path.
+
+## Next steps
+
+- [Trace a LangChain and LangGraph agent](/docs/cookbook/langchain-langgraph) to inspect individual model and tool spans.
+- [Build a hosted environment](/docs/environments/guides/build-an-environment) when you are ready to test a deployed agent.

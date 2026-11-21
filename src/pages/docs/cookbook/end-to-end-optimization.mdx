@@ -1,187 +1,152 @@
 ---
 title: "End-to-End Prompt Optimization"
 slug: "end-to-end-optimization"
-description: "Take a vague baseline prompt, configure a full agent-opt pipeline, and run RandomSearchOptimizer to rank prompt variants by score."
+description: "Optimize a support router, compare the selected wording with the original on held-out tickets, and save a prompt you can load into the application."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
-  - "agent-opt"
+  - "agent-learning-kit"
 frameworks:
-  - "OpenAI"
+  - "LiteLLM"
 difficulty: "intermediate"
 time-to-complete: "20 minutes"
 tags:
   - "prompt-optimization"
-  - "agent-opt"
+  - "fi.opt"
   - "evaluation"
 canonical: "https://docs.futureagi.com/docs/cookbook/end-to-end-optimization"
 page-type: "cookbook"
 ---
 
-<TLDR>
-Wire up every piece of an `agent-opt` optimization run: a dataset, a generator bound to a baseline prompt, an evaluator, a data mapper, and `RandomSearchOptimizer`. Score the vague baseline first, then run the optimizer and compare.
-</TLDR>
+## About
+
+A prompt can win a search on familiar tickets and still route new ones incorrectly. Run a small release check for Ridgeline Outfitters: optimize on one set of tickets, test on a separate set, and save the candidate only if it beats the original.
 
 | Time | Difficulty | Package |
-|------|-----------|---------|
-| 20 min | Intermediate | `agent-opt` |
+|---|---|---|
+| 20 min | Intermediate | `agent-learning-kit==0.3.7` |
 
-<Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings/api-keys))
-- An OpenAI API key (the generator's `gpt-4o-mini` and the optimizer's `gpt-4o` teacher model both call OpenAI through LiteLLM)
-- Python 3.11
-</Prerequisites>
+## Set up Python
 
-## Install
+Use a fresh Python 3.12 environment. In Bash, enter an OpenRouter API key when prompted. The model calls use that key; the exact-match metric runs locally without Future AGI credentials.
 
 ```bash
-pip install agent-opt
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7
+read -rsp 'OpenRouter API key: ' OPENROUTER_API_KEY; printf '\n'
+export OPENROUTER_API_KEY
 ```
 
-```bash
-export FI_API_KEY="your-api-key"
-export FI_SECRET_KEY="your-secret-key"
-export OPENAI_API_KEY="your-openai-api-key"
-```
+## Search, check, and save a prompt
 
-<Note>
-`RandomSearchOptimizer` bills your OpenAI key beyond the generator's own calls: each `optimize()` run adds `num_variations=5` `gpt-4o` teacher calls plus a `gpt-4o-mini` generation per dataset row per variation, on top of the Future AGI evaluator calls.
-</Note>
+1. Keep the two `holdout` rows out of `optimize()`. They represent new requests with the same two queue labels.
+2. Give random search only `train`. Afterward, score a fresh generator with the original template and the returned generator on `holdout`. Pass only `ticket` to each generator, not the answer key.
+3. Reject a rewrite before calling the routing model unless it uses `{ticket}` and no other replacement field. Otherwise, save it only if its holdout score is higher. Reload it and check that its next reply is actually a queue name before using it.
 
-## Tutorial
+Save as `end_to_end.py` and run `python end_to_end.py` in a directory where the script can write `ridgeline-router.txt`. Running it again replaces that file.
 
-<Steps>
-<Step title="Prepare the dataset and baseline prompt">
-
-The dataset is the set of inputs the optimizer scores every prompt variant against. The baseline prompt is deliberately vague, so there's a real gap for optimization to close.
+<CodeGroup titles={["Python"]}>
 
 ```python
-dataset = [
-    {
-        "article": "The James Webb Space Telescope captured detailed images of the Pillars of Creation.",
-    },
-    {
-        "article": "Researchers discovered an enzyme that rapidly breaks down plastic.",
-    },
-]
+from pathlib import Path
+from string import Formatter
 
-# Deliberately vague: no length constraint, no instruction on what to keep
-baseline_prompt = "Summarize this: {article}"
-```
-
-</Step>
-<Step title="Wire the generator, evaluator, and data mapper">
-
-The generator binds the baseline prompt to a model configuration; the optimizer calls it to produce output for every candidate prompt it tries. The evaluator scores each candidate's output, it's the objective function the optimizer optimizes against. The data mapper connects dataset fields to what the evaluator expects.
-
-```python
-from fi.opt.generators import LiteLLMGenerator
-from fi.opt.base.evaluator import Evaluator
+from fi.evals.metrics import Equals
+from fi.opt.base import Evaluator
 from fi.opt.datamappers import BasicDataMapper
-
-generator = LiteLLMGenerator(
-    model="gpt-4o-mini",
-    prompt_template=baseline_prompt,
-)
-
-evaluator = Evaluator(
-    eval_template="summary_quality",
-    eval_model_name="turing_flash",
-)
-
-data_mapper = BasicDataMapper(
-    key_map={
-        "input": "article",
-        "output": "generated_output",
-    }
-)
-```
-
-`generated_output` is a sentinel value `BasicDataMapper` recognises and replaces with each variant's output. Keep it exactly as shown.
-
-<Note>
-`summary_quality` is one of Future AGI's [built-in evals](/docs/evaluation/builtin). Swap it for any other built-in template that matches your task.
-</Note>
-
-Score the vague baseline now, before touching the optimizer, so you have a real number to compare against later:
-
-```python
-baseline_outputs = [generator.generate(row) for row in dataset]
-mapped = [
-    data_mapper.map(output, row)
-    for output, row in zip(baseline_outputs, dataset)
-]
-results = evaluator.evaluate(mapped)
-baseline_score = sum(r.score for r in results) / len(results)
-
-print(f"Baseline score: {baseline_score:.3f}")
-```
-
-**You should see** a `Baseline score` between 0 and 1. It's the vague prompt's true score, expect it to be middling, illustrating exactly the gap `optimize()` is meant to close.
-
-</Step>
-<Step title="Select the optimizer">
-
-`RandomSearchOptimizer` generates prompt variations with a teacher model and scores each with the evaluator. Future AGI ships 5 other strategies behind the same `optimize()` call:
-
-- [Bayesian Search](/docs/optimization/reference/optimizers/bayesian-search) for few-shot example selection
-- [ProTeGi](/docs/optimization/reference/optimizers/protegi) for targeted edits
-- [Meta-Prompt](/docs/optimization/reference/optimizers/meta-prompt) for higher-level rewrites
-- [GEPA](/docs/optimization/reference/optimizers/gepa) for evolutionary search
-- [PromptWizard](/docs/optimization/reference/optimizers/promptwizard) for multi-stage refinement
-
-Swapping the optimizer class doesn't change the rest of the workflow, the dataset, evaluator, and data mapper stay the same.
-
-```python
+from fi.opt.generators import LiteLLMGenerator
 from fi.opt.optimizers import RandomSearchOptimizer
 
+MODEL = "openrouter/openai/gpt-4o-mini"
+seed = "Ticket: {ticket}\nQueue (RETURNS or REPAIRS):"
+train = [
+    {"ticket": "My new boots don't fit. Can I send them back?", "queue": "RETURNS"},
+    {"ticket": "Can you fix a broken buckle on my pack?", "queue": "REPAIRS"},
+]
+mapper = BasicDataMapper({
+    "response": "generated_output",
+    "expected_response": "queue",
+})
+evaluator = Evaluator(metric=Equals(config={"case_sensitive": True}))
+holdout = [
+    {"ticket": "I ordered the wrong tent. Can I get a refund?", "queue": "RETURNS"},
+    {"ticket": "Can you replace my sleeping bag zipper?", "queue": "REPAIRS"},
+]
+
+
+def accuracy(generator, rows):
+    inputs = []
+    for row in rows:
+        reply = generator.generate({"ticket": row["ticket"]})
+        if not reply:
+            raise RuntimeError("No reply from the generator")
+        inputs.append(mapper.map(reply, row))
+    scores = evaluator.evaluate(inputs)
+    return sum(item.score for item in scores) / len(rows)
+
+
+def accepts_ticket(template):
+    try:
+        fields = [(name, spec, conversion) for _, name, spec, conversion
+                  in Formatter().parse(template) if name is not None]
+    except ValueError:  # Unmatched braces in a rewrite.
+        return False
+    return bool(fields) and all(field == ("ticket", "", None) for field in fields)
+
+
+class TicketRouter(LiteLLMGenerator):
+    def generate(self, row):
+        if not accepts_ticket(self.get_prompt_template()):
+            return ""  # An invalid rewrite cannot match either queue.
+        return super().generate({"ticket": row["ticket"]})
+
+
+generator = TicketRouter(MODEL, seed)
 optimizer = RandomSearchOptimizer(
-    generator=generator,
-    teacher_model="gpt-4o",
-    num_variations=5,
+    generator=generator, teacher_model=MODEL, num_variations=2
 )
+result = optimizer.optimize(evaluator=evaluator, data_mapper=mapper, dataset=train)
+
+# Random Search changes its generator in place. Rebuild the original for comparison.
+before = accuracy(LiteLLMGenerator(MODEL, seed), holdout)
+candidate = result.best_generator.get_prompt_template()
+after = accuracy(result.best_generator, holdout) if accepts_ticket(candidate) else None
+promote = after is not None and after > before
+chosen = candidate if promote else seed
+Path("ridgeline-router.txt").write_text(chosen, encoding="utf-8")
+candidate_score = f"{after:.0%}" if after is not None else "invalid template fields"
+print(f"Holdout: baseline={before:.0%}, candidate={candidate_score}")
+print("Saved:", "candidate" if promote else "baseline")
+
+router = LiteLLMGenerator(
+    MODEL, Path("ridgeline-router.txt").read_text(encoding="utf-8")
+)
+prediction = router.generate({"ticket": "Can you mend a torn tent fly?"})
+print("New ticket:", prediction if prediction in {"REPAIRS", "RETURNS"} else "manual review")
 ```
 
-**You should see** an `optimizer` instance bound to `generator`, ready to call `optimize()`; nothing runs until the next step.
+</CodeGroup>
 
-</Step>
-<Step title="Run the optimization and inspect the results">
+## Read the result
 
-```python
-result = optimizer.optimize(
-    evaluator=evaluator,
-    data_mapper=data_mapper,
-    dataset=dataset,
-)
+The file contains the chosen template, including its `{ticket}` placeholder, rather than a rendered reply. Here are the decision and routing lines from one run:
 
-print(f"Baseline score: {baseline_score:.3f}")
-print(f"Final score: {result.final_score:.3f}")
-print(f"Delta: {result.final_score - baseline_score:+.3f}")
-print(f"Best prompt:\n{result.best_generator.get_prompt_template()}")
-
-for i, iteration in enumerate(result.history):
-    print(f"Round {i + 1}: score={iteration.average_score:.3f}")
+```text
+Holdout: baseline=50%, candidate=100%
+Saved: candidate
+New ticket: REPAIRS
 ```
 
-**You should see** the final score beat the baseline score from step 2, a positive delta, the text of the highest-scoring prompt variant, and one score per round as Random Search works through the 5 variations it generated.
+The original routed one held-out ticket correctly; the candidate routed both. The script saved the candidate and got `REPAIRS` for the new ticket. A tie would have kept the original.
 
-<Check>
-`optimize()` handled evaluation, the search loop, and ranking. What's left is a scored, winning prompt that measurably beats the vague baseline.
-</Check>
+## Limits and troubleshooting
 
-</Step>
-</Steps>
+- `RandomSearchOptimizer` changes its generator's template. Reusing that instance as the baseline after the search would compare the candidate against itself.
+- Two held-out tickets can only distinguish 0%, 50%, and 100%. Use more unseen examples, especially tickets whose wording spans multiple queues, before promoting a change.
+- `manual review` is the script's fallback for a reply outside the two allowed labels, including an empty reply. A score during search is not a guarantee that the next output has the right format.
 
-## Troubleshooting
+## Next steps
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `ValueError` naming `fi_api_key` / `fi_secret_key` when constructing `Evaluator(...)` | `FI_API_KEY` / `FI_SECRET_KEY` weren't exported before the script started | Export both keys in the same shell session, then rerun |
-| `ValueError: Invalid configuration...` constructing `Evaluator()` | Neither a `metric` nor the `eval_template` + `eval_model_name` pair was passed | Pass `eval_template` and `eval_model_name` together, or a local `metric` instead |
-| LiteLLM raises an OpenAI auth error | `OPENAI_API_KEY` missing; the generator's `gpt-4o-mini` and the optimizer's `gpt-4o` teacher model both route through LiteLLM to OpenAI | Export `OPENAI_API_KEY` alongside the FI keys |
-| The evaluator scores an empty or missing `output` input and returns a flat/zero score | `BasicDataMapper`'s `key_map` output value isn't the literal `generated_output` sentinel, so the mapper silently drops the field | Keep `"output": "generated_output"` exactly as shown |
-| `result.final_score` barely moves after optimization | `num_variations` too low, or `eval_template` doesn't match what the dataset actually tests | Raise `num_variations`, and match `eval_template` to the task |
-| `optimizer.optimize()` takes several minutes | Expected for `RandomSearchOptimizer` with `num_variations=5`: each variation calls the `gpt-4o` teacher model plus the evaluator | Lower `num_variations` for a faster first run, or wait it out |
-
-Once you have a winning prompt, save it as a versioned template you can serve without a redeploy. See [Prompt Versioning](/docs/cookbook/quickstart/prompt-versioning).
+- [Load a larger ticket export](/docs/cookbook/import-datasets).
+- [Keep and serve named prompt versions](/docs/cookbook/quickstart/prompt-versioning).

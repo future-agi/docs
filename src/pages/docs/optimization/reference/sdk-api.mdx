@@ -1,206 +1,116 @@
 ---
-title: "SDK & API"
-description: "Evaluator, BasicDataMapper, LiteLLMGenerator, optimize() arguments, return types, and EarlyStoppingConfig for the agent-opt library."
+title: "Optimization SDK reference"
+description: "Python reference for prompt optimizers in Agent Learning Kit: generator and eval inputs, algorithm-specific calls, early stopping, and result fields."
 ---
 
-Install the library with `pip install agent-opt`; every import on this page comes from the `fi.opt` package it provides. For a full walkthrough that builds and runs an optimization end to end, see [Optimize from the SDK](/docs/optimization/guides/optimize-from-the-sdk); for the environment variables and authentication this page's examples assume, see [Install and authenticate](/docs/optimization/guides/optimize-from-the-sdk#install-and-authenticate).
+## About
 
-## The shared surface
+Agent Learning Kit provides `fi.opt` and the public `fi.alk.optimize` module. This page covers the six **prompt** searches also offered in the dataset dashboard. A Python run takes a list of rows, generates answers for candidate prompts, scores them, and returns an `OptimizationResult`. For a complete model-backed run, see [Optimize from the SDK](/docs/optimization/guides/optimize-from-the-sdk).
 
-Every optimizer in `agent-opt` is built on the same four pieces:
-
-- **`Evaluator`** scores outputs
-- **`BasicDataMapper`** maps dataset fields to what the evaluator expects
-- **`LiteLLMGenerator`** holds the prompt being optimized
-- **`optimizer.optimize()`** runs the optimizer and returns an `OptimizationResult`
-
-This page is the reference for that shared surface. Constructor parameters specific to a single optimizer live on that optimizer's own reference page.
+```bash
+python -m pip install agent-learning-kit==0.3.7
+```
 
 ## Evaluator
 
-`Evaluator` has two construction modes. Provide `metric` for local evaluation, or provide `eval_template` together with `eval_model_name` for evaluation on the Future AGI platform.
+Import `Evaluator` from `fi.alk.optimize` (or `fi.opt.base.evaluator`). Call `evaluate(inputs)` with a list of mapped dictionaries; it returns a list of `EvaluationResult` records. Choose one scoring mode:
 
-Platform mode runs a pre-built Future AGI eval template with no custom code. Local mode uses a custom metric, such as a local LLM-as-a-judge or a rule-based heuristic. See [Choosing Evaluation Metrics for Prompt Optimization](/docs/cookbook/eval-metrics-optimization) for worked examples of both modes, including where a local metric instance like `my_metric` below comes from.
+| Mode | Constructor arguments | Credentials and behavior |
+|---|---|---|
+| Local heuristic | `metric=` with a `BaseMetric` instance, such as `Equals()` | Runs the metric in Python. No provider or Future AGI keys are needed for a text comparison. |
+| Local LLM judge | `metric=` with a `BaseLLMJudgeMetric` instance | If the metric has no provider, the evaluator uses the optional `provider=` or creates a `LiteLLMProvider`. The judge needs credentials for its model. |
+| Future AGI platform | `eval_template=` and `eval_model_name=` | Pass `fi_api_key` and `fi_secret_key` or set `FI_API_KEY` and `FI_SECRET_KEY`. Both are required. The template's required inputs determine what to map. |
 
-| Argument | Type | Default | Mode | Description |
-|---|---|---|---|---|
-| `eval_template` | `str` | required (Platform) | Platform | Name of the Future AGI platform eval template to run |
-| `eval_model_name` | `str` | required (Platform) | Platform | Model the platform eval template runs under |
-| `fi_api_key` | `str` | `None` | Platform | Future AGI API key; falls back to the `FI_API_KEY` environment variable when omitted |
-| `fi_secret_key` | `str` | `None` | Platform | Future AGI secret key; falls back to the `FI_SECRET_KEY` environment variable when omitted |
-| `metric` | `BaseMetric` | required (Local) | Local | A local metric instance that performs the evaluation |
-| `provider` | `LiteLLMProvider` | `None` | Local | Optional, only used with a local LLM-as-judge metric; defaults from environment variables when omitted (see [Install and authenticate](/docs/optimization/guides/optimize-from-the-sdk#install-and-authenticate) for which ones) |
-
-```python
-from fi.opt.base.evaluator import Evaluator
-
-# Platform mode
-evaluator = Evaluator(
-    eval_template="summary_quality",
-    eval_model_name="turing_flash",
-    fi_api_key="your_key",
-    fi_secret_key="your_secret"
-)
-
-# Local mode
-evaluator = Evaluator(metric=my_metric)
-```
+These credentials are independent of the ones your generator uses. The optimization evaluator clamps numeric metric scores to the range 0 to 1. When a row fails to score, inspect the returned `reason` rather than assuming a zero always means the answer was wrong.
 
 ## BasicDataMapper
 
-`BasicDataMapper` is the only exported data mapper.
+`BasicDataMapper(key_map=...)` maps **evaluator input name → source**. A source of `"generated_output"` means the model's answer, not a column you have to create. Other sources name keys in the dataset row. Missing source keys are omitted, so you can inspect `mapper.map(output, row)` before starting a search.
 
-| Argument | Type | Default | Description |
-|---|---|---|---|
-| `key_map` | `dict[str, str]` | required | Maps each key the evaluator expects to the dataset column or generator-output key it should read from, as `{evaluator_key: source_key}` |
+This example tests the scoring rule for a support router without making any model calls:
+
+<CodeGroup titles={["Python"]}>
 
 ```python
-from fi.opt.datamappers import BasicDataMapper
+from fi.alk.optimize import BasicDataMapper, Evaluator
+from fi.evals.metrics.heuristics.string_metrics import Equals
 
-data_mapper = BasicDataMapper(
-    key_map={
-        "input": "article",            # dataset column "article" -> evaluator's "input"
-        "output": "generated_output"   # generator's output -> evaluator's "output"
-    }
-)
+row = {"ticket": "Can I exchange a rain jacket?", "queue": "RETURNS"}
+mapper = BasicDataMapper(key_map={"response": "generated_output", "expected_response": "queue"})
+metric = Evaluator(metric=Equals(config={"case_sensitive": True}))
+for output in ["RETURNS", "RETURNS: send the jacket back."]:
+    mapped = mapper.map(output, row)
+    score = metric.evaluate([mapped])[0]
+    print(output, score.score, score.reason, sep=" | ")
+```
+
+</CodeGroup>
+
+```text
+RETURNS | 1.0 | Response matches expected text.
+RETURNS: send the jacket back. | 0.0 | Response does not match.
 ```
 
 ## LiteLLMGenerator
 
-`LiteLLMGenerator` is the only exported generator.
+`LiteLLMGenerator(model, prompt_template)` takes a LiteLLM model identifier and a Python format string. For example, `model="openrouter/openai/gpt-4o-mini"` routes through OpenRouter. `generate(prompt_vars, **litellm_kwargs)` substitutes the supplied row fields, sends the filled prompt as a user message, and returns the answer text. Supply the key for the model's provider.
 
-| Argument | Type | Default | Description |
-|---|---|---|---|
-| `model` | `str` | required | LiteLLM-formatted model identifier |
-| `prompt_template` | `str` | required | Prompt template the generator fills to produce outputs |
-
-```python
-from fi.opt.generators import LiteLLMGenerator
-
-generator = LiteLLMGenerator(
-    model="gpt-4o-mini",
-    prompt_template="Summarize this article: {article}"
-)
-```
-
-`model` is routed through LiteLLM, so it needs its provider's API key set as an environment variable, for example `OPENAI_API_KEY` for `gpt-4o-mini` above. See [Install and authenticate](/docs/optimization/guides/optimize-from-the-sdk#install-and-authenticate) for the pattern.
+Use `get_prompt_template()` to retrieve the unfilled template and `set_prompt_template(template)` to replace it. A placeholder such as `{ticket}` must exist in the row; the substitutions happen **before** the provider call. A missing placeholder value raises `KeyError`, whereas an exception in the model call can yield an empty string.
 
 ## optimize()
 
-Every optimizer implements `optimize()` with the same core parameters below as explicit named arguments, not as `**kwargs`; a runnable instance follows the argument table. `optimizer` is an instance of one of the optimizer classes on the [Optimizers](/docs/optimization/reference/optimizers) reference page, built in that example as `RandomSearchOptimizer` from the `generator` above.
+All six searches take `evaluator`, `data_mapper`, `dataset` (a list of dictionaries), and optionally `early_stopping` (default `None`) on `optimize()`. The remaining arguments depend on the algorithm. These are **Python** settings, not defaults for the dashboard form.
 
-```python
-optimizer.optimize(evaluator, data_mapper, dataset, initial_prompts, early_stopping=None, **kwargs) -> OptimizationResult
-```
+| Class from `fi.alk.optimize` | Configure on the optimizer | Pass to `optimize()` in addition to the shared inputs |
+|---|---|---|
+| `RandomSearchOptimizer` | Supply `generator`; `teacher_model` defaults to `"gpt-5"`, `num_variations` to `5`. | No `initial_prompts` needed. It reads the starting template from the generator and scores the proposed variations, not a separate baseline. |
+| `BayesianSearchOptimizer` | Set the task model with `inference_model_name`. The search defaults to `min_examples=2`, `max_examples=8`, `n_trials=10`. Set `eval_subset_size` on the constructor, not the call. | Supply `initial_prompts`; it uses the first prompt as the instruction to accompany the few-shot examples. |
+| `MetaPromptOptimizer` | Supply `teacher_generator`. Set `task_model` if candidates should run on a different model; otherwise they run on the teacher's model. | Supply `initial_prompts` (first prompt used). Optional: `task_description`, `num_rounds=5`, `eval_subset_size=40`. |
+| `ProTeGi` | Supply `teacher_generator`; `num_gradients=4`, `errors_per_gradient=4`, `prompts_per_gradient=1`, `beam_size=4`. Optional `task_model`. | Supply `initial_prompts` for the starting beam. Optional keyword arguments: `num_rounds=3`, `eval_subset_size=32`. |
+| `PromptWizardOptimizer` | Supply `teacher_generator`; `mutate_rounds=3`, `refine_iterations=2`, `beam_size=1`. Optional `task_model`. | Supply `initial_prompts` (first prompt used). Optional: `task_description`, `eval_subset_size=25`. |
+| `GEPAOptimizer` | Supply `reflection_model`; `generator_model` defaults to `"gpt-4o-mini"`. | Supply `initial_prompts` (first prompt used). Optional: `max_metric_calls=150`. |
 
-| Argument | Type | Default | Description |
-|---|---|---|---|
-| `evaluator` | `Evaluator` | required | The `Evaluator` instance that scores generated outputs |
-| `data_mapper` | `BasicDataMapper` | required | The `BasicDataMapper` instance that maps dataset and output keys |
-| `dataset` | `list[dict]` | required | The dataset to evaluate against |
-| `initial_prompts` | `list[str]` | required (not accepted by Random Search) | Starting prompt(s) the optimizer refines; see each optimizer's reference page |
-| `early_stopping` | `EarlyStoppingConfig` | `None` | Stops the run before it reaches its maximum iterations; see [EarlyStoppingConfig](#earlystoppingconfig) below |
-| `**kwargs` | | optional | Optimizer-specific keyword arguments, where the optimizer accepts them (see each optimizer's reference page); Meta-Prompt and GEPA accept no `**kwargs` passthrough at all, so anything beyond their own named parameters (`task_description`, `num_rounds`, and `eval_subset_size` for Meta-Prompt; `max_metric_calls` for GEPA) raises a `TypeError` |
-
-```python
-from fi.opt.optimizers import RandomSearchOptimizer
-
-dataset = [
-    {"article": "..."},
-    {"article": "..."}
-]
-
-optimizer = RandomSearchOptimizer(generator=generator, num_variations=3)
-
-result = optimizer.optimize(
-    evaluator=evaluator,
-    data_mapper=data_mapper,
-    dataset=dataset
-)
-```
-
-`evaluator` and `data_mapper` are the values built in the sections above; `optimizer` is built just above from `generator`. See [Optimize from the SDK](/docs/optimization/guides/optimize-from-the-sdk) for a full walkthrough that builds `dataset`.
+For Meta-Prompt, ProTeGi, and PromptWizard the teacher generator takes `prompt_template="{prompt}"`. That placeholder receives the optimizer's rewrite instructions; the starting **task** prompt uses your row placeholders instead. Meta-Prompt and GEPA do not accept arbitrary extra keyword arguments to `optimize()`.
 
 ## EarlyStoppingConfig
 
-<Note title="Upcoming">
-`EarlyStoppingConfig` is not part of the current `0.0.1` release of `agent-opt` on PyPI. This section documents an upcoming release; importing `fi.opt.utils.early_stopping` against `0.0.1` raises an `ImportError`.
+Import `EarlyStoppingConfig` from `fi.opt.utils.early_stopping` and pass an instance as `early_stopping=`. All fields default to `None`. The checker stops when **any** enabled condition is met. It updates the count and checks the budget first, then the score threshold, then patience.
 
-Pass an `EarlyStoppingConfig` instance as the `early_stopping` keyword argument to `optimize()` to stop a run before it reaches its maximum iterations. All fields are optional. Early stopping turns on when `patience`, `min_score_threshold`, or `max_evaluations` is set; `min_delta` alone does not enable it, it only tunes the patience counter. When more than one field is set, optimization stops as soon as any one of them is satisfied.
-
-| Field | Bounds | Description |
+| Field | Accepted value | Meaning |
 |---|---|---|
-| `patience` | greater than 0 | Stop after this many consecutive iterations with no score improvement |
-| `min_score_threshold` | 0.0 to 1.0 | Stop once the score reaches or exceeds this threshold |
-| `max_evaluations` | greater than 0 | Stop once this many total dataset evaluations have run across all iterations; checked before the score threshold |
-| `min_delta` | 0.0 or greater | Minimum score improvement counted as progress |
+| `max_evaluations` | Positive integer | Stop when the optimizer's reported row-evaluation count reaches or exceeds the budget. Checks happen after scoring, so a batch can exceed it. This isn't a limit on all model calls or on spend. For example, PromptWizard counts the mutation pool at its stopping check, not the later scoring of refined candidates. |
+| `min_score_threshold` | Number from 0 to 1, inclusive | Stop when the score passed to the checker reaches or exceeds this value. |
+| `patience` | Positive integer | Stop after this many consecutive checks without sufficient improvement. |
+| `min_delta` | Nonnegative number | Reset patience only if the score is **greater than** the previous best plus this amount. With `None`, any positive improvement counts. Setting only `min_delta` doesn't enable stopping. |
 
-`optimize()` always returns an `OptimizationResult`, whether or not a stopping criterion triggered; check `early_stopped` and `stop_reason` on the result to see what happened.
-
-```python
-from fi.opt.utils.early_stopping import EarlyStoppingConfig
-
-result = optimizer.optimize(
-    evaluator=evaluator,
-    data_mapper=data_mapper,
-    dataset=dataset,
-    early_stopping=EarlyStoppingConfig(
-        patience=3,
-        min_score_threshold=0.9,
-        min_delta=0.01
-    )
-)
-```
-</Note>
+In the [routing example](/docs/optimization/guides/optimize-from-the-sdk#read-the-result), `EarlyStoppingConfig(max_evaluations=6)` permits two Meta-Prompt rounds of three rows each. The reason string can report a different best score than `final_score`: the checker tests the budget before updating its own best score for that batch.
 
 ## Return values
 
 ### OptimizationResult
 
-The object `optimize()` returns.
-
-| Field | Description |
+| Field | Meaning |
 |---|---|
-| `best_generator` | The generator holding the best-performing prompt found |
-| `history` | List of `IterationHistory` records, one per iteration |
-| `final_score` | The best score achieved during the run |
-| `early_stopped` | Whether the run was terminated early by a stopping criterion |
-| `stop_reason` | Explanation for early stopping, when applicable |
-| `total_iterations` | Total number of iterations completed |
-| `total_evaluations` | Total number of dataset evaluations performed |
+| `best_generator` | Generator holding the selected prompt; call `get_prompt_template()` to recover its text. |
+| `final_score` | Score the optimizer reports for the selected prompt. |
+| `history` | List of `IterationHistory` records. An algorithm that scores several candidates in a round can add several records. |
+| `early_stopped`, `stop_reason` | Whether an `EarlyStoppingConfig` condition triggered, and the explanation if it did. Reaching the algorithm’s own limit (such as Meta-Prompt’s `num_rounds`) does not by itself set `early_stopped`. |
+| `total_iterations`, `total_evaluations` | Counts the optimizer reports for scored iterations and row evaluations. They are not counts of provider requests. |
+| `best_candidate`, `metadata` | Optional candidate object and result details. Defaults are `None` and an empty dictionary. |
 
-```python
-print(result.final_score)
-print(result.best_generator.prompt_template)
-```
+In 0.3.7, Meta-Prompt, ProTeGi, and PromptWizard score candidates with `task_model` when supplied, but construct `best_generator` with the teacher's model. If those models differ, use `LiteLLMGenerator(model=task_model, prompt_template=result.best_generator.get_prompt_template())` for subsequent predictions on the tested model.
+
+With Random Search in 0.3.7, a variation is added to `history` **before** the stopping check and selected as best **after** it. If stopping triggers, compare the last history score and prompt before accepting `best_generator`. If it stops on the very first variation, the generator can still hold the starting prompt and `final_score` can be `-1.0`.
 
 ### IterationHistory
 
-A single iteration's record inside `history`.
-
-| Field | Description |
-|---|---|
-| `prompt` | The prompt evaluated in this iteration |
-| `average_score` | Mean score across this iteration's evaluations |
-| `individual_results` | List of `EvaluationResult`, one per dataset row |
+`prompt` is the candidate text; `average_score` is its aggregate score; `individual_results` holds its row-level `EvaluationResult` records. The record can also carry `candidate_id`, `candidate_config`, `layers`, and `metadata`.
 
 ### EvaluationResult
 
-A single evaluation's result, returned inside `individual_results`.
+`score` is numeric, `reason` is an explanation (empty string by default), and `metadata` is a dictionary (empty by default). For an exact-label metric, read the reason alongside the score to distinguish an output mismatch from an input validation failure.
 
-| Field | Description |
-|---|---|
-| `score` | Normalized score, 0.0 to 1.0 |
-| `reason` | Explanation for the score |
-| `metadata` | Additional evaluator-specific metadata |
+## Next steps
 
-## Keep exploring
-
-<CardGroup cols={2}>
-  <Card title="Optimizers" icon="list-check" href="/docs/optimization/reference/optimizers">
-    Parameters and defaults for each of the six optimizers
-  </Card>
-  <Card title="Understanding Optimization" icon="brain" href="/docs/optimization/concepts/understanding-optimization">
-    How optimizers, prompts, and runs fit together
-  </Card>
-</CardGroup>
+- [Optimize from the SDK](/docs/optimization/guides/optimize-from-the-sdk) for a runnable search with a local score and a provider-backed teacher.
+- [Optimization troubleshooting](/docs/optimization/troubleshooting) for missing inputs, empty outputs, and unexpected stopping behavior.
