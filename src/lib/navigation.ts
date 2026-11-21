@@ -1154,6 +1154,13 @@ export const tabNavigation: NavTab[] = [
           },
         ]
       },
+      {
+        group: 'Agent Learning Kit',
+        icon: 'flask',
+        items: [
+          { title: 'Run and verify a manifest', href: '/docs/sdk/agent-learning-kit/cli' },
+        ]
+      },
       // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
       sdkReferenceNavigation,
       {
