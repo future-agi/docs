@@ -14,7 +14,7 @@ An empty Error Feed is not a verdict on your agent. Check what the page actually
 | **Upgrade to access Error Feed** | Check the workspace's access. On a self-hosted deployment you need an [Enterprise license](/docs/self-hosting/configuration/reference#enterprise-edition) that includes Error Feed. The feed API returns HTTP 402 without the entitlement. Changing the project sampling rate won't grant access. |
 | **Couldn't verify feature access.** or **Couldn't load the Error Feed** | Select **Retry**. A failed read isn't an empty list of issues. |
 | **No Observe projects in this workspace.** | Select **Open Observe**, confirm you're in the intended workspace, and [connect your agent](/docs/observe/quickstart) if needed. |
-| **No errors match your filters**, or a feed with no rows | Clear **Search errors**, remove restrictions under **Filter**, and widen the time range to include the request. If the rows are still missing, check the trace itself. |
+| **No errors match your filters**, or a feed with no rows | Clear **Search errors**, remove restrictions under **Filter**, and widen the time range. It filters by when the issue was last seen, not when the request started. If the rows are still missing, check the trace itself. |
 
 {/* MEDIA: The Error Feed filter panel next to Search errors and the time range, showing a project restriction that could hide issues. */}
 
@@ -22,20 +22,39 @@ An empty Error Feed is not a verdict on your agent. Check what the page actually
 
 1. Open the project in **Observe** and check **Settings**. At the default **Sampling rate** of 0%, no trace is selected for automatic investigation. For a controlled test, [set a test project to 100%](/docs/error-feed/guides/turn-on-error-feed) before sending a new request.
 2. For example, send a boot-return question to the `ridgeline-support` agent. Open the trace in that project and note its trace ID. If it isn't in Observe, troubleshoot [trace ingestion](/docs/observe/troubleshooting/no-traces-appearing) first.
-3. Check that the root span has no parent and has ended. A child span alone won't trigger an investigation. If you use inline ingestion, the backend records the ended root directly. If you use `fi-collector`, check the additional delivery step below.
+3. Check that the root span has no parent and has ended. A child span alone won't trigger an investigation. With inline ingestion, the backend records the ended root directly: skip to [Check investigation and grouping](#check-investigation-and-grouping). With `fi-collector`, check delivery first.
 
 ## The traces came in through the collector
 
-If you operate the collector, check these boundaries in order. On a managed workspace, give support the project ID and trace ID so they can follow the same request.
+If you operate the collector, check these steps in order. On a managed workspace, give support the project ID and trace ID so they can follow the same request.
 
 | Check | What to look for |
 | --- | --- |
 | Storage | The root's insert into ClickHouse must succeed before `fi-collector` can announce it. Use synchronous writes (`writer.async_insert: false`); the collector refuses to start with notifications and asynchronous inserts both enabled. |
 | Publisher | Set `FI_ERROR_FEED_KAFKA_BROKERS` on `fi-collector` to the comma-separated broker addresses. Unset or blank disables notifications, not ingestion. A root stored while notifications were disabled can still appear in Observe. |
 | Delivery | Check that the Error Feed notification consumer is running and consuming the collector's topic (`error-feed.trace-available.v1` by default, configurable with `FI_ERROR_FEED_KAFKA_TOPIC`). Check the collector logs for `error feed stored-root notification gap` or `error feed notification gap` if a publish was expected. |
-| Investigation | Match the project ID and trace ID from Observe to `project_id` and `traces[].trace_id` in the `root_span_written` event. If it was delivered, check for an investigation job with the same project and trace ID. No job can be the correct result at a rate below 100%. If there is a job, check whether the investigation worker has completed it. Only grouped findings from the current report appear as issues from that investigation. |
+| Receipt | Find the `root_span_written` event with your `project_id` and `traces[].trace_id`. Match its `event_id` and project to a receipt in the backend's `tracer_trace_investigation_delivery` table. A receipt means the backend processed the notification, not that sampling selected the trace. |
 
-If no notification was published, waiting for a periodic scan won't recover it. Fix the publisher or consumer as appropriate, then send a **new** request and follow its trace ID. Even at 100%, no new row is expected if the investigation finds nothing or if its finding joins an existing issue.
+If no notification was published, waiting for a periodic scan won't recover it. Fix the publisher and send a new request. If the event is already in Kafka but there is no receipt, check the consumer before sending more traffic.
+
+## Check investigation and grouping
+
+For either ingestion path, self-hosted operators can check the job and its current report. Use `psql` with a read-only connection to the application's PostgreSQL database. Set `PROJECT_ID` and `TRACE_ID` to the UUIDs from Observe. This query reads status fields, not the conversation:
+
+```bash
+psql -X -v ON_ERROR_STOP=1 \
+  -v project_id="${PROJECT_ID:?Set PROJECT_ID}" \
+  -v trace_id="${TRACE_ID:?Set TRACE_ID}" <<'SQL'
+SELECT j.state, r.execution_status, r.has_issues, r.grouping_status
+FROM tracer_trace_investigation_job AS j
+LEFT JOIN tracer_trace_investigation_report AS r ON r.id = j.current_report_id
+WHERE j.project_id = :'project_id'::uuid AND j.trace_id = :'trace_id'::uuid;
+SQL
+```
+
+- **No job:** If the notification arrived, check whether scanning was enabled and the rate admitted this trace. A rate below 100% can exclude it.
+- **Job, no report:** A `waiting` job has not started its queued investigation; a `running` job is in progress. Check the investigation worker if the job stays queued.
+- **Current report:** A completed investigation with no findings won't create an issue. If `grouping_status` is `pending`, the findings aren't visible as issues yet. Once grouped, a finding may belong to an existing issue rather than create a new row.
 
 ## Next steps
 
