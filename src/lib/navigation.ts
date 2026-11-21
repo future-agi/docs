@@ -1167,6 +1167,13 @@ export const tabNavigation: NavTab[] = [
           },
         ]
       },
+      {
+        group: 'CLI',
+        icon: 'code',
+        items: [
+          { title: 'API command reference', href: '/docs/cli/api-reference' },
+        ]
+      },
       // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
       sdkReferenceNavigation,
       {
@@ -1566,9 +1573,13 @@ export const topNav = tabNavigation.map(tab => ({
 
 // Helper function to get navigation for a specific tab based on current path
 export function getActiveTab(currentPath: string): NavTab | undefined {
+  // CLI pages live outside /docs/sdk but belong to its CLI sidebar group.
+  if (currentPath === '/docs/cli' || currentPath.startsWith('/docs/cli/')) {
+    return tabNavigation.find(tab => tab.tab === 'SDK');
+  }
   // Check specific tabs first (integrations, cookbook, sdk, api)
   for (const tab of tabNavigation) {
-    if (tab.href !== '/docs' && currentPath.startsWith(tab.href)) {
+    if (tab.href !== '/docs' && (currentPath === tab.href || currentPath.startsWith(tab.href + '/'))) {
       return tab;
     }
   }
