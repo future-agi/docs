@@ -834,7 +834,8 @@ test('public prose and catalog labels contain no internal QA label or Alpha rele
   for (const file of routeFiles.filter(f=>f.endsWith('.mdx'))) {
     const prose=publicProse(fs.readFileSync(file,'utf8'));
     assert.doesNotMatch(prose,/\bnot\s+tested\b/i,file);
-    assert.doesNotMatch(prose,/\balpha\b/i,file);
+    // "Aleph Alpha" is a provider name, not a release status.
+    assert.doesNotMatch(prose,/(?<!\bAleph )\balpha\b/i,file);
   }
   for (const item of [...integrations,...integrationCategories,...integrationAids]) assert.doesNotMatch(JSON.stringify(item),/\bnot\s+tested\b|\balpha\b/i);
   assert.equal(publicProse('Beta. `pkg==1.0.0-alpha`\n```python\nmodel="alpha"\n```\n'),'Beta. \n\n');
