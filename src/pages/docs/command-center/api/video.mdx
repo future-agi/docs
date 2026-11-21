@@ -1,0 +1,184 @@
+---
+title: "Video generation jobs"
+description: "Submit a video through Agent Command Center, retry without creating a second job, download the finished MP4, and distinguish cancellation from local deletion."
+---
+
+## About
+
+A video request returns a job ID, not a video. You can disconnect, come back with the ID, and download the finished MP4. This guide generates a one-second close-up for a Ridgeline Outfitters support article on attaching a tent rainfly.
+
+## Submit a clip
+
+You need a gateway with `video.enabled: true` (off by default), a funded video provider, and an organization gateway key allowed to use the model. The example uses OpenRouter. A managed, platform-funded key cannot submit video jobs.
+
+Copy the **Gateway endpoint** from the gateway overview. Use the URL ending in `/v1`, not the platform API URL.
+
+{/* MEDIA: Gateway overview showing the Gateway endpoint and its Copy URL button, with no credentials visible. */}
+
+Run the examples in the same Bash shell with cURL and `jq` installed. Set `GATEWAY_API_KEY` in your environment first. Set `GATEWAY_BASE_URL` if your gateway endpoint differs from the default below.
+
+```bash
+base=${GATEWAY_BASE_URL:-https://gateway.futureagi.com/v1}
+videos="${base%/}/videos"
+auth="Authorization: Bearer ${GATEWAY_API_KEY:?Set your organization gateway key first}"
+request_key="ridgeline-rainfly-article-8421-clip-v1"
+```
+
+Choose **one** request format. Both examples request the same clip: one second at 480p in landscape. Save the printed job ID so you can resume later without submitting again.
+
+<Tabs>
+<Tab title="Native JSON">
+
+```bash
+video_id=$(curl -sS --fail-with-body "$videos" \
+  -H "$auth" -H "Idempotency-Key: $request_key" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "openrouter/x-ai/grok-imagine-video-1.5-lite",
+    "prompt": "Close-up of a hiker clipping a rainfly buckle onto a green tent at Ridgeline Outfitters.",
+    "duration_seconds": 1,
+    "resolution": "480p",
+    "aspect_ratio": "16:9"
+  }' | jq -er '.id // error(.error.message)') && printf '%s\n' "$video_id"
+```
+
+</Tab>
+<Tab title="OpenAI multipart">
+
+```bash
+video_id=$(curl -sS --fail-with-body "$videos" \
+  -H "$auth" -H "Idempotency-Key: $request_key" \
+  --form-string 'model=openrouter/x-ai/grok-imagine-video-1.5-lite' \
+  --form-string 'prompt=Close-up of a hiker clipping a rainfly buckle onto a green tent at Ridgeline Outfitters.' \
+  --form-string 'seconds=1' --form-string 'size=854x480' \
+  | jq -er '.id // error(.error.message)') && printf '%s\n' "$video_id"
+```
+
+</Tab>
+</Tabs>
+
+A new submission returns `202 Accepted`. That means the gateway recorded the job, not that the provider finished it. The response includes `id`, `status`, and an upper-bound `estimate`. When the charge is settled, the status response includes `cost.usd`.
+
+### Retry the same job
+
+If your connection drops before you get the ID, run the **same create command with the same key and inputs**. The gateway compares the normalized request, including the contents of any input images. Within the same organization and operation, a matching replay returns the original ID: `202` while the job is active or `200` once it ends. It does not start or reserve budget for a second generation.
+
+For example, changing the rainfly prompt to ask for a different camera angle with the same key returns `409 idempotency_conflict`. Give that edit a new key only if you intend to pay for a second clip. Use 1 to 255 printable ASCII characters per key. The default idempotency retention is 30 days; once the binding expires, the same key can create new paid work.
+
+## Poll and download the MP4
+
+`GET /v1/videos/{id}` reads the gateway's job record. The gateway polls the provider independently. The loop below requests the native status format even if you submitted multipart. It checks for an available output before downloading it to `ridgeline-rainfly.mp4`.
+
+```bash
+(
+  set -eu
+  for ((attempt=0; attempt<60; attempt++)); do
+    job=$(curl -fsS "$videos/${video_id:?Set the job ID from submission}" \
+      -H "$auth" -H 'X-AgentCC-Video-Dialect: native')
+    state=$(jq -er '.status' <<<"$job")
+    printf '%s\n' "$state"
+    case "$state" in
+      completed)
+        if ! jq -e '.artifacts[0].state == "available"' <<<"$job" >/dev/null; then
+          jq '.artifacts' <<<"$job"; exit 1
+        fi
+        curl -fsS "$videos/$video_id/content" -H "$auth" -o ridgeline-rainfly.mp4
+        exit 0 ;;
+      submission_unknown|failed|cancelled)
+        jq '{status, error, reconciliation, retry_safe, upstream_may_continue}' <<<"$job"
+        exit 1 ;;
+    esac
+    sleep 5
+  done
+  printf 'Local polling stopped. Resume with the same ID: %s\n' "$video_id"
+)
+```
+
+| Native `status` | OpenAI `status` | What to do |
+|---|---|---|
+| `submitting` | `queued` | Wait. The gateway has not yet recorded a provider job ID. |
+| `queued`, `running` | `queued`, `in_progress` | The provider has acknowledged the job. Keep polling the same ID. |
+| `submission_unknown` | `queued` | The provider may have accepted the request, but the gateway lacks confirmation. Check the same ID later for reconciliation. Do not submit with a new key. |
+| `completed` | `completed` | Download while `artifacts[0].state` is `available` and before `artifacts[0].expires_at` (Unix seconds). A completed generation can still be billable if the gateway could not store the output. |
+| `failed`, `cancelled` | `failed` | Check `error` and `upstream_may_continue`. An unresolved submission can end as `failed` with `submission_unresolved` and `retry_safe: false`. Failure does not always mean no charge. |
+
+The OpenAI response preserves the native state in `gateway_status`. To choose a response format explicitly, send `X-AgentCC-Video-Dialect: native` or `openai`. Otherwise, the gateway uses the OpenAI format for recognized OpenAI SDK clients, the creation format for individual jobs, and native format for lists.
+
+The content endpoint serves the gateway copy, not a provider URL. It defaults to `artifact_index=0`, accepts byte-range requests, and supports `variant=video` but not thumbnails or spritesheets. Output retention defaults to 24 hours; download the file if you need to keep it longer.
+
+## Find earlier jobs
+
+List completed jobs for the example model. The key determines the organization; a missing ID and another organization's ID both return `404 video_not_found` on lookup.
+
+```bash
+curl -fsS --get "$videos" -H "$auth" \
+  --data-urlencode 'model=openrouter/x-ai/grok-imagine-video-1.5-lite' \
+  --data-urlencode 'status=completed' --data-urlencode 'limit=10' \
+  | jq '{jobs: [.data[] | {id, status, created_at}], has_more, last_id}'
+```
+
+Results default to newest first (`order=desc`). `limit` defaults to 20 and accepts 1 to 100. If `has_more` is true, repeat the same query with `after` set to `last_id`. Use a cursor or an `offset`, not both. Status filters use the native state names.
+
+## Cancel work or delete your copy
+
+These are separate actions. If the rainfly clip is no longer needed **while it is being generated**, request cancellation and inspect the result:
+
+```bash
+curl -sS --fail-with-body -X POST "$videos/${video_id:?Set the job ID}/cancel" \
+  -H "$auth" -H 'X-AgentCC-Video-Dialect: native' \
+  | jq '{status, cancellation, error}'
+```
+
+The gateway can confirm cancellation before sending work to the provider. After submission, OpenRouter has no cancel operation (`409 cancel_unsupported`); the direct BytePlus adapter only requests cancellation while queued (`409 cancel_not_available` otherwise). `202` with `cancellation.state: requested` is not confirmation. Keep polling. On an already completed job, cancellation returns `200` with `cancellation.state: not_applicable` and leaves the clip available.
+
+If you have saved the clip and want to **remove it from the gateway**, use local deletion instead:
+
+```bash
+curl -sS --fail-with-body -X DELETE "$videos/${video_id:?Set the job ID}" \
+  -H "$auth" | jq '{id, deleted, deletion_scope, upstream_may_continue, accounting_retained}'
+```
+
+<Warning>
+Deletion removes the job from your list and purges the gateway copy. It never asks the provider to stop. The response says `deletion_scope: local_only`; the provider may continue generating and charging, and the gateway retains accounting. Replaying the original request while its deleted-job record is retained returns `410 deleted_job`, not a replacement clip.
+</Warning>
+
+## Request formats and model limits
+
+The gateway treats multipart as OpenAI format. It also accepts OpenAI JSON: use `Content-Type: application/json` and include `seconds`, `size`, or `input_reference`. JSON without any of those fields uses the native format. Do not mix `duration_seconds` with the OpenAI fields. If you use the OpenAI Python SDK, point its `base_url` at the gateway URL ending in `/v1` and pass `extra_headers={"Idempotency-Key": request_key}` to `client.videos.create`.
+
+| Setting | Native JSON | OpenAI multipart or JSON |
+|---|---|---|
+| Model and prompt | `model`, `prompt` | Same names. Use a gateway model ID, not a Sora ID. |
+| Duration | `duration_seconds`: integer | `seconds`: positive integer or integer string, within the model's range. |
+| Dimensions | `resolution` and `aspect_ratio` | `size`: exact `WIDTHxHEIGHT`. For example, `854x480` requests 480p at 16:9; `1280x720` requests 720p at 16:9. A near match such as `1283x720` is rejected, not rounded. |
+| Starting image | An `inputs` entry with `role: first_frame`, `media_type`, and `source` containing either `url` (HTTPS) or `data` (base64). | `input_reference`: upload an image file in multipart, or pass an `image_url` object in JSON, such as `{"image_url":"https://example.com/rainfly.png"}`. A base64 image data URL is also accepted inside `image_url`; `file_id` is not. |
+
+OpenRouter is the live-verified provider route. Use the full model ID from the table, and check that your gateway operator enabled it. The gateway validates these limits before it calls the provider. Each request produces one clip.
+
+| OpenRouter model | Duration (seconds) | Resolution | Aspect ratio |
+|---|---|---|---|
+| `openrouter/x-ai/grok-imagine-video-1.5-lite` | 1 to 15 | 480p, 720p, 1080p | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 |
+| `openrouter/bytedance/seedance-1-5-pro` | 4 to 12 | 480p, 720p, 1080p | 1:1, 3:4, 9:16, 9:21, 4:3, 16:9, 21:9 |
+| `openrouter/google/veo-3.1-lite` | 4, 6, or 8 | 720p, 1080p | 16:9, 9:16 |
+| `openrouter/kwaivgi/kling-v3.0-std` | 3 to 15 | 720p | 16:9, 9:16, 1:1 |
+| `openrouter/alibaba/wan-3.0` | 2 to 30 | 480p, 720p, 1080p | 16:9, 4:3, 1:1, 3:4, 9:16 |
+| `openrouter/minimax/hailuo-3-max` | 5 to 15 | 480p, 768p | 21:9, 16:9, 4:3, 1:1, 3:4, 9:16 |
+| `openrouter/runway/gen-4.5` | 2 to 10 | 720p | 16:9, 9:16 |
+
+The direct BytePlus ModelArk Seedance adapter (for example, `byteplus/dreamina-seedance-2-5-260628`) is contract-tested, not live-verified. OpenRouter support for a vendor's model does not imply support for that vendor's direct API. The OpenAI request format does not enable Sora: `sora`, `sora-2`, and `sora-2-pro` return `400 unsupported_model`.
+
+## Troubleshooting
+
+| Response | What to check |
+|---|---|
+| `400 missing_idempotency_key` | Include `Idempotency-Key` on create, even for multipart. |
+| `400 invalid_parameter` or `unsupported_combination` | Check duration, exact dimensions, and model-specific inputs. Omit optional OpenAI fields rather than sending `null`. |
+| `429 budget_exceeded` | The estimated charge exceeds an applicable budget. Check the budget before requesting another clip. |
+| `501 not_configured` or `503 provider_not_configured` | Ask the operator to check whether video is enabled and whether the provider and model are configured. `503 managed_tariff_not_configured` means you used a managed key. |
+| `409 result_not_ready` on `/content` | Poll the job before downloading. |
+| `410 output_expired` or `output_unavailable` on `/content` | The gateway copy expired or is unavailable. Check `artifacts` in the status response. Downloading again does not regenerate the video. |
+
+## Next steps
+
+- [Virtual keys and access control](/docs/command-center/concepts/virtual-keys): choose a key with access to the video provider and model.
+- [Cost tracking](/docs/command-center/features/cost-tracking): review spend after the provider reports a charge.

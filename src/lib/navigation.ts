@@ -230,6 +230,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Chat completions', href: '/docs/command-center/api/chat' },
                   { title: 'Embeddings & reranking', href: '/docs/command-center/api/embeddings' },
                   { title: 'Media endpoints', href: '/docs/command-center/api/media' },
+                  { title: 'Video generation jobs', href: '/docs/command-center/api/video' },
                   { title: 'Assistants API', href: '/docs/command-center/api/assistants' },
                   { title: 'Files & vector stores', href: '/docs/command-center/api/files' },
                   { title: 'Async & batch', href: '/docs/command-center/api/async-batch' },
