@@ -1,0 +1,122 @@
+---
+title: "Run call scoring"
+description: "Poll a simulation run and its calls, distinguish pending or missing evaluations from measured failures, and know when to stop polling."
+---
+
+## About
+
+A score of `0` can mean the agent failed a check. A missing score does not. For example, when Ridgeline Outfitters tests whether its support agent checks the return window, read the evaluator's `status` to see whether it finished, then `passed` to see whether the agent followed the policy.
+
+## Find the call in a run
+
+Open the environment's **Runs** tab and select a run. In its URL, the segment after `runs/{testId}/` is the execution ID. Export that ID as `RUN_ID`, along with the workspace's `FI_API_KEY` and `FI_SECRET_KEY`. Use the execution ID, not the test ID, for the calls list.
+
+{/* MEDIA: A Ridgeline run opened from the Runs tab, with the execution ID highlighted in the address bar after the test ID. */}
+
+`GET /simulate/v3/test-executions/{RUN_ID}/calls/` returns the run under `execution` and the current page of calls under `results`. This request uses cURL and `jq` to find Ridgeline's returns scenarios and print a call ID. Set `CALL_SEARCH` once for both examples: use a term from your scenario, or an empty string for the whole run. For a different deployment, set `FI_BASE_URL` to its trusted API origin, without an endpoint path such as `/tracer`.
+
+```bash
+set -o pipefail
+export CALL_SEARCH='returns'
+base=${FI_BASE_URL:-https://api.futureagi.com}
+curl --fail --silent --show-error --get \
+  "${base%/}/simulate/v3/test-executions/${RUN_ID}/calls/" \
+  -H "X-Api-Key: ${FI_API_KEY}" -H "X-Secret-Key: ${FI_SECRET_KEY}" \
+  --data-urlencode "search=${CALL_SEARCH}" \
+  --data-urlencode 'page_size=1' |
+  jq '{run: .execution.status, whole_run: .execution.summary.total,
+       matching: .summary.total, scoring: .summary.scoring,
+       calls: [.results[] | {id, scenario, scoring_status}]}'
+```
+
+`summary.scoring` counts **calls**, not individual evaluations. Its five counts add up to `summary.total` across all pages matching the search and filters. For example, a run of three calls with two matching `returns` has `execution.summary.total: 3` and `summary.total: 2`, even with just one row in `results`. There is no `execution.summary.scoring`. To monitor the whole run, make the list request without search or filters.
+
+## Poll the same call
+
+Export `CALL_ID` using an `id` from `results`. `GET /simulate/v3/call-executions/{CALL_ID}/` returns the call itself, including `evaluations`, `scoring_status`, `csat_status` and `csat_reason`. Keep that ID: a different call can move onto the first page between polls.
+
+Run this Python 3 example in the same shell so it uses the same `CALL_SEARCH`. It prints JSON so a real `0` or `false` stays distinct from `null`. The example stops starting new polls after 45 minutes; reaching that client limit does not change the run or its scores. You can resume with the same IDs.
+
+```python
+import json
+import os
+import time
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+base = (os.environ.get("FI_BASE_URL") or "https://api.futureagi.com").rstrip("/")
+run_id, call_id = os.environ["RUN_ID"], os.environ["CALL_ID"]
+query = urlencode({"search": os.environ["CALL_SEARCH"], "page_size": 1})
+active = {"pending", "running", "cancelling", "evaluating"}
+
+
+def get(path):
+    request = Request(base + path)
+    request.add_unredirected_header("X-Api-Key", os.environ["FI_API_KEY"])
+    request.add_unredirected_header("X-Secret-Key", os.environ["FI_SECRET_KEY"])
+    with urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+deadline = time.monotonic() + 45 * 60
+while time.monotonic() < deadline:
+    page = get(f"/simulate/v3/test-executions/{run_id}/calls/?{query}")
+    call = get(f"/simulate/v3/call-executions/{call_id}/")
+    if call["test_execution_id"] != page["execution"]["id"]:
+        raise SystemExit("CALL_ID does not belong to RUN_ID; select a call from this run.")
+    counts = page["summary"]["scoring"]
+    print(json.dumps({"run": page["execution"]["status"], "matching_calls": counts,
+                      "call": call["scoring_status"], "csat": call["csat_status"],
+                      "csat_reason": call["csat_reason"], "evaluations": call["evaluations"]}))
+    run_active = page["execution"]["status"] in active
+    still_scoring = counts["pending"] > 0 or call["scoring_status"] == "pending"
+    if not run_active and not still_scoring:
+        break
+    time.sleep(3)
+else:
+    raise SystemExit("Stopped polling after 45 minutes; the run may still be active or scoring.")
+```
+
+The dashboard shows **Grading** for `execution.status: "evaluating"`: the conversations have ended, but scoring has not. Keep polling a finished run if any matching call is still pending. Regrading a completed run can put it back into `evaluating`; adding an evaluation on the environment's **Evaluations** tab does not by itself regrade past calls.
+
+## Interpret a score
+
+Match an entry in the list's `evaluation_columns` to an entry in the call's `evaluations` by `id`. The **Test runs** tab shows the following states. If a check is no longer on the run, look in the call detail's `eval_metrics`: `removed: true` identifies a removed check, not a pass or fail.
+
+| Evaluation entry | What it means | What to display or count |
+| --- | --- | --- |
+| No matching entry while the call is live | No result for this check yet; it may still arrive. | A loading indicator. Do not infer a score or verdict. |
+| No matching entry on a finished call | No result for this check, for example because it did not apply or the call was cancelled before grading. | A dash. Do not add a zero to the average. |
+| `pending` | The call expects a result. `value`, `score` and `passed` are `null`. | A loading indicator. Poll again. |
+| `succeeded` | The evaluator returned a result. | Read `value`, `score` and `passed`. Include a numeric `0` if present; never substitute zero for `null`. |
+| `failed` | The evaluator failed, not necessarily the agent. | **Failed**. Show `reason` rather than counting a failed verdict. |
+| `timed_out` | The grading deadline elapsed. | **Timed out**, with `reason`. There is no measured score. |
+| `skipped` | The check was not scored. | **Not scored**, with `reason`. |
+
+Here are two snapshots of the same Ridgeline call. Both list requests searched for `returns` and returned one row per page.
+
+| Snapshot | Pending calls among the two matches | `scoring_status` | Return-window check | `csat_status` |
+| --- | --- | --- | --- | --- |
+| Before the call results arrived | 2 | `pending` | No entry yet | `pending` |
+| After grading | 0 | `succeeded` | `status: "succeeded"`, `value: "Failed"`, `score: 0.0`, `passed: false` | `skipped` |
+
+The grader did its job: the agent offered a refund without checking the return window. Count the measured zero for that check. Leave CSAT out of its average: `csat_reason` was `Nothing to score: the call has no transcript or recording.`
+
+{/* MEDIA: Test runs table for a Ridgeline return with a 0% return-window score beside Not scored in the CSAT column, with the no-transcript reason on hover. */}
+
+`csat_status` describes only customer satisfaction. It can take the same five values as an evaluation, plus `not_applicable`. Read the numeric rating from `csat` on the list row or `csat_score` on the detail. Read `csat_reason` for `failed`, `timed_out` or `skipped`; otherwise the reason is `null`. A live call can show `pending` before the system knows whether CSAT applies.
+
+`scoring_status` combines all the call's evaluations and CSAT. The first applicable state wins: `pending`, then `timed_out`, then `failed`, then `succeeded`. If everything is skipped or does not apply, the call reads `not_applicable`. A call can therefore show `pending` even when one check already has a usable score.
+
+## Timeouts and request errors
+
+- **Grading never starts:** An expected evaluation can time out 30 minutes after dispatch. Once grading starts, 10 minutes without progress can time it out. For CSAT the corresponding limits are 30 minutes without starting or 10 minutes without a result after an attempt starts. These are server clocks; polling does not reset them.
+- **A result arrives late:** A `timed_out` check needs no further polling of its own. If you reopen the call later, a score may have replaced the timeout. On a `completed` run the detail can show the new score while the filtered counts still reflect the timeout for up to five minutes if the call is off the page.
+- **Older clients:** For an evaluation's `status`, replace comparisons to `completed` with `succeeded`, and `error` with `failed`. Do not make that substitution in `execution.status` or in the call's `outcome`.
+- **HTTP 400:** Check `page` (starts at 1) and `page_size` (1 to 500, default 50). If you send `filters`, encode it as a JSON object with supported keys and lists of strings, for example `{"goal":["Returns"]}`. `filters.status` selects call outcomes, not scoring states.
+- **HTTP 404:** Check that you used an execution ID for the list, a call ID for the detail, and credentials for the workspace that owns the run. A valid list request with no matches returns empty `results`, not a 404.
+
+## Next steps
+
+- [Read run results](/docs/environments/guides/read-run-results) to inspect the transcript and the evaluator's reason together.
+- [Add evaluations](/docs/environments/guides/add-evaluations) to grade finished calls against a new check.

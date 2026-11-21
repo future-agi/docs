@@ -931,12 +931,16 @@ export const tabNavigation: NavTab[] = [
             title: 'Guides',
             items: [
               { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
+              { title: 'Run the repository harness', href: '/docs/environments/guides/alk-harness' },
+              { title: 'Clone or provision a voice target', href: '/docs/environments/guides/provider-import' },
               { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
               { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
               { title: 'Import evidence', href: '/docs/environments/guides/import-evidence' },
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
+              { title: 'Run outbound calls and voicemail cases', href: '/docs/environments/guides/outbound-voice' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
+              { title: 'Trace an Environment call', href: '/docs/environments/guides/trace-an-agent-run' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
@@ -946,6 +950,9 @@ export const tabNavigation: NavTab[] = [
             title: 'References',
             items: [
               { title: 'Supported agents', href: '/docs/environments/reference/supported-agents' },
+              { title: 'Call receipts and voice metrics', href: '/docs/environments/reference/call-metrics' },
+              { title: 'Run call scoring', href: '/docs/environments/reference/run-call-scoring' },
+              { title: 'Evaluation API', href: '/docs/environments/reference/evaluation-api' },
             ]
           },
           {

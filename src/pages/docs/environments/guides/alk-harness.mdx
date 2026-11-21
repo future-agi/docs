@@ -1,0 +1,211 @@
+---
+title: "Run the repository harness"
+description: "Use Agent Learning Kit to build a test world from your agent's repository, add scenarios without starting over, and rerun one case by name."
+---
+
+## About
+
+Use `agent-learn harness` to build a test world from your agent's repository and rerun a saved scenario against the agent. For Ridgeline Outfitters, you'll start with three returns cases, then add two that test the return deadline without rebuilding the world.
+
+## Set up the CLI
+
+Start in the root of your test agent's repository. For the example, use a chat agent that accepts chat turns over HTTP and ships a Docker Compose runtime. You need Python 3.10 or later and, to start the runtime, Docker with Compose. Use test services and synthetic orders, not your production returns system. If you only want to try the offline example, you need Python but not an agent repository or Docker.
+
+Run the examples in the same Bash shell. Keep the artifact directory outside the repository so you can reuse it independently of the source.
+
+```bash
+export SOURCE_DIR="$PWD"
+export NAME=ridgeline-support
+export WORK="$(mktemp -d "${TMPDIR:-/tmp}/ridgeline-harness.XXXXXX")"
+export OUT="$WORK/suite"
+python3 -m venv "$WORK/venv"
+source "$WORK/venv/bin/activate"
+python -m pip install agent-learning-kit==0.3.7
+agent-learn harness --help
+```
+
+<Warning>
+Repository authoring and simulated conversations make billable model calls. For the default harness backend, configure an [Agent Command Center key](/docs/quickstart/command-center-gateway) that can route to a Gemini model. The harness uses the Claude Agent SDK to drive the session, but this version allows spending only on Gemini models. A Future AGI platform API key alone does not configure this route. To try a scripted case without a model key or Docker, skip to [Run an offline case](#run-an-offline-case).
+</Warning>
+
+Export `AGENTCC_API_KEY` from your secret manager into the current shell. Use a Gemini model ID enabled on that key (the route below is an example), and check that Docker Compose is available:
+
+```bash
+: "${AGENTCC_API_KEY:?Load your Agent Command Center key first}"
+export ALK_HARNESS_MODEL=vertex_ai/gemini-3.7-flash
+docker compose version
+```
+
+## Build the world and author three cases
+
+Use the individual stages when you want to inspect what the harness read before spending on the next stage. `--path` points at source code, `--name` labels the agent, and `--out` is the session directory that later commands read. `--once` returns control to your shell instead of waiting for corrections.
+
+<Steps>
+<Step title="Read the agent">
+
+Check the recorded tools, rules, use cases and open questions in the [contract](/docs/environments/concepts/contracts). For Ridgeline, the return deadline should come from the submitted agent, not from a guess in the test. For the repository run, check that `runtime.interface` identifies the existing chat endpoint, including its kind, path and container port.
+
+```bash
+agent-learn harness understand --path "$SOURCE_DIR" --name "$NAME" --out "$OUT" --once
+python -m json.tool "$OUT/contract.json"
+```
+
+</Step>
+<Step title="Build the world">
+
+Supply the source path again when running `build` as a separate command. The saved `manifest.json` describes the world; the snapshot contains its starting state. For a local build that seals a Compose environment, the command also prints the bundle path and digest.
+
+```bash
+agent-learn harness build --path "$SOURCE_DIR" --name "$NAME" --out "$OUT" --once
+```
+
+</Step>
+<Step title="Write the initial suite">
+
+`scenarios.json` indexes the saved cases. Each `scenarios/<name>/` directory contains the scenario, its setup and readiness code, and any deterministic checks. Keep a copy of the first index so you can tell which cases the next command adds.
+
+```bash
+agent-learn harness scenarios --name "$NAME" --out "$OUT" --count 3 --once
+cp "$OUT/scenarios.json" "$WORK/before.json"
+```
+
+</Step>
+</Steps>
+
+## Extend the suite without starting over
+
+Pass the **same** `--name` and `--out` to `scenarios`. `--count 5` means **five in total**, not five more. Without a count, the target is the current suite size, or ten if no cases exist. Repeat `--guidance` to give the writer separate requirements. Here the agent's policy allows returns of unused equipment within 30 days:
+
+```bash
+agent-learn harness scenarios --name "$NAME" --out "$OUT" --count 5 --once \
+  --guidance 'Keep the three existing cases. Add a shopper returning an unused tent on the last eligible day.' \
+  --guidance 'Add a shopper one day past the deadline. Check that the agent explains the refusal without issuing a refund.'
+```
+
+Compare `scenario_key` values to identify additions. A retained key identifies the same case, not necessarily unchanged checks. A proof checks the test itself, not your agent. In `proofs.json`, look up a key and check `holds` for the overall proof verdict: `ready` checks the starting conditions, `solvable` checks the reference solution, and `not_vacuous` checks that doing nothing does not pass the test. `why` gives the reason for a recorded unsuccessful proof. Check the saved count rather than assuming every candidate made it into the suite.
+
+```bash
+python - "$WORK/before.json" "$OUT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+before, out = map(Path, sys.argv[1:])
+old = {row["scenario_key"] for row in json.loads(before.read_text())}
+suite = json.loads((out / "scenarios.json").read_text())
+proofs_file = out / "proofs.json"
+proofs = json.loads(proofs_file.read_text()) if proofs_file.exists() else {}
+current = {row["scenario_key"] for row in suite}
+print(f"Saved {len(suite)} cases; missing original keys: {sorted(old - current)}")
+for row in suite:
+    key = row["scenario_key"]
+    label = "kept" if key in old else "added"
+    print(f"{label}: {key} | name: {row['name']}")
+    if label == "added":
+        print(json.dumps(proofs.get(key, "No proof recorded"), indent=2))
+PY
+```
+
+## Run one case
+
+For the repository chat agent, use `--target repository` to exercise its shipped runtime. The default target, `local`, is not a substitute: it reconstructs an agent from the contract and refuses repository-backed agents. Enter the **name** of an added scenario from the previous step, including any spaces. Omitting `--only` runs the whole suite.
+
+```bash
+read -r -p 'Scenario name to run: ' CASE
+agent-learn harness run --name "$NAME" --out "$OUT" --target repository --only "$CASE"
+```
+
+Read `report.txt` for the selected run and `runs.json` for the stored results. Rerunning a selection replaces the records for those names and keeps the other cases' results. Exit code `0` means all selected cases passed; `2` means at least one did not pass. If a record has `ended` set to `not-run`, read `crashes` before treating the result as an agent failure.
+
+## Restore or reset the Compose environment
+
+If you stopped the environment, bring it up before rerunning a case. To restart from a sealed local Compose bundle, use the directory printed by `build`, not the repository or the scenario index. `up` verifies the bundle and provisions its saved source snapshot. `status` reads the environment record for `--out`; it isn't a live health probe.
+
+```bash
+agent-learn harness environment up --bundle "$OUT/environment-bundle" --out "$OUT"
+agent-learn harness environment status --out "$OUT"
+```
+
+`reset` removes this session's Compose volumes and recreates its services from their declared seed state. Use it before the next attempt to discard changes such as a refund recorded in a test database:
+
+```bash
+agent-learn harness environment reset --out "$OUT"
+```
+
+Rerun the selected case while the environment is up. When you are finished, `down` removes the session's Compose project and test volumes. It leaves the saved scenarios in place:
+
+```bash
+agent-learn harness environment down --out "$OUT"
+```
+
+## Start a separate suite unattended
+
+For a new session, choose one of these commands instead of the individual stages. Each uses its own fresh output directory. Neither command extends `$OUT`.
+
+| Alternative | When to use it |
+| --- | --- |
+| `agent-learn harness author --path "$SOURCE_DIR" --name "$NAME" --count 3 --out "$WORK/author"` | Create the contract, logical world and scenarios without executing conversations. Runtime provisioning and bundle validation are deferred. |
+| `agent-learn harness auto --path "$SOURCE_DIR" --name "$NAME" --count 3 --out "$WORK/auto"` | Build and run unattended using the modality and runtime in the contract. Use this when you want execution as well as authored cases. |
+
+## Run an offline case
+
+`agent-learn run` (without `harness`) takes a manifest instead of a repository. This example supplies both the customer's situation and the scripted reply. It checks that a local text turn completes; it does **not** call your agent, evaluate its answer, or produce a reusable harness world.
+
+```bash
+cat > "$WORK/ridgeline-manifest.json" <<'JSON'
+{
+  "version": "agent-learning.run.v1",
+  "name": "ridgeline-return-policy",
+  "scenario": {
+    "name": "ridgeline-return-policy",
+    "dataset": [{
+      "persona": {"name": "Maya", "role": "shopper"},
+      "situation": "Maya wants to return an unused tent after 12 days.",
+      "outcome": "Explain the 30-day return window."
+    }]
+  },
+  "agent": {"type": "scripted", "content": "You can return your unused tent within 30 days."},
+  "simulation": {"engine": "local_text", "min_turns": 1, "max_turns": 1},
+  "evaluation": {"enabled": false}
+}
+JSON
+agent-learn run "$WORK/ridgeline-manifest.json" -o "$WORK/ridgeline-result.json"
+python -m json.tool "$WORK/ridgeline-result.json"
+```
+
+Look for `"status": "passed"` and read `report.results[0].messages` for the shopper's request and the scripted reply. Since evaluation is disabled, `passed` is not a grade on the return policy.
+
+## Optional: reopen a session in browser chat
+
+The local chat server is part of the [Agent Learning Kit source repository](https://github.com/future-agi/agent-learning-kit), not a script installed by the wheel. In your activated environment, install the web server dependencies and start the checkout that matches 0.3.7. Keep the same model credentials for authoring in chat. No frontend build is required.
+
+```bash
+python -m pip install 'agent-learning-kit[harness-ui]==0.3.7'
+git clone https://github.com/future-agi/agent-learning-kit.git "$WORK/kit"
+git -C "$WORK/kit" checkout --detach a699c808921659dcb9518384d218ad26e5058048
+python "$WORK/kit/harness-ui/server.py"
+```
+
+Open `http://localhost:8777`, select **+ new**, and give the chat the absolute path to your test repository. Ask it to build the world, then ask for the three returns scenarios. Use **Contract**, **Environment**, **Scenarios** and **Runs** to inspect the files as each stage finishes.
+
+{/* MEDIA: Local harness chat with the Ridgeline session selected and a scenario's checks visible in the Scenarios tab. */}
+
+Select the conversation again in the session picker to restore its history and artifacts. They live under `artifacts/sessions/<id>/` in the kit checkout. That session folder is a CLI `--out` directory too. The picker lists sessions from that location, not arbitrary directories you used for CLI output. Stop the server with Ctrl+C.
+
+{/* MEDIA: Session picker showing the saved Ridgeline conversation and the same session open after selection. */}
+
+## Limits and errors
+
+| Symptom | What to check |
+| --- | --- |
+| `build` reports no contract, or `scenarios` reports no world | Point `--out` at the session where the preceding stage succeeded. Changing `--name` does not load files from a different `--out`. |
+| An extension saves fewer cases than requested | Compare the saved index with the original. Inspect the stage output and the latest recorded proof for the affected key. A missing proof or a deferred runtime check is not a passing agent result. |
+| A repository chat case cannot start its runtime | Check that the session has a running Compose environment and the harness can select exactly one agent service. For example, give just the agent service the `harness-runtime` Compose profile. |
+| `run` reports no matching scenario | Copy the exact `name` from `scenarios.json`, not the proof key or the folder path. |
+| `environment up` cannot verify the bundle | Use the intact sealed bundle from a completed local build. An `author` output directory alone is not a sealed runtime. |
+
+## Next steps
+
+- [Review the contract](/docs/environments/guides/review-the-contract) to check the tools and rules the harness should test.
+- [Scenarios and trials](/docs/environments/concepts/scenarios-and-trials) explains the difference between the test definition and an executed conversation.
+- [Build an environment](/docs/environments/guides/build-an-environment) shows how to run a repository-backed environment from the dashboard instead.

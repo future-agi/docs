@@ -1,0 +1,202 @@
+---
+title: "Clone or provision a voice target"
+description: "Test a Vapi or Retell voice agent with isolated HTTP tools. Choose who creates each target, wire its callbacks, and verify what gets cleaned up."
+---
+
+## About
+
+Ridgeline Outfitters wants to test whether its voice agent saves a caller's preferred tent color without changing a customer profile. You can send the call to a temporary copy of a Vapi or Retell agent, or have your code create an agent for each isolated test environment (a *world*).
+
+## Choose who owns the target
+
+Set `agent.mode` in a **hosted harness job request**. [Connecting a hosted agent in the dashboard](/docs/environments/guides/build-an-environment#connect-a-hosted-voice-agent) is a different workflow.
+
+| Mode | What gets called | What a tool call proves | Side effects and cleanup |
+|---|---|---|---|
+| `connect_only` | The existing provider ID you supply | The conversation and provider call record describe that target. Its tools still run wherever it points them. | No clone, rewiring or provider-resource cleanup. A tool can still change live data. |
+| `provider_import` | A copy of the existing target in your provider account, created after the world's backend is ready | A trace from the isolated backend can show what a rewired HTTP tool actually received. | At teardown the harness requests deletion of the copies it created. It doesn't patch or delete the original. Provider-native tools still run at the provider. |
+| `environment_backed` | A target your repository's provision command creates for the world | You can check both the call and the effects your tool recorded in that world. | Your code owns provisioning, callback wiring and deletion. Its receipt identifies which resources belong to the attempt. |
+
+<Warning>
+Use a disposable provider project with synthetic data. Cloning redirects supported HTTP tools; it doesn't make a native transfer action harmless or stop your own backend from contacting a live service.
+</Warning>
+
+## Option 1: Import an existing target
+
+1. Record the source agent ID and its current webhook and tool routes so you can compare them after the run. For Vapi use `agent.connector: vapi`, `agent.config.assistant_id` and `VAPI_API_KEY`. For Retell voice use `retell`, `agent_id` and `RETELL_API_KEY`. Record the IDs of any referenced tools or response engine, too. The credential must be able to read the original, create the copies and delete them.
+2. Supply the **source that implements the HTTP tools**, not just their JSON schemas. For Ridgeline's `record_preference` tool, the [example import backend](https://github.com/future-agi/agent-learning-kit/tree/3f62802175855927942102221ad17f86d06aa1fd/examples/harness/provider_voice_environment/import_backend) accepts `POST /provider/tools/record_preference` and records the request. Every supported custom tool on the source agent needs a matching name in the environment contract, not just the one you plan to call.
+3. Make the backend reachable through an HTTP capability: a named endpoint exposed by the world. If there's exactly one HTTP capability, the harness selects it. Otherwise set `agent.config.public_capability` to the name of the right one. By default the clone sends events to `/provider/events` and tools under `/provider/tools` on the world's signed HTTPS endpoint. The harness uses the path from the original tool URL, not the tool name or query string. For the Ridgeline import, use a source `POST` tool named `record_preference` with path `/record_preference` and a string argument named `preference`. On the clone, the backend receives `POST /provider/tools/record_preference`. Set `agent.config.event_path` and `agent.config.tool_path` if the backend uses other mounts.
+
+| Provider definition | What the harness copies and rewires |
+|---|---|
+| Vapi assistant | Copies the assistant and its referenced reusable tools. Sets the assistant server URL to the event endpoint and rewrites supported `function` server URLs and `apiRequest` URLs, including inline tools. |
+| Retell LLM | Copies the LLM definition, redirects its custom-function URLs, then creates a voice agent with the copied engine and the world's event webhook. |
+| Retell Conversation Flow | Copies the flow graph, including embedded components. Validates nested custom tools before creating the flow, rewrites their URLs and attaches the new voice agent to the new flow ID. |
+
+## Option 2: Provision a target from your repository
+
+Use `environment_backed` when your code defines the prompt, voice, model and tools. **Omit `agent_id` and `assistant_id`**: the provision command returns the new ID. Start with the [Retell example](https://github.com/future-agi/agent-learning-kit/tree/3f62802175855927942102221ad17f86d06aa1fd/examples/harness/provider_voice_environment/retell) or the [Vapi example](https://github.com/future-agi/agent-learning-kit/tree/3f62802175855927942102221ad17f86d06aa1fd/examples/harness/provider_voice_environment/vapi). Put its files at the root of the submitted source.
+
+For the Retell example, `alk.yaml` selects the `agent` process and its `target_http` endpoint. The endpoint must serve HTTP and listen on `0.0.0.0` for provider callbacks. If the manifest lives elsewhere, set `agent.config.lifecycle_manifest` to its repository-relative path.
+
+```yaml
+schema_version: "1"
+provider:
+  type: retell
+  scope: world
+  process: agent
+  public_capability: target_http
+  event_path: /provider/events
+  tool_path: /provider/tools
+  required_secrets: [RETELL_API_KEY, RETELL_VOICE_ID]
+  provision:
+    command: [python, provider_target.py, provision]
+    timeout_seconds: 120
+  destroy:
+    command: [python, provider_target.py, destroy]
+    timeout_seconds: 120
+  output: provider-target.json
+```
+
+The harness runs each command directly, without a shell, in the selected process's built source tree. Each timeout defaults to 120 seconds and must be greater than zero and at most 1,800 seconds. The linked examples show the provider API calls. Before reusing them outside a disposable project, add retry handling and ownership checks:
+
+| Command | What your code must do |
+|---|---|
+| `provision` | Read the JSON file named by `ALK_PROVIDER_CONTEXT`. Make creation idempotent for its `idempotency_key`: a retry with the same key must not create a second graph. Use `ALK_EVENT_URL` for the agent webhook and `ALK_TOOL_BASE_URL` for tool routes. If a later create fails, undo the resources you already created. |
+| `destroy` | Read the JSON file named by `ALK_PROVIDER_RECEIPT`. Delete only resources marked `owned: true`, in reverse dependency order: the voice agent before its flow or LLM, for example. Treat an already absent owned resource as success. Return zero only once cleanup is complete. Don't find deletion candidates by name. |
+
+Provision must write a JSON receipt to the path in `ALK_PROVIDER_OUTPUT`. For example, Ridgeline's Retell command would return a receipt shaped like this. Use the actual IDs from the provider and copy `attempt_id`, `world_id` and `idempotency_key` from the context:
+
+```json
+{
+  "schema_version": "1",
+  "provider": "retell",
+  "attempt_id": "ridgeline-attempt-1",
+  "world_id": "0",
+  "target": {"kind": "voice_agent", "id": "ridgeline-test-agent"},
+  "resources": [
+    {"kind": "retell_llm", "id": "ridgeline-test-llm", "owned": true},
+    {"kind": "voice_agent", "id": "ridgeline-test-agent", "owned": true}
+  ],
+  "cleanup": {"receipt_version": "1", "idempotency_key": "ridgeline-attempt-1-w0"}
+}
+```
+
+The target itself must appear as an owned resource with the same ID and kind. For Vapi, the kind is `assistant`. Never include credentials or signed URLs in the receipt.
+
+## Submit the Ridgeline example
+
+Use Bash, cURL, `jq` and Python 3.9 or later. For a Retell import, start in `import_backend` with `RIDGELINE_MODE=provider_import` (the default). For a repository-created Retell agent, start in `retell` with `RIDGELINE_MODE=environment_backed`. Export `FI_API_KEY` and `FI_SECRET_KEY` for your workspace. Run the upload in the shell you'll use for preflight; it exports the returned source ID. Only the listed files are uploaded.
+
+```bash
+set -eo pipefail
+export RIDGELINE_MODE="${RIDGELINE_MODE:-provider_import}"
+files=(agent.py requirements.txt)
+if [[ "$RIDGELINE_MODE" == environment_backed ]]; then
+  files+=(alk.yaml provider_target.py)
+fi
+parts=()
+for file in "${files[@]}"; do
+  parts+=(-F "files=@$file" --form-string "paths=$file")
+done
+api="${FI_BASE_URL:-https://api.futureagi.com}"
+RIDGELINE_SOURCE_ID=$(curl -fsS "${api%/}/simulate/api/harness-jobs/sources/" \
+  -H "X-Api-Key: ${FI_API_KEY:?}" -H "X-Secret-Key: ${FI_SECRET_KEY:?}" \
+  --form-string name=ridgeline-preferences "${parts[@]}" | jq -er '.source_id')
+export RIDGELINE_SOURCE_ID
+```
+
+Export the following inputs in the same shell. Both options need `RETELL_API_KEY`. For an import, also set `RIDGELINE_AGENT_ID` to your disposable Retell voice agent's ID. For the repository example, set `RETELL_VOICE_ID` instead. For each of `RETELL_API_KEY` and `RETELL_VOICE_ID`, you can instead set the corresponding `*_REF` variable (for example `RETELL_API_KEY_REF`) to an **existing vault reference key**, not the credential itself. Target references use `manager: platform-vault` and `purpose: target_provider`; the platform's simulator credentials are separate and never enter your process.
+
+Save the Python block as `submit.py`. Run `python3 submit.py` to check the request without creating a job. Once preflight passes, export `RIDGELINE_SUBMISSION_ID` with a unique value and run `python3 submit.py --submit`. On retries, reuse the same submission ID, source ID and request; do not upload the source again. The example sends new credential values only through the write-only `credential_values` field, not through `agent.config` or a file.
+
+```python
+import argparse
+import json
+import os
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submit", action="store_true")
+submit = parser.parse_args().submit
+env = os.environ
+api = env.get("FI_BASE_URL", "https://api.futureagi.com").rstrip("/")
+base = api + "/simulate/api/harness-jobs/"
+mode = env.get("RIDGELINE_MODE", "provider_import")
+if mode not in {"provider_import", "environment_backed"}:
+    raise SystemExit("Choose provider_import or environment_backed")
+config = {"agent_id": env["RIDGELINE_AGENT_ID"]} if mode == "provider_import" else {}
+aliases = ["RETELL_API_KEY"]
+if mode == "environment_backed":
+    aliases.append("RETELL_VOICE_ID")
+refs, values = {}, {}
+for name in aliases:
+    if key := env.get(name + "_REF"):
+        refs[name] = {"manager": "platform-vault", "purpose": "target_provider", "key": key}
+    else:
+        values[name] = env[name]
+body = {
+    "source": {"kind": "archive", "archive_artifact_id": env["RIDGELINE_SOURCE_ID"]},
+    "agent": {"connector": "retell", "mode": mode, "config": config, "secret_refs": refs},
+    "credential_values": values,
+    "metadata": {"name": "ridgeline-preferences"},
+    "scenario_count": 1,
+    "artifacts": {"level": "full"},
+}
+headers = {"Content-Type": "application/json", "X-Api-Key": env["FI_API_KEY"],
+           "X-Secret-Key": env["FI_SECRET_KEY"]}
+
+def post(path, extra_headers):
+    request = Request(base + path, data=json.dumps(body).encode(), headers=headers | extra_headers)
+    try:
+        with urlopen(request) as response:
+            return json.load(response)
+    except HTTPError as exc:
+        try:
+            error = json.load(exc)
+        except (UnicodeError, ValueError):
+            error = {}
+        code = error.get("error") if isinstance(error, dict) else None
+        raise SystemExit(f"HTTP {exc.code}: {code or exc.reason}") from None
+
+report = post("preflight/", {})
+for check in report["checks"]:
+    print(check["label"], check["status"], check.get("fix") or "")
+if not report["ready_to_submit"]:
+    raise SystemExit("Preflight failed; no job was submitted.")
+if submit:
+    if not env.get("RIDGELINE_SUBMISSION_ID"):
+        raise SystemExit("Export RIDGELINE_SUBMISSION_ID before submitting.")
+    job = post("", {"Idempotency-Key": env["RIDGELINE_SUBMISSION_ID"]})
+    print("Environment job:", job["job"]["job_id"])
+```
+
+An HTTP `202` from job creation means the build was accepted. Preflight can skip a live credential probe when you supply only a reference; neither preflight nor an accepted build proves that a tool call reached the world.
+
+## Verify the tool call and cleanup
+
+Once the environment is ready, [choose or edit a scenario](/docs/environments/guides/work-with-scenarios) so the caller asks Ridgeline to save **forest green** as their preferred tent color. [Run that scenario](/docs/environments/guides/run-a-simulation) and check three things:
+
+1. **Target:** The provider call record belongs to the temporary agent ID, not the source ID. For a Retell flow import, the clone should reference a different flow ID as well.
+2. **Effect:** In the [run results](/docs/environments/guides/read-run-results), look for the `record_preference` call and its `preference` argument. Compare it with the backend's own record. Both Retell example backends append a JSON line with `kind: tool.record_preference` and the request in `body` to `PROVIDER_TRACE_PATH` (default `/tmp/provider-trace.jsonl`). Capture that record before the world is removed. Look for `forest green` in the request, not just in the conversation. The example records the request; it doesn't update a customer profile.
+3. **Cleanup:** After teardown, confirm the owned target and its owned flow, LLM or reusable tools are gone from the disposable provider project. For an import, recheck the source ID, webhook and tool routes against the originals. For repository provisioning, compare the removed IDs with the receipt; shared resources must still exist. A successful call is not confirmation that every delete succeeded.
+
+{/* MEDIA: A Ridgeline test call in run results showing the caller asking for forest green and the record_preference tool call with that argument. */}
+
+## Limits and setup errors
+
+| Symptom | What to change |
+|---|---|
+| `egress_domain_private` during preflight | The hosted sandbox cannot use a private or reserved egress host. If the reported host is `localhost` on your own installation, ask the administrator to check `HARNESS_PUBLIC_BASE_URL`, the public HTTPS address the sandbox uses to call back into the platform. |
+| `provider_tool_implementation_missing` | Check that the environment contract declares the exact provider tool name and that the backend implements its HTTP route. An opaque third-party endpoint or a schema alone isn't an implementation. |
+| `retell_response_engine_unsupported` | Import a Retell LLM or Conversation Flow. A custom LLM engine can't be cloned this way. |
+| Tool returns 404 after import | Compare the source URL path with the route your backend serves. If the source paths already include `/provider/tools` and the signed callback URL adds that mount again, set `config["tool_path"] = "/"` on the import request so the backend receives the original paths. This setting applies to all imported tools. |
+| `provider_import_public_capability_ambiguous` | Expose the tool service over HTTP. If several HTTP capabilities exist, name the correct one in `agent.config.public_capability`. |
+| Provision stops before a call | Check the manifest path, matching connector, declared secrets, callback reachability and command exit status. If the command returned zero, check the receipt against the attempt, world and idempotency key. These are setup failures, not failed conversation goals. |
+
+## Next steps
+
+- [Review the contract](/docs/environments/guides/review-the-contract) to check which tools the environment recognized.
+- [Add evaluations](/docs/environments/guides/add-evaluations) to grade the interaction as well as verifying the tool ran.
+- [Debug failures](/docs/environments/guides/debug-failures) if the call ran but the outcome didn't match the scenario.
