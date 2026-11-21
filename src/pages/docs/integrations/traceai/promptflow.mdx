@@ -1,157 +1,145 @@
 ---
-title: "Prompt Flow Integration with Future AGI for LLM Tracing"
-description: "Trace the OpenAI client calls made by a Prompt Flow application with traceAI-openai, then inspect them in Future AGI Observe."
+title: "Trace Microsoft Prompt flow"
+description: "Trace a Python flex flow or DAG in Future AGI. Inspect the flow, its tools and model calls, hide message content, and recognize a stream that closed early."
 ---
 
-Trace OpenAI calls made by a Prompt Flow application with Future AGI.
+## About
 
-## 1. Installation
-Install the traceAI and Prompt Flow packages.
+Use `traceAI-promptflow` to see which step in a Microsoft Prompt flow run called the model. Tracing only the OpenAI client shows the model request, but not the flow or the policy lookup that informed the reply.
+
+## Install and set credentials
+
+Use Python 3.10 through 3.13. The integration supports `promptflow-tracing>=1.12.0,<2`. In an empty directory, install the integration, the flow executor, and the OpenAI client for this example:
 
 ```bash
-pip install traceAI-openai promptflow promptflow-tools
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install traceAI-promptflow==0.1.0 promptflow-core==1.18.5 'openai>=1,<2'
 ```
 
----
+Set these variables in the environment where you will run Python. Keep credentials out of the flow files.
 
-## 2. Set Environment Variables
+| Environment variable | What to set |
+| --- | --- |
+| `FI_API_KEY`, `FI_SECRET_KEY` | Your [Future AGI key pair](https://app.futureagi.com/dashboard/keys), for exporting spans. |
+| `OPENAI_API_KEY` | Your model provider's API key, for one Chat Completions request. If you use an OpenAI-compatible provider, also set `OPENAI_BASE_URL` to its API base URL. |
+| `OPENAI_MODEL` | A chat model available to your key. The example reads this variable when it drafts the reply. |
 
-Set up your environment variables to authenticate with both FutureAGI and OpenAI services.
+## Define the returns flow
+
+Ridgeline Outfitters' support agent looks up the return policy for a tent, then drafts a reply using that policy. Save the following as `flow.flex.yaml`. The entry points to the `answer` function in `support.py`.
+
+```yaml
+entry: support:answer
+```
+
+Save `support.py` in the same directory. Use Prompt flow's `@trace` on the two helpers so you can distinguish time spent looking up the policy from time spent drafting the reply.
 
 ```python
 import os
 
-os.environ["OPENAI_API_KEY"] = "your-openai-api-key"
-os.environ["OPENAI_MODEL"] = "your-chat-model"  # a Chat Completions model available to your account
-os.environ["FI_API_KEY"] = "your-futureagi-api-key"
-os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
-```
+from openai import OpenAI
+from promptflow.tracing import trace
 
----
 
-## 3. Initialize Trace Provider
+@trace
+def find_policy(item: str) -> str:
+    policies = {"tent": "Unused tents can be returned within 30 days."}
+    return policies[item]
 
-Set up the trace provider to create a new project in FutureAGI, establish telemetry data pipelines.
 
-```python
-from fi_instrumentation import register
-from fi_instrumentation.fi_types import ProjectType
-
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="promptflow",
-)
-```
-
----
-
-## 4. Instrument your Project
-
-Instrument the OpenAI client before creating the flow.
-
-```python
-from traceai_openai import OpenAIInstrumentor
-
-OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
-```
-
----
-## 5. Prepare the `chat.prompty` File
-
-Create `chat.prompty` in the same directory as your script. It uses OpenAI configuration, matching the connection in step 7. [Prompty supports overriding this configuration when loading the template](https://microsoft.github.io/promptflow/how-to-guides/develop-a-prompty/index.html#load-a-prompty); `ChatFlow` supplies that override below. Choose a model that supports the `temperature` and `max_tokens` parameters in this example.
-
-```yaml
----
-name: Basic Chat
-model:
-  api: chat
-  configuration:
-    type: openai
-    model: ${env:OPENAI_MODEL}
-  parameters:
-    temperature: 0.2
-    max_tokens: 1024
-inputs: 
-  question:
-    type: string
-  chat_history:
-    type: list
-sample:
-  question: "What is Prompt flow?"
-  chat_history: []
----
-
-system:
-You are a helpful assistant.
-
-{% for item in chat_history %}
-{{item.role}}:
-{{item.content}}
-{% endfor %}
-
-user:
-{{question}}
-```
-
----
-
-## 6. Create a Flow
-
-Create a flow that loads the prompt file.
-
-```python
-from pathlib import Path
-from promptflow.core import OpenAIModelConfiguration, Prompty
-
-BASE_DIR = Path(__file__).absolute().parent
-
-class ChatFlow:
-    def __init__(self, model_config: OpenAIModelConfiguration, max_total_token=4096):
-        self.model_config = model_config
-        self.max_total_token = max_total_token
-
-    def __call__(
-        self,
-        question: str = "What's Azure Machine Learning?",
-        chat_history: list = [],
-    ) -> str:
-        """Flow entry function."""
-
-        prompty = Prompty.load(
-            source=BASE_DIR / "chat.prompty",
-            model={"configuration": self.model_config},
+@trace
+def draft_reply(question: str, policy: str) -> str:
+    with OpenAI() as client:
+        response = client.chat.completions.create(
+            model=os.environ["OPENAI_MODEL"],
+            messages=[
+                {"role": "system", "content": f"Answer in one sentence using this policy: {policy}"},
+                {"role": "user", "content": question},
+            ],
         )
+    return response.choices[0].message.content
 
-        output = prompty(question=question, chat_history=chat_history)
 
-        return output
+def answer(item: str, question: str) -> str:
+    return draft_reply(question, find_policy(item))
 ```
 
----
+## Run the flow and close a preview early
 
-## 7. Execute the Flow
+Save `run_flow.py` next to the other two files. Register the provider and instrument Prompt flow **before** creating the executor. This example hides both inputs and outputs: you can inspect the call hierarchy and token usage without exporting the customer's question or the model's reply.
 
 ```python
-from promptflow.client import PFClient
-from promptflow.connections import OpenAIConnection
+from fi_instrumentation import TraceConfig, register
+from fi_instrumentation.fi_types import ProjectType
+from promptflow.executor import FlowExecutor
+from promptflow.tracing import trace
+from traceai_promptflow import PromptflowInstrumentor
 
-pf = PFClient()
-
-connection = OpenAIConnection(
-    name="open_ai_connection",
-    base_url="https://api.openai.com/v1",
-    api_key=os.environ["OPENAI_API_KEY"],
+provider = register(
+    project_name="ridgeline-returns", project_type=ProjectType.OBSERVE, verbose=False
+)
+PromptflowInstrumentor().instrument(
+    tracer_provider=provider,
+    config=TraceConfig(hide_inputs=True, hide_outputs=True),
 )
 
-conn = pf.connections.create_or_update(connection)
 
-config = OpenAIModelConfiguration(
-    connection="open_ai_connection", model=os.environ["OPENAI_MODEL"]
-)
+@trace
+def preview_reply(reply: str):
+    yield "Ridgeline Outfitters support"
+    yield reply
 
-chat_flow = ChatFlow(config)
-result = chat_flow(question="What is ChatGPT? Please explain with concise statement")
-print(result)
+
+try:
+    flow = FlowExecutor.create("flow.flex.yaml", {})
+    result = flow.exec_line({
+        "item": "tent",
+        "question": "Can I return an unused tent after two weeks?",
+    })
+    print(result.output)
+
+    preview = preview_reply(result.output)
+    try:
+        print(next(preview))
+    finally:
+        preview.close()
+finally:
+    provider.force_flush()
 ```
 
-Open the **promptflow** project in Future AGI **Observe** to inspect the recorded OpenAI call.
+Run the script from that directory:
+
+```bash
+python run_flow.py
+```
+
+You should see a reply based on the 30-day policy, then `Ridgeline Outfitters support`. The preview consumer closes the generator after the heading, before it reads the reply.
+
+## Inspect the two traces
+
+Open **Observe → Tracing**, select `ridgeline-returns`, and open the `answer` trace. Compare the spans by their `gen_ai.span.kind`:
+
+| Span | Kind | What to inspect |
+| --- | --- | --- |
+| `answer` | `CHAIN` | The whole flex flow run. A DAG run also has a `CHAIN` root, with its nodes beneath it. |
+| `find_policy` and `draft_reply` | `TOOL` | These are siblings under `answer`. Only `draft_reply` has a model call. |
+| `openai_chat` | `LLM` | The OpenAI call under `draft_reply`. Look for the request model, response model, and input and output token counts when the provider returns usage. |
+
+{/* MEDIA: Expanded answer trace for ridgeline-returns with find_policy and draft_reply as siblings and openai_chat selected under draft_reply, showing the model and token counts. */}
+
+Open the separate `preview_reply` trace. It is a `CHAIN` because you called the decorated function outside the flow. A generator span stays open while you consume it. Closing it early sets `promptflow.stream.incomplete` to `true`; consuming it to exhaustion finishes the span without that flag. For an async generator, use `await stream.aclose()` if you stop early.
+
+{/* MEDIA: The preview_reply span with promptflow.stream.incomplete set to true and no captured reply content. */}
+
+## Limits and troubleshooting
+
+- **No flow spans:** If you explicitly set `PF_DISABLE_TRACING=true`, `instrument()` respects it. Unset the variable before starting the process to let the instrumentor enable tracing.
+- **Two spans for one model call:** Do not also enable `OpenAIInstrumentor` for calls Prompt flow already traces. Instrumenting only the provider has the opposite problem: you lose the flow and tool spans.
+- **No question or reply on the spans:** The two hide settings in the example omit `input.value` and `output.value`. By default the integration captures these values. It drops Prompt flow's native `inputs`, `output`, `prompt.template`, `prompt.variables`, and `promptflow.*` events rather than exporting a second copy. On failure, it records `ERROR` and `error.type`, not the exception message or traceback.
+- **Batch workers or feedback:** Instrumentation applies to the current process. Call `instrument()` in each batch worker that should export spans. Do not rely on the parent's hide settings for uninstrumented workers or for Prompt flow's serving `/feedback` endpoint, which is outside this integration.
+
+## Next steps
+
+- [Explore the Observe dashboard](/docs/observe/guides/explore-dashboard) to compare flow runs and inspect individual spans.
+- [Mask span attributes](/docs/sdk/tracing/mask-span-attributes) to choose which content to capture in other tracing integrations.
