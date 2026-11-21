@@ -1,0 +1,121 @@
+---
+title: "Launch tracing and verify a span"
+description: "Check what fagi can instrument, send a stock lookup trace, then use its exact ID to find the stored spans in the CLI and the Observe dashboard."
+---
+
+## About
+
+`fagi run` can tell you whether it found a tracing agent for a command. It cannot tell you whether a span arrived. To check delivery, get the trace ID from one request, watch for that ID in the same project, then open the stored spans. The example below traces a stock question for Ridgeline Outfitters without calling a model.
+
+## Check how to start your app
+
+Install the CLI with npm (Node.js 22.15+ on the 22.x line, or 23.11+) and check the build:
+
+```bash
+npm install -g @future-agi/cli@0.2.2
+fagi version --json
+```
+
+`"flavour": "slim"` means the CLI includes no tracing agents. For Future AGI Cloud, get your **API Key** and **Secret Key** from the [Keys page](https://app.futureagi.com/dashboard/keys). For self-hosting, use your own installation's keys and set `FI_BASE_URL` to its platform API. Export the pair as `FI_API_KEY` and `FI_SECRET_KEY` in the shell you will use to send and read traces.
+
+Choose how to start your app:
+
+| Runtime | What to do |
+| --- | --- |
+| Python | Register traceAI in your code and run Python directly, as in the example below. The CLI's zero-code check looks for `fi_instrumentation.auto`, not just an installed core package. `trace install python --from` is not supported. |
+| Node.js | Run `node` directly through `fagi run`. The launcher can use a project package that provides `@traceai/auto/register`, or a trusted local Node agent directory. |
+| Ruby | Run `ruby` directly through `fagi run` with `traceai-auto` available or a trusted Ruby agent directory installed. |
+| Go | In a Go module, `fagi trace setup go .` adds imports to main packages and runs `go get`. Review `traceai_auto.go`, `go.mod`, and `go.sum` before building. A binary that links the Go agent needs no launcher injection. Experimental `fagi run --go-inject` needs a Go agent payload. |
+| Java and .NET | Java-agent injection and .NET zero-code tracing are disabled in this CLI release. A standalone language SDK does not enable either launcher capability. |
+
+### Preview a Node launch
+
+In a trusted Node project directory, compare the launch plan before and after making the agent available. The version command keeps this check independent of your app:
+
+```bash
+fagi run --dry-run --json -- node --version
+npm install @traceai/auto@0.4.1
+fagi run --dry-run --json -- node --version
+```
+
+Read `warnings` alongside `environment`. With no Node agent, the preview warns that the real launch would be refused; the preview itself can exit successfully. With the package resolved and the preload attached, look for `NODE_OPTIONS` and no missing- or unconfirmed-agent warning. A package-manager wrapper such as `npm start` can still start with a notice that it may run untraced. Use your app's actual `node` command to check its startup options, then remove `--dry-run --json` to launch it. Only use trusted programs and projects: probes run even during a preview, and a launched child can inherit your credentials.
+
+If you have a complete local agent directory instead, use `fagi trace install node --from "$AGENT_DIR"` with `AGENT_DIR` set to that directory. Local payload installation also accepts `go` and `ruby`. For a process manager, `fagi trace env --format sh node` prints credential-free shell settings; generate them on the filesystem where Node will run. Printing settings does not install an agent or start a process.
+
+## Send one request and verify it
+
+This path uses Python in-code tracing, so you can follow it without a launcher payload. Use Python 3.10 through 3.15 in a virtual environment. If your self-hosted trace collector is separate from the platform API, set `FI_TRACES_URL` to the collector's base URL for the Python exporter.
+
+<Steps>
+  <Step title="Instrument the stock lookup">
+    Install the tracing package, then save the Python example as `stock_lookup.py`.
+
+    ```bash
+    python -m pip install fi-instrumentation-otel==1.5.1
+    ```
+
+    ```python
+    from fi_instrumentation import register
+    from fi_instrumentation.fi_types import ProjectType
+
+    provider = register(
+        project_name="ridgeline-support",
+        project_type=ProjectType.OBSERVE,
+        verbose=False,
+    )
+    tracer = provider.get_tracer("ridgeline.inventory")
+    inventory = {"alpine-stove": 4}
+
+    with tracer.start_as_current_span("answer_stock_question") as request:
+        request.set_attribute("fi.span.kind", "agent")
+        with tracer.start_as_current_span("lookup_stock") as lookup:
+            lookup.set_attribute("fi.span.kind", "tool")
+            sku = "alpine-stove"
+            lookup.set_attribute("inventory.sku", sku)
+            lookup.set_attribute("inventory.available", inventory[sku])
+        trace_id = request.get_span_context().trace_id
+
+    provider.force_flush()
+    print(f"{trace_id:032x}")
+    ```
+  </Step>
+  <Step title="Watch for that request, not just any trace">
+    Run the script directly. Keep its 32-character hexadecimal OpenTelemetry trace ID in the shell for both reads:
+
+    ```bash
+    TRACE_ID=$(python stock_lookup.py)
+    fagi trace watch --project ridgeline-support --trace-id "$TRACE_ID" \
+      --until-first --timeout 90s --json
+    ```
+
+    Look for `matched: true` and `stop_reason: "until_first"` in the final `watch_finished` object, with a `trace_observed` event for your ID. The CLI accepts the SDK's 32 hex digits and matches the stored, hyphenated form. Without `--trace-id`, an older, unrelated request could satisfy `--until-first`.
+  </Step>
+  <Step title="Read the stored span outline">
+    ```bash
+    fagi trace view "$TRACE_ID" --project ridgeline-support
+    ```
+
+    Look for `answer_stock_question` with `lookup_stock` indented beneath it. `view` reads a snapshot; it does not replay the request or guarantee that every span has arrived. Add `--json` for the full returned detail, including spans that did not fit the table.
+  </Step>
+  <Step title="Match the ID in Observe">
+    Open **Observe**, select **ridgeline-support**, and open the `answer_stock_question` row. Use **Copy Trace ID** in the trace detail and compare it to `TRACE_ID` (ignore hyphens). Check for `lookup_stock` in the same tree. A row name alone does not distinguish two runs of the script.
+
+    {/* MEDIA: The ridgeline-support trace detail with Copy Trace ID and lookup_stock nested under answer_stock_question. */}
+  </Step>
+</Steps>
+
+## If the trace does not appear
+
+| Result | What to check |
+| --- | --- |
+| `agents_not_included` (exit 2 on launch) | A missing tracing agent is a launch refusal, not an exporter failure. Install the matching agent or start an app that has in-code tracing directly. A release-disabled runtime can fail even on a dry run, without a plan. |
+| `project_not_found` | `--project` needs an exact, case-sensitive name. The first export creates the project; if the lookup ran before that, rerun it after export. |
+| `project_ambiguous` or `project_lookup_incomplete` | Select the intended project's hyphenated UUID with `--project-id` **instead of** `--project`. For ambiguous names, the diagnostic lists candidate IDs and trace types. The project UUID selects the container; the trace ID selects one request inside it. |
+| `trace_not_observed` (exit 6) | Each poll samples one page of up to 100 stored rows and filters it locally. The defaults are 30 polls, a 2-second interval, and a 90-second overall deadline. A busy project can hide your trace between polls. Check the ID and exporter destination, or try `trace view` with the known ID rather than waiting for it to enter the window. |
+
+If you omit both project flags, `watch` and `view` read `project_name` from `futureagi.toml` (or the file selected by `FI_CONFIG_FILE`), then fall back to `FI_PROJECT_NAME`. Pass an explicit selector when the app exports under a different name.
+
+## Next steps
+
+- [Explore the Observe dashboard](/docs/observe/guides/explore-dashboard) to inspect other requests in the project.
+- [Troubleshoot missing traces](/docs/observe/troubleshooting/no-traces-appearing) if neither the CLI nor the dashboard finds your trace.
