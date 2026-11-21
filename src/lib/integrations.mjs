@@ -178,7 +178,7 @@ export const integrations = [
   { id: 'vapi', name: 'Vapi', href: '/docs/observe/concepts/voice-observability', category: 'voice', summary: 'Connect calls using the shared voice observability guide.', method: 'Voice guide', logo: 'vapi', sharedGuide: true },
   { id: 'retell', name: 'Retell', href: '/docs/observe/concepts/voice-observability', category: 'voice', summary: 'Connect calls using the shared voice observability guide.', method: 'Voice guide', logo: 'retell', sharedGuide: true },
 
-  { id: 'spring-boot', name: 'Spring Boot & Spring AI', href: '/docs/integrations/traceai/spring-boot', category: 'java', summary: 'Set up tracing with the Spring Boot starter.', method: 'Java starter', logo: 'spring', aliases: ['JVM'] },
+  { id: 'spring-boot', name: 'Spring Boot & Spring AI', href: '/docs/integrations/traceai/spring-boot', category: 'java', summary: 'Trace Spring AI model, embedding, and tool calls with native Micrometer observations.', method: 'OpenTelemetry', logo: 'spring', aliases: ['JVM', 'Micrometer', 'SpringAIObservationFilter'] },
   { id: 'java-openai', name: 'OpenAI for Java', href: '/docs/integrations/traceai/java/openai', category: 'java', summary: 'Wrap the OpenAI Java client to capture requests.', method: 'Java wrapper', logo: 'openai' },
   { id: 'java-anthropic', name: 'Anthropic for Java', href: '/docs/integrations/traceai/java/anthropic', category: 'java', summary: 'Export native Claude SDK spans without wrapping the client.', method: 'OpenTelemetry', logo: 'anthropic' },
   { id: 'java-bedrock', name: 'AWS Bedrock for Java', href: '/docs/integrations/traceai/java/bedrock', category: 'java', summary: 'Wrap Bedrock clients to capture model requests.', method: 'Java wrapper', logo: 'bedrock' },
