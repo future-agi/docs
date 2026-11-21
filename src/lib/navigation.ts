@@ -284,6 +284,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Deployment',
             items: [
               { title: 'Self-hosted', href: '/docs/command-center/deployment/self-hosted' },
+              { title: 'Video generation', href: '/docs/command-center/deployment/video-generation' },
             ]
           },
           {
