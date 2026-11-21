@@ -22,10 +22,10 @@ try {
   assert.equal((await page.evaluate(() => navigator.clipboard.readText())).trim(), 'npm install @traceai/auto@0.4.1');
   const active = page.locator('.integration-sidebar a[aria-current="page"]');
   assert.equal(await active.getAttribute('href'), route);
-  const image = page.locator('img[src="/images/docs/integrations/traceai/auto/trace-span.png"]');
+  const image = page.locator('img[src="/images/docs/integrations/traceai/auto/backpack-rain-cover-model-span.png"]');
   await image.scrollIntoViewIfNeeded();
   await image.evaluate(img => img.decode());
-  assert.equal(await image.evaluate(img => img.naturalWidth), 1440);
+  assert.equal(await image.evaluate(img => img.naturalWidth), 856);
   await page.screenshot({ path: `${out}/auto-result.png` });
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   await page.screenshot({ path: `${out}/auto-setup.png` });

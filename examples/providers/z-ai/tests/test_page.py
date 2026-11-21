@@ -37,7 +37,7 @@ def test_the_page_has_the_required_sections(page):
 def test_the_page_states_version_url_and_provider_label(page):
     assert page.count(f'base_url="{ZAI_URL}"') == 1
     assert "'traceAI-openai==0.1.16' 'fi-instrumentation-otel==1.5.1' 'openai==3.57.0'" in page
-    assert "gen_ai.provider.name=zai" in page
+    assert "`gen_ai.provider.name` is `zai`" in page
 
 
 def test_the_page_uses_the_general_platform_and_openai_client(page):
@@ -55,7 +55,7 @@ def test_page_is_customer_facing_and_preserves_data_handling_guidance(page):
         assert phrase not in page
     assert "Request, response and error content" in page
     assert "Use data approved for tracing" in page
-    assert "illustrated with a sample trace" in page
+    assert "The OpenAI example below shows where to find the control" in page
     assert "/images/docs/integrations/z-ai-trace-view.png" in page
 
 
