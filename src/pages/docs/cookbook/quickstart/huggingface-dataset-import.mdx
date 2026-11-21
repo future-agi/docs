@@ -44,7 +44,9 @@ Use the public [Bitext customer support dataset](https://huggingface.co/datasets
 | `num_rows` | `3` | A bounded sample. Omitting the count requests the split's row count. |
 | `name` | A new name starting with `ridgeline-cancellations-` | The dataset you'll find in Future AGI |
 
-Save the following as `import_replies.py` and run `python import_replies.py`. The returned ID identifies the new dataset. Import processing continues in the background; the next script waits for all three reply cells, not just the column headers.
+Save the following as `import_replies.py` and run `python import_replies.py`. The returned ID identifies the new dataset. Import processing continues in the background; the next script waits for the customer message and reply in all three rows.
+
+<CodeGroup titles={["Python"]}>
 
 ```python
 from uuid import uuid4
@@ -64,6 +66,8 @@ with Client() as client:
     print(created.dataset_id)
 ```
 
+</CodeGroup>
+
 {/* MEDIA: The imported three-row dataset with instruction, intent, and response columns visible. */}
 
 ## Score the replies and save a CSV
@@ -72,14 +76,20 @@ The `word_count_in_range` template needs one input, `text`. Map that key to the 
 
 Save this as `score_replies.py`, then run `python score_replies.py DATASET_ID` with the ID from the import. The script sets up the evaluation without running it, looks up its attached ID, then starts it once.
 
+<CodeGroup titles={["Python"]}>
+
 ```python
+import argparse
 import csv
-import sys
 import time
 
 from fi.platform import Client
 
-dataset_id = sys.argv[1]
+parser = argparse.ArgumentParser()
+parser.add_argument("dataset_id")
+parser.add_argument("--resume", action="store_true", help="Wait and export without starting a run")
+args = parser.parse_args()
+dataset_id = args.dataset_id
 check = "reply-length"
 
 with Client() as client:
@@ -88,40 +98,42 @@ with Client() as client:
         table = client.datasets.get(dataset_id, page_size=3)
         cols = {c.name: c.id for c in table.column_config}
         rows = [row.model_dump() for row in table.table or []]
-        if "response" in cols and len(rows) == 3 and all(
-            row.get(cols["response"], {}).get("cell_value") for row in rows
+        if {"instruction", "response"} <= cols.keys() and len(rows) == 3 and all(
+            row.get(cols[field], {}).get("cell_value")
+            for row in rows for field in ("instruction", "response")
         ):
             break
         time.sleep(2)
     else:
-        raise TimeoutError(f"Expected three imported reply cells in {dataset_id}")
-
-    page = 0
-    while True:
-        batch = client.evals.templates.list(
-            owner_filter="system", search="word_count_in_range", page=page, page_size=20,
-        )
-        match = next((t for t in batch.items if t.name == "word_count_in_range"), None)
-        if match:
-            template = client.evals.templates.get(match.id)
-            break
-        if not batch.items or (page + 1) * batch.page_size >= batch.total:
-            raise LookupError("No system template named word_count_in_range")
-        page += 1
-
-    if set(template.required_keys) != {"text"}:
-        raise ValueError(f"Unexpected inputs: {template.required_keys}")
-    client.datasets.evals.add(
-        dataset_id, name=check, template_id=template.id, run=False,
-        config={"mapping": {"text": cols["response"]},
-                "params": {"min_words": 1, "max_words": 100}},
-    )
+        raise TimeoutError(f"Expected three complete support exchanges in {dataset_id}")
 
     def attached_check():
         items = client.datasets.evals.list(dataset_id, eval_type="user").evals
         return next(item for item in items if item["name"] == check)
 
-    client.datasets.evals.run(dataset_id, user_eval_ids=[attached_check()["id"]])
+    if not args.resume:
+        page = 0
+        while True:
+            batch = client.evals.templates.list(
+                owner_filter="system", search="word_count_in_range", page=page, page_size=20,
+            )
+            match = next((t for t in batch.items if t.name == "word_count_in_range"), None)
+            if match:
+                template = client.evals.templates.get(match.id)
+                break
+            if not batch.items or (page + 1) * batch.page_size >= batch.total:
+                raise LookupError("No system template named word_count_in_range")
+            page += 1
+
+        if set(template.required_keys) != {"text"}:
+            raise ValueError(f"Unexpected inputs: {template.required_keys}")
+        client.datasets.evals.add(
+            dataset_id, name=check, template_id=template.id, run=False,
+            config={"mapping": {"text": cols["response"]},
+                    "params": {"min_words": 1, "max_words": 100}},
+        )
+
+        client.datasets.evals.run(dataset_id, user_eval_ids=[attached_check()["id"]])
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         state = attached_check()["status"]
@@ -137,14 +149,27 @@ with Client() as client:
     cols = {c.name: c.id for c in table.column_config}
     fields = ["instruction", "response", check]
     path = f"ridgeline-replies-{dataset_id}.csv"
+    records = []
+    for row in table.table or []:
+        cells = row.model_dump()
+        record = {}
+        for field in fields:
+            cell = cells.get(cols[field], {})
+            value = cell.get("cell_value")
+            if cell.get("status") == "error" or value is None or value == "":
+                raise RuntimeError(f"Missing or failed {field} in row {row.row_id}")
+            record[field] = value
+        records.append(record)
+    if len(records) != 3:
+        raise RuntimeError(f"Expected 3 scored rows, got {len(records)}")
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        for row in table.table:
-            cells = row.model_dump()
-            writer.writerow({k: cells[cols[k]]["cell_value"] for k in fields})
+        writer.writerows(records)
     print(path)
 ```
+
+</CodeGroup>
 
 ## Interpret the results
 
@@ -156,6 +181,7 @@ The first three replies in the `train` split have 37, 48, and 205 whitespace-sep
 
 - For another dataset, check its configuration, split, and column names first. Mapping `text` to `instruction` would score the customer's message; looking up `cols["output"]` would fail because this dataset has no `output` column.
 - If the import hasn't populated the reply cells after five minutes, inspect the existing dataset before starting a new import. The examples use a new name on each import.
+- If you stopped waiting after the run started, use `python score_replies.py DATASET_ID --resume` to wait for and export the existing result rather than attaching `reply-length` again.
 - To change the sample size, update `num_rows`, the readiness check, and the export. The export reads one page of three rows. For multiple pages, use `metadata.next_page_index` while `metadata.has_more` is true.
 - To score the same rows again, call `run` with the existing attached evaluation ID. The template ID identifies a reusable definition, not your dataset's `reply-length` check.
 

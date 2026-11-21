@@ -34,7 +34,9 @@ Set `FI_API_KEY` and `FI_SECRET_KEY` in this shell using your [Future AGI API ke
 
 ## Upload the handoffs
 
-Save this as `upload_cases.py` and run `python upload_cases.py`. It writes a CSV and uploads it as a new dataset. Keep the printed dataset name: the next script reconnects to that exact upload.
+Save this as `upload_cases.py` and run `python upload_cases.py`. It writes a CSV and uploads it as a new dataset. Keep the printed dataset ID. The next script uses it to score this upload.
+
+<CodeGroup titles={["Python"]}>
 
 ```python
 import csv
@@ -58,8 +60,10 @@ dataset = Dataset(dataset_config=DatasetConfig(
     name=name, model_type=ModelTypes.GENERATIVE_LLM,
 ))
 dataset.create(source=path)
-print(name)
+print(dataset.dataset_config.id)
 ```
+
+</CodeGroup>
 
 ## Map and run both checks
 
@@ -71,18 +75,22 @@ Both templates call their required input `text`. For `is_json`, supply the ID of
 | Column ID | `column_config` on the uploaded dataset | Value in `config["mapping"]` |
 | Attached evaluation ID | `client.datasets.evals.list(dataset_id, eval_type="user")` | `user_eval_ids` when starting the run |
 
-Save this as `score_cases.py`. Run `python score_cases.py DATASET_NAME`, replacing `DATASET_NAME` with the name from the upload. `run=False` lets you configure both checks before starting them together. The wait loops stop after five minutes each; they don't submit a second run.
+Save this as `score_cases.py`. Run `python score_cases.py DATASET_ID` with the ID from the upload. `run=False` lets you configure both checks before starting them together. The wait loops stop after five minutes each; they don't submit a second run.
+
+<CodeGroup titles={["Python"]}>
 
 ```python
+import argparse
 import csv
-import sys
 import time
 
-from fi.datasets import Dataset
 from fi.platform import Client
 
-name = sys.argv[1]
-dataset_id = str(Dataset.get_dataset_config(name).dataset_config.id)
+parser = argparse.ArgumentParser()
+parser.add_argument("dataset_id")
+parser.add_argument("--resume", action="store_true", help="Wait and export without starting a run")
+args = parser.parse_args()
+dataset_id = args.dataset_id
 checks = [
     ("is_json", "handoff", "handoff-json"),
     ("is_email", "contact", "contact-email"),
@@ -107,32 +115,36 @@ with Client() as client:
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         table = client.datasets.get(dataset_id, page_size=3)
-        state = (table.dataset_config or {}).get("file_processing_status")
+        upload = table.dataset_config or {}
+        state = upload.get("file_processing_status")
         if state == "completed":
+            if upload.get("error_columns"):
+                raise RuntimeError(f"CSV has upload errors: {dataset_id}")
             break
         if state == "failed":
-            raise RuntimeError(f"CSV upload failed: {name}")
+            raise RuntimeError(f"CSV upload failed: {dataset_id}")
         time.sleep(2)
     else:
-        raise TimeoutError(f"CSV still processing: {name}")
-
-    columns = {c.name: c.id for c in table.column_config}
-    for template_name, column, check_name in checks:
-        template = find_template(client, template_name)
-        if set(template.required_keys) != {"text"}:
-            raise ValueError(f"{template_name} requires {template.required_keys}")
-        client.datasets.evals.add(
-            dataset_id, name=check_name, template_id=template.id,
-            config={"mapping": {"text": columns[column]}}, run=False,
-        )
+        raise TimeoutError(f"CSV still processing: {dataset_id}")
 
     def attached():
         items = client.datasets.evals.list(dataset_id, eval_type="user").evals
         return {item["name"]: item for item in items}
 
-    metrics = attached()
     names = [check_name for _, _, check_name in checks]
-    client.datasets.evals.run(dataset_id, user_eval_ids=[metrics[n]["id"] for n in names])
+    columns = {c.name: c.id for c in table.column_config}
+    if not args.resume:
+        for template_name, column, check_name in checks:
+            template = find_template(client, template_name)
+            if set(template.required_keys) != {"text"}:
+                raise ValueError(f"{template_name} requires {template.required_keys}")
+            client.datasets.evals.add(
+                dataset_id, name=check_name, template_id=template.id,
+                config={"mapping": {"text": columns[column]}}, run=False,
+            )
+
+        metrics = attached()
+        client.datasets.evals.run(dataset_id, user_eval_ids=[metrics[n]["id"] for n in names])
 
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
@@ -144,20 +156,33 @@ with Client() as client:
             raise RuntimeError(states)
         time.sleep(2)
     else:
-        raise TimeoutError(f"Check {name} before starting another run: {states}")
+        raise TimeoutError(f"Run again with --resume to check {dataset_id}: {states}")
 
     table = client.datasets.get(dataset_id, page_size=3)
     columns = {c.name: c.id for c in table.column_config}
     fields = ["case", "handoff", "contact", *names]
-    path = f"{name}-scored.csv"
+    path = f"ridgeline-handoffs-{dataset_id}-scored.csv"
+    records = []
+    for row in table.table or []:
+        cells = row.model_dump()
+        record = {}
+        for field in fields:
+            cell = cells.get(columns[field], {})
+            value = cell.get("cell_value")
+            if cell.get("status") == "error" or value is None or value == "":
+                raise RuntimeError(f"Missing or failed {field} in row {row.row_id}")
+            record[field] = value
+        records.append(record)
+    if len(records) != 3:
+        raise RuntimeError(f"Expected 3 scored rows, got {len(records)}")
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        for row in table.table:
-            cells = row.model_dump()
-            writer.writerow({k: cells[columns[k]]["cell_value"] for k in fields})
+        writer.writerows(records)
     print(path)
 ```
+
+</CodeGroup>
 
 ## Read the scored CSV
 
@@ -174,6 +199,7 @@ Compare each check independently. A completed run means processing finished, not
 ## Limits and troubleshooting
 
 - In `futureagi==0.7.0`, importing `fi.datasets` can log a warning about an optional evaluation dependency. That warning is for `Dataset.add_evaluation()`. The `client.datasets.evals` calls above do not need a second package.
+- If you stopped waiting after the run started, use `python score_cases.py DATASET_ID --resume` to poll and export the same run without attaching or starting the checks again.
 - A missing required input gives `Missing required mapping keys: text`. If a check runs but scores the wrong thing, inspect the column ID mapped to `text` instead.
 - `Eval not found` when starting a run means you should check the IDs against the evaluations attached to **this dataset**, not the template catalog. To rerun the checks, call `run` with the attached IDs; don't attach the same names again.
 - The export reads one page because the input has exactly three rows. For a larger dataset, read subsequent table pages using `metadata.next_page_index` while `metadata.has_more` is true.
