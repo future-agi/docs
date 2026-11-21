@@ -2,6 +2,7 @@
 
 The Python snippet on src/pages/docs/integrations/providers/z-ai.mdx is run exactly as written,
 with the Z.ai base URL swapped for the local stand-in and a configured model, and must produce the span the page describes."""
+from importlib.metadata import version
 import re
 import subprocess
 import sys
@@ -58,10 +59,10 @@ def test_page_is_customer_facing_and_preserves_data_handling_guidance(page):
     assert "/images/docs/integrations/z-ai-trace-view.png" in page
 
 
-def test_optional_masking_links_to_the_client_guide_without_promising_error_redaction(page):
+def test_optional_masking_documents_independent_error_control(page):
     assert "(/docs/integrations/traceai/openai)" in page
     assert "masking does not change what you send to Z.ai" in page
-    assert "FI_HIDE_ERROR_DETAILS=true" not in page
+    assert "FI_HIDE_ERROR_DETAILS=true" in page
 
 
 def test_no_credentials_in_the_page_or_the_example():
@@ -71,10 +72,12 @@ def test_no_credentials_in_the_page_or_the_example():
             assert not secrets.search(path.read_text()), path
 
 
-def test_the_python_snippet_runs_as_written(page, stub, collector):
+@pytest.mark.parametrize("original_host", [False, True], ids=["loopback-success", "original-host-refused"])
+def test_the_python_snippet_runs_as_written(page, stub, collector, probe, original_host):
     (code,) = [s for s in snippets(page, "python") if "OpenAIInstrumentor" in s]
     assert code.count(f'base_url="{ZAI_URL}"') == 1 and code.count('model=os.environ["ZAI_MODEL"]') == 1
-    code = code.replace(f'base_url="{ZAI_URL}"', f'base_url="{stub.url}"')
+    if not original_host:
+        code = code.replace(f'base_url="{ZAI_URL}"', f'base_url="{stub.url}"')
     env = clean_env()
     env.update(
         {
@@ -87,7 +90,16 @@ def test_the_python_snippet_runs_as_written(page, stub, collector):
             "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "3",
         }
     )
+    if original_host:
+        env["HTTPS_PROXY"] = probe.url
     done = subprocess.run([sys.executable, "-I", "-c", code], env=env, capture_output=True, text=True, timeout=120, cwd="/")
+    if original_host:
+        assert done.returncode != 0
+        assert {p["target"] for p in probe.seen} == {"api.z.ai:443"}
+        (failed,) = llm_spans(collector)
+        assert failed["status"]["code"] == "STATUS_CODE_ERROR"
+        assert failed["_attrs"]["gen_ai.provider.name"] == ("openai" if version("traceAI-openai") == "0.1.10" else "zai")
+        return
     assert done.returncode == 0, done.stderr[-1500:]
     assert "Z.ai stand-in reply to: We accept unused packs within 30 days. Can I return an unused pack on day 12?" in done.stdout
     (llm,) = llm_spans(collector)

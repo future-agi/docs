@@ -4,6 +4,7 @@ The test reads the page, takes the code block that builds the client, swaps only
 CometAPI base URL for the local stand-in, and runs it in a separate process like a
 customer would. A second run keeps the URL as written and sends it through the refusing
 CONNECT probe to show which host the snippet dials."""
+from importlib.metadata import version
 import re
 import subprocess
 import sys
@@ -51,6 +52,8 @@ def test_the_page_snippet_as_written_dials_api_cometapi_com(collector, probe, tm
     assert {p["target"] for p in probe.seen} == {"api.cometapi.com:443"}
     (span,) = llm_spans(collector)
     assert span["status"]["code"] == "STATUS_CODE_ERROR"
+    # The standalone example also runs this test against its legacy adapter.
+    assert span["_attrs"]["gen_ai.provider.name"] == ("openai" if version("traceAI-openai") == "0.1.10" else "cometapi")
 
 
 def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
@@ -76,7 +79,7 @@ def test_the_page_follows_the_docs_style_and_carries_no_secret():
         assert name in text
     assert "Live vendor verification" not in text and "stand-in" not in text
     assert "error messages" in text and "tool definitions" in text
-    assert "Open **Observe**" in text and "gen_ai.provider.name=cometapi" in text
+    assert "Under **Observe**, open **Tracing**" in text and "gen_ai.provider.name=cometapi" in text
 
 
 def test_no_key_in_the_diff_and_no_other_cometapi_endpoint_client():

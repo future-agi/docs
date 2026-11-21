@@ -4,6 +4,7 @@ The test reads the page, takes the code block that builds the client, swaps only
 URL for the local stand-in, and runs it in a separate process like a customer would. A second run
 keeps the URL as written and sends it through the refusing CONNECT probe to show which host the
 snippet dials. The remaining tests keep the page and the example app saying the same thing."""
+from importlib.metadata import version
 import re
 import subprocess
 import sys
@@ -53,6 +54,8 @@ def test_the_page_snippet_as_written_dials_api_novita_ai(collector, probe, tmp_p
     assert {p["target"] for p in probe.seen} == {"api.novita.ai:443"}
     (span,) = llm_spans(collector)
     assert span["status"]["code"] == "STATUS_CODE_ERROR"
+    # The standalone example also runs this test against its legacy adapter.
+    assert span["_attrs"]["gen_ai.provider.name"] == ("openai" if version("traceAI-openai") == "0.1.10" else "novita")
 
 
 def test_the_page_and_the_app_agree_on_the_recipe_url(stub):
@@ -79,7 +82,7 @@ def test_the_page_explains_privacy_and_provider_label_without_a_test_diary():
     text = PAGE.read_text()
     assert "Live vendor verification" not in text and "stand-in" not in text
     assert "gen_ai.provider.name=novita" in text
-    assert "Open **Observe**" in text
+    assert "Under **Observe**, open **Tracing**" in text
     assert "'traceAI-openai==0.1.16' 'fi-instrumentation-otel==1.5.1' 'openai==3.57.0'" in text
     assert "unknown proxy hostname keeps `openai`" in text
     code = snippet()
