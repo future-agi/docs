@@ -48,7 +48,6 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Send your first trace', href: '/docs/get-started/send-your-first-trace' },
               { title: 'Route your first LLM request', href: '/docs/get-started/route-your-first-llm-request' },
-              { title: 'Connect no code agents', href: '/docs/get-started/connect-no-code-agents' },
               { title: 'Create your first prompt', href: '/docs/get-started/create-your-first-prompt' },
             ]
           },
@@ -823,95 +822,6 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Simulation',
-        icon: 'play',
-        items: [
-          { title: 'Overview', href: '/docs/simulation' },
-          {
-            title: 'Concepts',
-            items: [
-              { title: 'Understanding Simulation', href: '/docs/simulation/concepts/understanding-simulation' },
-              { title: 'Agent definitions & versions', href: '/docs/simulation/concepts/agent-definitions' },
-              { title: 'Scenarios', href: '/docs/simulation/concepts/scenarios' },
-              { title: 'Personas', href: '/docs/simulation/concepts/personas' },
-              { title: 'Runs & results', href: '/docs/simulation/concepts/runs-and-results' },
-              { title: 'Replay', href: '/docs/simulation/concepts/replay' },
-              { title: 'Optimization', href: '/docs/simulation/concepts/optimization' },
-            ]
-          },
-          {
-            title: 'Guides',
-            items: [
-              { title: 'Connect your agent', href: '/docs/simulation/guides/connect-your-agent' },
-              { title: 'Create scenarios', href: '/docs/simulation/guides/create-scenarios' },
-              { title: 'Create personas', href: '/docs/simulation/guides/create-personas' },
-              {
-                title: 'Explore scenarios',
-                items: [
-                  { title: 'Overview', href: '/docs/simulation/guides/explore-scenarios' },
-                  { title: 'Explore scenario graph', href: '/docs/simulation/guides/explore-scenarios/scenario-graph' },
-                  { title: 'Add rows', href: '/docs/simulation/guides/explore-scenarios/add-rows' },
-                  { title: 'Add columns', href: '/docs/simulation/guides/explore-scenarios/add-columns' },
-                ]
-              },
-              {
-                title: 'Running simulations',
-                items: [
-                  { title: 'Create a simulation', href: '/docs/simulation/guides/create-simulation' },
-                  { title: 'Run a voice simulation', href: '/docs/simulation/guides/run-voice-simulation' },
-                  { title: 'Run a chat simulation', href: '/docs/simulation/guides/run-chat-simulation' },
-                  { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
-                ]
-              },
-              {
-                title: 'Evaluations in simulation',
-                items: [
-                  { title: 'Edit evals in a simulation', href: '/docs/simulation/guides/edit-evals' },
-                  { title: 'Evaluate tool calls', href: '/docs/simulation/guides/evaluate-tool-calls' },
-                ]
-              },
-              {
-                title: 'Replay simulations',
-                items: [
-                  { title: 'Replay chat sessions', href: '/docs/simulation/guides/replay-chat' },
-                  { title: 'Replay voice calls', href: '/docs/simulation/guides/replay-voice' },
-                ]
-              },
-              {
-                title: 'Explore results',
-                items: [
-                  { title: 'Overview', href: '/docs/simulation/guides/explore-results' },
-                  { title: 'Calls & transcripts', href: '/docs/simulation/guides/explore-results/calls-and-transcripts' },
-                  { title: 'Analytics & metrics', href: '/docs/simulation/guides/explore-results/analytics' },
-                ]
-              },
-              {
-                title: 'Optimize using simulate',
-                items: [
-                  { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
-                  { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
-                ]
-              },
-            ]
-          },
-          {
-            title: 'References',
-            items: [
-              { title: 'Built-in personas', href: '/docs/simulation/reference/built-in-personas' },
-              { title: 'Voice providers', href: '/docs/simulation/reference/voice-providers' },
-              { title: 'Call metrics', href: '/docs/simulation/reference/call-metrics' },
-              { title: 'SDK & API', href: '/docs/simulation/reference/sdk-api' },
-            ]
-          },
-          {
-            title: 'Troubleshooting',
-            items: [
-              { title: 'Simulation FAQ & fixes', href: '/docs/simulation/troubleshooting' },
-            ]
-          },
-        ]
-      },
-      {
         group: 'Environments',
         icon: 'layers',
         items: [
@@ -1011,9 +921,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Multi-Turn Conversation Eval', href: '/docs/cookbook/quickstart/conversation-eval' },
               { title: 'Session-Based Observability', href: '/docs/cookbook/quickstart/session-observability' },
               { title: 'LangGraph Agent Observability', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
-              { title: 'Chat Simulation with Personas', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
-              { title: 'Chat Simulation & Debug Failures', href: '/docs/cookbook/chat-simulation-fix-agent' },
-              { title: 'Prompt Workbench Simulation', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
               { title: 'End-to-End Agent Testing', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
             ]
           },
@@ -1036,7 +943,6 @@ export const tabNavigation: NavTab[] = [
             title: 'Voice Agents',
             collapsible: true,
             items: [
-              { title: 'Voice Simulation', href: '/docs/cookbook/quickstart/voice-simulation' },
               { title: 'Voice Agent Simulate SDK', href: '/docs/cookbook/simulate-sdk' },
             ]
           },
