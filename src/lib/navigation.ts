@@ -828,6 +828,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'What you are billed for', href: '/docs/billing/concepts/what-you-are-billed-for' },
               { title: 'Pricing', href: '/docs/billing/reference/pricing' },
               { title: 'Manage your plan', href: '/docs/billing/guides/manage-your-plan' },
+              { title: 'Google Cloud Marketplace', href: '/docs/billing/guides/google-cloud-marketplace' },
               { title: 'Control spend', href: '/docs/billing/guides/control-spend' },
             ]
           },
