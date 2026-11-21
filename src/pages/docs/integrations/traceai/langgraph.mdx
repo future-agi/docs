@@ -1,93 +1,184 @@
 ---
-title: "LangGraph Integration with Future AGI for Agent Tracing"
-description: "Integrate LangGraph with Future AGI observability. Trace agent graph execution, tool usage, and state transitions using the LangChain instrumentor."
+title: "Trace LangGraph runs"
+description: "Trace a local Python graph or calls to a remote LangGraph server. Connect TypeScript client spans to graph nodes and distinguish a closed stream from an error."
 ---
 
-Trace LangGraph execution with the [LangChain instrumentor](/docs/integrations/traceai/langchain). If you already enabled it, you do not need to instrument it again.
+## About
 
-## 1. Installation
-First install the traceAI package and necessary LangChain packages.
+To find out **how long a remote run took**, trace the LangGraph SDK client. To find out **which node took that time**, instrument the process that executes the graph. The examples below follow a return request through Ridgeline Outfitters' support graph. They do not need a model API key.
+
+## Trace a local Python graph
+
+Set `FI_API_KEY` and `FI_SECRET_KEY` from your [Future AGI API keys](/docs/admin-settings/api-keys) in your environment. Use Python 3.12 for this example:
 
 ```bash
-pip install traceAI-langchain
-pip install langgraph
-pip install langchain-anthropic
+python -m pip install 'traceAI-langchain==0.2.4' 'fi-instrumentation-otel==1.5.1' 'langgraph==1.2.24'
 ```
----
 
-## 2. Set Environment Variables
+Save this as `support.py`. Register the provider and enable the [LangChain instrumentor](/docs/integrations/traceai/langchain) before running the graph. If your application already instruments LangChain, reuse its provider rather than instrumenting it again.
 
-Set up your environment variables to authenticate with both FutureAGI and Anthropic.
+<CodeGroup titles={["Python"]}>
 
 ```python
-import os
+from typing_extensions import TypedDict
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from langgraph.graph import END, START, StateGraph
+from traceai_langchain import LangChainInstrumentor
 
-os.environ["ANTHROPIC_API_KEY"] = "your-anthropic-api-key"
-os.environ["FI_API_KEY"] = "your-futureagi-api-key"
-os.environ["FI_SECRET_KEY"] = "your-futureagi-secret-key"
+
+class Ticket(TypedDict, total=False):
+    question: str
+    queue: str
+
+
+def route_ticket(state: Ticket):
+    return {"queue": "returns" if "return" in state["question"].lower() else "support"}
+
+
+builder = StateGraph(Ticket)
+builder.add_node("route_ticket", route_ticket)
+builder.add_edge(START, "route_ticket")
+builder.add_edge("route_ticket", END)
+graph = builder.compile()
+
+if __name__ == "__main__":
+    provider = register(project_name="ridgeline-returns-langgraph", project_type=ProjectType.OBSERVE)
+    LangChainInstrumentor().instrument(tracer_provider=provider)
+    try:
+        for update in graph.stream({"question": "Can I return my hiking boots?"}, stream_mode="updates"):
+            print(update)
+    finally:
+        provider.shutdown()
 ```
 
----
+</CodeGroup>
 
-## 3. Initialize Trace Provider
-Set up the trace provider to create a new project in FutureAGI, establish telemetry data pipelines.
+Run `python support.py`. The update is `{'route_ticket': {'queue': 'returns'}}`. Open `ridgeline-returns-langgraph` in Observe and expand the graph trace to see `route_ticket`.
+
+{/* MEDIA: Local Python trace expanded to show route_ticket as a child of LangGraph. */}
+
+## Trace calls to a remote graph
+
+Use this path when the graph runs in another process. You need its API URL and assistant ID or graph name, plus `LANGGRAPH_API_KEY` if your deployment requires authentication. To follow along without a deployment, serve the same `support.py` locally. Install the development server and save its graph mapping as `langgraph.json` in the same directory:
+
+```bash
+python -m pip install 'langgraph-cli[inmem]==0.4.43' 'langgraph-api==0.18.4'
+printf '%s\n' '{"dependencies":["."],"graphs":{"support":"./support.py:graph"}}' > langgraph.json
+langgraph dev --no-browser --no-reload
+```
+
+In a second terminal, set the Future AGI keys as above. For the local development server, use the following settings. For a deployment, substitute its URL and assistant ID. Use Node.js 22.18 or later to run the `.mts` file directly.
+
+```bash
+export LANGGRAPH_API_URL=http://127.0.0.1:2024
+export LANGGRAPH_ASSISTANT_ID=support
+npm install @traceai/langchain@0.1.8 @traceai/fi-core@1.4.1 @langchain/core@1.5.0 \
+  @langchain/langgraph-sdk@1.12.9 @opentelemetry/api@1.9.1 @opentelemetry/core@3.1.1
+```
+
+Save this as `remote.mts`. `wrapLangGraphClient` creates one `CLIENT` span per `runs.wait` or consumed `runs.stream` call. It does not trace `threads.create()`. The `onRequest` hook injects the active span's W3C trace context into the HTTP request. If you already use an `onRequest` hook, pass it to `langGraphTraceRequestHook(existingHook)` to preserve its changes.
+
+<CodeGroup titles={["TypeScript"]}>
+
+```typescript
+import { Client } from "@langchain/langgraph-sdk";
+import { propagation } from "@opentelemetry/api";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { ProjectType, register } from "@traceai/fi-core";
+import { langGraphTraceRequestHook, wrapLangGraphClient } from "@traceai/langchain";
+
+const apiUrl = process.env.LANGGRAPH_API_URL;
+const assistant = process.env.LANGGRAPH_ASSISTANT_ID;
+if (!apiUrl || !assistant) throw new Error("Set LANGGRAPH_API_URL and LANGGRAPH_ASSISTANT_ID");
+
+propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+const provider = register({ projectName: "ridgeline-returns-langgraph", projectType: ProjectType.OBSERVE });
+const client = wrapLangGraphClient(new Client({
+  apiUrl, apiKey: process.env.LANGGRAPH_API_KEY, onRequest: langGraphTraceRequestHook(),
+}), { tracerProvider: provider });
+
+try {
+  const thread = process.env.LANGGRAPH_THREAD_ID ?? (await client.threads.create()).thread_id;
+  console.log("Thread:", thread);
+  const input = { question: "Can I return my hiking boots?" };
+  console.log(await client.runs.wait(thread, assistant, { input }));
+
+  const stream = client.runs.stream(thread, assistant, { input, streamMode: "updates" });
+  for await (const chunk of stream) {
+    if (chunk.event === "updates") {
+      console.log(chunk.data);
+      if (process.env.CLOSE_EARLY === "1") break;
+    }
+  }
+} finally {
+  await provider.shutdown();
+}
+```
+
+</CodeGroup>
+
+Run `node remote.mts`. `wait` returns the final state with `queue: 'returns'`; `stream` yields the `route_ticket` update. In Observe, look for `LangGraph runs.wait` and `LangGraph runs.stream`. Compare their span attributes:
+
+| Attribute | What to check |
+| --- | --- |
+| `langgraph.thread.id` | Matches the thread printed by the client for both operations. The wrapper also sets `session.id`, but this can appear as `<redacted>` after export. Use the thread ID to correlate runs in that case. |
+| `langgraph.assistant.id` | `support`, the assistant that handled the request. |
+| `langgraph.run.id` | Different for the wait and stream: these are two runs, not two views of one run. Present when the SDK supplies `run_id` via `onRunCreated`. |
+
+{/* MEDIA: Observe showing client-only wait and stream spans with the same langgraph.thread.id and different langgraph.run.id values. */}
+
+## Connect the server's graph nodes
+
+The client alone cannot tell you that `route_ticket` ran. To see it beneath the client span, export both sides to the same Observe project, extract the W3C `traceparent` at the server, and keep that context active where the worker runs the graph. A header at the HTTP boundary is not enough if a queue or worker drops its parent context.
+
+For the Python development server above, stop the server, install the HTTP instrumentor, and save the following as `serve.py` next to `langgraph.json`. It instruments both the HTTP request and the LangChain callbacks before starting the server.
+
+```bash
+python -m pip install 'opentelemetry-instrumentation-starlette==0.66b2'
+```
 
 ```python
 from fi_instrumentation import register
 from fi_instrumentation.fi_types import ProjectType
-
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="langgraph_project",
-)
-```
-
----
-
-## 4. Instrument your Project
-Initialize the LangChain instrumentor to enable tracing.
-
-```python
+from opentelemetry.instrumentation.starlette import StarletteInstrumentor
 from traceai_langchain import LangChainInstrumentor
 
-LangChainInstrumentor().instrument(tracer_provider=trace_provider)
+provider = register(project_name="ridgeline-returns-langgraph", project_type=ProjectType.OBSERVE,
+                    set_global_tracer_provider=True)
+StarletteInstrumentor().instrument(tracer_provider=provider)
+LangChainInstrumentor().instrument(tracer_provider=provider)
+
+from langgraph_cli.cli import cli
+
+try:
+    cli()
+finally:
+    provider.shutdown()
 ```
 
----
+Start the server with worker context propagation enabled:
 
-## 5. Create LangGraph Agents
-Set up your LangGraph agents as you normally would. Our Instrumentor will automatically trace and send the telemetry data to our platform.
-
-```python
-from typing import Annotated
-from typing_extensions import TypedDict
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langchain_anthropic import ChatAnthropic
-
-class State(TypedDict):
-    messages: Annotated[list, add_messages]
-
-graph_builder = StateGraph(State)
-llm = ChatAnthropic(model="claude-3-5-sonnet-20240620")
-
-def chatbot(state: State):
-    return {"messages": [llm.invoke(state["messages"])]}
-
-graph_builder.add_node("chatbot", chatbot)
-graph_builder.add_edge(START, "chatbot")
-graph_builder.add_edge("chatbot", END)
-graph = graph_builder.compile()
-
-def stream_graph_updates(user_input: str):
-    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
-        for value in event.values():
-            print("Assistant:", value["messages"][-1].content)
-
-user_input = "What do you know about LangGraph?"
-stream_graph_updates(user_input)
+```bash
+OTEL_ENABLED=true python serve.py dev --no-browser --no-reload
 ```
 
-## View the trace
+Set `LANGGRAPH_THREAD_ID` in the client terminal to the thread printed by the first run. Run `node remote.mts` again and open the new `LangGraph runs.wait` trace. Follow the server's `POST` request to `worker.stream_run`, then expand `support` to see `route_ticket`. These are descendants of the client span, not additional client calls. The streaming run has the same hierarchy under `LangGraph runs.stream`. If your graph calls a model or tool, look for its server-side spans inside the graph.
 
-Open **Observability** in Future AGI and select the `langgraph_project` project to inspect the trace.
+{/* MEDIA: Expanded remote wait trace showing the client span, the server request and the route_ticket node in the same trace. */}
+
+## Stream lifecycle and troubleshooting
+
+| What you observe | What it means |
+| --- | --- |
+| No span after calling `runs.stream()` | The stream is lazy. The first pull starts its span; constructing the iterator makes no request. Consume the iterator or close it after starting it so the span ends. |
+| `langgraph.stream.cancelled: true` | The consumer closed a started stream early. Try `CLOSE_EARLY=1 node remote.mts`: the `break` closes the iterator rather than reading it to completion. This flag describes the client, not whether the server finished the run. |
+| `langgraph.cancelled: true` | To interrupt a request, pass an `AbortController`'s `signal` in the run options and call `abort()` on the controller. An SDK `AbortError`, or a stream that ends normally with an aborted signal, marks cancellation rather than failure. |
+| A failed span | A thrown non-abort error still reaches the caller. An `error` event in the stream marks its span as an error and still reaches the consumer. |
+| No prompt, result or stream event body on the client span | The wrapper records identifiers and operation status, not request or response content. Server-side instrumentation has its own [capture controls](/docs/sdk/tracing/trace-config). |
+| Client and graph appear as separate traces | Check that your SDK supports `ClientConfig.onRequest` (1.12.9 does), the client uses a W3C propagator, and the server continues that context in the worker. Older SDKs without the hook can still create client spans. A matching thread ID alone does not join two traces. |
+
+## Next steps
+
+- [Trace LangChain model and tool calls](/docs/integrations/traceai/langchain).
+- [Follow a conversation across traces with sessions](/docs/observe/concepts/sessions).
