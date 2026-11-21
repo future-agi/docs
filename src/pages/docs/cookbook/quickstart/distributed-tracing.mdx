@@ -24,7 +24,9 @@ Ridgeline Outfitters’ Node.js support gateway asks a Java returns service whet
 
 ## 1. Start the Java returns service
 
-You need a JDK (17 or later), Node.js 20.6 or later, npm, cURL and a pair of [Future AGI keys](/docs/admin-settings). Set `FI_API_KEY` and `FI_SECRET_KEY` in both terminals. Use the same `FI_PROJECT_NAME` so you can see both services in one project. The name selects the destination; it does **not** connect the spans.
+You need a JDK (17 or later), Node.js 20.6 or later, npm, cURL and a pair of [Future AGI API keys](/docs/admin-settings/api-keys). Set `FI_API_KEY` and `FI_SECRET_KEY` in both terminals. Use the same `FI_PROJECT_NAME` so you can see both services in one project. The `traceparent` header, not the project name, connects the spans.
+
+If you host Future AGI yourself, set `FI_BASE_URL` for these Node and Java processes to your trace collector (for example, `http://localhost:4318` when both processes run on the collector host).
 
 For an existing Jakarta or Javax servlet that makes an instrumented AI call on the request thread, add `-javaagent:/path/to/traceai-javaagent-1.4.0.jar` to your Java command **before** `-jar` or the main class. You don't need to add a servlet filter or call `extract()` yourself.
 
@@ -54,7 +56,7 @@ export TRACEAI_PROPAGATE_OUTGOING_ADAPTERS=true
 export TRACEAI_PROPAGATE_HOSTS='+127.0.0.1'
 ```
 
-Save this as `gateway.cjs`. Registering the Node tracer provider gives the application a context manager. Initialize the adapter **before** starting the gateway span, so it can observe the start and find the active parent when `http.get()` sends the headers. If your app already registers an OpenTelemetry provider, use that one instead of creating a second one.
+Save this as `gateway.cjs`. Registering the Node tracer provider gives the application a context manager. Initialize the adapter **before** starting the gateway span, so it can observe the start and find the active parent when `http.get()` sends the headers. If your app already registers a provider, keep it and its shutdown lifecycle rather than creating another provider for the adapter.
 
 ```js
 const { randomBytes } = require('node:crypto');
@@ -107,12 +109,25 @@ main().catch(err => { console.error(err.message); process.exitCode = 1; });
 
 ## 3. Compare a sampled and an unsampled request
 
+With the servlet still running, run each command from `ridgeline-gateway`. The third command bypasses the gateway so you can see what happens without an incoming parent.
+
+<CodeGroup titles={["Sampled", "Unsampled", "No parent"]}>
+
 ```bash
 node gateway.cjs
+```
+
+```bash
 node gateway.cjs unsampled
 ```
 
-Both requests should return the fixture's answer, `Yes, within 30 days.` Compare the IDs printed by the gateway with `Servlet received: 00-<trace ID>-<parent span ID>-<flags>` in each response. The IDs should match **within** each request. In the [dashboard](https://app.futureagi.com), open **Tracing**, select `ridgeline-returns` and inspect the sampled trace. The sampling flag changes what gets recorded, not whether the servlet runs.
+```bash
+curl -fsS http://127.0.0.1:5101/return-policy
+```
+
+</CodeGroup>
+
+All three requests should return the fixture's answer, `Yes, within 30 days.` Compare the IDs printed by the gateway with `Servlet received: 00-<trace ID>-<parent span ID>-<flags>` in each gateway response. Both IDs should match for that request. The direct cURL request prints `Servlet received: null`. In the [dashboard](https://app.futureagi.com), open **Tracing**, select `ridgeline-returns` and inspect the sampled trace. The sampling flag changes what gets recorded, not whether the servlet runs.
 
 | Request | Header at the servlet | What to look for in `ridgeline-returns` |
 | --- | --- | --- |
@@ -122,7 +137,7 @@ Both requests should return the fixture's answer, `Yes, within 30 days.` Compare
 
 {/* MEDIA: Sampled Ridgeline returns trace expanded to show Check return policy directly above chat returns-fixture, with the shared trace ID visible. */}
 
-To isolate the Java side from the Node adapter, send a valid sampled parent directly with cURL and OpenSSL. Here `tracestate` says the upstream service kept half its traces. Java inherits the valid `fi=r:0.5` entry and records `fi.sampling.ratio` as `0.5` on the AI span. When the Java sampler *adds or updates* its own `fi` entry, it places it first; adding it to a full 32-member list removes the rightmost member. The command below supplies a parent ID but does not export a span for that parent.
+To isolate the Java side from the Node adapter, send a valid sampled parent directly with cURL and OpenSSL. Here `traceparent` marks this particular request as sampled. The `tracestate` entry describes the upstream sampling probability, not a second decision about this request. Java inherits the valid `fi=r:0.5` entry and records `fi.sampling.ratio` as `0.5` on the AI span. When the Java sampler *adds or updates* its own `fi` entry, it places it first; adding it to a full 32-member list removes the rightmost member. The command below supplies a parent ID but does not export a span for that parent.
 
 ```bash
 curl -fsS http://127.0.0.1:5101/return-policy \
@@ -140,7 +155,7 @@ curl -fsS http://127.0.0.1:5101/return-policy \
 
 For example, `+*.ridgeline.internal,-payments.ridgeline.internal` allows subdomains but not the bare domain or the payments service. Any positive rule excludes unlisted hosts; denies win. A positive rule cannot override known provider-host and provider-port exclusions, such as Ollama's port `11434`. Allow only the services you control: an unrecognized model proxy is not automatically excluded.
 
-On eligible requests, the adapter can add `traceparent`, `tracestate` and existing W3C baggage after privacy filtering. It doesn't invent a root or overwrite application headers. It doesn't add fresh headers to an attributable cross-origin redirect chain, even if the chain later returns to the original host.
+On eligible requests, the adapter can add `traceparent`, `tracestate` and existing W3C baggage after privacy filtering. The host policy applies only to headers the adapter adds, not to headers your application sets itself. The adapter never creates a root or overwrites application headers. If it observes a redirect to another origin, it stops adding headers to that chain, even if a later redirect returns to the original host.
 
 ## Alternative: inject and extract the parent yourself
 
@@ -210,12 +225,12 @@ Open the printed trace. `Look up tent policy` should be a child of `Check tent r
 
 ## If the spans don't join
 
-- **The servlet receives no header.** Check that you use `node:http` or `node:https`, the flag is on, the host is allowed, and the request runs in an active context. No headers are added for an unobserved local span, an observed active CLIENT span or a request that already has `traceparent` (even an invalid one). `report()` from `@traceai/auto` shows `outgoing-http` as `pending` until it actually adds headers, then `instrumented`.
+- **The servlet receives no header.** Check that you use `node:http` or `node:https`, the flag is on, the host is allowed, and the request runs in an active context. No headers are added for an unobserved local span, an observed active CLIENT span or a request that already has `traceparent` (even an invalid one). Check `outgoing-http` in `report()` from `@traceai/auto`: `disabled` means the opt-in is off or the policy disables additions, `pending` means the adapter is waiting for its first header write, and `instrumented` means it has added headers on at least one request.
 - **Your gateway uses `fetch` or Undici.** The adapter doesn't inject into global `fetch`, `undici.fetch` or `undici.request`. Capturing a model call made with `fetch` doesn't imply that a call to your own backend carries context. Use native HTTP(S) for this recipe or [inject and extract W3C headers explicitly](/docs/sdk/tracing/advanced-tracing-examples).
 - **Java starts a new trace despite a valid header.** Use the Java agent on `javax.servlet.http.HttpServlet` or `jakarta.servlet.http.HttpServlet`, including servlet-based Spring MVC. It scopes the parent to `service()` on the request thread and restores the previous context on return or exception. Filters before the servlet, work you hand to another thread, reactive servers and gRPC are outside this hook. An application span already active at the AI call takes precedence.
 - **You already instrument incoming Java requests.** Set `FI_DISABLED_INSTRUMENTATIONS=servlet` on the Java process to opt out of servlet extraction. Beside the OpenTelemetry Java agent, the traceAI servlet hook is off automatically. Check which agent supplies and exports your parent before looking for a missing SERVER span.
 
 ## Next steps
 
-- [Manual tracing](/docs/cookbook/quickstart/manual-tracing): add a named span for a separate operation inside either service.
+- [Manual tracing](/docs/cookbook/quickstart/manual-tracing): add a named span to a Python application.
 - [Advanced tracing examples](/docs/sdk/tracing/advanced-tracing-examples): propagate context manually in Python or TypeScript and carry it across async boundaries.
