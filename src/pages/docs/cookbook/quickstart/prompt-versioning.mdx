@@ -1,7 +1,7 @@
 ---
 title: "Create, test, and serve prompt versions"
 slug: "prompt-versioning"
-description: "Compare two committed prompt versions on the same support tickets, score the routing decisions, and move the production label without changing application code."
+description: "Compare two committed prompt versions on the same support tickets, score the routing decisions, and move a serving label without changing application code."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -20,25 +20,28 @@ page-type: "cookbook"
 
 ## About
 
-Ridgeline Outfitters is changing its support router. A sentence like “Send this to the returns team” helps a person, but the ticket system expects the exact code `RETURNS`. You'll keep the current prompt under the `production` label, test a second version on the same tickets, then switch the label or roll it back.
+Ridgeline Outfitters is changing its support router. A sentence like “Send this to the returns team” helps a person, but the ticket system expects the exact code `RETURNS`. You'll keep the current prompt under the `ridgeline-live` label, test a second version on the same tickets, then switch the label or roll it back.
 
 ## Set up two Python environments
 
-Start in an empty directory with Python 3.12. Set `FI_API_KEY` and `FI_SECRET_KEY` from your [Future AGI account](/docs/admin-settings) and set `OPENROUTER_API_KEY` for the model calls. Use a workspace where you can create a practice prompt. Pick a `PROMPT_NAME` that does not already exist there.
+Start in an empty directory with Python 3.12. Set `FI_API_KEY` and `FI_SECRET_KEY` from your [Future AGI account](/docs/admin-settings/api-keys) and set `OPENROUTER_API_KEY` for the model calls. Use a workspace where you can create a practice prompt. Pick a `PROMPT_NAME` that does not already exist there.
 
 ```bash
-python3 -m venv .venv-platform
+python3.12 -m venv .venv-platform
 .venv-platform/bin/python -m pip install futureagi==0.8.0
-python3 -m venv .venv-alk
+python3.12 -m venv .venv-alk
 .venv-alk/bin/python -m pip install agent-learning-kit==0.3.7
 export PROMPT_NAME="ridgeline-ticket-router"
+export CANDIDATE_VERSION="v2"
 ```
 
 Both distributions install files under `fi/`. Keep them apart: `.venv-platform` owns `fi.prompt`, while `.venv-alk` owns `fi.evals`. The commands below name the interpreter explicitly. The only thing the evaluation needs from the platform process is a file of test cases.
 
 ## 1. Commit a baseline and a candidate
 
-Save this as `create_versions.py`. The first commit labels v1. The second commit saves v2 for comparison without moving that label.
+Save this as `create_versions.py`. Use the custom workspace label `ridgeline-live` for this example, not the system Production label. The first commit labels v1. The second commit saves v2 for comparison without moving that label.
+
+<CodeGroup titles={["Python"]}>
 
 ```python
 import os
@@ -64,44 +67,74 @@ def template(instruction):
 if __name__ == "__main__":
     prompt = Prompt(template=template("Recommend the right team in a sentence."))
     prompt.create()
-    prompt.commit_current_version(message="Route tickets for a support rep", label="production")
+    if not prompt.get_label_by_name("ridgeline-live"):
+        prompt.create_label("ridgeline-live")
+    prompt.commit_current_version(message="Route tickets for a support rep", label="ridgeline-live")
     prompt.create_new_version(template=template("Return only the queue code: RETURNS or REPAIRS."))
     prompt.commit_current_version(message="Return a code the ticket system can dispatch")
-    live = Prompt.get_template_by_name(name=name, label="production")
-    print("production:", live.template.version, "candidate:", prompt.template.version)
+    live = Prompt.get_template_by_name(name=name, label="ridgeline-live")
+    if live.template.version != "v1" or prompt.template.version != "v2":
+        raise RuntimeError("Check the baseline label and candidate before exporting")
+    print("ridgeline-live:", live.template.version, "candidate:", prompt.template.version)
 ```
+
+</CodeGroup>
 
 ```bash
 .venv-platform/bin/python create_versions.py
 ```
 
-For a new template, check that `production` resolves to `v1` and the candidate is `v2`. You can also open the prompt's **History** drawer and select **Commit History** to see the two versions and which one has the label.
+For a new template, check that `ridgeline-live` resolves to `v1` and the candidate is `v2`. You can also open the prompt's **History** drawer and select **Commit History** to see the two versions and which one has the label.
 
-{/* MEDIA: Commit History for ridgeline-ticket-router with v1 labeled Production and v2 committed without that label. */}
+{/* MEDIA: Commit History for ridgeline-ticket-router with v1 labeled ridgeline-live and v2 committed without that label. */}
 
 ## 2. Export the same tickets for both versions
 
-Save this as `export_cases.py`. Fetch each version **by number**, so a later label change cannot silently change the comparison. `compile()` substitutes the ticket into the template and returns chat messages; it does not call a model.
+The SDK stores text in message parts. In `futureagi==0.8.0`, calling `compile()` on a fetched prompt can turn those parts into a string like `"[{'type': 'text', ...}]"`. Save this small renderer as `render_router.py`. It extracts the text and fills the router's one `{{ticket}}` field, so evaluation and serving send the same messages. It is for this text-only template, not for images or tools.
+
+<CodeGroup titles={["Python"]}>
+
+```python
+def render_router(prompt, ticket):
+    messages = []
+    for message in prompt.template.model_dump()["messages"]:
+        content = message["content"]
+        if isinstance(content, list):
+            if any(part.get("type") != "text" for part in content):
+                raise ValueError("This router expects text parts only")
+            content = "".join(part["text"] for part in content)
+        messages.append({"role": message["role"], "content": content.replace("{{ticket}}", ticket)})
+    return messages
+```
+
+</CodeGroup>
+
+Save this as `export_cases.py`. Fetch each version **by number**, so a later label change cannot silently change the comparison. Neither fetching nor rendering calls a model.
+
+<CodeGroup titles={["Python"]}>
 
 ```python
 import json
 import os
 from pathlib import Path
 from fi.prompt import Prompt
+from render_router import render_router
 
 cases = [
     ("The unused pack is too small. Can I return it?", "RETURNS"),
     ("The seam on my tent tore. Can you fix it?", "REPAIRS"),
 ]
 rows = []
-for version in ("v1", "v2"):
+for version in ("v1", os.environ["CANDIDATE_VERSION"]):
     prompt = Prompt.get_template_by_name(name=os.environ["PROMPT_NAME"], version=version)
     for ticket, expected in cases:
         rows.append({"version": version, "expected": expected,
-                     "messages": prompt.compile(ticket=ticket)})
+                     "messages": render_router(prompt, ticket)})
 Path("router-cases.json").write_text(json.dumps(rows, indent=2))
 print(f"Exported {len(rows)} cases")
 ```
+
+</CodeGroup>
 
 ```bash
 .venv-platform/bin/python export_cases.py
@@ -113,6 +146,8 @@ print(f"Exported {len(rows)} cases")
 
 Save this as `score_cases.py`. It makes four model calls through OpenRouter. The `equals` metric runs locally in Agent Learning Kit. It checks whether the reply is usable **as the routing code**, including its case, rather than whether the model mentioned the right team somewhere in a sentence.
 
+<CodeGroup titles={["Python"]}>
+
 ```python
 import json
 from pathlib import Path
@@ -122,13 +157,17 @@ from litellm import completion
 for row in json.loads(Path("router-cases.json").read_text()):
     reply = completion(model="openrouter/openai/gpt-4o-mini",
                        messages=row["messages"], temperature=0)
-    text = reply.choices[0].message.content.strip()
+    text = reply.choices[0].message.content
+    if not isinstance(text, str):
+        raise RuntimeError("Model returned no text to score")
     result = evaluate("equals", engine="local", output=text,
                       expected_response=row["expected"], config={"case_sensitive": True})
     if result.error:
         raise RuntimeError(result.error)
     print(row["version"], row["expected"], "PASS" if result.passed else "FAIL", repr(text))
 ```
+
+</CodeGroup>
 
 ```bash
 .venv-alk/bin/python score_cases.py
@@ -143,35 +182,44 @@ v2 RETURNS PASS 'RETURNS'
 v2 REPAIRS PASS 'REPAIRS'
 ```
 
-Both v1 replies picked the right team but failed the ticket system's format check. If v2 produces a sentence, punctuation, or the wrong code, leave `production` on v1. Review the printed replies and revise the candidate. Passing these two cases tests the output contract, not every routing decision.
+Both v1 replies picked the right team but failed the ticket system's format check. If v2 produces a sentence, punctuation, or the wrong code, leave `ridgeline-live` on v1. Review the printed replies. To retry, commit the revised prompt as a new version in the workbench and set `CANDIDATE_VERSION` to its number (for example, `export CANDIDATE_VERSION="v3"`). Run `export_cases.py` and `score_cases.py` again before moving the label. Passing these two cases tests the output contract, not every routing decision.
 
 ## 4. Promote, serve, or roll back
 
-Save this as `serve.py`. With a version argument, it moves the label on **this template**. Without an argument it only looks up the labeled version, just as your application would. Pass the compiled `messages` to your chat model when serving a real ticket.
+Save this as `serve.py`. With a version argument, it moves the label on **this template**. Without an argument it only looks up the labeled version. Your application must request `label="ridgeline-live"` explicitly to follow this label. Pass the rendered `messages` to your chat model when serving a real ticket.
+
+<CodeGroup titles={["Python"]}>
 
 ```python
 import os
 import sys
 from fi.prompt import Prompt
+from render_router import render_router
 
 name = os.environ["PROMPT_NAME"]
+if len(sys.argv) > 2:
+    raise SystemExit("Usage: serve.py [version]")
 if len(sys.argv) == 2:
     Prompt.assign_label_to_template_version(template_name=name, version=sys.argv[1],
-                                            label="production")
-live = Prompt.get_template_by_name(name=name, label="production")
-messages = live.compile(ticket="The seam on my tent tore. Can you fix it?")
+                                            label="ridgeline-live")
+live = Prompt.get_template_by_name(name=name, label="ridgeline-live")
+if len(sys.argv) == 2 and live.template.version != sys.argv[1]:
+    raise SystemExit(f"Label resolved to {live.template.version}, not {sys.argv[1]}")
+messages = render_router(live, "The seam on my tent tore. Can you fix it?")
 print("Serving", live.template.version)
 print(messages[-1]["content"])
 ```
 
-After reviewing the scores, promote v2 and verify what the application fetches:
+</CodeGroup>
+
+If the selected candidate passed, promote that same version and verify what the application fetches:
 
 ```bash
-.venv-platform/bin/python serve.py v2
+.venv-platform/bin/python serve.py "${CANDIDATE_VERSION:?Set the tested version first}"
 .venv-platform/bin/python serve.py
 ```
 
-To roll back, move the same label to v1; there's no need to recreate either version:
+To roll back, move the same label to v1. Check for `Serving v1`; there's no need to recreate either version:
 
 ```bash
 .venv-platform/bin/python serve.py v1
@@ -181,7 +229,7 @@ To roll back, move the same label to v1; there's no need to recreate either vers
 
 - **A prompt or eval import fails:** check which interpreter ran the script. If you installed both distributions together, start with two fresh environments rather than reinstalling them on top of one another.
 - **The application still uses v1:** `get_template_by_name()` caches lookups in the Python process. Check the label in a fresh process with `serve.py` before changing it again. An application pinned to `version="v1"` does not follow a label.
-- **The test inputs contain literal braces:** match the keyword passed to `compile(ticket=...)` to the `{{ticket}}` variable. An unresolved variable stays in the compiled message.
+- **The test inputs contain literal braces:** this renderer replaces the exact text `{{ticket}}`. If you renamed the variable in the template, update the renderer to match before running the comparison.
 
 ## Next steps
 

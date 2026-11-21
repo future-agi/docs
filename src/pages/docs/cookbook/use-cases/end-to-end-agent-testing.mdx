@@ -29,9 +29,9 @@ A Ridgeline Outfitters customer tells the support agent that a tent is torn, the
 Use Python 3.12 and an empty directory. Set `OPENROUTER_API_KEY` in your shell for the agent's model calls. You don't need a hosted simulation: the synthetic customer, transcript, and evaluation all run in the Agent Learning Kit process. The addresses in this example are fictional; the agent never sends email.
 
 ```bash
-python3 -m venv .venv-platform
+python3.12 -m venv .venv-platform
 .venv-platform/bin/python -m pip install futureagi==0.8.0
-python3 -m venv .venv-alk
+python3.12 -m venv .venv-alk
 .venv-alk/bin/python -m pip install agent-learning-kit==0.3.7
 ```
 
@@ -46,6 +46,8 @@ The two distributions both install `fi/` files. Don't install them in the same e
 
 Save this as `export_policies.py`. The current policy routes **every** case to returns. The proposed change makes an exception for damage and leaves the unused-gear route alone. Exporting each system message once keeps the prompt fixed for every turn of its test run.
 
+<CodeGroup titles={["Python"]}>
+
 ```python
 import json
 from pathlib import Path
@@ -53,8 +55,8 @@ from fi.prompt.types import PromptTemplate, SystemMessage
 
 common = (
     "You are the support agent for Ridgeline Outfitters. "
-    "Give one next step, including the exact contact address, on every reply. "
-    "Use only the address for the customer's situation. "
+    "Give one next step, including the contact email address. "
+    "When the customer asks for the exact next step, reply with only the email address. "
 )
 policies = {
     "baseline": "For any gear issue, refer the customer to returns@ridgeline.example.",
@@ -70,11 +72,15 @@ for name, instruction in policies.items():
     Path(f"{name}.json").write_text(json.dumps(message, indent=2))
 ```
 
+</CodeGroup>
+
 ```bash
 .venv-platform/bin/python export_policies.py
 ```
 
-For an agent already managed in Future AGI, export its actual instruction instead of defining the baseline by hand. Set `FI_API_KEY`, `FI_SECRET_KEY`, `PROMPT_NAME`, and `PROMPT_VERSION` to your [workspace credentials](/docs/admin-settings), template name, and a committed version such as `v1`. This optional command is for a template with a single, static system message; the simulated customer supplies the user messages.
+For the Ridgeline walkthrough, keep the two files you just created. To test your own managed agent instead, export **both** committed versions of the same template. Set `FI_API_KEY` and `FI_SECRET_KEY` to your [workspace credentials](/docs/admin-settings/api-keys), `PROMPT_NAME` to the template name, and `BASELINE_VERSION` and `CANDIDATE_VERSION` to the two version numbers. Use this variant for prompts with a single static system message. If your agent needs tools, examples, or prompt variables, this callback does not reproduce it. Adapt the cases and final-reply check to your agent’s output contract.
+
+The model provider receives the exported system message and conversation on each turn.
 
 ```bash
 .venv-platform/bin/python - <<'PY'
@@ -83,10 +89,19 @@ import os
 from pathlib import Path
 from fi.prompt import Prompt
 
-prompt = Prompt.get_template_by_name(name=os.environ["PROMPT_NAME"],
-                                     version=os.environ["PROMPT_VERSION"])
-system, = [msg for msg in prompt.compile() if msg["role"] == "system"]
-Path("baseline.json").write_text(json.dumps(system, indent=2))
+for policy in ("baseline", "candidate"):
+    prompt = Prompt.get_template_by_name(name=os.environ["PROMPT_NAME"],
+                                         version=os.environ[f"{policy.upper()}_VERSION"])
+    messages = prompt.template.model_dump()["messages"]
+    if len(messages) != 1 or messages[0]["role"] != "system":
+        raise ValueError("Expected one static system message")
+    content = messages[0]["content"]
+    if isinstance(content, list):
+        if any(part.get("type") != "text" for part in content):
+            raise ValueError("Expected text parts only")
+        content = "".join(part["text"] for part in content)
+    system = {"role": "system", "content": content}
+    Path(f"{policy}.json").write_text(json.dumps(system, indent=2))
 PY
 ```
 
@@ -94,19 +109,25 @@ PY
 
 Save this as `test_handoff.py`. Each `Persona` supplies the customer's situation and desired outcome, **not** the correct address. On the second turn the synthetic customer asks for the next step. The agent receives the full `messages` history so it can tell which issue the customer meant.
 
+<CodeGroup titles={["Python"]}>
+
 ```python
 import asyncio
 import json
-import sys
+import argparse
 from pathlib import Path
 from fi.evals import evaluate
 from fi.simulate import AgentInput, Persona, Scenario, TestRunner
 from litellm import acompletion
 
 customers = [
-    ("Ari", "The seam on my tent tore.", "repairs"),
-    ("Jo", "I'd like to return an unused pack.", "returns"),
+    ("Ari", "The seam on my tent tore.", "repairs@ridgeline.example"),
+    ("Jo", "I'd like to return an unused pack.", "returns@ridgeline.example"),
 ]
+expected = {name: address for name, _, address in customers}
+if len(expected) != len(customers):
+    raise ValueError("Give each customer a unique case name")
+
 scenario = Scenario(
     name="gear-handoff",
     dataset=[Persona(persona={"name": name}, situation=situation,
@@ -115,7 +136,11 @@ scenario = Scenario(
 )
 
 async def main():
-    policy = Path(sys.argv[1])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("policy", type=Path)
+    parser.add_argument("--require-pass", action="store_true")
+    args = parser.parse_args()
+    policy = args.policy
     system = json.loads(policy.read_text())
 
     async def reply(turn: AgentInput) -> str:
@@ -125,36 +150,38 @@ async def main():
 
     report = await TestRunner().run_test(scenario=scenario, agent_callback=reply,
                                          min_turns=2, max_turns=2)
-    expected = {name: f"{team}@ridgeline.example" for name, _, team in customers}
-    if len(report.results) != len(customers):
+    names = [case.persona.persona["name"] for case in report.results]
+    if sorted(names) != sorted(expected):
         raise RuntimeError("Missing conversation; inspect the run before scoring")
     transcripts = []
+    failures = 0
     for case in report.results:
         name = case.persona.persona["name"]
         replies = [m["content"] for m in case.messages if m["role"] == "assistant"]
         if len(replies) != 2:
             raise RuntimeError(f"Incomplete conversation for {name}; check the model call")
-        correct = evaluate("contains", engine="local", output=replies[-1],
-                           config={"keyword": expected[name]})
-        other_addresses = sorted(set(expected.values()) - {expected[name]})
-        no_other = evaluate("contains_none", engine="local", output=replies[-1],
-                            config={"keywords": other_addresses})
-        if correct.error or no_other.error:
-            raise RuntimeError(correct.error or no_other.error)
-        verdict = "PASS" if correct.passed and no_other.passed else "FAIL"
+        result = evaluate("equals", engine="local", output=replies[-1],
+                          expected_response=expected[name], config={"case_sensitive": True})
+        if result.error:
+            raise RuntimeError(result.error)
+        failures += int(not result.passed)
+        verdict = "PASS" if result.passed else "FAIL"
         print(f"{name}: {verdict} (expected {expected[name]})")
         transcripts.append(f"{name}: {verdict}\n{case.transcript}")
     Path(f"{policy.stem}-transcripts.txt").write_text("\n\n".join(transcripts))
+    if args.require_pass and failures:
+        raise SystemExit(f"{failures} handoff check(s) failed; inspect the transcript")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Run the baseline first. This makes four model calls, two per customer. The contact checks run locally on the **last assistant reply**, not on the customer's words or the whole transcript.
+</CodeGroup>
+
+Run the baseline first. This makes four model calls, two per customer. The local `equals` check compares the **entire last assistant reply** with the address. An explanation, a second address, or a trailing space also fails. The first reply and the customer’s messages are context, not scoring inputs.
 
 ```bash
-.venv-alk/bin/python test_handoff.py baseline.json
-cat baseline-transcripts.txt
+.venv-alk/bin/python test_handoff.py baseline.json && cat baseline-transcripts.txt
 ```
 
 ## 3. Diagnose the failure and replay the same cases
@@ -166,11 +193,10 @@ Ari: FAIL (expected repairs@ridgeline.example)
 Jo: PASS (expected returns@ridgeline.example)
 ```
 
-Ari's final reply said, “The exact next step is to email our returns department at returns@ridgeline.example.” Compare that with the first user message about the torn seam. The agent followed its instruction, but the instruction doesn't distinguish damage from returns. Fix the policy, not the expected address.
+Ari's final reply was `returns@ridgeline.example`. Compare that with the first user message about the torn seam. The agent followed its instruction, but the instruction doesn't distinguish damage from returns. Fix the policy, not the expected address.
 
 ```bash
-.venv-alk/bin/python test_handoff.py candidate.json
-cat candidate-transcripts.txt
+.venv-alk/bin/python test_handoff.py candidate.json --require-pass && cat candidate-transcripts.txt
 ```
 
 With the candidate policy, the same two cases produced:
@@ -180,13 +206,13 @@ Ari: PASS (expected repairs@ridgeline.example)
 Jo: PASS (expected returns@ridgeline.example)
 ```
 
-Check **both** customers before promoting the change. Ari should now receive the repairs address; Jo still needs the returns address. Passing means that the final reply contains the expected address and not the other one. It does not tell you whether the repair was accepted, whether the response was polite, or whether the agent actually created a ticket.
+Check **both** customers before promoting the change. Ari should now receive the repairs address; Jo still needs the returns address. `--require-pass` saves the transcript and exits with an error if either final reply differs from its expected address. It does not tell you whether the repair was accepted, whether the response was polite, or whether the agent actually created a ticket.
 
 ## Limits and troubleshooting
 
 - **Import failure:** run `export_policies.py` with `.venv-platform/bin/python` and `test_handoff.py` with `.venv-alk/bin/python`. If you installed both packages together, recreate them in separate environments.
 - **Missing transcript or incomplete conversation:** check the model credential and provider availability. A callback that doesn't return both replies is a run failure, not evidence that the prompt chose the wrong address.
-- **More coverage:** add a customer and expected queue to `customers` for each handoff you rely on. Keep the same cases across versions and use synthetic customer details.
+- **More coverage:** add a uniquely named customer and expected address to `customers` for each handoff you rely on. Keep the same cases across versions and use synthetic customer details.
 
 ## Next steps
 
