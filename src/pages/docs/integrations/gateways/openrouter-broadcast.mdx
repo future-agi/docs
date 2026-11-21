@@ -1,254 +1,130 @@
 ---
 title: "OpenRouter Broadcast tracing with Future AGI"
-description: "Send OpenRouter Broadcast traces to Observe through an OpenTelemetry Collector you run, with prompt and response capture off by default."
+description: "Send OpenRouter Broadcast traces directly to Future AGI with an OTLP endpoint and three headers, without installing an SDK or running your own collector."
 ---
 
 ## About
 
-[OpenRouter Broadcast](https://openrouter.ai/docs/guides/features/broadcast) copies a trace of each request that passes through OpenRouter to the observability tools you pick, so you can see those calls without adding code to your app. An organization admin turns it on under **Settings**, **Observability**. This page sends those traces to Observe through an OpenTelemetry Collector that you run.
+Send requests passing through [OpenRouter Broadcast](https://openrouter.ai/docs/guides/features/broadcast) to Future AGI Observe without adding instrumentation to your application.
 
-Broadcast is not client tracing. The [OpenAI instrumentor](/docs/integrations/traceai/openai) with the base URL `https://openrouter.ai/api/v1` traces calls your own code makes. Broadcast traces what OpenRouter received, from any client, including tools you cannot instrument.
+Broadcast runs in OpenRouter, including for clients you cannot instrument. For application-side agent and tool spans, use the [OpenAI instrumentor](/docs/integrations/traceai/openai) with the OpenRouter base URL instead. Enabling both records the client call and the gateway call separately.
 
-| | Client tracing | Broadcast |
-| --- | --- | --- |
-| Where it runs | Your application, with `traceai-openai` | OpenRouter, switched on by an organization admin |
-| What you see | The call as your code made it, under your own agent and tool spans | Generation spans and optional grouping spans, named through the request's `trace` fields |
-| Prompts and responses | Captured by default, switched off with the `FI_HIDE_*` variables | Off by default on this page, switched on with `FI_CAPTURE_CONTENT` |
-| What you run | Nothing beyond your app | A collector that OpenRouter's cloud can reach |
+## Before you start
 
-## Why use a collector?
+- Get a Future AGI API key and secret key from [API keys](/docs/admin-settings/api-keys) in the workspace that should receive the traces.
+- Choose an Observe project name, such as `my-openrouter`.
+- Have access to [OpenRouter's Observability settings](https://openrouter.ai/settings/observability). An organization admin configures organization-wide destinations.
+- Have an OpenRouter API key with credits available. Set it as `OPENROUTER_API_KEY` in your terminal for the example below; do not commit it.
 
-The collector adds the required `project_name` resource attribute and Future AGI key headers. It authenticates OpenRouter with a separate bearer token, so you do not give OpenRouter your Future AGI keys. By default it removes the [listed prompt and error fields](#privacy), not arbitrary metadata or model parameters.
+<Warning>
+The direct destination stores your Future AGI credentials in OpenRouter. Use it only if your organization's credential-sharing policy allows this. OpenRouter encrypts destination credentials at rest. If you require credentials or custom redaction to stay in your infrastructure, keep an independently managed collector rather than replacing it with this direct destination.
+</Warning>
 
-## Set up
+## Set up Broadcast
 
 <Steps>
 
-<Step title="Write the collector config">
+<Step title="Configure the destination">
 
-Save this as `otelcol.yaml`. Everything it reads from the environment is listed in the next step.
-
-```yaml
-extensions:
-  # The endpoint has to be reachable from OpenRouter's cloud, so it must not be open: anyone who finds it
-  # could write into your project. The Headers field of the destination carries the token.
-  bearertokenauth/broadcast:
-    scheme: Bearer
-    token: ${env:BROADCAST_TOKEN}
-
-receivers:
-  otlp:
-    protocols:
-      http:
-        endpoint: 0.0.0.0:4318
-        auth:
-          authenticator: bearertokenauth/broadcast
-        # Put TLS in front of this (a load balancer or reverse proxy), or set `tls:` here with
-        # cert_file and key_file.
-
-processors:
-  resource/future_agi:
-    attributes:
-      - key: project_name
-        value: ${env:FI_PROJECT_NAME}
-        action: upsert
-      - key: project_type
-        value: observe
-        action: insert
-
-  transform/openrouter:
-    error_mode: ignore
-    trace_statements:
-      - context: span
-        statements:
-          # Future AGI reads gen_ai.usage.input_tokens and output_tokens. OpenRouter's Webhook page shows
-          # prompt_tokens and completion_tokens instead; copy them across when only those arrive.
-          - set(attributes["gen_ai.usage.input_tokens"], attributes["gen_ai.usage.prompt_tokens"]) where attributes["gen_ai.usage.input_tokens"] == nil and attributes["gen_ai.usage.prompt_tokens"] != nil
-          - set(attributes["gen_ai.usage.output_tokens"], attributes["gen_ai.usage.completion_tokens"]) where attributes["gen_ai.usage.output_tokens"] == nil and attributes["gen_ai.usage.completion_tokens"] != nil
-          # OpenRouter's cost for the request (US dollars). Observe reads gen_ai.cost.total; OpenRouter writes
-          # gen_ai.usage.total_cost when Cost metadata is enabled.
-          - set(attributes["gen_ai.cost.total"], attributes["gen_ai.usage.total_cost"]) where attributes["gen_ai.usage.total_cost"] != nil
-          - set(attributes["gen_ai.cost.input"], attributes["gen_ai.usage.input_cost"]) where attributes["gen_ai.usage.input_cost"] != nil
-          - set(attributes["gen_ai.cost.output"], attributes["gen_ai.usage.output_cost"]) where attributes["gen_ai.usage.output_cost"] != nil
-          # Span types in Observe: the generation is an LLM span, everything else a chain.
-          - set(attributes["fi.span.kind"], "LLM") where attributes["gen_ai.request.model"] != nil
-          - set(attributes["fi.span.kind"], "CHAIN") where attributes["gen_ai.request.model"] == nil
-          # Content ON: fill the Input and Output panes from OpenRouter's span.input / span.output.
-          - set(attributes["input.value"], attributes["span.input"]) where attributes["span.input"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
-          - set(attributes["output.value"], attributes["span.output"]) where attributes["span.output"] != nil and "${env:FI_CAPTURE_CONTENT:-false}" == "true"
-          - delete_key(attributes, "span.input") where "${env:FI_CAPTURE_CONTENT:-false}" == "true"
-          - delete_key(attributes, "span.output") where "${env:FI_CAPTURE_CONTENT:-false}" == "true"
-          # Content OFF (the default): prompts and completions in every spelling OpenRouter or the
-          # OpenTelemetry GenAI conventions use, including `<key>.truncated` markers and indexed keys.
-          - delete_matching_keys(attributes, "^(span|trace)\\.(input|output|status_message)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          - delete_matching_keys(attributes, "^gen_ai\\.(prompt|completion|input\\.messages|output\\.messages)(\\..*)?$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          # Raw provider usage can hold any field the provider adds. OpenRouter nulls it in Privacy Mode.
-          - delete_matching_keys(attributes, "^(span|trace)\\.metadata\\.openrouter_generation\\.upstream_raw_response_usage$") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          # Error text can echo the request. Keep the fact of the error, not the words.
-          - set(status.message, "error") where status.message != "" and "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-      - context: spanevent
-        statements:
-          - delete_key(attributes, "exception.message") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-          - delete_key(attributes, "exception.stacktrace") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
-
-  # OpenRouter shortens any attribute over 10,000,000 characters. Future AGI reads at most 16 MiB per
-  # request, so batching keeps requests small. A single generation can still exceed it.
-  batch:
-    send_batch_size: 256
-    send_batch_max_size: 512
-    timeout: 2s
-
-exporters:
-  otlp_http/future_agi:
-    traces_endpoint: ${env:FI_TRACES_URL}
-    encoding: proto
-    compression: none          # optional: Future AGI also accepts gzip bodies
-    headers:
-      X-Api-Key: ${env:FI_API_KEY}
-      X-Secret-Key: ${env:FI_SECRET_KEY}
-
-service:
-  extensions: [bearertokenauth/broadcast]
-  telemetry:
-    metrics:
-      level: none              # no self-metrics endpoint; Broadcast sends traces only
-    logs:
-      level: warn
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [resource/future_agi, transform/openrouter, batch]
-      exporters: [otlp_http/future_agi]
-```
-
-`FI_CAPTURE_CONTENT` is read as the exact string `true`. Any other value, or none, removes the fields listed in [Privacy](#privacy). Custom metadata and model parameters are retained; do not put sensitive text in them.
-</Step>
-
-<Step title="Run the collector">
-
-```bash
-export BROADCAST_TOKEN=$(openssl rand -hex 24)   # the secret OpenRouter will send
-export FI_API_KEY=YOUR_API_KEY FI_SECRET_KEY=YOUR_SECRET_KEY
-
-docker run -d --name openrouter-broadcast-otelcol --memory 512m \
-  -p 4318:4318 \
-  -v "$PWD/otelcol.yaml:/etc/otelcol/config.yaml:ro" \
-  -e BROADCAST_TOKEN -e FI_API_KEY -e FI_SECRET_KEY \
-  -e FI_CAPTURE_CONTENT="${FI_CAPTURE_CONTENT:-false}" \
-  -e FI_PROJECT_NAME=my-openrouter \
-  -e FI_TRACES_URL=https://api.futureagi.com/tracer/v1/traces \
-  otel/opentelemetry-collector-contrib:0.162.0 --config /etc/otelcol/config.yaml
-```
-
-| Variable | Value |
-| --- | --- |
-| `BROADCAST_TOKEN` | A secret you invent. It protects the collector, not Future AGI. |
-| `FI_API_KEY`, `FI_SECRET_KEY` | Your Future AGI keys. They stay on this machine. |
-| `FI_PROJECT_NAME` | The Observe project every Broadcast trace goes to. Choose the project that will receive the traces. |
-| `FI_TRACES_URL` | The full traces URL. Hosted Future AGI: `https://api.futureagi.com/tracer/v1/traces`. Self-hosted: `http://<your Future AGI host>:4318/v1/traces`. |
-| `FI_CAPTURE_CONTENT` | Leave unset. See [Privacy](#privacy). |
-</Step>
-
-<Step title="Make it reachable over HTTPS">
-
-OpenRouter's page says the collector must be on a publicly accessible endpoint. The collector listens on plain HTTP on port 4318. Put TLS in front of it with a load balancer or a reverse proxy, or add `tls:` with `cert_file` and `key_file` under the receiver's `http:` block. Every request must carry the bearer token; without it the collector answers 401.
-</Step>
-
-<Step title="Add the destination in OpenRouter">
-
-An organization admin opens [Settings, Observability](https://openrouter.ai/settings/observability), switches **Enable Broadcast** on, and edits **OpenTelemetry Collector**.
+Open [Settings > Observability](https://openrouter.ai/settings/observability) in OpenRouter and enable **Broadcast**. Edit the **OpenTelemetry Collector** destination. Despite its name, this destination can send directly to Future AGI; you do not need to run a collector.
 
 | Field | Value |
 | --- | --- |
-| Endpoint | `https://broadcast.example.com/v1/traces`, your collector's public URL with the `/v1/traces` path |
-| Headers | `{"Authorization": "Bearer YOUR_BROADCAST_TOKEN"}`, with the value of `BROADCAST_TOKEN`. Do not put your Future AGI keys here. |
-| Privacy Mode | Tick it unless you want prompts and responses in Observe. See [Privacy](#privacy). |
-
-Click **Test Connection**. OpenRouter saves the destination only if the test passes. Test Connection checks OpenRouter to collector only. It passes even if your Future AGI keys are wrong, because the collector answers OpenRouter before it exports anything. Send a real request and check Observe.
-</Step>
-
-<Step title="Send a request through OpenRouter">
-
-Any client works. `user`, `session_id` and `trace` are optional and are what link traces to users and sessions in Observe:
+| Endpoint | `https://api.futureagi.com/tracer/v1/traces` |
+| Headers | The JSON object below, with your Future AGI keys and project name |
 
 ```json
 {
-  "model": "openai/gpt-4o-mini",
-  "messages": [{ "role": "user", "content": "What is the capital of France?" }],
-  "user": "user_12345",
-  "session_id": "session_abc",
-  "trace": { "environment": "staging" }
+  "X-Api-Key": "YOUR_API_KEY",
+  "X-Secret-Key": "YOUR_SECRET_KEY",
+  "X-Project-Name": "my-openrouter"
 }
 ```
 
-Open **Observe**, select your project, and open the trace.
+Use the full endpoint, including `/tracer/v1/traces`. OpenRouter sends OTLP/HTTP with JSON encoding; do not select a gRPC endpoint or add an OpenRouter bearer token to these headers.
+
+`X-Project-Name` routes spans that have no `project_name` resource attribute. The key pair selects the workspace; the header selects the project within it. An explicit `project_name` resource attribute takes precedence. Send one nonempty name of at most 255 characters, without commas, control characters or invisible characters. Do not send repeated project-name headers.
+
+For self-hosted Future AGI, use your collector's public HTTPS OTLP/HTTP endpoint ending in `/v1/traces`. The deployment must support the `X-Project-Name` header; older collectors require an upgrade.
+
+</Step>
+
+<Step title="Choose which requests and content to send">
+
+Set the destination's **API key filter** to the application's OpenRouter key and use a sampling rate of **1.0** while checking the setup. Leaving the included-key list empty sends traffic from all keys; excluded keys take precedence. In a shared account, coordinate these settings with its owner before changing them.
+
+Enable **Privacy Mode** if you do not want prompts, responses or provider error text sent to Future AGI. Leave it off only when you intend to capture content. Privacy Mode still sends custom metadata and model parameters, including caller-supplied `stop` sequences. Use opaque user and session identifiers and keep secrets out of metadata. See [Privacy](#privacy).
+
+</Step>
+
+<Step title="Test and save">
+
+Click **Test Connection**. OpenRouter saves the destination only if its test passes. Then send an application request and check the resulting trace: a connection test alone does not demonstrate that your key filter, sampling and project selection are correct.
+
+</Step>
+
+<Step title="Send a request">
+
+Run this with your OpenRouter key in `OPENROUTER_API_KEY`. The request uses a short response limit and synthetic identifiers.
+
+```bash
+curl --fail-with-body https://openrouter.ai/api/v1/chat/completions \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "max_tokens": 16,
+    "messages": [{"role": "user", "content": "What is the capital of France?"}],
+    "user": "demo-user",
+    "session_id": "capital-demo",
+    "trace": {"trace_name": "Capital lookup", "environment": "demo"}
+  }'
+```
+
+Open **Observe** in the workspace that owns the Future AGI keys, select `my-openrouter`, and open the new trace. Broadcast sends traces asynchronously after the request completes.
+
 </Step>
 
 </Steps>
 
-## What shows up in Observe
+## Inspect the trace
 
-| Signal | What Observe shows |
+OpenRouter's [span attributes reference](https://openrouter.ai/docs/guides/features/broadcast/otel-collector#span-attributes) describes the exported fields.
+
+| Data | Where to look |
 | --- | --- |
-| Hierarchy | OpenRouter's [OTLP destination settings](https://openrouter.ai/docs/guides/features/broadcast/otel-collector#supported-metadata-keys) let you name the root with `trace_name`, grouping spans with `span_name`, and model calls with `generation_name`. Use `parent_span_id` only when linking to a parent you also export. |
-| Span types | The collector sets `llm` on spans with `gen_ai.request.model` and `chain` on spans without it. |
-| Model and provider | The model slug OpenRouter sends, for example `openai/gpt-4o-mini`, and the provider that served it from `gen_ai.provider.name`, for example `azure`. `gen_ai.system` holds the model's vendor (`openai`), not the host. A failed request that never reached a provider shows provider `unknown`. |
-| Tokens | Input, output and total from `gen_ai.usage.*`. OpenRouter's Webhook page spells them `prompt_tokens` and `completion_tokens`, the other pages `input_tokens` and `output_tokens`. The collector accepts both. A request with no usage shows no tokens, not zero. |
-| Cost | OpenRouter writes the cost in US dollars to `gen_ai.usage.total_cost`, with `input_cost` and `output_cost` beside it, when **Cost** is switched on under **Additional generation metadata**. The collector copies the total to `gen_ai.cost.total`, which Observe reads. This mapping lets Observe read OpenRouter's cost. |
-| User and session | `user.id` becomes the end user and `session.id` the session. Two requests with the same `session_id` land in one session. |
-| Custom metadata | `trace.metadata.*` is stored as span attributes. It is not mapped to the metadata field. |
-| Prompt and response | Removed from the documented content fields by default. With the opt-in, `span.input` and `span.output` fill the generation span's Input and Output panes. OpenRouter sends content on the generation span, not a duplicate under `trace.input` or `trace.output`. |
-| Tool calls | Inside the response, visible only with the opt-in. OpenRouter reports whether the model called a tool. The tool runs in your app, so there is no tool span. |
-| Errors | The collector preserves error status codes and replaces nonempty status messages with `error` unless you opt in. It removes the listed error-detail fields, not arbitrary provider-specific fields. Do not rely on Broadcast as a complete application error log. |
-| Cost options | With **Cost** and **Request context** switched on under **Additional generation metadata**, the `openrouter_generation.*` fields arrive as attributes on the generation span, once under `span.metadata.` and once under `trace.metadata.`. They repeat the same quantities, so do not add them. |
-| Timing | Span start and end, and `openrouter.inter_token_latency_ms` as an attribute. |
+| Model and usage | The generation span's `gen_ai.request.model` and `gen_ai.usage.*` attributes |
+| Prompt and response | `span.input` / `span.output` and `gen_ai.prompt` / `gen_ai.completion` on the generation span, when Privacy Mode is off |
+| Session and user | `session.id` and `user.id` span attributes; a user attribute alone does not guarantee an entry in the Users tab |
+| Custom metadata | Attributes under `trace.metadata.*`, such as `trace.metadata.environment` |
+| Hierarchy | Generation spans and optional grouping spans; use `trace_name`, `span_name` and `generation_name` to name them |
+
+Broadcast records what OpenRouter handles, not tools executed by your application. Use `parent_span_id` only when the referenced parent span is also exported to the same project. Input/output pane rendering, user indexing and cost summaries depend on your Future AGI collector's attribute mappings; inspect the generation attributes rather than treating an empty pane or zero cost as proof that OpenRouter sent no data.
 
 ## Privacy
 
-Use OpenRouter's Privacy Mode and the collector filter together to suppress the documented prompt and response fields. Neither is a general-purpose scrubber for arbitrary span data.
+[OpenRouter's Privacy Mode](https://openrouter.ai/docs/guides/features/broadcast#privacy-mode) excludes prompt and completion content and provider error text. Raw provider usage is replaced with `null` because the provider can add arbitrary fields to that object. Model, token usage, timing, cost, user/session identifiers, custom metadata and model parameters remain eligible for export.
 
-| Switch | Where | Default |
-| --- | --- | --- |
-| Privacy Mode | The destination in OpenRouter | Off, in OpenRouter |
-| `FI_CAPTURE_CONTENT` | The collector's environment | `false` |
+There is no additional redaction layer in this direct route. Privacy Mode is not a general-purpose scrubber: custom metadata and model parameters, including `stop` sequences, can contain sensitive text. OpenRouter may also attach API key names and account identifiers. Review what your application puts into these fields before enabling Broadcast for production traffic.
 
-With the collector default, these fields are removed before traces are sent to Future AGI:
-
-| Removed | Why |
-| --- | --- |
-| `span.input`, `span.output`, `gen_ai.prompt`, `gen_ai.completion`, and the `trace.input` and `trace.output` older copies, with their `<key>.truncated` markers and indexed spellings | Prompts and responses |
-| `gen_ai.input.messages`, `gen_ai.output.messages` | The OpenTelemetry GenAI names for the same thing. OpenRouter does not document them. |
-| `openrouter_generation.upstream_raw_response_usage` on the root and generation span | The provider's usage object can hold any field. OpenRouter nulls it in Privacy Mode. |
-| The span status message, replaced by `error` | Error text can echo the request |
-| `exception.message` and `exception.stacktrace` on span events | Stack traces carry paths and text |
-
-Kept: model, provider, token counts, timing, finish reason, `user.id`, `session.id`, custom metadata and the Cost options. [OpenRouter also retains model parameters in Privacy Mode](https://openrouter.ai/docs/guides/features/broadcast#privacy-mode), including caller-supplied `stop` sequences. The collector does not redact those parameters, arbitrary metadata, event names or unlisted provider fields. Use opaque user/session identifiers and keep sensitive text out of these fields.
-
-To send content on purpose, run `export FI_CAPTURE_CONTENT=true`, remove the existing container with `docker rm -f openrouter-broadcast-otelcol`, and run the Docker command above again. Leave Privacy Mode off in OpenRouter. Recreate the container whenever this value changes: `docker restart` retains the environment from container creation. The collector then copies `span.input` and `span.output` into the Input and Output panes and leaves the rest alone.
-
-OpenRouter also sends the API key name (`trace.metadata.openrouter.api_key_name`) and owner IDs (`entity_id`, `creator_user_id`); the collector retains them.
-
-## Limitations
-
-- OpenRouter sends prompt and completion content once per generation, as described in its [span attributes reference](https://openrouter.ai/docs/guides/features/broadcast/otel-collector#span-attributes). Large attributes or batches can still exceed the receiver's request-size limit; reduce content capture or batch size if exports return HTTP 413.
-- The same span ids sent twice are deduplicated. If OpenRouter re-exports a trace with new span ids, you would see it twice.
-- One collector sends to one project. Run one collector per project, each with its own endpoint and token.
-- Sampling and API key filters are OpenRouter's. A trace missing because of them is correct.
+<Warning>
+If you already use a collector with content filtering, changing the endpoint bypasses those filters. The collector's `FI_CAPTURE_CONTENT` setting has no effect on this direct route. Set Privacy Mode deliberately and review the retained fields before switching.
+</Warning>
 
 ## Troubleshooting
 
-| What you see | What it means |
+| Symptom | Action |
 | --- | --- |
-| Test Connection fails | The token in Headers does not match `BROADCAST_TOKEN`, or the collector is not reachable from the internet. The collector answers 401 to a missing or wrong token. |
-| Test Connection passes and nothing appears in Observe | Check the collector log for `Exporting failed. Dropping data`. A 401 there means the Future AGI keys or `FI_TRACES_URL` are wrong. The Test Connection result never depends on Future AGI. |
-| HTTP 400 `no project_name` | You pointed OpenRouter straight at Future AGI. Use the collector. |
-| Tokens are 0 | The request had no usage, or OpenRouter used key names this page does not know. Compare one trace's attributes with the tables above. |
-| Cost is 0 | See [What shows up in Observe](#what-shows-up-in-observe). |
-| No prompts or responses | That is the default. See [Privacy](#privacy), and check Privacy Mode in OpenRouter. |
-| Some requests are missing | Sampling or API key filters on the OpenRouter destination. |
-| A long conversation is missing | The export was over 16 MiB. The collector log shows HTTP 413. |
+| Test Connection fails | Check the full endpoint and both Future AGI key headers. An OpenRouter API key is not a Future AGI credential. |
+| HTTP 400 `no project_name` | Add `X-Project-Name` to Headers. On a self-hosted deployment, confirm that the collector supports it. |
+| HTTP 400 with a project-name error | Send one nonempty project name within the rules above, not a list of names. |
+| HTTP 401 | Check that both Future AGI keys belong to the intended workspace and have not been revoked. |
+| Connection test passes, but no application trace appears | Check the destination's API key filter, exclusions and sampling. Select the matching workspace and project in Observe and widen the time range. |
+| Prompt or response is missing | Check Privacy Mode, then inspect the generation span's attributes rather than only its Input and Output panes. |
+| HTTP 413 | The export exceeds the receiver's request-size limit. Enable Privacy Mode to reduce content, or exclude keys producing oversized transcripts. See [ingestion request limits](/docs/observe/reference/export-formats#ingestion-request-limits). |
 
-## Next Steps
+## Next steps
 
-- [OpenAI instrumentor](/docs/integrations/traceai/openai), for tracing calls your code makes to OpenRouter
-- [Observe](/docs/observe)
+- [Explore traces in Observe](/docs/observe/guides/explore-dashboard)
+- [Trace application-side OpenRouter calls](/docs/integrations/traceai/openai)
+- [Export formats and endpoints](/docs/observe/reference/export-formats)
