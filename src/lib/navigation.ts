@@ -1156,6 +1156,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'code',
         items: [
           { title: 'SDK Overview', href: '/docs/sdk' },
+          { title: 'Use the platform client reliably', href: '/docs/sdk/platform-client-reliability' },
           {
             title: 'List of SDKs',
             items: [
