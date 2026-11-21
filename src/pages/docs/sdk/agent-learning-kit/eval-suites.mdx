@@ -1,6 +1,6 @@
 ---
 title: "Evaluate saved runs and catch regressions"
-description: "Grade a saved agent reply against two assertions, turn a failure into a replayable case, and compare the next build against a known-good baseline in CI."
+description: "Grade a saved agent reply against two policy requirements, turn a failure into a replayable case, and compare the next build against a known-good baseline in CI."
 ---
 
 ## About
@@ -46,7 +46,7 @@ for version, reply in replies.items():
 
 ## 2. Check two requirements on the incident
 
-Save this manifest as `suite.json` next to the replies. `current.json` is the evidence file you want to grade; its path is relative to the manifest. Both assertions read the assistant's message, not the customer's question. One checks for a receipt reminder and the other for the return window.
+Save this manifest as `suite.json` next to the replies. `current.json` is the evidence file you want to grade; its path is relative to the manifest. In these two-message runs, the reply is at `report.results[0].messages[1]`. The first assertion checks that the speaker is the assistant. The next two look for the receipt reminder and the return window in that same message. For longer conversations, point all three paths at the turn you want to grade.
 
 ```json
 {
@@ -58,6 +58,7 @@ Save this manifest as `suite.json` next to the replies. `current.json` is the ev
   "tests": [{
     "id": "receipt-and-window",
     "assert": [
+      {"type": "json_path_equals", "path": "report.results[0].messages[1].role", "value": "assistant"},
       {"type": "json_path_contains", "path": "report.results[0].messages[1].content", "value": "receipt"},
       {"type": "json_path_contains", "path": "report.results[0].messages[1].content", "value": "within 30 days"}
     ]
@@ -84,25 +85,25 @@ print(result["status"], result["summary"]["score"])
 ```
 
 ```bash
-cp incident.json current.json
-alk eval suite.json --output incident-eval.json
+cp incident.json current.json &&
+  alk eval suite.json --output incident-eval.json
 ```
 
 </CodeGroup>
 
-The receipt check returns `True`, the window check returns `False`, and the suite reports `failed 0.5`: one of two assertions passed. A suite passes only if its score reaches `threshold` **and** every case passes. Lowering the threshold to `0.5` would not excuse the failed assertion. Use `alk eval suite.json --dry-run` to check the manifest's shape without reading the provider output or testing either requirement.
+The speaker and receipt checks return `True`. The window check returns `False`. Two of three assertions passed, so Python prints `failed 0.6667`. A suite passes only if its score reaches `threshold` **and** every case passes. Lowering the threshold to `0.5` would not excuse the failed assertion. Use `alk eval suite.json --dry-run` to check the manifest's shape without reading the provider output or testing either requirement.
 
 ## 3. Compare with a baseline and promote the failure
 
 Freeze the verdict from the **approved** reply, not from the incident. `baseline.json` is the reference for future comparisons. You do not regenerate it on each build.
 
 ```bash
-cp approved.json current.json
-alk eval suite.json --output approved-eval.json
-alk baseline approved-eval.json --output baseline.json
+cp approved.json current.json &&
+  alk eval suite.json --output approved-eval.json &&
+  alk baseline approved-eval.json --output baseline.json
 ```
 
-Compare the incident verdict you saved in step 2. This command **should exit 1**: the score dropped from `1.0` to `0.5`. In `incident-compare.json`, `summary.score_delta` is `-0.5` and `summary.new_finding_count` is `1`. By default, `compare` allows neither a score drop nor a new finding.
+Compare the incident verdict you saved in step 2. This command **should exit 1**: the score dropped from `1.0` to `0.6667`. In `incident-compare.json`, `summary.score_delta` is `-0.3333` and `summary.new_finding_count` is `1`. By default, `compare` allows neither a score drop nor a new finding.
 
 ```bash
 alk compare baseline.json incident-eval.json --output incident-compare.json
@@ -111,24 +112,24 @@ alk compare baseline.json incident-eval.json --output incident-compare.json
 Use `report` to write a readable summary for review. `promote-to-regression` turns the failed assertion's finding into a manifest; pass that manifest, not the promotion summary, to `replay`.
 
 ```bash
-alk report incident-eval.json --markdown incident.md
-alk promote-to-regression incident-eval.json --output promotion.json --manifest regression.json
-alk replay regression.json --output replay.json
+alk report incident-eval.json --markdown incident.md &&
+  alk promote-to-regression incident-eval.json --output promotion.json --manifest regression.json &&
+  alk replay regression.json --output replay.json
 ```
 
-For this fixture, `promotion.json` records one promoted finding and `replay.json` records one passed manifest. The generated manifest runs a **scripted agent**. A passing replay means that script passed the generated case, not that your support agent now quotes the right window.
+For this fixture, `promotion.json` records one promoted finding and `replay.json` records one passed manifest. The generated manifest puts the finding in a red-team scenario and runs a scripted agent. It records the expected phrase and the actual reply as evidence; it does not rerun the return-window assertion. Use the original suite to test your support agent’s next reply.
 
 ## 4. Gate the next build on its own reply
 
-Select `fixed.json` to stand in for evidence captured from the new build. Run this block as a CI step. It checks the candidate against the two requirements and compares its score and findings to the frozen reference. The corrected reply has different wording but passes both checks: the score is `1.0`, the delta is `0.0`, and there are no new findings.
+Select `fixed.json` to stand in for evidence captured from the new build. Run this block as a CI step. It checks the candidate against the two requirements and compares its score and findings to the frozen reference. The corrected reply has different wording but passes all three assertions: the score is `1.0`, the delta is `0.0`, and there are no new findings.
 
 ```bash
-cp fixed.json current.json
-alk eval suite.json --output current-eval.json &&
+cp fixed.json current.json &&
+  alk eval suite.json --output current-eval.json &&
   alk compare baseline.json current-eval.json --output current-compare.json
 ```
 
-In CI, replace the `cp` with your build's capture step. Keep `suite.json`, the reviewed `baseline.json`, and the promoted `regression.json` in version control. Let a nonzero exit fail the job. Don't use the fixed example reply as input to every build: that would keep testing yesterday's response.
+In CI, replace `cp` with a capture step that writes `current.json` and exits nonzero if it cannot capture a fresh reply. Keep the `&&` chain so a failed capture cannot grade a leftover file. Version the suite and its reviewed baseline together. Before committing a promoted manifest, check the captured reply and source paths for private data. Don't use the fixed example reply as input to every build: that would keep testing yesterday's response.
 
 ## Example: score the same evidence with agent-report metrics
 
@@ -161,9 +162,9 @@ alk eval-artifact incident.json --config criteria.json --output run-metrics.json
 
 ## Limits and errors
 
-- **Missing observation:** If the assistant message is absent, the JSON-path assertion fails. Inspect `error` and `path` in `eval_suite.cases[0].assertions`. A missing message means the reply was not recorded at that path, not that the agent quoted the wrong policy. Capture the missing evidence or correct the path before changing a threshold.
+- **Missing observation:** If a message or field is missing at the specified path, its assertion fails. Inspect `error` and `path` on that assertion in `eval_suite.cases[0].assertions`. If the path exists but the value is wrong, compare `actual` with `expected` instead. A missing message means the reply was not recorded at that path, not that the agent quoted the wrong policy. Capture the missing evidence or correct the path before changing a threshold.
 - **Wrong input shape:** `eval-artifact` looks for `report.results`, top-level `results`, or a report in `optimization.history`. A bare task transcript is not a run report; use `eval-task` for that input.
-- **Literal matching:** `json_path_contains` checks for the supplied text. It does not recognize equivalent wording or detect a sentence that negates the policy. If the contract is a structured value, use `json_path_equals` on that field instead.
+- **Literal matching:** `json_path_contains` uses a case-sensitive substring check on this reply. It does not recognize equivalent wording or detect a sentence that negates the policy. If the contract is a structured value, use `json_path_equals` on that field instead.
 - **Project CI versus kit releases:** `alk release-check` verifies the Agent Learning Kit's own release gates against a kit source checkout. `alk release-proof` also runs checks such as lint, tests, and package builds there. Neither command evaluates your agent's latest reply. Use your project suite and baseline for that.
 
 ## Next steps
