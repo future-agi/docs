@@ -932,6 +932,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
               { title: 'Run the repository harness', href: '/docs/environments/guides/alk-harness' },
+              { title: 'Clone or provision a voice target', href: '/docs/environments/guides/provider-import' },
               { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
               { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
               { title: 'Import evidence', href: '/docs/environments/guides/import-evidence' },
