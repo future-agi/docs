@@ -410,6 +410,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
               { title: 'Collect feedback', href: '/docs/evaluation/guides/collect-feedback' },
               { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
+              { title: 'Use decision models', href: '/docs/evaluation/guides/decision-models' },
               { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
               { title: 'Advanced usage', href: '/docs/evaluation/guides/advanced-usage' },
             ]
