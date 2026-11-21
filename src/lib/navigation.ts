@@ -644,6 +644,7 @@ export const tabNavigation: NavTab[] = [
               },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
+              { title: 'Sample whole contacts', href: '/docs/observe/guides/sample-eval-tasks' },
               { title: 'Instant eval', href: '/docs/observe/features/instant-eval' },
               { title: 'Insights', href: '/docs/observe/features/insights' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
