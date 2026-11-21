@@ -947,6 +947,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'Supported agents', href: '/docs/environments/reference/supported-agents' },
               { title: 'Call receipts and voice metrics', href: '/docs/environments/reference/call-metrics' },
+              { title: 'Run call scoring', href: '/docs/environments/reference/run-call-scoring' },
             ]
           },
           {
