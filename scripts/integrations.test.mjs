@@ -64,8 +64,9 @@ test('VoltAgent uses the released processor and a discoverable Node.js example',
   assert.equal(catalog?.href, '/docs/integrations/traceai/voltagent');
   assert.equal(catalog?.category, 'frameworks');
   assert.equal(catalog?.method, 'traceAI SDK');
-  for (const pin of ['@traceai/voltagent@0.1.0', '@traceai/fi-core@1.1.1', '@voltagent/core@2.11.0', 'ai@6.0.309', '@ai-sdk/openai@3.0.130', 'zod@4.6.7']) {
-    assert.ok(page.includes(pin), pin);
+  const install = page.match(/```bash\n(npm install[\s\S]*?)\n```/)?.[1];
+  for (const pin of ['@traceai/voltagent@0.1.1', '@traceai/fi-core@1.4.1', '@voltagent/core@2.11.0', 'ai@6.0.309', '@ai-sdk/openai@3.0.130', 'zod@4.6.7']) {
+    assert.ok(install?.includes(pin), pin);
   }
   assert.match(page, /setGlobalTracerProvider: false/);
   assert.match(page, /spanProcessors: \[new FIVoltAgentSpanProcessor\(\{ tracerProvider \}\)\]/);
