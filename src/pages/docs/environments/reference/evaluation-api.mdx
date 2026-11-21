@@ -1,0 +1,133 @@
+---
+title: "Environment evaluation API"
+description: "Edit an environment evaluation without changing past scores, then regrade selected evaluations on a finished run and read the verdict for the same call."
+---
+
+## About
+
+Use `PATCH` to change how an environment grades calls. It saves the evaluation without changing any past score. Use a separate `POST` to apply selected evaluations to one completed run. Grading uses the existing calls; it does not contact the agent again.
+
+For example, a Ridgeline Outfitters shopper asks whether a worn jacket qualifies for a refund. The `no_misselling` evaluation checks whether the agent makes promises its instructions don't support. If the check was reading only the agent's replies, you can give it the shopper's question too and grade the same exchange again.
+
+## Find the environment, evaluation and run
+
+Use Bash, cURL, `jq`, and a workspace [API key and secret key](/docs/admin-settings/api-keys) in `FI_API_KEY` and `FI_SECRET_KEY`. Run the snippets in the same shell. For the example, start with a chat environment that has a completed run and an [applied evaluation](/docs/environments/guides/add-evaluations) named `no_misselling`. Pick a call that already has a verdict for it so you can compare before and after.
+
+```bash
+set -o pipefail
+API_BASE=${API_BASE:-https://api.futureagi.com}
+api() {
+  curl --silent --show-error --fail-with-body \
+    -H "X-Api-Key: ${FI_API_KEY:?Set FI_API_KEY}" \
+    -H "X-Secret-Key: ${FI_SECRET_KEY:?Set FI_SECRET_KEY}" \
+    -H 'Content-Type: application/json' "$@"
+}
+ENVS="$API_BASE/simulate/api/harness-environments"
+api "$ENVS/" | jq '.results[] | {name, id}'
+read -rp 'Environment ID: ' ENV_ID
+ENV_URL="$ENVS/$ENV_ID"
+ENV_DETAIL=$(api "$ENV_URL/")
+jq '.evaluations.selected[] | {name, id, editable}' <<<"$ENV_DETAIL"
+read -rp 'Applied no_misselling evaluation ID: ' EVAL_ID
+RUN_TEST_ID=$(jq -er '.overview.run.run_test_id' <<<"$ENV_DETAIL")
+api "$API_BASE/simulate/run-tests/$RUN_TEST_ID/executions/?summary=true&status=completed" \
+  | jq '.results[] | {id, status}'
+read -rp 'Completed execution ID: ' EXEC_ID
+```
+
+`EVAL_ID` identifies the configuration **in this environment**, not a library template. `EXEC_ID` identifies one execution, not the run test that groups its executions. For the latest run you can also read `last_run.test_execution_id` from the environment list if `last_run` is not `null`. Use `page=2` and subsequent pages if the environment or execution is not on the first page.
+
+To inspect the current settings, read the run test. `editable` tells you whether PATCH is allowed; `regradable` tells you whether this evaluation can run again. Some built-in suite evaluations are regradable but not editable. For a result that only the harness can produce during a call, both flags are false.
+
+```bash
+api "$API_BASE/simulate/run-tests/$RUN_TEST_ID/" \
+  | jq --arg id "$EVAL_ID" '.simulate_eval_configs_detail[] | select(.id == $id)
+      | {name, config, mapping, editable, regradable}'
+```
+
+## Save an edit without changing a score
+
+`PATCH /simulate/api/harness-environments/{id}/evaluations/{eval_config_id}/`
+
+First record the verdict for a completed call. The calls list includes the call ID and scenario. Use `page=2` if you need another page.
+
+```bash
+CALLS_URL="$API_BASE/simulate/v3/test-executions/$EXEC_ID/calls/"
+api "$CALLS_URL" | jq --arg id "$EVAL_ID" '.results[] | select(.execution_status == "completed")
+  | {id, scenario, evaluation: [.evaluations[] | select(.id == $id) | {status, passed}]}'
+read -rp 'Call ID with a scored no_misselling check: ' CALL_ID
+CALL_URL="$API_BASE/simulate/v3/call-executions/$CALL_ID/"
+verdict() {
+  api "$CALL_URL" | jq -ce --arg id "$EVAL_ID" '.evaluations[] | select(.id == $id)
+    | {status, value, score, passed, reason}'
+}
+verdict
+```
+
+For Ridgeline, map `conversation` to `transcript` so the judge sees both sides of the refund question. Keep `agent_prompt` mapped to the agent's instructions so it has the return terms to judge the promise against. A successful edit returns `200` with the updated configuration. Read the call again: its verdict and reason still reflect the original inputs.
+
+```bash
+api -X PATCH "$ENV_URL/evaluations/$EVAL_ID/" \
+  -d '{"mapping":{"agent_prompt":"agent_prompt","conversation":"transcript"}}' \
+  | jq '{id, name, config, mapping, editable, regradable}'
+verdict
+```
+
+Send at least one of these fields. Omitted fields keep their values. When replacing `mapping` or `config`, send the complete object you want to keep.
+
+| PATCH field | What to send |
+|---|---|
+| `name` | A nonblank name not already used by another evaluation on this run test. |
+| `config` | A JSON object with settings for the current template. For a function check, put its parameters under `params`. |
+| `mapping` | An object mapping template inputs to call data. The evaluation must keep at least one mapped input. |
+| `filters` | A list of filters restricting which results to evaluate. Use `[]` to clear them. |
+| `model` | The judge model name, for an evaluation that uses a model. |
+| `error_localizer` | A boolean enabling or disabling error localization. |
+| `kb_id` | The UUID of a knowledge base in your organization, or `null` to clear it. |
+
+You cannot change `template_id` in place. To switch templates, [remove the evaluation and add the replacement](/docs/environments/guides/add-evaluations). Neither `run` nor `test_execution_id` is a PATCH field.
+
+## Regrade selected evaluations on one run
+
+`POST /simulate/api/harness-environments/{id}/runs/{execution_id}/evaluations/run/`
+
+Send a nonempty array of **distinct configuration UUIDs** in `eval_config_ids`. Choose evaluations, not calls: the request covers the run, not just the call you inspected. Omit the optional boolean `enable_tool_evaluation` to keep the current tool-call grading setting. If you send it, the API saves it on the environment, not just for this request.
+
+```bash
+api -X POST "$ENV_URL/runs/$EXEC_ID/evaluations/run/" \
+  -d "$(jq -nc --arg id "$EVAL_ID" '{eval_config_ids: [$id]}')" | jq .
+```
+
+`202 Accepted` with `{"call_execution_count": 1}` means one call was queued, **not** that one call passed. The count is calls submitted, not the number of evaluations or completed scores. The run moves to `evaluating`. The selected scores become pending and are replaced as grading finishes; evaluations you didn't select are not regraded.
+
+Poll the **same call ID**. For `no_misselling`, `status: succeeded` and `passed: false` can appear together: the check ran and judged the promise unsupported. If the status is `failed`, `timed_out`, or `skipped`, read `reason`; those are grading outcomes, not a verdict on the agent's answer.
+
+```bash
+for ((i=0; i<30; i++)); do
+  result=$(verdict) || break
+  printf '%s\n' "$result"
+  [[ $(jq -r '.status' <<<"$result") == pending ]] || break
+  sleep 2
+done
+```
+
+If polling ends while the result is still pending, read it again later; don't submit another POST. One call's verdict does not mean every call has finished. Read `execution.status` from the calls list to check the whole run.
+
+## Errors and recovery
+
+Read `detail` for the reason. Request validation can also return field errors under `details`.
+
+| HTTP status | What happened | What to do |
+|---|---|---|
+| `400` on PATCH | An empty `{}` gives `Nothing to change`. Other causes include unknown fields, a duplicate name, invalid template parameters, an inaccessible knowledge base or a mapping with no inputs. | Change the named field and resend the edit. A refused edit saves nothing. |
+| `400` on POST | `eval_config_ids` is missing, empty, contains an invalid UUID or has duplicates. | Send at least one applied config ID, each only once. |
+| `400` for a harness result | The harness owns the configuration, or a requested score can only be produced during a call. | Check `editable` and `regradable` separately. Exclude any non-regradable evaluation from the request. To refresh a call-only score, rerun the call instead. |
+| `404` | `Environment not found`, `Run not found`, or `Evaluation not found`. | Resolve the IDs again with the same workspace credentials. Both the execution and every config must belong to this environment. |
+| `409` before grading | The environment hasn't finished building, the harness is still finishing the run, or the execution is not `completed`. A run with no calls or no completed call is also refused. | Wait for a build or active run to finish. If no call completed, choose a different run or run the simulation again. |
+| `409` on a second POST | A competing request can return `Grading is already running on this run.` A request made after the run has moved to `evaluating` can instead return `Only a finished run can be graded again`. | Poll the first request's run instead of submitting it again. |
+| `503` on POST | `Grading couldn't be started. Try again.` The queue did not accept the grading job. | The API restores the prior scores, call evaluation-completion flags and run status. You can retry the POST later without repeating the PATCH. |
+
+## Next steps
+
+- [Add evaluations](/docs/environments/guides/add-evaluations) to choose checks and manage tool-call grading in the dashboard.
+- [Read run results](/docs/environments/guides/read-run-results) to compare the verdict with the transcript or rerun the call itself.
