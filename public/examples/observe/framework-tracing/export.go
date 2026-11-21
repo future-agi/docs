@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -18,7 +20,8 @@ func provider(ctx context.Context) (*sdktrace.TracerProvider, error) {
 	}
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "https://api.futureagi.com/tracer/v1/traces"
+		base := cmp.Or(os.Getenv("FI_TRACES_URL"), os.Getenv("FI_BASE_URL"), "https://api.futureagi.com")
+		endpoint = strings.TrimRight(base, "/") + "/tracer/v1/traces"
 	}
 	exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint),
 		otlptracehttp.WithCompression(otlptracehttp.NoCompression),

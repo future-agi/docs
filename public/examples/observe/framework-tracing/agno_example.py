@@ -12,9 +12,9 @@ def lookup_care() -> str:
     return "Air dry away from direct heat."
 
 
-base = os.getenv("FI_BASE_URL", "https://api.futureagi.com").rstrip("/")
+base = os.getenv("FI_TRACES_URL") or os.getenv("FI_BASE_URL") or "https://api.futureagi.com"
 tracing = configure_agno_tracing(
-    otlp_endpoint=base + "/tracer/v1/traces",
+    otlp_endpoint=base.rstrip("/") + "/tracer/v1/traces",
     otlp_headers={"X-Api-Key": os.environ["FI_API_KEY"], "X-Secret-Key": os.environ["FI_SECRET_KEY"]},
     project_name="ridgeline-framework-tracing",
     config=TraceConfig(hide_inputs=True, hide_outputs=True),

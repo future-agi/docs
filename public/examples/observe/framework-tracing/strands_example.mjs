@@ -6,8 +6,9 @@ import { StrandsSpanExporter, StrandsSpanProcessor } from '@traceai/strands/nati
 import { Agent, FunctionTool } from '@strands-agents/sdk';
 import { OpenAIModel } from '@strands-agents/sdk/models/openai';
 
+const base = (process.env.FI_TRACES_URL || process.env.FI_BASE_URL || 'https://api.futureagi.com').replace(/\/+$/, '');
 const exporter = new OTLPTraceExporter({
-  url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ?? 'https://api.futureagi.com/tracer/v1/traces',
+  url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || `${base}/tracer/v1/traces`,
   headers: { 'x-api-key': process.env.FI_API_KEY, 'x-secret-key': process.env.FI_SECRET_KEY },
 });
 const provider = new NodeTracerProvider({
