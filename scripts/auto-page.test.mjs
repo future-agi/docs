@@ -22,14 +22,14 @@ test('primary setup preloads a maintained package without app instrumentation', 
   assert.match(page, /Node\.js 20\.6 or later/);
   assert.match(page, /https:\/\/app\.futureagi\.com\/dashboard\/keys/);
   assert.match(page, /<Steps>[\s\S]*<Step title="Install the package">/);
-  for (const command of ['npm install @traceai/auto', 'node --import @traceai/auto/register app.mjs', 'NODE_OPTIONS="--import @traceai/auto/register" npm start', 'node --require @traceai/auto/register app.cjs', 'npx --no-install traceai-auto doctor']) {
+  for (const command of ['npm install @traceai/auto', 'node --import @traceai/auto/register app.mjs', 'NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import @traceai/auto/register" npm start', 'node --require @traceai/auto/register app.cjs', 'npx --no-install traceai-auto doctor']) {
     assert.ok(page.includes(command), command);
   }
   const examples = [...page.matchAll(/```javascript\n([\s\S]*?)\n```/g)];
   assert.equal(examples.length, 2);
   assert.match(examples[0][1], /import OpenAI from "openai"/);
   assert.doesNotMatch(examples[0][1], /traceai|opentelemetry|instrument|register/);
-  assert.match(page, /Open \*\*Observe\*\*[\s\S]*select `ridgeline-support`/);
+  assert.match(page, /open \*\*Tracing\*\* under \*\*Observe\*\* and select `ridgeline-support`/);
   assert.match(page, /zero exit code alone does not prove export health/);
 });
 

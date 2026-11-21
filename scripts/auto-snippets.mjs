@@ -73,7 +73,7 @@ const env = {
   npm_config_fund: 'false',
 };
 const setup = block('export FI_API_KEY');
-const config = setup.code.replaceAll('your-api-key', 'synthetic-fi-api-key').replaceAll('your-secret-key', 'synthetic-fi-secret-key');
+const config = setup.code.replaceAll('YOUR_API_KEY', 'synthetic-fi-api-key').replaceAll('YOUR_SECRET_KEY', 'synthetic-fi-secret-key');
 const allSpans = from => batches.slice(from).flatMap(batch => batch.resourceSpans.flatMap(resource => resource.scopeSpans.flatMap(scope => scope.spans)));
 async function run(name, command, { expected = 'model', hidden = false, overrides = {} } = {}) {
   const from = batches.length;
@@ -162,7 +162,10 @@ try {
   done.add(example.index);
   done.add(setup.index); // Executed before every shell command with synthetic substitutions.
   await execute('node --import');
-  await execute('NODE_OPTIONS=');
+  // An npm launch must retain an existing preload in the app process, not just in npm itself.
+  await writeFile(join(app, 'existing-preload.cjs'), `if (process.argv[1]?.endsWith('/app.mjs')) require('node:fs').writeFileSync('preload-result', 'loaded');`);
+  await execute('NODE_OPTIONS=', { overrides: { NODE_OPTIONS: '--require ./existing-preload.cjs' } });
+  assert.equal(await readFile(join(app, 'preload-result'), 'utf8'), 'loaded');
   await execute('node --require');
   await execute('npm install @opentelemetry/api', { expected: 'install' });
   const request = block('import { trace }');
