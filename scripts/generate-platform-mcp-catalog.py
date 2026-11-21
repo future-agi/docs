@@ -4,6 +4,7 @@ python3 scripts/generate-platform-mcp-catalog.py /path/to/future-agi
 """
 
 import argparse
+import ast
 import html
 import json
 import re
@@ -42,7 +43,15 @@ QUEUE_GATES = {
 # Keep the generated public summaries focused on what a caller needs to do.
 SUMMARIES = {
     "add_dataset_rows": "Append rows. Each row takes a `cells` array of `column_name` and `value` pairs. Create writable columns first. An unknown or duplicate column rejects the batch; a flat column-to-value dictionary is not a row.",
-    "list_trace_properties": "Discover filters for `search_traces` (`source=traces`) or `list_spans` (`source=spans`). In cursor mode, omit `page` and `exclude_custom_attributes`; use `next_cursor` as `cursor` while `has_more` is true.",
+    "list_trace_properties": "Discover filters for `search_traces` (`source=traces`) or `list_spans` (`source=spans`). Set `cursor_mode=true`, `per_eval_config=true`, and `project_ids` when known. Use the returned `name` as `column_id`; preserve `property_id` and `source` for typed attributes. For `filter_config.col_type`, map `system_metric` to `SYSTEM_METRIC`, `custom_attribute` to `SPAN_ATTRIBUTE`, `eval_metric` to `EVAL_METRIC`, and `annotation_metric` to `ANNOTATION`. In cursor mode, omit `page` and `exclude_custom_attributes`; use `next_cursor` as `cursor` while `has_more` is true.",
+    "list_alert_rules": "List configured alert monitors, their thresholds and projects. Compare with `list_fired_alerts` to see which monitors have fired.",
+    "delete_dashboard": "Delete a dashboard and its widgets.",
+    "delete_datasets": "Soft-delete one or more datasets using `dataset_ids`. Deletion also affects their rows, columns and attached evaluations.",
+    "get_sql_result": "Poll your job. MCP returns up to 100 rows by default, within a byte limit. While `result.has_more` is true, pass `result.next_offset` as `offset`. If `result.previewed` is true, download the full cells using authenticated `GET /tracer/sql-query/{id}/download/` with `project_id` and `file_format` (`csv` or `parquet`). Results expire after 24 hours. You need project access on every read.",
+    "get_trace": "Return a trace by ID. Pass at most one run scope: `test_execution_id` or `call_execution_id`.",
+    "get_span": "Read a span by ID, optionally pinned with `project_id`. Pass at most one run scope: `test_execution_id` or `call_execution_id`. For a physical lookup, supply the entire reference: `project_id`, `trace_id`, `start_hour`, `observation_type`, `service_name`, `expected_start_time` and `expected_version`. Use timezone-qualified timestamps (at most six fractional digits); `start_hour` is the UTC hour containing `expected_start_time`, aligned to the hour. Send the version as a canonical unsigned 64-bit decimal string.",
+    "submit_annotation": "Submit label values matching the settings from `get_annotation_item_detail`. Submission moves a pending item to `in_progress`; call `complete_annotation_item` when you finish your annotations.",
+    "complete_annotation_item": "Finish your annotation pass and get the next item, if any. A `completed_item_id` receipt does not guarantee the item is complete: it stays `in_progress` until the required labels and annotator count are covered. If review is required, `status` stays `in_progress` and `review_status` becomes `pending_review`.",
     "list_guardrail_rules": "Read guardrail trigger counts by rule. Request logs show whether a guardrail triggered, not which rule triggered it.",
     "update_eval_task": "Pause the running task before editing it. `edit_rerun` keeps existing results; `fresh_run` deletes them and starts again. Reruns may incur evaluation charges.",
     "create_experiment": "Create and start an experiment. Read `experiment_id` from the result message and pass it to `get_experiment` to follow the run.",
@@ -78,7 +87,7 @@ def type_label(spec, defs):
     return spec.get("type", "JSON value")
 
 
-def constraints(spec):
+def constraints(spec, *, nullable=False):
     notes = []
     for lo, hi, unit in [("minimum", "maximum", ""), ("minLength", "maxLength", " chars"),
                          ("minItems", "maxItems", " items")]:
@@ -91,7 +100,10 @@ def constraints(spec):
     if spec.get("uniqueItems"):
         notes.append("distinct items")
     if "enum" in spec:
-        notes.append("one of " + ", ".join(map(literal, spec["enum"])))
+        values = spec["enum"]
+        if nullable and None not in values:
+            values = [*values, None]
+        notes.append("one of " + ", ".join(map(literal, values)))
     if "format" in spec:
         notes.append(f"format `{spec['format']}`")
     if "pattern" in spec:
@@ -105,13 +117,15 @@ def rows(path, spec, required, defs):
     spec = resolve(spec, defs)
     branches = [resolve(v, defs) for v in spec.get("anyOf", [spec])]
     notes = []
-    for branch in branches:
-        notes.extend(constraints(branch))
-        description = branch.get("description", "")
+    nullable = any(branch.get("type") == "null" for branch in branches)
+    for node in ([spec] if "anyOf" in spec else []) + branches:
+        notes.extend(constraints(node, nullable=nullable and node is not spec))
+        description = node.get("description", "")
         # Include non-obvious input semantics, not redundant serializer labels or
         # REST-only behavior (e.g. multipart uploads are not MCP arguments).
-        if description.startswith(("A UUID string identifying", "New cell value.",
-                                   "Any valid JSON value.", "Which time-window preset")):
+        if description.startswith("Which time-window preset"):
+            description = "Records the chosen preset only. To filter the query, resolve it to explicit UTC bounds and send `date_range`."
+        if description.startswith(("A UUID string identifying", "New cell value.", "Any valid JSON value.")):
             continue
         if description:
             notes.append(text(description))
@@ -119,6 +133,9 @@ def rows(path, spec, required, defs):
     for branch in branches:
         for key, value in branch.get("properties", {}).items():
             yield from rows(f"{path}.{key}", value, "Yes" if key in branch.get("required", []) else "No", defs)
+        entry = branch.get("additionalProperties")
+        if isinstance(entry, dict) and set(entry) - {"title", "description"}:
+            yield from rows(path + ".*", entry, "Map value", defs)
         if "items" in branch:
             item = resolve(branch["items"], defs)
             if set(item) - {"type", "title", "description"}:
@@ -164,7 +181,7 @@ def tool_lines(tool):
     yield "\n</details>\n"
 
 
-def catalog(manifest):
+def catalog(manifest, scope_labels):
     groups = defaultdict(list)
     for tool in manifest["tools"]:
         groups[tool["group"]].append(tool)
@@ -174,7 +191,7 @@ def catalog(manifest):
     yield "| --- | ---: | --- |"
     for slug, (label, purpose) in GROUPS.items():
         anchor = label.lower().replace(" ", "-")
-        yield f"| [{label}](#{anchor}) (`{slug}`) | {len(groups[slug])} | {purpose} |"
+        yield f"| [{scope_labels[slug]}](#{anchor}) (`{slug}`) | {len(groups[slug])} | {purpose} |"
     for slug, (label, _) in GROUPS.items():
         yield f"\n### {label}\n"
         for tool in groups[slug]:
@@ -186,6 +203,10 @@ if __name__ == "__main__":
     parser.add_argument("repo", type=Path)
     args = parser.parse_args()
     manifest = json.loads(subprocess.check_output(["git", "-C", str(args.repo), "show", f"{RELEASE}:{SOURCE}"]))
-    head, tail = PAGE.read_text().split(BEGIN)
+    constants = subprocess.check_output(["git", "-C", str(args.repo), "show", f"{RELEASE}:futureagi/mcp_server/constants.py"])
+    declaration = next(stmt for stmt in ast.parse(constants).body if isinstance(stmt, ast.Assign)
+                       and any(isinstance(t, ast.Name) and t.id == "TOOL_GROUPS" for t in stmt.targets))
+    scope_labels = {slug: group["name"] for slug, group in ast.literal_eval(declaration.value).items()}
+    head, tail = PAGE.read_text(encoding="utf-8").split(BEGIN)
     _, tail = tail.split(END)
-    PAGE.write_text(head + BEGIN + "\n\n" + "\n".join(catalog(manifest)) + "\n" + END + tail)
+    PAGE.write_text(head + BEGIN + "\n\n" + "\n".join(catalog(manifest, scope_labels)) + "\n" + END + tail, encoding="utf-8")
