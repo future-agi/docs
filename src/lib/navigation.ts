@@ -467,6 +467,7 @@ export const tabNavigation: NavTab[] = [
                   {
                     title: 'Conversation & agents',
                     items: [
+                      { title: 'Voice and chat agent evals', href: '/docs/evaluation/builtin/voice-and-chat-agent-evals' },
                       { title: 'Conversation Coherence', href: '/docs/evaluation/builtin/conversation-coherence' },
                       { title: 'Conversation Resolution', href: '/docs/evaluation/builtin/conversation-resolution' },
                       { title: 'Evaluate Function Calling', href: '/docs/evaluation/builtin/llm-function-calling' },
