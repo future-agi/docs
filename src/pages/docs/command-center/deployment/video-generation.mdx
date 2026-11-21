@@ -5,11 +5,13 @@ description: "Configure Redis, artifact storage and a provider budget for video 
 
 ## About
 
-A video can take longer to generate than a gateway process stays up. The gateway keeps the job ID, polling schedule and budget reservation in Redis, and copies the finished video to storage you control. This guide sets up a test gateway for Ridgeline Outfitters to generate one tent-packing clip through OpenRouter.
+A gateway restart does not have to interrupt a video job: Redis keeps track of the job and its budget, and a separate store holds the finished file. You’ll set up a test gateway for Ridgeline Outfitters, request one tent-packing clip through OpenRouter and retrieve it after a restart.
 
 ## 1. Prepare the two stores
 
-Start with a [self-hosted gateway](/docs/command-center/deployment/self-hosted) running v1.59.1. Set `GATEWAY_URL` in your shell to its base URL, without `/v1` or a trailing slash, and `RIDGELINE_GATEWAY_KEY` to a valid test organization key. If you are starting from an empty configuration, use the key setup in step 2 with `video.enabled: false` first. With video disabled (the default), this authenticated read returns HTTP `501` with `error.code` set to `not_configured`. An unauthenticated request can get `401` before it reaches the video handler.
+Start with a [self-hosted gateway](/docs/command-center/deployment/self-hosted) running v1.59.1. Set `GATEWAY_URL` in your shell to its base URL, without `/v1` or a trailing slash, and `RIDGELINE_GATEWAY_KEY` to a valid test organization key. For a new gateway, start with just the `auth` block from step 2 and set the same key in the gateway environment. Omit the `video` block for this check: generation is disabled by default.
+
+Run the following authenticated request. Expect HTTP `501` and `error.code: "not_configured"`. A `401` means authentication stopped the request before it reached the video handler.
 
 ```bash
 curl -sS -i "${GATEWAY_URL:?Set GATEWAY_URL}/v1/videos?limit=1" \
@@ -21,13 +23,13 @@ curl -sS -i "${GATEWAY_URL:?Set GATEWAY_URL}/v1/videos?limit=1" \
 | Redis | Use persistent Redis with `maxmemory-policy noeviction`. Use AOF with `appendfsync everysec`, or choose a snapshot interval whose data loss you can tolerate. Every replica must use the same Redis database and prefix. Protect Redis and its backups: job records include prompts. There is no automatic fallback to memory for video. |
 | Video files | For one replica, mount a persistent directory writable by the gateway at `/var/lib/agentcc/video`. For multiple replicas, mount the **same** writable filesystem there on all replicas or use S3. Redis alone cannot restore a lost MP4. |
 
-For S3, set `video.artifacts.backend: s3` and supply `bucket`, `region`, `prefix` (for example `video/`), `access_key` and `secret_key` under `video.artifacts.s3`. Use credentials that can write, read and delete private objects under that prefix. Allow temporary disk space on the gateway: it stages the file before uploading it.
+For AWS S3, set `video.artifacts.backend: s3`. Under `video.artifacts.s3`, set `bucket`, `region`, a `prefix` ending in `/` (for example `video/`), and the `access_key` and `secret_key` for that bucket. The gateway sends a `private` ACL on upload. Use a bucket that accepts this ACL and credentials that can write, read and delete objects under the prefix. Mount a writable temporary directory for each gateway replica: it stages the file there before uploading it. The release container runs as UID `65532`; grant that UID write access to the chosen disk or temporary directory.
 
 ## 2. Configure one provider and a spending limit
 
 The client uses an organization gateway key. The gateway uses a **different** key, your OpenRouter credential, to pay for generation. Supply these as `RIDGELINE_GATEWAY_KEY` and `OPENROUTER_API_KEY` in the gateway process environment. Also supply a separate `AGENTCC_ADMIN_TOKEN` for operator calls and your test Redis address (`host:port`) and password as `REDIS_ADDRESS` and `REDIS_PASSWORD`.
 
-Use this `config.yaml` on a dedicated test gateway. On an existing installation, merge the settings instead of replacing other keys, budgets or providers. The example allows one model and caps the `ridgeline-video` key at $2 per day. The provider limits shown are example values; keep them within your provider account's quotas.
+Use this `config.yaml` on a dedicated test gateway. On an existing installation, merge the settings instead of replacing other keys, budgets or providers. The example allows one model and rejects a new job if its estimated cost would put the `ridgeline-video` key over its $2 daily budget. This is a gateway admission check, not a spending limit on your OpenRouter account. Set the provider limits to values within your account’s quotas.
 
 ```yaml
 redis:
@@ -71,20 +73,26 @@ video:
       safety_identifier_mode: none
 ```
 
-Restart the gateway with the configuration, secrets and storage mount in place. If you run the binary directly, start it with `./agentcc-gateway --config config.yaml`. On a **fresh Redis prefix**, `kill_switch: true` starts the worker but blocks new submissions. An existing prefix keeps its stored switch value across restarts. To check the enabled deployment without buying a clip, supply the organization key in your client shell and list jobs:
+If clients connect through a load balancer and you restrict access by IP, set `ip_acl.trusted_proxies` to the number of addresses your trusted proxy chain appends to `X-Forwarded-For`. The default, `0`, checks the direct peer instead.
+
+Restart the test gateway with the configuration, secrets and storage mount in place. If you run the binary directly, use `./agentcc-gateway --config config.yaml`. With a fresh Redis prefix, `kill_switch: true` starts the worker but blocks submissions. An existing prefix keeps its stored switch value across restarts. List jobs with the organization key to check that video is enabled without buying a clip:
 
 ```bash
 curl -fsS "${GATEWAY_URL:?}/v1/videos?limit=1" \
   -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" | jq '{object, total}'
 ```
 
-Expect `object: "list"` and `total: 0` for a new organization. The list does not test the provider credential. Use `GET /-/admin/video/capabilities` with your admin bearer token to see the model and input combinations the binary recognizes; only models you enable in the provider's `models` list are offered.
+Expect `{"object":"list","total":0}` for an organization with no jobs. This confirms you can read jobs, not that OpenRouter accepts your credential. With your admin bearer token, `GET /-/admin/video/capabilities` lists the binary’s built-in models and input combinations, including models you did not enable. The gateway only accepts submissions for models you list under an enabled provider.
 
 The native `byteplus` adapter has its own model IDs, region and tariff (`byteplus-2026-10-02`). A successful OpenRouter clip does not verify native BytePlus access or billing. BytePlus output privacy is unknown: leave the adapter disabled unless you can accept that exposure. Enabling it requires `acknowledge_public_output: true`.
 
 ## 3. Verify one job across a restart
 
-Use cURL and `jq` in the same shell for the following steps. Only open submissions when you are ready to spend from the provider account. From your operator shell, use the admin token to open the switch:
+<Warning>
+  Opening submissions affects every organization on the test gateway. The next clip can incur a real charge on your OpenRouter account. Leave the switch closed if you only need to verify the installation.
+</Warning>
+
+Use cURL and `jq`. In your operator shell, set `AGENTCC_ADMIN_TOKEN` to the gateway's admin token and allow new submissions:
 
 ```bash
 curl -fsS "${GATEWAY_URL:?}/-/admin/video/killswitch" \
@@ -92,7 +100,7 @@ curl -fsS "${GATEWAY_URL:?}/-/admin/video/killswitch" \
   -H 'Content-Type: application/json' -d '{"enabled":false}'
 ```
 
-Submit the clip with the **organization** key. Keep the idempotency key and body unchanged if the client loses the response: replaying them retrieves the same job while the binding is retained. Changing the body under the same key returns `409 idempotency_conflict`.
+In your client shell, submit the clip with the organization key. If you lose the response, retry the same request with the same `Idempotency-Key`. While submissions are open and the binding is retained, a successful replay returns the original job. The key is scoped to the organization and operation: changing the prompt for this text-to-video request returns `409 idempotency_conflict`. Keep this shell open for the status and download commands.
 
 ```bash
 set -o pipefail
@@ -142,7 +150,7 @@ The response is `{"enabled":true}`. Replicas sharing the prefix now reject new s
 | `video.artifacts.ttl` / `video.artifacts.max_bytes` | `24h` / `2147483648` | File retention and maximum bytes per artifact. A job can remain visible after its file expires. |
 | `video.retention.job_metadata` / `video.retention.idempotency` | `720h` / `720h` | Job and replay retention. Unresolved work and unsettled reservations are protected from normal cleanup. After a binding expires, reusing its key can buy another video. |
 
-The gateway reserves the tariff's upper-bound estimate against applicable budgets **before** sending a priced request upstream. `estimate.usd` is the reservation, not the bill. For OpenRouter, `cost.usd` reflects the charge reported by the provider after settlement. If billing is unknown, the reservation stays held. Use the admin token with `GET /-/admin/video/unsettled` to identify jobs to compare with provider billing.
+With video and Redis enabled, replicas share the config-file budget counters. Ordinary requests and video reservations count against the same applicable limit. The gateway reserves the tariff’s upper-bound estimate before it sends a priced request upstream. `estimate.usd` is the reservation, not the bill. For OpenRouter, `cost.usd` reflects the charge reported by the provider after settlement. If OpenRouter omits the charge or reports `usage.is_byok: true` because the model vendor bills its own key directly, the gateway keeps the reservation rather than treating the cost as zero. Use the admin token with `GET /-/admin/video/unsettled` to identify jobs to compare with provider billing.
 
 | Symptom | What to check |
 | --- | --- |
@@ -150,6 +158,7 @@ The gateway reserves the tariff's upper-bound estimate against applicable budget
 | `429 budget_exceeded` | Check remaining headroom, including outstanding reservations, before starting another job. |
 | `503 video_store_unavailable` or `503 budget_store_unavailable` | Restore Redis connectivity. Do not switch to an empty store; it has no record of work already paid for. |
 | `submission_unknown` | The provider may have received the request. Do not retry with a new idempotency key. OpenRouter cannot look up an unknown submission. Check the existing job and provider records; deleting the local job does not stop upstream spend. |
+| `409 result_not_ready` on download | Read the same job ID again. Download when the job is `completed` and the artifact is `available`; do not resubmit. |
 | `410 output_expired` or `410 output_unavailable` on download | Check the artifact's expiry and state. For an unavailable copy, check storage access and the size limit. The gateway does not regenerate the video. |
 
 ## Next steps
