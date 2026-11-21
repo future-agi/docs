@@ -1251,6 +1251,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'gauge',
         items: [
           { title: 'Overview', href: '/docs/sdk/optimization' },
+          { title: 'Optimize from a manifest', href: '/docs/sdk/agent-learning-kit/optimization-manifests' },
         ]
       },
       {
