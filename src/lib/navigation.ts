@@ -946,6 +946,7 @@ export const tabNavigation: NavTab[] = [
             title: 'References',
             items: [
               { title: 'Supported agents', href: '/docs/environments/reference/supported-agents' },
+              { title: 'Harness configuration', href: '/docs/environments/reference/harness-configuration' },
             ]
           },
           {
