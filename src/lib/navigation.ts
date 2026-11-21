@@ -938,6 +938,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Import evidence', href: '/docs/environments/guides/import-evidence' },
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
+              { title: 'Run outbound calls and voicemail cases', href: '/docs/environments/guides/outbound-voice' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
               { title: 'Trace an Environment call', href: '/docs/environments/guides/trace-an-agent-run' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
