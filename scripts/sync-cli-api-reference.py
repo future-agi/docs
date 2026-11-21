@@ -18,8 +18,9 @@ VERSION = '0.2.2'
 
 # Keep the command descriptions about the CLI, not the upstream MCP tool names.
 PURPOSE = {
-    'submit_annotation': 'Submit values for an item. This moves the item to in progress; complete it separately with `annotations queues items complete`.',
-    'get_annotation_item_detail': 'Read the source, queue instructions, label settings and existing annotations for an item. `--reserve` also acquires an editing reservation.',
+    'submit_annotation': 'Submitting annotations changes a pending item to `in_progress`; complete it separately with `annotations queues items complete`.',
+    'get_annotation_item_detail': 'Read the source, queue instructions, label settings and existing annotations for an item. `--reserve` requests an editing reservation; it does not lock an item opened for review.',
+    'delete_prompt_template': 'Mark the prompt template and its versions as deleted.',
     'create_dashboard': 'Create an empty dashboard. Add widgets with `dashboards widgets create`.',
     'create_dashboard_widget': 'Add a widget. Its `query_config` uses the same shape as `dashboards metrics query`.',
     'add_dataset_prompt': 'Create a prompt output column and schedule processing of dataset rows. This can incur model charges.',
@@ -31,7 +32,7 @@ PURPOSE = {
     'get_dataset_prompt_stats': 'Return prompt IDs and usage statistics. To inspect cell outputs, use `datasets get`.',
     'get_error_cluster': 'Get one error issue and its stored root-cause analysis, if one exists.',
     'get_error_cluster_overview': 'Get daily error counts, pattern statistics and representative traces for one issue.',
-    'create_experiment': 'Create and start an experiment, which can schedule model work. The response includes the experiment ID inside the `result` message.',
+    'create_experiment': 'Create an experiment and request a run. Both `prompt_config` and `user_eval_metrics` must be nonempty. The `result` message contains `experiment_id=<uuid>`; use `experiments get` to check its status. Creation can succeed even if the workflow does not start.',
     'list_guardrail_rules': 'List guardrail rules and how often each rule triggered.',
     'list_gateway_session_requests': 'Read the newest 100 requests for a gateway session UUID. For older requests use `gateway request-logs list --session-id` with the session ID string.',
     'test_gateway_playground': 'Send a real chat completion through the gateway routing and guardrail rules. The request can incur model charges.',
@@ -40,29 +41,35 @@ PURPOSE = {
     'list_eval_configs': 'List the configuration IDs accepted by `observability eval-tasks create`. These are not template IDs.',
     'create_eval_task': 'Start an online evaluation task. Use evaluation configuration IDs from the same project. Retrying after a timeout can duplicate the task and its charges.',
     'resume_eval_task': 'Resume a paused task and schedule the remaining evaluations. Charges can apply.',
-    'update_eval_task': 'Update and rerun the task. Pause it first. `edit_rerun` preserves results; `fresh_run` deletes earlier results. Either can incur charges.',
-    'list_trace_properties': 'Discover properties for trace or span filters. Use `--source traces` or `--source spans`; for cursor mode pass `--cursor-mode` and `--page-size` and omit `--page`.',
+    'update_eval_task': 'Update and rerun the task. Pause a running task before updating it. `edit_rerun` preserves results; `fresh_run` deletes earlier results. Either can incur charges.',
+    'list_trace_properties': 'Discover properties for trace or span filters. In cursor mode, use `--source traces` for trace filters or `--source spans` for span filters.',
     'run_prompt': 'To execute a version, set the `is_run` body key to `"prompt"` and supply `--version`. Poll `prompts run get` with the same template ID and `--template-version` matching the submitted `--version`.',
     'get_prompt_run': 'Get status and outputs for a prompt run. Supply the submitted version as `--template-version` to avoid polling a different default version.',
 }
 
 # Exceptions that affect safe use even when a caller passes valid flags.
+METRIC_PAGING = 'For cursor mode, pass `--cursor-mode` with `--page-size` (normally 1 to 50); omit `--page`, `--workflow` and `--exclude-custom-attributes`. Read `result.next_cursor` in JSON and pass it as `--cursor` for the next page. `--role` and `--source spans` require cursor mode.'
+
 CAVEAT = {
+    'submit_annotation': 'Supply at least one entry in `annotations`, with `label_id` and `value`. In CLI 0.2.2 the value must be a JSON object, so labels that require scalar or array values cannot be submitted with this command.',
+    'create_eval_task': 'For a historical run without a sampling policy, set `--spans-limit`. For continuous runs the platform ignores that limit. Omit `--start-time`, `--end-time`, `--last-run` and `--status`: the platform manages these on creation.',
+    'update_eval_task': 'Omit `--row-type`, which the server rejects on update, and `--status`, which it ignores. Changing the sampling population requires `fresh_run`.',
+    'list_trace_properties': METRIC_PAGING,
     'get_annotation_queue': 'Use `annotations queues list --include-counts` for item counts.',
     'list_annotation_queues': 'Counts are populated only with `--include-counts`; a missing count does not mean zero.',
     'list_annotation_queue_items': 'Only `--assigned-to me` filters assignments.',
     'query_dashboard_metrics': 'An empty table can mean the query is still running. Inspect `result.query_status` in JSON; poll without `--refresh`.',
     'query_dashboard_widget': 'Inspect `result.query_status` in JSON before treating an empty result as zero metrics.',
-    'list_dashboard_metrics': 'For cursor mode supply `--cursor-mode --page-size` with a size of at most 50 and omit `--page`. Use `--json` with `--workflow dataset`.',
+    'list_dashboard_metrics': METRIC_PAGING + ' Outside cursor mode, `--workflow dataset` returns grouped data; use `--json` without `--fields`.',
     'create_dataset_column': 'Omit `--source` when creating a static input column.',
     'create_dataset': 'The platform ignores `--row`.',
     'complete_annotation_item': 'Read `result.next_item.id` in JSON for the next item.',
     'add_dataset_prompt': 'Supply both `config.model` and `config.messages` in the JSON body.',
     'configure_dataset_evaluation': 'The response does not include the attached ID. Read it with `datasets evaluations list --eval-type user`.',
     'list_dataset_evaluations': 'Supply at most one value each for `--eval-tags` and `--use-cases`.',
-    'update_dataset_cell': 'Pass media as a data URI or HTTP(S) URL in `new_value`. An empty value clears the cell.',
+    'update_dataset_cell': 'For media cells, pass a data URI or HTTP(S) URL as a string. Omitting `new_value` or passing an empty string clears the cell.',
     'list_knowledge_bases': 'An out-of-range page can return HTTP 500. Check the requested position instead of retrying it.',
-    'add_dataset_rows': 'Use existing writable column names. Unknown or duplicate names reject the batch.',
+    'add_dataset_rows': 'Use existing writable column names. Unknown or duplicate names reject the batch. For media cells, read the stored value back: an upload failure can leave an empty string even when the request succeeds.',
     'test_evaluation': 'Use `--template-type Llm`, `Futureagi` or `Function`. Put input mappings in `config.mapping`. For `Llm`, set `config.model`; for `Function`, supply `eval_type_id`. A timeout does not cancel model work.',
     'create_eval_template': 'For a non-draft LLM or agent evaluator, supply instructions with a `{{variable}}`; for a code evaluator, supply the code.',
     'delete_datasets': 'Deletion cascades to rows, columns and attached evaluations. One missing ID rejects the whole request.',
@@ -97,6 +104,15 @@ def inputs(op):
         desc = f['description'].replace('.;', ';').strip().strip(';')
         if op['tool'] == 'create_optimization_run' and f.get('data_key') == 'optimizer_config':
             desc = 'Algorithm-specific object. For random_search use num_variations; for gepa use max_metric_calls. Do not use num_trials.'
+        if op['tool'] == 'update_dataset_cell' and f['name'] == 'new-value':
+            desc = 'String value sent in JSON. This command does not upload multipart files.'
+        if op['tool'] == 'create_dataset_column' and f['name'] == 'column-type':
+            desc = 'One of `text`, `boolean`, `integer`, `float`, `json`, `array`, `image`, `images`, `datetime`, `audio`, `document`, `others`, `persona`.'
+        if op['tool'] in ('create_dashboard_widget', 'update_dashboard_widget'):
+            if f['name'] == 'width':
+                desc = '1 to 12 columns.'
+            elif f['name'] == 'height':
+                desc = 'At least 1.'
         desc = text(desc).replace('CLI safety maximum', 'CLI maximum').replace(' (not a server bound; --allow-large-pages bypasses it)', '')
         if f.get('pattern') and desc.startswith('pattern '):
             desc = f"pattern `{f['pattern']}`"
