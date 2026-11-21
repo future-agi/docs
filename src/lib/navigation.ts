@@ -592,6 +592,12 @@ export const tabNavigation: NavTab[] = [
               { title: 'Use the MCP Server in your IDE', href: '/docs/falcon-ai/guides/use-the-mcp-server' },
             ]
           },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Platform MCP tools', href: '/docs/falcon-ai/reference/platform-mcp-tools' },
+            ]
+          },
         ]
       },
       {
