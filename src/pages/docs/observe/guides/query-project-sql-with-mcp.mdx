@@ -5,7 +5,7 @@ description: "Run read-only SQL on an Observe project through MCP. Poll your que
 
 ## About
 
-Use the Future AGI MCP server to query traces without changing project data. Suppose Ridgeline Outfitters wants to know which support requests involved the most operations last week. You can count spans per trace, then read the ranked results a page at a time without running the query again.
+Use the Future AGI MCP server to query traces without changing project data. To find which Ridgeline Outfitters support requests involved the most operations in the last seven days, count spans per trace and page through the ranking.
 
 ## Run a query from your MCP client
 
@@ -14,6 +14,7 @@ Use the Future AGI MCP server to query traces without changing project data. Sup
     [Connect your MCP client](/docs/falcon-ai/guides/use-the-mcp-server) with access to the `observability` tools. You need at least viewer access to the Observe project. These are MCP tool calls, not Future AGI CLI commands.
 
     Ask your client: “Call `list_projects` with `project_type` set to `observe` and `name` set to `support-agent`. Use the matching project's `id` as `project_id` in `get_sql_catalog`. Show me the columns for `spans`.” Replace `support-agent` with your project name. The catalog lists datasets, column names and types, example queries, and an `unavailable_reason` when a dataset isn't available.
+    {/* MEDIA: MCP client showing the spans dataset and its trace_id and start_time columns in the project catalog. */}
   </Step>
   <Step title="Count the spans in each trace">
     Ask your client to call `run_sql` once with your `project_id`, the SQL below, and `start` and `end` set to the UTC timestamps for the last seven days. Use an interval containing your traces. For `spans`, the window includes `start` and excludes `end`, based on each span's `start_time`.
@@ -26,10 +27,12 @@ Use the Future AGI MCP server to query traces without changing project data. Sup
     LIMIT 10
     ```
 
-    Keep the returned `id`. This identifies your query job, not a trace. A new job starts as `queued`; `run_sql` can also return a previously completed result with `reused: true`.
+    Keep the returned `id`. This identifies your query job, not a trace. Check the returned `state` rather than assuming the job is still queued. By default, `run_sql` can return a recent successful job for the same query and window with `reused: true`.
+
+    {/* MEDIA: MCP client showing the run_sql receipt with the job id and state. */}
   </Step>
   <Step title="Read the first page, then the next">
-    Call `get_sql_result` with the same `project_id`, the job `id`, and `limit: 2`. While `state` is `queued` or `running`, wait and poll the same job. When it is `succeeded`, each array in `result.rows` contains one trace ID and its span count, in `result.columns` order. The first row identifies the trace with the most spans in the window.
+    Call `get_sql_result` with the same `project_id`, the job `id`, and `limit: 2`. While `state` is `queued` or `running`, wait and poll the same job. When it is `succeeded`, each array in `result.rows` contains one trace ID and its span count, in `result.columns` order. If `rows` is empty on the first page, no spans matched the window. Otherwise, the first row identifies a trace with the most spans.
 
     If `result.has_more` is true, call `get_sql_result` again with `offset` set to `result.next_offset`. Keep the same IDs and limit. Stop when `has_more` is false. The SQL `LIMIT 10` selects the top ten traces; the tool's `limit: 2` only changes how many you read per page.
   </Step>
@@ -37,9 +40,14 @@ Use the Future AGI MCP server to query traces without changing project data. Sup
 
 {/* MEDIA: MCP client showing the first two pages of ranked support traces, with the same job ID and the first page's next_offset used on the second call. */}
 
-## Example: read the ranking in Python
+## Example: read every page of the ranking
 
-Install the MCP client with `python -m pip install 'mcp==1.30.0'`. Set `FI_API_KEY` and `FI_SECRET_KEY` to your workspace API key pair and `PROJECT_ID` to the project UUID from `list_projects`. For a self-hosted installation, set `FI_BASE_URL` to your API base URL. The script submits one query and prints the job ID so you can download its result later.
+Set `FI_API_KEY` and `FI_SECRET_KEY` to your workspace API key pair and `PROJECT_ID` to the project UUID from `list_projects`. For a self-hosted installation, set `FI_BASE_URL` to your API base URL. Both clients submit one query and print the job ID for the download step.
+
+- Python: install the client with `python -m pip install 'mcp==1.30.0'`, save the example as `ranking.py`, and run `python ranking.py`.
+- TypeScript: with Node.js 22.18 or later, run `npm install @modelcontextprotocol/sdk@1.27.1`, save the example as `ranking.mts` in that directory, and run `node ranking.mts`.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
 
 ```python
 import asyncio
@@ -99,17 +107,75 @@ async def main():
 asyncio.run(main())
 ```
 
+```typescript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Set ${name}`);
+  return value;
+}
+
+const project_id = required("PROJECT_ID");
+const base = process.env.FI_BASE_URL || "https://api.futureagi.com";
+const client = new Client({ name: "support-ranking", version: "1.0.0" });
+const headers = { "X-Api-Key": required("FI_API_KEY"), "X-Secret-Key": required("FI_SECRET_KEY") };
+await client.connect(new StreamableHTTPClientTransport(new URL("/mcp", base), {
+  requestInit: { headers },
+}));
+
+async function call(name: string, args: Record<string, unknown>) {
+  const reply = CallToolResultSchema.parse(
+    await client.callTool({ name, arguments: { project_id, ...args } })
+  );
+  const text = reply.content.find(item => item.type === "text");
+  if (!text) throw new Error("No text result");
+  const data = JSON.parse(text.text);
+  if (reply.isError) throw new Error(data.error.message);
+  return data;
+}
+
+try {
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const sql = `SELECT trace_id, count() AS span_count FROM spans
+               GROUP BY trace_id ORDER BY span_count DESC, trace_id LIMIT 10`;
+  const { id } = await call("run_sql", { sql, start: start.toISOString(), end: end.toISOString() });
+  console.log("Job ID:", id);
+  let offset = 0;
+  while (true) {
+    const job = await call("get_sql_result", { id, offset, limit: 2 });
+    if (["queued", "running"].includes(job.state)) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      continue;
+    }
+    if (job.expired) throw new Error("Result expired");
+    if (job.state !== "succeeded") throw new Error(job.error || job.state);
+    for (const [traceId, count] of job.result.rows) console.log(traceId, count);
+    if (!job.result.has_more) break;
+    offset = job.result.next_offset;
+  }
+} finally {
+  await client.close();
+}
+```
+
+</CodeGroup>
+
 ## Cancel a job or download its result
 
 To stop a query, call `cancel_sql` with its `id` and `project_id`. To try this with a separate job, submit the same query with `reuse: false` and cancel the **new** job ID. A queued or running job changes to `cancelled`; if it already finished, the call returns its existing state. Cancellation doesn't change the traces.
 
-MCP returns up to 100 rows per page by default. A page can contain fewer rows than requested to fit the response size, so always use `next_offset`, not `offset + limit`. If `result.previewed` is true, read `result.retrieval_note`: some text was shortened for MCP. To get full stored values, download the successful job as CSV or Parquet **within 24 hours of submission**. There is no public result link.
+MCP returns up to 100 rows per page by default. A page can contain fewer rows than requested to fit the response size, so always use `next_offset`, not `offset + limit`. If `result.previewed` is true, read `result.retrieval_note`: some text was shortened for MCP. To get full stored values, download the successful job as CSV or Parquet before the job's `expires_at`, 24 hours after its original submission. Reusing a job does not extend that deadline. There is no public result link.
 
 Set `JOB_ID` to the ID printed by the script. Use the same project and credentials to download the ranking:
 
 ```bash
+base=${FI_BASE_URL:-https://api.futureagi.com}
 curl --fail --silent --show-error --get \
-  "${FI_BASE_URL:-https://api.futureagi.com}/tracer/sql-query/${JOB_ID:?Set JOB_ID}/download/" \
+  "${base%/}/tracer/sql-query/${JOB_ID:?Set JOB_ID}/download/" \
   --header "X-Api-Key: ${FI_API_KEY:?Set FI_API_KEY}" \
   --header "X-Secret-Key: ${FI_SECRET_KEY:?Set FI_SECRET_KEY}" \
   --data-urlencode "project_id=${PROJECT_ID:?Set PROJECT_ID}" \
@@ -117,7 +183,7 @@ curl --fail --silent --show-error --get \
   --output support-trace-ranking.csv
 ```
 
-For Parquet, use `file_format=parquet` and a `.parquet` output filename. The download contains the stored result, not just the last MCP page.
+For Parquet, use `file_format=parquet` and a `.parquet` output filename. Both formats include all stored rows, not just the last MCP page. CSV prefixes formula-like text with an apostrophe for spreadsheet safety. Use Parquet to preserve those strings unchanged.
 
 ## Limits and errors
 
@@ -127,6 +193,7 @@ For Parquet, use `file_format=parquet` and a `.parquet` output filename. The dow
 | SQL is rejected | Submit one read-only ClickHouse `SELECT` using available catalog datasets. You can join them, but can't write data, use raw tables, or change query settings. |
 | `Configure the dedicated read-only SQL connection first.` | Ask your administrator to configure the SQL workbench connection for this installation. Changing your query won't fix a missing connection. |
 | A page request is rejected | Use a `limit` from 1 to 100 and an `offset` from 0 to 10,000. The first offset defaults to 0. |
+| `A query is already running. Cancel it or wait for completion.` | Wait before submitting another job. You can have one active query at a time, and your organization can have two. A cancelled running query can briefly hold its slot while the worker stops. |
 | `failed` or `cancelled` | Stop polling. For `failed`, read the job's `error` before changing the query or retrying. |
 | `result.truncated` is true | The query hit the 10,000-row result cap. More pages or a download won't recover rows beyond it. Narrow the window or aggregate in SQL. |
 | `Query not available.` | Check both IDs and the signed-in account. Jobs are personal even within a shared project, and each result request checks your current project access. |
