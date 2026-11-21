@@ -1,37 +1,38 @@
 ---
 title: "Video generation jobs"
-description: "Submit a video through Agent Command Center, retry without creating a second job, download the finished MP4, and distinguish cancellation from local deletion."
+description: "Submit a video through Agent Command Center, retry without creating a second job, download the finished clip, and distinguish cancellation from local deletion."
 ---
 
 ## About
 
-A video request returns a job ID, not a video. You can disconnect, come back with the ID, and download the finished MP4. This guide generates a one-second close-up for a Ridgeline Outfitters support article on attaching a tent rainfly.
+A video request returns a job ID, not a video. You can disconnect, come back with the ID, and download the finished clip. This guide generates a one-second close-up for a Ridgeline Outfitters support article on attaching a tent rainfly.
 
 ## Submit a clip
 
 You need a gateway with `video.enabled: true` (off by default), a funded video provider, and an organization gateway key allowed to use the model. The example uses OpenRouter. A managed, platform-funded key cannot submit video jobs.
 
-Copy the **Gateway endpoint** from the gateway overview. Use the URL ending in `/v1`, not the platform API URL.
+On the gateway overview, use **Copy URL** under **Gateway endpoint**. Set `GATEWAY_BASE_URL` to that endpoint, appending `/v1` if it is not already there. Use the gateway URL, not the platform API URL.
 
 {/* MEDIA: Gateway overview showing the Gateway endpoint and its Copy URL button, with no credentials visible. */}
 
-Run the examples in the same Bash shell with cURL and `jq` installed. Set `GATEWAY_API_KEY` in your environment first. Set `GATEWAY_BASE_URL` if your gateway endpoint differs from the default below.
+Run the examples in the same Bash shell with cURL 7.76 or later, `jq`, and `uuidgen` installed. Export `GATEWAY_BASE_URL` and `GATEWAY_API_KEY` in your environment first. Use a different request key for each clip you intend to generate.
 
 ```bash
-base=${GATEWAY_BASE_URL:-https://gateway.futureagi.com/v1}
+set -o pipefail
+base=${GATEWAY_BASE_URL:?Set the gateway endpoint ending in /v1}
 videos="${base%/}/videos"
 auth="Authorization: Bearer ${GATEWAY_API_KEY:?Set your organization gateway key first}"
-request_key="ridgeline-rainfly-article-8421-clip-v1"
+request_key=$(uuidgen) && printf 'Save this request key: %s\n' "$request_key"
 ```
 
-Choose **one** request format. Both examples request the same clip: one second at 480p in landscape. Save the printed job ID so you can resume later without submitting again.
+Save the printed request key **before** submitting. If you restart the shell to retry, restore `request_key` to that value rather than generating another. Choose **one** request format. Both examples request the same clip: one second at 480p in landscape. Save the printed job ID so you can resume later without submitting again.
 
 <Tabs>
 <Tab title="Native JSON">
 
 ```bash
 video_id=$(curl -sS --fail-with-body "$videos" \
-  -H "$auth" -H "Idempotency-Key: $request_key" \
+  -H "$auth" -H "Idempotency-Key: ${request_key:?Set the saved request key}" \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "openrouter/x-ai/grok-imagine-video-1.5-lite",
@@ -47,7 +48,7 @@ video_id=$(curl -sS --fail-with-body "$videos" \
 
 ```bash
 video_id=$(curl -sS --fail-with-body "$videos" \
-  -H "$auth" -H "Idempotency-Key: $request_key" \
+  -H "$auth" -H "Idempotency-Key: ${request_key:?Set the saved request key}" \
   --form-string 'model=openrouter/x-ai/grok-imagine-video-1.5-lite' \
   --form-string 'prompt=Close-up of a hiker clipping a rainfly buckle onto a green tent at Ridgeline Outfitters.' \
   --form-string 'seconds=1' --form-string 'size=854x480' \
@@ -65,9 +66,9 @@ If your connection drops before you get the ID, run the **same create command wi
 
 For example, changing the rainfly prompt to ask for a different camera angle with the same key returns `409 idempotency_conflict`. Give that edit a new key only if you intend to pay for a second clip. Use 1 to 255 printable ASCII characters per key. The default idempotency retention is 30 days; once the binding expires, the same key can create new paid work.
 
-## Poll and download the MP4
+## Poll and download the clip
 
-`GET /v1/videos/{id}` reads the gateway's job record. The gateway polls the provider independently. The loop below requests the native status format even if you submitted multipart. It checks for an available output before downloading it to `ridgeline-rainfly.mp4`.
+`GET /v1/videos/{id}` reads the gateway's job record. The gateway polls the provider independently. The loop below requests the native status format even if you submitted multipart. It saves the available output as `ridgeline-rainfly.mp4` (MP4) or `ridgeline-rainfly.mov` (QuickTime).
 
 ```bash
 (
@@ -82,15 +83,27 @@ For example, changing the rainfly prompt to ask for a different camera angle wit
         if ! jq -e '.artifacts[0].state == "available"' <<<"$job" >/dev/null; then
           jq '.artifacts' <<<"$job"; exit 1
         fi
-        curl -fsS "$videos/$video_id/content" -H "$auth" -o ridgeline-rainfly.mp4
+        case "$(jq -r '.artifacts[0].content_type' <<<"$job")" in
+          video/mp4) output=ridgeline-rainfly.mp4 ;;
+          video/quicktime) output=ridgeline-rainfly.mov ;;
+          *) printf 'Unrecognized video format\n' >&2; exit 1 ;;
+        esac
+        tmp=$(mktemp "./${output}.XXXXXX") || exit 1
+        trap 'rm -f -- "$tmp"' EXIT
+        curl -fsS "$videos/$video_id/content" -H "$auth" -o "$tmp" || exit 1
+        mv -- "$tmp" "$output" || exit 1
+        printf 'Saved %s\n' "$output"
         exit 0 ;;
-      submission_unknown|failed|cancelled)
+      submission_unknown)
+        jq '{status, reconciliation}' <<<"$job" >&2 ;;
+      failed|cancelled)
         jq '{status, error, reconciliation, retry_safe, upstream_may_continue}' <<<"$job"
         exit 1 ;;
     esac
     sleep 5
   done
-  printf 'Local polling stopped. Resume with the same ID: %s\n' "$video_id"
+  printf 'Local polling stopped. Resume with the same ID: %s\n' "$video_id" >&2
+  exit 2
 )
 ```
 
@@ -110,12 +123,46 @@ The content endpoint serves the gateway copy, not a provider URL. It defaults to
 
 List completed jobs for the example model. The key determines the organization; a missing ID and another organization's ID both return `404 video_not_found` on lookup.
 
+<CodeGroup titles={["Python", "TypeScript", "cURL"]}>
+
+```python
+import json
+import os
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+query = urlencode({"model": "openrouter/x-ai/grok-imagine-video-1.5-lite",
+                   "status": "completed", "limit": 10})
+url = os.environ["GATEWAY_BASE_URL"].rstrip("/") + "/videos?" + query
+request = Request(url, headers={"Authorization": "Bearer " + os.environ["GATEWAY_API_KEY"]})
+with urlopen(request) as response:
+    page = json.load(response)
+print([job["id"] for job in page["data"]], page["has_more"], page["last_id"])
+```
+
+```typescript
+// Run as a module in Node.js 18 or later.
+const { GATEWAY_BASE_URL, GATEWAY_API_KEY } = process.env;
+if (!GATEWAY_BASE_URL || !GATEWAY_API_KEY) throw new Error("Set the gateway URL and key");
+const url = new URL(GATEWAY_BASE_URL.replace(/\/$/, "") + "/videos");
+url.search = new URLSearchParams({
+  model: "openrouter/x-ai/grok-imagine-video-1.5-lite", status: "completed", limit: "10"
+}).toString();
+const response = await fetch(url, { headers: { Authorization: `Bearer ${GATEWAY_API_KEY}` } });
+if (!response.ok) throw new Error(`List failed: HTTP ${response.status}`);
+const page = await response.json();
+for (const job of page.data) console.log(job.id);
+console.log(page.has_more, page.last_id);
+```
+
 ```bash
 curl -fsS --get "$videos" -H "$auth" \
   --data-urlencode 'model=openrouter/x-ai/grok-imagine-video-1.5-lite' \
   --data-urlencode 'status=completed' --data-urlencode 'limit=10' \
   | jq '{jobs: [.data[] | {id, status, created_at}], has_more, last_id}'
 ```
+
+</CodeGroup>
 
 Results default to newest first (`order=desc`). `limit` defaults to 20 and accepts 1 to 100. If `has_more` is true, repeat the same query with `after` set to `last_id`. Use a cursor or an `offset`, not both. Status filters use the native state names.
 
@@ -135,7 +182,7 @@ If you have saved the clip and want to **remove it from the gateway**, use local
 
 ```bash
 curl -sS --fail-with-body -X DELETE "$videos/${video_id:?Set the job ID}" \
-  -H "$auth" | jq '{id, deleted, deletion_scope, upstream_may_continue, accounting_retained}'
+  -H "$auth" | jq '.'
 ```
 
 <Warning>
