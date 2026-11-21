@@ -1175,6 +1175,7 @@ export const tabNavigation: NavTab[] = [
           { title: 'Launch tracing and verify a span', href: '/docs/cli/tracing-setup' },
           { title: 'Check stored traces in CI', href: '/docs/cli/trace-check' },
           { title: 'Test a judge and gate a suite in CI', href: '/docs/cli/eval-suite' },
+          { title: 'Test gateway rules', href: '/docs/cli/test-gateway-guards' },
         ]
       },
       // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
