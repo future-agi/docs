@@ -5,11 +5,11 @@ description: "Trace a LangChain.js v1 graph from approval to tool result and str
 
 ## About
 
-When a support agent quotes a return policy, you can use its trace to see which document it retrieved and whether the model used that tool result. This guide traces a local LangChain.js v1 graph that pauses for approval, then streams an answer. For a Python chain, skip to [Python setup](#trace-a-python-chain).
+When a support agent quotes a return policy, you can use its trace to see which document it retrieved and check that the same passage reached the model's next call. This guide traces a local LangChain.js v1 graph that pauses for approval, then streams an answer. The Python example traces the same question with a prompt and model call instead of a graph.
 
-## Set credentials
+## 1. Set credentials
 
-Export your [Future AGI API keys](/docs/admin-settings/api-keys) in the shell where you'll run the example. The model provider needs a separate key. Choose a chat model that supports tool calling and streaming.
+Export your [Future AGI API keys](/docs/admin-settings/api-keys) in the shell where you'll run the example. Set `OPENAI_API_KEY` to an OpenAI key and `OPENAI_MODEL` to a chat model available to that key. For an OpenAI-compatible provider, also set `OPENAI_BASE_URL` to its API base URL and use its key and model ID instead. The JavaScript graph requires streaming and forced tool calling.
 
 ```bash
 export FI_API_KEY="YOUR_API_KEY"
@@ -20,9 +20,11 @@ export OPENAI_MODEL="YOUR_MODEL_ID"
 
 Use sample data while inspecting the messages below. By default, a trace can include prompts, tool arguments, returned documents and model replies. See [privacy and stream limits](#privacy-and-stream-limits) before using customer data.
 
-## Install the JavaScript packages
+## 2. Install the packages
 
-In a Node.js 22 or later project, install the instrumentor and compatible v1 packages. The example uses native ES modules, so you don't need a TypeScript runner.
+Choose the tab for your runtime. Use Node.js 22 or later for the JavaScript graph, or a Python 3.10 to 3.13 environment for the Python chain.
+
+<CodeGroup titles={["JavaScript", "Python"]}>
 
 ```bash
 npm install @traceai/langchain@0.1.8 @traceai/fi-core@1.2.4 \
@@ -30,9 +32,19 @@ npm install @traceai/langchain@0.1.8 @traceai/fi-core@1.2.4 \
   @opentelemetry/instrumentation@0.202.0 zod@3.25.76
 ```
 
-## Trace an approval, tool lookup and streamed reply
+```bash
+python -m pip install traceAI-langchain==0.2.1 fi-instrumentation-otel==1.2.3 langchain-openai==1.7.4
+```
 
-Save this as `returns.mjs`. The `approve` node pauses before the first model call. The example supplies the approval itself so you can see both runs in one script. In an application, resume only after the person reviewing the request responds.
+</CodeGroup>
+
+## 3. Trace the return-policy question
+
+For JavaScript, save the graph as `returns.mjs`. Its `approve` node pauses before the first model call. The example supplies approval itself; in your application, resume only after the reviewer responds.
+
+For Python, save the chain as `returns.py`. Call `instrument()` once at startup. It applies to the whole process, so calling it again with a different provider does not switch projects. Run workflows that need separate providers in separate processes.
+
+<CodeGroup titles={["JavaScript", "Python"]}>
 
 ```javascript
 import { register, ProjectType } from "@traceai/fi-core";
@@ -75,16 +87,18 @@ const graph = new StateGraph(MessagesAnnotation)
   }, { ends: ["answer", END] })
   .addNode("answer", async ({ messages }) => {
     const request = await model.bindTools([lookup], { tool_choice: "lookup_policy" }).invoke(messages);
-    const [call] = request.tool_calls;
-    const result = await lookup.invoke({ ...call, type: "tool_call" });
-    const stream = await model.stream([...messages, request, result]);
+    const results = [];
+    for (const call of request.tool_calls) {
+      results.push(await lookup.invoke({ ...call, type: "tool_call" }));
+    }
+    const stream = await model.stream([...messages, request, ...results]);
     let reply = "";
     for await (const chunk of stream) {
       process.stdout.write(chunk.text);
       reply += chunk.text;
     }
     console.log();
-    return { messages: [request, result, { role: "assistant", content: reply }] };
+    return { messages: [request, ...results, { role: "assistant", content: reply }] };
   })
   .addEdge(START, "approve").addEdge("answer", END)
   .compile({ checkpointer: new MemorySaver() });
@@ -99,36 +113,6 @@ try {
   await provider.shutdown();
 }
 ```
-
-Run `node returns.mjs`. You should see the approval question, then an answer explaining that 20 days falls within the 30-day return window. The checkpointer and the same `thread_id` let the second invocation continue the first. `MemorySaver` keeps the checkpoint only in this process.
-
-Notice that `lookup.invoke()` receives the whole tool call, not just `call.args`. LangChain uses its ID to construct the tool result message. Passing that message to the final model call gives you a link you can follow in the trace.
-
-## Read the two runs
-
-Open **Observe**, select `ridgeline-langchain-returns` and open the trace for each invocation. Start with the earlier run to see why the graph stopped; open the resumed run to see where the answer came from.
-
-| Select this span | What to look for |
-|---|---|
-| `approve` in the first run | `langgraph.interrupt=true` and an `interrupt` event. The pause ends with `OK`, not `ERROR`. The event does not record the interrupt payload. |
-| First chat model in `answer` | In `gen_ai.output.messages`, find the assistant's `tool_calls` entry. Note its `id`, `function.name` (`lookup_policy`) and JSON-encoded `function.arguments`. |
-| `lookup_policy` and its retriever | The tool returns the policy text. On the retriever span, `retrieval.documents.0.document.content` contains the passage and `retrieval.documents.0.document.metadata` identifies `returns-handbook`. |
-| Second chat model in `answer` | In `gen_ai.input.messages`, find the message with `role: "tool"`. Its `tool_call_id` matches the first model's `tool_calls` ID. This is the ID to compare, not the tool span's OpenTelemetry span ID. |
-| Streamed model reply | `gen_ai.response.time_to_first_token` measures seconds from model run start to the first observed token or chunk. It is absent if none was observed. |
-
-{/* MEDIA: Two traces for ridgeline-langchain-returns, with the paused approve span in Events and the resumed model spans expanded to show the matching tool call and result IDs. */}
-
-A subgraph that hands control to its parent with `Command.PARENT` also finishes without an error, but it has no interrupt marker. A node that throws an ordinary exception still produces an `ERROR` span.
-
-## Trace a Python chain
-
-Python uses a process-wide instrumentor rather than JavaScript's explicit ESM module setup. Install the packages into your Python environment and use the credentials you exported above.
-
-```bash
-python -m pip install traceAI-langchain==0.2.1 fi-instrumentation-otel==1.2.3 langchain-openai==1.7.4
-```
-
-Save this as `returns.py` and run `python returns.py`. This shorter example traces the prompt and model call without a graph or tool. Open `ridgeline-langchain-returns-python` in **Observe** to see the chain and its model span.
 
 ```python
 import os
@@ -151,16 +135,40 @@ finally:
     provider.shutdown()
 ```
 
-Call `instrument()` once when the process starts. Calling it again with another provider does not switch projects. Run workflows that need separate providers in separate Python processes.
+</CodeGroup>
+
+**Python**: Run `python returns.py`. It prints an answer about the 30-day return window. In the **Observe** section, open **Tracing** and select `ridgeline-langchain-returns-python` to inspect the prompt and model spans.
+
+**JavaScript**: Run `node returns.mjs`. You should see the approval question, then an answer explaining that 20 days falls within the 30-day return window. The checkpointer and the same `thread_id` let the second invocation continue the first. `MemorySaver` keeps the checkpoint only in this process.
+
+Notice that `lookup.invoke()` receives the whole tool call, not just `call.args`. LangChain uses its ID to construct the tool result message. Passing that message to the final model call gives you a link you can follow in the trace.
+
+## 4. Inspect the JavaScript traces
+
+In the **Observe** section, open **Tracing**, select `ridgeline-langchain-returns` and open the trace for each invocation. Start with the earlier run to see why the graph stopped; open the resumed run to see which policy the model received.
+
+{/* MEDIA: Tracing project with the two graph invocations listed in time order. */}
+
+| Select this span | What to look for |
+|---|---|
+| `approve` in the first run | `langgraph.interrupt=true` and an `interrupt` event on the **Events** tab. The pause ends with `OK`, not `ERROR`. The event does not record the interrupt payload. |
+| First chat model in `answer` | In `gen_ai.output.messages`, find the assistant's `tool_calls` entry. Note its `id`, `function.name` (`lookup_policy`) and JSON-encoded `function.arguments`. |
+| `lookup_policy` and its retriever | The tool returns the policy text. On the retriever span, `retrieval.documents.0.document.content` contains the passage and `retrieval.documents.0.document.metadata` identifies `returns-handbook`. |
+| Second chat model in `answer` | In `gen_ai.input.messages`, find the message with `role: "tool"`. Its `tool_call_id` matches the first model's `tool_calls` ID. This is the ID to compare, not the tool span's OpenTelemetry span ID. |
+| Streamed model reply | `gen_ai.response.time_to_first_token` measures seconds from model run start to the first observed token or chunk. It is absent if none was observed. |
+
+{/* MEDIA: Two traces for ridgeline-langchain-returns, with the paused approve span in Events and the resumed model spans expanded to show the matching tool call and result IDs. */}
+
+A subgraph that hands control to its parent with `Command.PARENT` also finishes without an error, but it has no interrupt marker. A node that throws an ordinary exception still produces an `ERROR` span.
 
 ## Privacy and stream limits
 
-- **Sensitive content:** Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before initialization to hide inputs and outputs, including retrieved document content and metadata. Hiding the output alone does not hide a tool result repeated in the *next model's input*. Use `FI_HIDE_ERROR_DETAILS=true` for error details, and keep secrets out of custom attributes. See [TraceConfig](/docs/sdk/tracing/trace-config).
-- **Closing streams:** In ESM, pass all three modules to `manuallyInstrument()`. The callback manager covers ordinary runs; the other modules also catch early closure of model and composed runnable streams. Consume streams to completion or explicitly close them. A cancelled stream ends with `ERROR` and `langchain.stream.cancelled=true`, not a successful partial answer. An abandoned iterator without a close or abort signal has no observable end.
-- **Missing final spans:** LangChain.js can dispatch callbacks in the background. Await `awaitAllCallbacks()` before flushing or shutting down. In a server, keep the provider running between requests and shut it down when the service stops.
+- **Sensitive content**: Set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before initialization to hide inputs and outputs, including retrieved document content and metadata. Hiding the output alone does not hide a tool result repeated in the *next model's input*. Use `FI_HIDE_ERROR_DETAILS=true` for error details, and keep secrets out of custom attributes. See [TraceConfig](/docs/sdk/tracing/trace-config).
+- **Closing streams**: In ESM, pass all three modules to `manuallyInstrument()`. The callback manager covers ordinary runs; the other modules also catch early closure of model and composed runnable streams. Consume streams to completion or explicitly close them. A cancelled stream ends with `ERROR` and `langchain.stream.cancelled=true`, not a successful partial answer. An abandoned iterator without a close or abort signal has no observable end.
+- **Missing final spans**: LangChain.js can dispatch callbacks in the background. Await `awaitAllCallbacks()` before flushing or shutting down. In a server, keep the provider running between requests and shut it down when the service stops.
 
 ## Next steps
 
-- [Trace LangGraph](/docs/integrations/traceai/langgraph) for a graph running on a remote server. Client instrumentation alone cannot see the server's node spans.
+- [Trace a local LangGraph in Python](/docs/integrations/traceai/langgraph), or [trace remote LangGraph SDK calls](https://github.com/future-agi/traceAI/tree/main/typescript/packages/traceai_langchain#remote-langgraph-sdk-calls). Instrument the remote server separately to see its node spans.
 - [Trace LangChainGo](https://github.com/future-agi/traceAI/tree/main/go/langchaingo) if your application uses Go. Use the Go callback handler, not the JavaScript or Python instrumentor.
 - [Trace LangChain Deep Agents](/docs/integrations/traceai/langchain-deep-agents) to inspect task delegation and filesystem tools.
