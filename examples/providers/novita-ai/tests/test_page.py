@@ -4,11 +4,12 @@ The test reads the page, takes the code block that builds the client, swaps only
 URL for the local stand-in, and runs it in a separate process like a customer would. A second run
 keeps the URL as written and sends it through the refusing CONNECT probe to show which host the
 snippet dials. The remaining tests keep the page and the example app saying the same thing."""
+from importlib.metadata import version
 import re
 import subprocess
 import sys
 
-from conftest import FI_API_KEY, FI_SECRET_KEY, NOVITA_BARE_URL, NOVITA_KEY, NOVITA_URL, ROOT, clean_env, llm_spans, novita_requests
+from conftest import FI_API_KEY, FI_SECRET_KEY, MODEL, NOVITA_BARE_URL, NOVITA_KEY, NOVITA_URL, ROOT, clean_env, llm_spans, novita_requests
 
 PAGE = ROOT.parents[2] / "src" / "pages" / "docs" / "integrations" / "providers" / "novita-ai.mdx"
 
@@ -25,9 +26,10 @@ def run(code, env_extra, tmp_path):
     env = clean_env()
     env.update({"NOVITA_API_KEY": NOVITA_KEY, "FI_API_KEY": FI_API_KEY, "FI_SECRET_KEY": FI_SECRET_KEY,
                 "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "3", "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "127.0.0.1,localhost"})
+    env["NOVITA_MODEL"] = MODEL
     env.update(env_extra)
     script = tmp_path / "page_snippet.py"
-    script.write_text(code + "\ntrace_provider.force_flush()\ntrace_provider.shutdown()\n")
+    script.write_text(code)
     return subprocess.run([sys.executable, "-I", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
 
 
@@ -35,12 +37,12 @@ def test_the_page_snippet_runs_and_is_traced_on_the_named_project(stub, collecto
     code = snippet().replace(NOVITA_URL, stub.url)
     result = run(code, {"FI_BASE_URL": collector.url}, tmp_path)
     assert result.returncode == 0, result.stderr[-1500:]
-    assert "echo: What is the capital of France?" in result.stdout
+    assert "echo: We accept unused packs within 30 days. Can I return an unused pack on day 12?" in result.stdout
     (span,) = llm_spans(collector)
     attrs = span["_attrs"]
-    assert attrs["gen_ai.request.model"] == "your-model-id"
+    assert attrs["gen_ai.request.model"] == MODEL
     assert attrs["gen_ai.provider.name"] == "openai"
-    assert collector.spans()[0]["_resource"]["project_name"] == "my-chatbot"
+    assert collector.spans()[0]["_resource"]["project_name"] == "ridgeline-returns"
     assert collector.spans()[0]["_resource"]["project_type"] == "observe"
     (request,) = novita_requests(stub)
     assert request["path"] == "/openai/v1/chat/completions" and request["body"]["max_tokens"] == 128
@@ -52,6 +54,8 @@ def test_the_page_snippet_as_written_dials_api_novita_ai(collector, probe, tmp_p
     assert {p["target"] for p in probe.seen} == {"api.novita.ai:443"}
     (span,) = llm_spans(collector)
     assert span["status"]["code"] == "STATUS_CODE_ERROR"
+    # The standalone example also runs this test against its legacy adapter.
+    assert span["_attrs"]["gen_ai.provider.name"] == ("openai" if version("traceAI-openai") == "0.1.10" else "novita")
 
 
 def test_the_page_and_the_app_agree_on_the_recipe_url(stub):
@@ -68,7 +72,7 @@ def test_the_page_names_every_url_form_and_keeps_secrets_out():
     text = PAGE.read_text()
     for form in (NOVITA_URL, NOVITA_BARE_URL):
         assert f"`{form}`" in text
-    assert "## Which base URL" in text
+    assert "## Configure the endpoint" in text
     assert chr(0x2014) not in text, "the docs style guide forbids em dashes"
     assert 'NOVITA_API_KEY="YOUR_NOVITA_API_KEY"' in text  # placeholders only, no key in the page
     assert not re.search(r"sk[-_][A-Za-z0-9]{16,}", text)
@@ -77,12 +81,12 @@ def test_the_page_names_every_url_form_and_keeps_secrets_out():
 def test_the_page_explains_privacy_and_provider_label_without_a_test_diary():
     text = PAGE.read_text()
     assert "Live vendor verification" not in text and "stand-in" not in text
-    assert "`openai`, not Novita" in text
-    assert "Open **Observe**" in text
-    assert "traceAI-openai==0.1.10 fi-instrumentation-otel==1.1.0 openai==3.35.1" in text
-    assert "With the pinned versions" in text
+    assert "gen_ai.provider.name=novita" in text
+    assert "Under **Observe**, open **Tracing**" in text
+    assert "'traceAI-openai==0.1.16' 'fi-instrumentation-otel==1.5.1' 'openai==3.57.0'" in text
+    assert "unknown proxy hostname keeps `openai`" in text
     code = snippet()
-    assert "finally:" in code and "trace_provider.force_flush()" in code and "trace_provider.shutdown()" in code
+    assert "finally:" in code and "provider.force_flush()" in code and "provider.shutdown()" in code
     for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
         assert name in text
     assert "error messages" in text and "tool definitions" in text

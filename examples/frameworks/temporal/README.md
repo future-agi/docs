@@ -1,6 +1,6 @@
 # Temporal tracing example
 
-Runnable assets for the docs page [Temporal tracing with Future AGI](../../../src/pages/docs/integrations/frameworks/temporal.mdx).
+For the maintained `traceAI-temporal` adapter and a runnable return-window workflow, see [Trace Temporal workflows in Python](../../../src/pages/docs/integrations/frameworks/temporal.mdx). The weather example in this directory uses a manually configured exporter instead.
 A Temporal workflow that plans with a model, runs a tool and answers with the model, as one trace in
 Observe: Temporal's `StartWorkflow`, `RunWorkflow`, `StartActivity` and `RunActivity` spans (from
 `OpenTelemetryPlugin`) with the model and tool spans of the activities under the activity that ran them.

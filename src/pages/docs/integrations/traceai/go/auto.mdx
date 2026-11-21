@@ -1,0 +1,146 @@
+---
+title: "Trace a Go application with one import"
+description: "Trace outgoing AI requests in Go with the traceAI auto agent. Check the HTTP transport, flush a short-lived program, and confirm delivery in Future AGI."
+---
+
+## About
+
+The Go auto agent records supported outgoing AI requests that pass through `http.DefaultTransport`. You add one import and rebuild your application. You do not need to change each model call or install a separate AI SDK.
+
+## Set up the agent
+
+<Steps>
+<Step title="Install the Go module">
+
+Use Go 1.26 or later. Run the `go get` command in your existing module. To follow the Ridgeline Outfitters example below, start with a new module instead:
+
+```bash
+mkdir ridgeline-go-support
+cd ridgeline-go-support
+go mod init example.com/ridgeline-go-support
+go get github.com/future-agi/traceAI/go/auto@v0.2.0
+```
+
+</Step>
+<Step title="Set the destination and privacy controls">
+
+Load your [Future AGI API key and secret key](/docs/admin-settings/api-keys) into `FI_API_KEY` and `FI_SECRET_KEY` through your secret manager. Both keys must come from the same configuration source. In the same environment, set:
+
+```bash
+export FI_PROJECT_NAME="ridgeline-go-support"
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+The two hide flags keep the shopper's question and the agent's answer out of the trace. Content capture is on by default. You can still inspect the model, timing and token counts when the provider returns usage.
+
+For Future AGI Cloud, leave `FI_BASE_URL` unset. The exporter uses `https://api.futureagi.com` and appends `/tracer/v1/traces`. For a self-hosted installation, set `FI_BASE_URL` to the base URL of the Future AGI trace collector, **without** the traces path.
+
+</Step>
+<Step title="Import once and rebuild">
+
+For a long-running service, add `import _ "github.com/future-agi/traceAI/go/auto"` to your Go source and rebuild your binary. The import wraps the default HTTP transport at process startup; installing the module alone does not change an existing binary.
+
+For a command or a service with a graceful shutdown path, use a **named import** instead. Finish reading or close the response body, then call `auto.Shutdown(ctx)` before exit as in the example below. The exporter batches spans, and Go has no exit hook. To drain the queue while continuing to serve requests, use `auto.ForceFlush(ctx)` instead.
+
+</Step>
+</Steps>
+
+## Example: trace one support reply
+
+Save this as `main.go` in the example module. The local server stands in for a Chat Completions provider: it returns a fixed answer about a tent repair and sample usage counts. The outbound HTTP request and trace export are real; you do not need a model-provider key.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"time"
+
+	"github.com/future-agi/traceAI/go/auto"
+)
+
+func ask() error {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"ridgeline-chat","choices":[{"index":0,"message":{"role":"assistant","content":"Use a nylon repair patch."},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":6,"total_tokens":18}}`)
+	}))
+	defer provider.Close()
+
+	request := `{"model":"ridgeline-chat","messages":[{"role":"user","content":"How do I patch a torn tent fly?"}]}`
+	resp, err := http.Post(provider.URL+"/v1/chat/completions", "application/json", strings.NewReader(request))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		return err
+	}
+	fmt.Println("Support reply:", resp.Status)
+	return nil
+}
+
+func main() {
+	err := ask()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	flushErr := auto.Shutdown(ctx)
+	cancel()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if flushErr != nil {
+		log.Fatal(flushErr)
+	}
+}
+```
+
+Build the binary, run the configuration check, then make the request:
+
+```bash
+go build -o ridgeline-support .
+go run github.com/future-agi/traceAI/go/auto/cmd/traceai-doctor
+./ridgeline-support
+```
+
+| Check | What it tells you |
+| --- | --- |
+| The doctor shows `wire` with status `instrumented`. | The local configuration enables the transport wrapper. The doctor masks credentials. Its JSON `collector` field reads `not tested (startup is network-free)`. It does not contact Future AGI or inspect the packages linked into your application binary. |
+| The binary prints `Support reply: 200 OK`. | The support client received its HTTP response. This does not confirm export. |
+| A new trace appears in your project. | In **Observe → Tracing**, open **ridgeline-go-support** and select `chat ridgeline-chat`. Check for 12 prompt tokens and 6 completion tokens. In the Markdown preview, both **Input** and **Output** should show **REDACTED**. Finding this span confirms delivery to the intended project. |
+
+![The chat ridgeline-chat span in ridgeline-go-support shows 12 prompt tokens and 6 completion tokens. Both Input and Output display REDACTED.](/images/docs/integrations/traceai/go/auto/ridgeline-chat-redacted-trace.png)
+
+## Which calls get traced?
+
+The agent checks the HTTP method, path and request shape, not just the host name. For example, a compatible gateway can serve `POST /v1/chat/completions`, but an arbitrary POST to a support endpoint is not a model call.
+
+| Traffic | Coverage in `go/auto` v0.2.0 |
+| --- | --- |
+| Outgoing calls on the default transport | Recognizes OpenAI-compatible chat, Responses, completions, embeddings, image generation, moderation and rerank; Anthropic Messages; Gemini generation and embedding; Cohere chat and embedding; Bedrock Converse and InvokeModel; Ollama chat, generate and embed; and supported HTTP speech APIs. |
+| A client with a custom `http.RoundTripper` | Wrap the transport you already use with `auto.Transport(base)` and assign it to the client's `Transport` field. A client that bypasses the wrapper is not observed. |
+| Streams | Read to EOF or close the body to finish the span. The agent parses supported JSON, SSE and NDJSON responses. Bedrock binary event streams yield request and status information, not parsed output messages. |
+| Framework steps and other transports | No automatic incoming HTTP server, tool or framework-step spans. gRPC, WebSocket, HTTP/3 and realtime audio are not covered. Use dedicated middleware when you need framework steps. |
+
+## Configuration and troubleshooting
+
+Explicit `auto.Init` options take precedence over environment variables, then the config file (`FI_CONFIG_FILE`, default `./futureagi.toml`), then defaults. Supply options before the first supported request. The agent activates once. It uses an existing OpenTelemetry SDK tracer provider if available at activation; otherwise it creates a private one and leaves the global provider alone.
+
+| Symptom | What to check |
+| --- | --- |
+| The doctor reports `disabled` for `wire`. | Confirm both keys are available to the process, `FI_WIRE_CAPTURE` is not `false`, and `OTEL_SDK_DISABLED` is not `true`. If you set `FI_INSTRUMENTATIONS`, allow `wire`; `FI_DISABLED_INSTRUMENTATIONS=wire` disables all wire capture. Provider names are not filters on wire traffic. |
+| The doctor reports `failed` for `wire` and exits with an error. | Check the local configuration first. For example, `FI_BASE_URL` needs an `http://` or `https://` scheme and a host, `FI_WIRE_MAX_BODY_BYTES` must be positive, and `FI_SAMPLE_RATE` must be between `0` and `1` inclusive. The doctor does not test connectivity. |
+| The doctor looks healthy but there is no trace. | Check the actual client transport, endpoint shape, project name and collector base URL. Read or close the response before shutdown. If you sample, `FI_SAMPLE_RATE` controls the root keep ratio on an agent-created provider; an application-owned provider keeps its own sampler. |
+| The program panics on `http.DefaultTransport.(*http.Transport)`. | When capture is enabled the default transport is a wrapper, not an `*http.Transport`. If you own the assertion, construct an `http.Transport` and pass it to `auto.Transport` instead. If a dependency makes the assertion and you cannot change it, set `FI_WIRE_CAPTURE=false` before starting the process. Wrapping a different client does not change the default transport back. |
+| A large response has partial or missing content. | `FI_WIRE_MAX_BODY_BYTES` defaults to `4194304` bytes per direction. Over-limit captures can carry `traceai.wire.truncated=true`. Content hiding is separate from this limit. |
+
+## Next steps
+
+- Use the [OpenAI Go middleware](/docs/integrations/traceai/go/openai) when you want to instrument a specific SDK client.
+- Trace [Eino graph and tool steps](/docs/integrations/traceai/go/eino) with its dedicated handler, rather than relying on model HTTP calls alone.
+- See the [tagged Go auto reference](https://github.com/future-agi/traceAI/blob/go/auto/v0.2.0/go/auto/README.md) for the full protocol list, privacy settings and OpenTelemetry configuration.

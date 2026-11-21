@@ -1,75 +1,64 @@
-"""The docs page stays true to the example: shown code is real code, and the promises it makes are in the files."""
-import os
+"""Check the published adapter guide, independently of the manual weather example."""
+import asyncio
 import re
+import runpy
+from pathlib import Path
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-EXAMPLE = os.path.join(HERE, "..")
-PAGE = os.path.join(EXAMPLE, "..", "..", "..", "src", "pages", "docs", "integrations", "frameworks", "temporal.mdx")
+import pytest
+from temporalio import workflow
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner
 
+from helpers import MockModel
 
-def page() -> str:
-    return open(PAGE).read()
-
-
-def code_blocks(text: str) -> list[tuple[str, str]]:
-    return re.findall(r"```(\w+)\n(.*?)```", text, flags=re.S)
+PAGE = Path(__file__).resolve().parents[4] / "src/pages/docs/integrations/frameworks/temporal.mdx"
 
 
-def test_every_python_excerpt_is_verbatim_and_in_order():
-    checked = 0
-    for lang, body in code_blocks(page()):
-        first, _, rest = body.partition("\n")
-        match = re.match(r"# file: (\S+)$", first)
-        if lang != "python" or not match:
-            continue
-        # indentation is ignored: the page shows the body of main() without its indent
-        lines = [line.strip() for line in open(os.path.join(EXAMPLE, match.group(1))).read().splitlines()]
-        position = 0
-        for shown in (line.strip() for line in rest.splitlines()):
-            if not shown.strip() or shown.strip() == "...":
-                continue
-            try:
-                position = lines.index(shown, position) + 1
-            except ValueError:
-                raise AssertionError(f"{match.group(1)}: line not found in order: {shown!r}") from None
-        checked += 1
-    assert checked >= 5
+@pytest.fixture
+def program(tmp_path, monkeypatch):
+    # Import the exact files a reader copies. The workflow must be a real module
+    # so Temporal can independently import it inside the replay sandbox.
+    snippets = re.findall(r'<CodeGroup titles=\{\["([\w]+\.py)"\]\}>\s*```python\n(.*?)\n```', PAGE.read_text(), re.S)
+    assert {name for name, _ in snippets} == {"returns_workflow.py", "run_return.py"}
+    for name, source in snippets:
+        (tmp_path / name).write_text(source + "\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return runpy.run_path(str(tmp_path / "run_return.py"))
 
 
-def test_front_matter_and_sections():
-    text = page()
-    assert text.startswith("---\ntitle: ")
-    assert re.search(r'^description: ".+"$', text, flags=re.M)
-    for heading in ("## About", "## Set up", "## What you see in Observe", "## Privacy", "## Flush on shutdown", "## Troubleshooting", "## Scope"):
-        assert heading in text
+def test_workflow_loads_in_replay_sandbox(program):
+    async def prepare():
+        definition = workflow._Definition.must_from_class(program["ReturnWindow"])
+        SandboxedWorkflowRunner().prepare_workflow(definition)
+
+    asyncio.run(prepare())
 
 
-def test_page_states_the_example_version_and_plugin_requirements():
-    text = page()
-    assert "**1.34.0**" in text
-    assert '"temporalio[opentelemetry]==1.34.0"' in text
-    assert "add_temporal_spans=True" in text and "default is `False`" in text
-    assert "experimental" in text
-    assert "create_tracer_provider(sampler, resource, shutdown_on_exit, active_span_processor, id_generator, span_limits)" in text
-    assert "examples/frameworks/temporal" in text
-    assert "Everything on this page was run end to end" not in text
+@pytest.mark.parametrize(("days", "expected"), [(12, "Within the 30-day window"), (31, "Outside the 30-day window")])
+def test_no_model_needed(program, monkeypatch, days, expected):
+    monkeypatch.delenv("RIDGELINE_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert asyncio.run(program["check_return_window"](days)) == expected
 
 
-def test_page_documents_the_headers_project_compression_and_privacy_switches():
-    text = page()
-    for needle in ("X-Api-Key", "X-Secret-Key", "project_name", "project_type", "NoCompression", "KEEP_TEMPORAL_ERROR_TEXT",
-                   "FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_INPUT_MESSAGES", "FI_HIDE_OUTPUT_MESSAGES", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
-        assert needle in text, needle
+def test_optional_reply_makes_one_request(program, monkeypatch):
+    model = MockModel()
+    try:
+        monkeypatch.setenv("RIDGELINE_MODEL", "returns-test")
+        monkeypatch.setenv("OPENAI_BASE_URL", model.base_url)
+        assert asyncio.run(program["check_return_window"](12)) == "It is sunny in Lisbon."
+        assert len(model.requests) == 1
+        assert model.requests[0]["model"] == "returns-test"
+        assert "Within the 30-day window" in model.requests[0]["messages"][0]["content"]
+    finally:
+        model.close()
 
 
-def test_page_is_customer_application_tracing_and_links_no_internal_worker_code():
-    text = page()
-    assert "Temporal Python SDK" in text
+def test_page_contract():
+    text = PAGE.read_text()
+    assert re.match(r'^---\ntitle: .+\ndescription: ".+"\n---\n\n## About\n', text)
+    assert re.findall(r'^## (.+)$', text, re.M)[-1] == "Next steps"
+    for term in ("traceAI-temporal==0.1.1", "FI_API_KEY", "FI_SECRET_KEY", "FI_PROJECT_NAME", "FI_TRACES_URL",
+                 "X-Api-Key", "X-Secret-Key", "capture_content=True", "keep_error_text=True", "session.id"):
+        assert term in text
     for internal in ("otel_sync_to_async", "bind_context", "futureagi/", "tfc/", "/Users/"):
-        assert internal not in text, internal
-
-
-def test_the_environment_variables_the_page_names_are_read_by_the_example():
-    sources = "".join(open(os.path.join(EXAMPLE, f)).read() for f in ("tracing.py", "worker.py", "starter.py"))
-    for name in ("FI_API_KEY", "FI_SECRET_KEY", "FI_BASE_URL", "FI_PROJECT_NAME", "KEEP_TEMPORAL_ERROR_TEXT", "TEMPORAL_ADDRESS", "TEMPORAL_NAMESPACE"):
-        assert name in sources, name
+        assert internal not in text

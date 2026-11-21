@@ -1,12 +1,10 @@
-# AWS Lambda tracing lifecycle (Python and Go)
+# Legacy local Lambda lifecycle example (Python and Go)
 
-Runnable companion of the page `src/pages/docs/integrations/runtimes/aws-lambda.mdx`: a Lambda handler
-that builds the tracer provider once, makes one trace per invocation and flushes before every return,
-including the error path. No layer, no ADOT, no AWS call.
+For new functions, follow the [AWS Lambda integration guide](https://docs.futureagi.com/docs/integrations/runtimes/aws-lambda). It uses the maintained Python, TypeScript, and Go lifecycle wrappers. The files in this directory illustrate the older, hand-written local recipe. Do not run this recipe alongside a wrapper: both create an invocation span and attempt a flush. The content-capture switch below applies only to this legacy example.
 
 | Path | What |
 | --- | --- |
-| `python/tracing.py`, `python/handler.py` | the recipe (copy these two files) |
+| `python/tracing.py`, `python/handler.py` | the legacy Python implementation |
 | `python/tests/` | 18 tests: fake exporter, a local OTLP receiver, no AWS client |
 | `python/local_runner.py` | calls the handler in-process (cold start, then warm) for the end-to-end run |
 | `go/tracing/`, `go/handler/` | the same recipe in Go; `go/cmd/function` is the real `lambda.Start` entry point (built, not run) |

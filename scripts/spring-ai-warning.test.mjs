@@ -1,50 +1,41 @@
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
-// Source contract only; the site build validates MDX rendering separately.
-// Run with: node --test scripts/spring-ai-warning.test.mjs
-const source = readFileSync(
-  new URL("../src/pages/docs/integrations/traceai/spring-boot.mdx", import.meta.url),
-  "utf8",
-);
-const warning = source.match(/<Warning>([\s\S]*?)<\/Warning>/)?.[1] ?? "";
+const read = name => readFileSync(new URL(name, import.meta.url), 'utf8');
+const guide = read('../src/pages/docs/integrations/traceai/spring-boot.mdx');
+const pom = read('../public/examples/spring-ai/pom.xml');
+const java = [...guide.matchAll(/```java\n([\s\S]*?)\n```/g)].map(m => m[1]).join('\n');
 
-test("warning identifies the unsupported Spring AI 1.1 path and reported linkage error", () => {
-  assert.match(warning, /not a supported integration path for Spring AI `1\.1\.x`/);
-  assert.match(warning, /`NoSuchMethodError` involving `Message\.getContent\(\)`/);
-  assert.match(warning, /Do not install this wrapper for Spring AI 1\.1 or downgrade to M4/);
+test('the published dependency and native setup agree; no second tracing pipeline', () => {
+  const version = guide.match(/com\.futureagi:traceai-spring-ai:([\d.]+)/)?.[1];
+  assert.ok(version && version !== '1.0.0');
+  assert.equal(pom.match(/<artifactId>traceai-spring-ai<\/artifactId>\s*<version>([^<]+)/)?.[1], version);
+  assert.match(java, /new SpringAIObservationFilter\(\)/);
+  assert.match(java, /new SpringAITracingObservationHandler\(tracer\)/);
+  assert.match(java, /new SpringAIToolExecutionExceptionProcessor\(registry, existingProcessor\)/);
+  assert.doesNotMatch(java + pom, /TracedChatModel|TracedEmbeddingModel|TraceAI\.init|traceai-spring-boot-starter|main-SNAPSHOT/);
 });
 
-test("M4 is a historical wrapper compilation target, not a tested support range", () => {
-  assert.match(warning, /traceAI wrapper compiled against Spring AI `1\.0\.0-M4`/);
-  assert.match(warning, /compilation target is not a tested support range/);
-  assert.ok(!/source currently targets/i.test(source), "Do not describe the current source target");
+test('both Boot export configurations supply keys and project attribution', () => {
+  for (const prefix of ['management.otlp.tracing', 'management.opentelemetry.tracing.export.otlp']) {
+    for (const [key, env] of [['X-Api-Key', 'FI_API_KEY'], ['X-Secret-Key', 'FI_SECRET_KEY'], ['fi-project-name', 'FI_PROJECT_NAME']]) {
+      assert.ok(guide.includes(`${prefix}.headers.${key}=\${${env}}`));
+    }
+    assert.ok(guide.includes(`${prefix}.endpoint=`));
+  }
+  assert.ok(guide.includes('management.opentelemetry.resource-attributes.project_name=${FI_PROJECT_NAME}'));
 });
 
-test("page has no open-ended M4 compatibility range", () => {
-  assert.ok(!/M4\s*\+/.test(source), "Remove the M4+ support claim");
-});
-
-test("page has no floating main-SNAPSHOT coordinate", () => {
-  assert.ok(!/main-SNAPSHOT/i.test(source), "Remove the floating main-SNAPSHOT coordinate");
-});
-
-for (const [name, url] of [
-  ["Spring AI 1.1 observability", "https://docs.spring.io/spring-ai/reference/1.1/observability/index.html"],
-  ["Spring Boot 3.5 tracing", "https://docs.spring.io/spring-boot/3.5/reference/actuator/tracing.html"],
-]) {
-  test(`page links to the versioned official ${name} reference`, () => {
-    assert.ok(source.includes(`](${url})`), `Missing versioned reference: ${url}`);
-  });
-}
-
-test("notice excludes unsupported wrapper examples and preserves privacy guidance", () => {
-  assert.match(source, /Do not enable sensitive prompt or completion logging/);
-  assert.match(source, /may not include the same traceAI attributes, token counts or cost fields/);
-  assert.ok(!/^\s*(?:```|~~~|\|)/m.test(source), "Remove code fences and tables from this notice");
-  assert.ok(
-    !/com\.github\.future-agi\.traceAI|traceai-spring-boot-starter|TracedChatModel|TracedEmbeddingModel/.test(source),
-    "Remove obsolete dependency coordinates and wrapper examples",
-  );
+test('the old M4 artifact is distinguished from modern runtimes and privacy remains explicit', () => {
+  assert.match(guide, /NoSuchMethodError/);
+  assert.match(guide, /Message\.getContent\(\)/);
+  assert.match(guide, /1\.0\.0-M4/);
+  assert.doesNotMatch(guide, /M4\s*\+/);
+  assert.match(guide, /FI_HIDE_ERROR_DETAILS=true/);
+  assert.match(guide, /32,000 characters/);
+  for (const url of ['https://docs.spring.io/spring-ai/reference/1.1/observability/index.html',
+    'https://docs.spring.io/spring-boot/3.5/reference/actuator/tracing.html']) {
+    assert.ok(guide.includes(`](${url})`));
+  }
 });
