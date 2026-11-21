@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-from conftest import COMET_KEY, COMET_URL, FI_API_KEY, FI_SECRET_KEY, ROOT, clean_env, llm_spans
+from conftest import COMET_KEY, COMET_URL, FI_API_KEY, FI_SECRET_KEY, MODEL, ROOT, clean_env, llm_spans
 
 PAGE = ROOT.parents[2] / "src" / "pages" / "docs" / "integrations" / "providers" / "cometapi.mdx"
 
@@ -25,9 +25,10 @@ def run(code, env_extra, tmp_path):
     env = clean_env()
     env.update({"COMETAPI_KEY": COMET_KEY, "FI_API_KEY": FI_API_KEY, "FI_SECRET_KEY": FI_SECRET_KEY,
                 "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "3", "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "127.0.0.1,localhost"})
+    env["COMETAPI_MODEL"] = MODEL
     env.update(env_extra)
     script = tmp_path / "page_snippet.py"
-    script.write_text(code + "\ntrace_provider.force_flush()\ntrace_provider.shutdown()\n")
+    script.write_text(code)
     return subprocess.run([sys.executable, "-I", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
 
 
@@ -35,12 +36,12 @@ def test_the_page_snippet_runs_and_is_traced_on_the_named_project(stub, collecto
     code = snippet().replace(COMET_URL, stub.url)
     result = run(code, {"FI_BASE_URL": collector.url}, tmp_path)
     assert result.returncode == 0, result.stderr[-1500:]
-    assert "echo: What is the capital of France?" in result.stdout
+    assert "echo: We accept unused packs within 30 days. Can I return an unused pack on day 12?" in result.stdout
     (span,) = llm_spans(collector)
     attrs = span["_attrs"]
-    assert attrs["gen_ai.request.model"] == "your-model-id"
+    assert attrs["gen_ai.request.model"] == MODEL
     assert attrs["gen_ai.provider.name"] == "openai"
-    assert collector.spans()[0]["_resource"]["project_name"] == "my-chatbot"
+    assert collector.spans()[0]["_resource"]["project_name"] == "ridgeline-returns"
     assert collector.spans()[0]["_resource"]["project_type"] == "observe"
 
 
@@ -54,7 +55,7 @@ def test_the_page_snippet_as_written_dials_api_cometapi_com(collector, probe, tm
 
 def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
     text = PAGE.read_text()
-    assert text.count("https://api.cometapi.com/v1") >= 3
+    assert f'base_url="{COMET_URL}"' in snippet()
     assert "https://api.cometapi.com/v1/chat/completions" in text
     # The documented recipe is chat-only and does not promise a dedicated package.
     for route in ("Responses", "image", "video", "audio"):
@@ -66,16 +67,16 @@ def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
 def test_the_page_follows_the_docs_style_and_carries_no_secret():
     text = PAGE.read_text()
     assert chr(0x2014) not in text, "the docs style guide forbids em dashes"
-    assert text.split("---", 2)[2].lstrip().startswith("Trace your CometAPI")
-    assert "traceAI-openai==0.1.10 fi-instrumentation-otel==1.1.0 openai==3.31.0" in text
+    assert text.split("---", 2)[2].lstrip().startswith("## About")
+    assert "'traceAI-openai==0.1.16' 'fi-instrumentation-otel==1.5.1' 'openai==3.57.0'" in text
     code = snippet()
-    assert "finally:" in code and "trace_provider.force_flush()" in code and "trace_provider.shutdown()" in code
+    assert "finally:" in code and "provider.force_flush()" in code and "provider.shutdown()" in code
     assert 'COMETAPI_KEY="YOUR_COMETAPI_KEY"' in text  # placeholders only, no key in the page
     for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
         assert name in text
     assert "Live vendor verification" not in text and "stand-in" not in text
     assert "error messages" in text and "tool definitions" in text
-    assert "Open **Observe**" in text and "traceAI-openai 0.1.10" in text
+    assert "Open **Observe**" in text and "gen_ai.provider.name=cometapi" in text
 
 
 def test_no_key_in_the_diff_and_no_other_cometapi_endpoint_client():

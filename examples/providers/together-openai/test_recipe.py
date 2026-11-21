@@ -217,6 +217,10 @@ def test_exact_page_snippets_export_to_loopback(monkeypatch, compression):
     thread.start()
     monkeypatch.setenv("FI_BASE_URL", f"http://127.0.0.1:{server.server_port}")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", compression)
+    monkeypatch.setenv("FI_API_KEY", "your-futureagi-api-key")
+    monkeypatch.setenv("FI_SECRET_KEY", "your-futureagi-secret-key")
+    monkeypatch.setenv("TOGETHER_API_KEY", "your-together-api-key")
+    monkeypatch.setenv("TOGETHER_MODEL", MODEL)
     monkeypatch.setattr(
         httpx.Client, "send", lambda self, request, **kwargs: respond(request)
     )
@@ -248,7 +252,7 @@ def test_exact_page_snippets_export_to_loopback(monkeypatch, compression):
     resource = {
         item.key: item.value.string_value for item in resource_spans.resource.attributes
     }
-    assert resource["project_name"] == "togetherai_project"
+    assert resource["project_name"] == "ridgeline-returns"
     spans = [span for scope in resource_spans.scope_spans for span in scope.spans]
     (span,) = spans
     attrs = {item.key: item.value.string_value for item in span.attributes}
