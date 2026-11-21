@@ -1169,6 +1169,7 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'Overview', href: '/docs/sdk/evals' },
           { title: 'Running Evaluations', href: '/docs/sdk/evals/evaluate' },
+          { title: 'Saved Runs and Regression Tests', href: '/docs/sdk/agent-learning-kit/eval-suites' },
           { title: 'AutoEval', href: '/docs/sdk/evals/autoeval' },
           { title: 'LLM-as-Judge', href: '/docs/sdk/evals/llm-judge' },
           { title: 'Guardrails', href: '/docs/sdk/evals/guardrails-module' },
