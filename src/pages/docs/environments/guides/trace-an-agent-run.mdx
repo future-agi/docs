@@ -1,0 +1,109 @@
+---
+title: "Trace an Environment call"
+description: "Follow one simulated call from its transcript to the spans your code agent exported, then retrieve the same trace and span by ID with the SDK or MCP."
+---
+
+## About
+
+A transcript tells you what your agent said; a trace tells you which operations its code ran. Suppose the Ridgeline Outfitters support agent gives the same return window for a full-price tent and a clearance tent. Open each call's trace to see which return policy the agent actually looked up.
+
+## Instrument the code that runs during a call
+
+Start with a code agent that sends spans through traceAI or OpenTelemetry over HTTP. The Environment checks Python imports for signs of instrumentation. That check does not run your code, verify delivery, or add tracing to an uninstrumented agent. A JavaScript tracing dependency is not detected by this Python check, and a gRPC-only OpenTelemetry exporter does not qualify.
+
+For example, the following Python module traces Ridgeline's policy lookup. Install `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` in the agent's dependencies and call `lookup_return_window` from the returns handler. If the agent already configures tracing, reuse its tracer instead of creating a second provider. Leave the exporter endpoint unset in the code so the sandbox can supply it.
+
+```python
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+provider = TracerProvider()
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+tracer = provider.get_tracer("ridgeline-returns")
+
+
+def lookup_return_window(policy: str) -> int:
+    with tracer.start_as_current_span("lookup_return_window") as span:
+        days = {"full-price": 30, "clearance": 14}[policy]
+        span.set_attribute("ridgeline.policy", policy)
+        span.set_attribute("ridgeline.window_days", days)
+        return days
+
+
+if __name__ == "__main__":
+    print(lookup_return_window("clearance"))
+    provider.shutdown()
+```
+
+## Enable observability and open a call
+
+1. **Enable it for the agent.** When you [build the Environment](/docs/environments/guides/build-an-environment), select **Turn on observability** on **Source repository** or **Code upload**. It is off by default. For an existing agent, open **Agents > Connected agents**, select the agent, open **Definition**, and switch on **Observability**. If you are a workspace viewer, the switch is disabled. Ask someone with permission to update the agent to enable it before the run; turning it on later cannot add spans to a past call.
+
+{/* MEDIA: The source repository build form with Turn on observability selected. */}
+
+{/* MEDIA: The connected agent's Definition tab showing the Observability switch and its disabled state for a viewer. */}
+
+2. **Run the two cases.** [Run a simulation](/docs/environments/guides/run-a-simulation) against the instrumented agent with one full-price return scenario and one clearance return scenario. In the Environment's **Runs** tab, open that run. Under **Test runs**, select the full-price call and read its **Transcript**. For a chat agent, copy the **Conversation ID** from the call header: this is the `call_execution_id`, not the trace ID.
+
+3. **Match the lookup to the answer.** In the same call, select **Traces**. Open a trace row, then select `lookup_return_window` in the read-only trace detail. Check `ridgeline.policy` and `ridgeline.window_days` against the transcript. Use **Copy Trace ID** if you want to retrieve it outside the dashboard. Close the trace and repeat for the clearance call. The span name can be identical in both calls; the span attribute `fi.simulator.call_execution_id` identifies the call during which the span started.
+
+{/* MEDIA: Two Ridgeline chat calls in the same run, each with its own Conversation ID, Traces tab and policy lookup span. */}
+
+If the clearance call's span says `full-price` and `30`, investigate how the agent selected the policy. If it says `clearance` and `14` but the transcript promises 30 days, the lookup returned the expected value. Investigate how the agent used that result instead.
+
+## Retrieve the same span with the SDK or MCP
+
+The platform stores simulated traces in a hidden project for the agent. They do not appear in the ordinary Observe project list. A by-ID lookup needs **both** the ID of the trace or span you want **and** one execution ID: `call_execution_id` for a call, **or** `test_execution_id` for the run. Supply exactly one of the two execution IDs. It selects the simulation project of an agent whose run you can read; it does not select a span for you.
+
+If you have the run and call IDs but not the trace ID, the same list the dashboard uses is available at `GET /simulate/v3/test-executions/{test_execution_id}/traces/?call_execution_id={call_execution_id}`. The run execution ID is the last path segment in the Environment's run detail URL, not the Environment ID. Use a `trace_id` from the `traces` array in the response. The list returns up to 200 traces for that call.
+
+**Python SDK.** Install `futureagi` and set `FI_API_KEY` and `FI_SECRET_KEY` for the workspace that owns the run. Paste the two IDs from the *same* call when prompted. This example walks the trace tree, opens the marked policy lookup by its span ID, and prints the policy it used.
+
+<CodeGroup titles={["Python"]}>
+```python
+from fi import Client
+
+client = Client()
+call_id = input("Conversation ID: ").strip()
+trace_id = input("Trace ID: ").strip()
+trace = client.traces.get(trace_id, call_execution_id=call_id)
+nodes = list(trace.model_dump().get("observation_spans") or [])
+
+while nodes:
+    node = nodes.pop()
+    nodes.extend(node.get("children") or [])
+    span = node["observation_span"]
+    attrs = span.get("span_attributes") or {}
+    if (
+        span["name"] == "lookup_return_window"
+        and attrs.get("fi.simulator.call_execution_id") == call_id
+    ):
+        result = client.spans.get(span["id"], call_execution_id=call_id)
+        policy = result.observation_span["span_attributes"]
+        print(policy["ridgeline.policy"], policy["ridgeline.window_days"])
+        break
+else:
+    print("No marked policy lookup in this trace for this call.")
+```
+</CodeGroup>
+
+**MCP.** [Connect your MCP client](/docs/falcon-ai/guides/use-the-mcp-server) to the same workspace. Give it the conversation ID and trace ID you copied and ask: “Use `get_trace` with the trace ID as `id` and the conversation ID as `call_execution_id`. Find `lookup_return_window`, then call `get_span` with its span ID as `id` and the same `call_execution_id`. Which policy and return window did it record?” Repeat with the IDs from the second call.
+
+## If a trace is missing
+
+| What you see | What to check |
+|---|---|
+| **Observability was not turned on** | Read the reason on the Environment. A missing instrumenter does not block the build. Add an HTTP exporter to the agent code, have the Environment read the updated code, and enable observability before running again. |
+| **No trace for this call** | The call can succeed without exporting a span. Check that the selected call exercised the instrumented code and that the exporter uses the sandbox's destination, not a hard-coded collector. The call shows the code agent's traces, not production voice calls or the platform's own traces from building the Environment. |
+| **Root span not stored yet** | A trace ID is already available, but its root span has not arrived. Reopen the call later for the root name, start time, status and latency. |
+| **Couldn't load this call's traces.** | Retry the read. This is a retrieval error, not evidence that the agent sent no spans. |
+| SDK or MCP cannot find the trace | Without an execution ID, a lookup reads ordinary visible projects. Use a credential that can read the run, and check that you copied a trace ID for `get_trace` or a span ID for `get_span`, not the conversation ID. |
+
+{/* MEDIA: A completed uninstrumented Ridgeline call with a transcript and the No trace for this call empty state. */}
+
+## Next steps
+
+- [Read run results](/docs/environments/guides/read-run-results) to compare the transcript with the call's evaluation verdicts.
+- [Debug failures](/docs/environments/guides/debug-failures) to investigate a pattern across calls.
+- See the SDK reference for [trace lookups](/docs/sdk/reference/traces#tracesget) and [span lookups](/docs/sdk/reference/spans#spansget).
