@@ -1,0 +1,259 @@
+---
+title: "Use the platform client reliably"
+description: "Limit reads, handle failed requests without duplicating writes, check response shapes, and extend the Future AGI platform client in Python and TypeScript."
+---
+
+## About
+
+Before releasing the Ridgeline Outfitters support agent, you can check its prompts and dashboards without reading every record or repeating a failed write. Use `fi.Client` or `fi.AsyncClient` in Python, or `Client` from `@future-agi/sdk` in TypeScript.
+
+## Read a bounded sample
+
+Install the platform SDK with `python -m pip install futureagi` or `npm install @future-agi/sdk`. Set `FI_API_KEY` and `FI_SECRET_KEY` in your environment using your [API keys](/docs/admin-settings/api-keys). For a self-hosted installation, set `FI_BASE_URL` to its API origin. To run a TypeScript example, save it as `check.mts` and run `npx tsx check.mts`.
+
+Start with a prompt search. Ask for two prompts **per page**, then collect at most three **in total**. Use a separate trace read to see how many rows came back on one page. Neither call changes your workspace.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```python
+from fi import Client
+from fi.platform import RequestOptions
+
+with Client(strict_responses=True) as client:
+    options = RequestOptions(timeout=5, max_retries=1, headers={"X-Request-Id": "ridgeline-prompt-check"})
+    prompts = client.prompts.list(search="Ridgeline", limit=2, options=options)
+    first = prompts.first_page()
+    print("First page:", first.number, len(first.items))
+    print("Sample:", [prompt.name for prompt in prompts.to_list(limit=3)])
+
+    traces = client.traces.list(page_number=0, page_size=2)
+    if traces is None or not isinstance(traces.table, list):
+        raise ValueError("Expected a trace table")
+    print("Trace rows on this page:", len(traces.table))
+```
+
+```typescript
+import { Client } from "@future-agi/sdk";
+
+const client = new Client();
+const options = { timeout: 5000, maxRetries: 1, headers: { "X-Request-Id": "ridgeline-prompt-check" } };
+const prompts = client.prompts.list({ search: "Ridgeline", limit: 2 }, options);
+const first = await prompts.firstPage();
+console.log("First page:", first.number, first.items.length);
+console.log("Sample:", (await prompts.toArray(3)).map(prompt => prompt.name));
+
+const traces = await client.traces.list({ page_number: 0, page_size: 2 });
+if (!Array.isArray(traces?.table)) throw new Error("Expected a trace table");
+console.log("Trace rows on this page:", traces.table.length);
+```
+
+</CodeGroup>
+
+Choose the read pattern from the method's return type, not from the name `list`:
+
+| Return type | Example | How to read it |
+| --- | --- | --- |
+| Pager | `prompts.list` | Iterate for items across pages. Use `first_page()` / `firstPage()` for a single page with `number`, `items` and `raw` (the decoded page). |
+| Response model | `traces.list` | Read `table` for rows, `metadata` for paging information and `config` for columns. Request another page explicitly. Pass `project_id` to restrict the read to one project. |
+| List or array | `dashboards.list` | Read the returned dashboard objects directly. There is no page method. |
+
+Creating a pager sends no request. `to_list(limit=0)` / `toArray(0)` also sends none. A new iteration starts at the first page, so the example fetches that page twice to demonstrate two alternatives. An empty sample is expected if no prompt matches the search. Even without an item limit, the pager stops after 10,000 pages without raising an error. Reaching that guard does not mean you read every result. With `fi.AsyncClient`, use `async for prompt in client.prompts.list()` or `await client.prompts.list().to_list(limit=3)`; don't await the pager itself.
+
+## Decide whether to retry
+
+By default, each request has up to **two retries** after the first attempt. Python's default timeout is `60` seconds; TypeScript's is `60000` milliseconds. Set `max_retries` / `maxRetries` to `0` to disable retries. The prompt options above override the timeout and retry count for each page request, not for the entire search. Retries and backoff can take longer than the timeout for one attempt. Header names are case-insensitive: a per-call header replaces a client header of the same name rather than sending both.
+
+| Failure | Methods the client retries |
+| --- | --- |
+| HTTP 429 (rate limit) | Any method, including POST and PATCH. |
+| Transport failure (such as a timeout or dropped connection), or HTTP 408, 500, 502, 503, 504 | GET, HEAD, OPTIONS, PUT and DELETE only. |
+| Other HTTP errors | None. Handle the error rather than waiting for a retry. |
+
+For an eligible retry, a numeric `Retry-After` is in seconds, capped at 30 seconds. Otherwise the client uses exponential backoff with jitter. It follows at most five redirects and only to the same origin (scheme, host and port). A redirect outside the origin raises `APIConnectionError` without forwarding credentials.
+
+A POST that times out or returns 503 might already have created a prompt. Look it up before issuing another create. For an HTTP error response, catch `APIError` or a subclass such as `NotFoundError` (404) or `RateLimitError` (429). Read the status and, when present, the backend's `type`, `code`, `detail` and the `X-Request-Id` response header. A connection failure raises `APIConnectionError` instead, with no HTTP status. Import the TypeScript error classes from `@future-agi/sdk/platform`, not the package root.
+
+<Accordion title="See which calls are retried without making a real write">
+
+This example injects a transport. The first GET gets a 503; its retry gets a 404 with a request ID. The POST gets a 503 and is not replayed. In both languages the recorded attempts are `GET, GET, POST`.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```python
+import httpx
+from fi import Client
+from fi.platform import APIError, NotFoundError
+
+attempts = []
+def respond(request):
+    attempts.append(request.method)
+    if attempts == ["GET", "GET"]:
+        return httpx.Response(404, headers={"X-Request-Id": "ridgeline-42"},
+                              json={"code": "not_found", "detail": "Not found"})
+    return httpx.Response(503, headers={"Retry-After": "0"})
+
+with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+    with Client(api_key="example", secret_key="example", http_client=http) as client:
+        try:
+            client.prompts.get("ridgeline-returns")
+        except NotFoundError as err:
+            print(err.status_code, err.code, err.detail, err.request_id)
+        try:
+            client.prompts.create(name="Ridgeline returns")
+        except APIError as err:
+            print(err.status_code)
+print(attempts)
+```
+
+```typescript
+import { Client, APIError, NotFoundError } from "@future-agi/sdk/platform";
+
+const attempts: string[] = [];
+const client = new Client({
+  apiKey: "example", secretKey: "example",
+  fetch: async (_url, init) => {
+    attempts.push(init.method!);
+    if (attempts.join() === "GET,GET") {
+      return new Response(JSON.stringify({ code: "not_found", detail: "Not found" }),
+        { status: 404, headers: { "X-Request-Id": "ridgeline-42" } });
+    }
+    return new Response(null, { status: 503, headers: { "Retry-After": "0" } });
+  },
+});
+try { await client.prompts.get("ridgeline-returns"); }
+catch (err) {
+  if (!(err instanceof NotFoundError)) throw err;
+  console.log(err.status, err.code, err.detail, err.requestId);
+}
+try { await client.prompts.create({ name: "Ridgeline returns" }); }
+catch (err) {
+  if (!(err instanceof APIError)) throw err;
+  console.log(err.status);
+}
+console.log(attempts);
+```
+
+</CodeGroup>
+
+</Accordion>
+
+## Send only the fields you intend to change
+
+On a JSON PATCH, **omitting** a field means leave it alone; **sending null** clears a nullable field. For example, these are two distinct updates to the same prompt template:
+
+| Intent | Python arguments to `client.prompts.update` | TypeScript arguments to `client.prompts.update` | JSON sent |
+| --- | --- | --- | --- |
+| Rename the prompt, keep its folder | `prompt_id, name="Ridgeline returns"` | `promptId, { name: "Ridgeline returns" }` | `{"name":"Ridgeline returns"}` |
+| Remove it from its folder, keep its name | `prompt_id, prompt_folder=None` | `promptId, { prompt_folder: null }` | `{"prompt_folder":null}` |
+
+Python uses `NOT_GIVEN` for omitted optional arguments; TypeScript leaves out `undefined`. Don't use `None` / `null` to mean "no change" in a JSON body. Query parameters and multipart form fields omit null values rather than encoding JSON null.
+
+## Check the response before using it
+
+In Python, generated methods parse described responses into models and retain extra fields. In the default mode, missing model fields can be `None`. If a value won't parse, the SDK emits `ResponseShapeWarning` and returns the decoded JSON for that value instead of a model. Set `strict_responses=True` to raise instead of returning a value that fails model validation, and to reject missing required non-nullable fields. This still allows extra fields and values the model can convert to the declared type. Catch `ResponseValidationError` and inspect `op_id` and `data`. This is not an HTTP error: the server can return 200 with the wrong shape.
+
+TypeScript's model declarations are compile-time types, not runtime checks on individual fields. Validate a field before relying on it if the response shape matters. If a page is missing its expected item array, the TypeScript pager throws `APIError`. The default Python pager emits `ResponseShapeWarning` and can yield no items, just like an empty search. The Python read example uses strict mode so that a missing array raises `ResponseValidationError` instead.
+
+<Accordion title="Try a malformed response in each language">
+
+The injected response gives the prompt a list of names where the model expects one string. Python's default client returns the dictionary and warns; the strict client rejects it. The TypeScript call resolves, so the example checks the value explicitly.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```python
+import warnings
+import httpx
+from fi import Client
+from fi.platform import ResponseShapeWarning, ResponseValidationError
+
+payload = {"name": ["Ridgeline returns"]}
+transport = httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+with httpx.Client(transport=transport) as http:
+    for strict in (False, True):
+        with Client(api_key="example", secret_key="example", http_client=http,
+                    strict_responses=strict) as client:
+            try:
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", ResponseShapeWarning)
+                    value = client.prompts.get("ridgeline-returns")
+                    print(value, any(w.category is ResponseShapeWarning for w in caught))
+            except ResponseValidationError as err:
+                print(err.op_id, err.data)
+```
+
+```typescript
+import { Client } from "@future-agi/sdk";
+
+const client = new Client({
+  apiKey: "example", secretKey: "example",
+  fetch: async () => new Response(JSON.stringify({ name: ["Ridgeline returns"] })),
+});
+const prompt = await client.prompts.get("ridgeline-returns");
+if (typeof prompt.name !== "string") console.log("Expected one prompt name");
+```
+
+</CodeGroup>
+
+</Accordion>
+
+## Reuse a read without editing generated code
+
+If a generated method already exists, use it. To send a supported query or body field that isn't in its signature yet, pass `extra_query` or `extra_body` in Python, or `extraQuery` or `extraBody` in TypeScript's trailing options. For an endpoint with no generated method, use `client.request` with a path starting with `/`. It shares the client's authentication, retries and errors, but returns decoded data rather than response models.
+
+Here are three ways to read the support dashboard: the generated list, a helper that finds it by name, and the underlying GET. The helper lives in your application. Registering a subclass keeps the other dashboard methods and their configuration intact. The example also works if you haven't created the dashboard: the helper finds no match.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```python
+from fi import Client
+from fi.platform.resources import Dashboards
+
+class SupportDashboards(Dashboards):
+    def by_name(self, name):
+        return next((board for board in self.list() if board.name == name), None)
+
+class SupportClient(Client):
+    _resources = {**Client._resources, "dashboards": SupportDashboards}
+
+with SupportClient() as client:
+    print("Dashboards:", len(client.dashboards.list()))
+    print("Support dashboard found:", client.dashboards.by_name("Ridgeline support") is not None)
+    path = "/tracer/dashboard/"
+    boards = client.request("GET", path)
+    envelope = client.request("GET", path, unwrap=None)
+    print("Decoded dashboards:", len(boards), "Envelope status:", envelope["status"])
+```
+
+```typescript
+import { Client, Dashboards } from "@future-agi/sdk/platform";
+
+class SupportDashboards extends Dashboards {
+  async byName(name: string) {
+    return (await this.list()).find(board => board.name === name);
+  }
+}
+
+const client = new Client({ resources: { dashboards: SupportDashboards } });
+console.log("Dashboards:", (await client.dashboards.list()).length);
+if (client.dashboards instanceof SupportDashboards) {
+  console.log("Support dashboard found:", !!(await client.dashboards.byName("Ridgeline support")));
+}
+const path = "/tracer/dashboard/";
+const boards = await client.request("GET", path);
+const envelope = await client.request("GET", path, { unwrap: null });
+if (Array.isArray(boards) && envelope && typeof envelope === "object" && "status" in envelope) {
+  console.log("Decoded dashboards:", boards.length, "Envelope status:", envelope.status);
+}
+```
+
+</CodeGroup>
+
+The raw call defaults to JSON and returns the `result` key when present. Use `unwrap=None` / `{ unwrap: null }` for the full decoded envelope, or supply another key to extract. For a text export, set `decode` to `"text"`; `"auto"` chooses JSON when the response content type contains `json`, otherwise text. Python takes `query=`, `body=` and `options=` as keywords; TypeScript takes the request arguments third and per-call options fourth.
+
+To extend a nested resource such as `dashboards.widgets`, subclass the child as well. In Python, override `_children` on the parent with `{**Dashboards._children, "widgets": SupportWidgets}`. In TypeScript, call `super(transport)` in the parent's constructor, then assign `this.widgets = new SupportWidgets(transport)`. Register that parent in the same way as above. Both levels then use the same transport; you don't need a second client.
+
+## Next steps
+
+- [Platform SDK reference](/docs/sdk/reference): look up error subclasses, resource methods and return types.
+- [Prompts](/docs/sdk/reference/prompts): find list filters, update fields and nested label and version methods.
+- [Traces](/docs/sdk/reference/traces) and [dashboards](/docs/sdk/reference/dashboards): look up table reads and dashboard operations.

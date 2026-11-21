@@ -1,0 +1,112 @@
+---
+title: "Test a gateway rule and find its request log"
+description: "Send a test prompt through your gateway with fagi, assert the expected guardrail outcome in CI, and match the result to its request log."
+---
+
+## About
+
+Use `fagi gateway try` to check whether your gateway lets a prompt through, warns, or blocks it. Use `fagi gateway tail` in a second terminal to see the request the gateway logged. For example, Ridgeline Outfitters wants ordinary tent repair questions to pass, but its support agent must not send a customer's email address to the model.
+
+## Test a repair question
+
+<Steps>
+<Step title="Choose your test gateway">
+
+Use a test gateway with a [configured provider](/docs/command-center/features/providers). For the email test below, [turn on a guardrail](/docs/protect/guides/turn-on-a-guardrail) that blocks email addresses before the model call. Use a test configuration with no other blocking rule so you can attribute a content block to this rule.
+
+Use Node.js 22.15 or later in the 22.x series, or 23.11 or later. On a self-hosted install, set `FI_BASE_URL` to your platform API URL in both terminals before logging in. Install the CLI, then enter your platform API key and secret key at the login prompts:
+
+```bash
+npm install -g @future-agi/cli@0.2.2
+fagi auth login
+```
+
+For CI, set `FI_API_KEY` and `FI_SECRET_KEY` as secrets instead of running `fagi auth login`. List the gateways your credentials can access:
+
+```bash
+fagi api gateway list
+```
+
+The examples use gateway ID `default` and model `gpt-4o-mini`. Substitute your gateway ID and a model it serves in both terminals. If you omit `--gateway` from `try`, the CLI selects the only gateway in the list. A list with zero or multiple gateways exits `2` rather than guessing. If you omit `--model`, the playground tries to select a configured model.
+
+</Step>
+<Step title="Preview the request without sending it">
+
+```bash
+fagi gateway try 'Does Ridgeline Outfitters repair torn tent seams?' \
+  --gateway default --model gpt-4o-mini \
+  --system 'You answer gear repair questions for Ridgeline Outfitters.' \
+  --expect passed --dry-run --json
+```
+
+Look for `dry_run: true`, the gateway ID and the request fields `prompt`, `model` and `system_prompt`. A dry run checks the input without reading credentials or calling the gateway. It does not evaluate the rule.
+
+</Step>
+<Step title="Start the log watch in terminal one">
+
+```bash
+fagi gateway tail --since "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --model gpt-4o-mini --until-first --timeout 60s -o jsonl
+```
+
+The first poll includes requests that started at or after the displayed UTC second. Leave this terminal running. `--until-first` stops at the first row matching the filters, not necessarily *your* request if another caller uses the same model.
+
+</Step>
+<Step title="Send the prompt in terminal two and match the request IDs">
+
+<Warning>
+Without `--dry-run`, `try` attempts a real completion and can incur a model charge. The CLI does not retry it. If it times out, check the log before sending it again.
+</Warning>
+
+```bash
+fagi gateway try 'Does Ridgeline Outfitters repair torn tent seams?' \
+  --gateway default --model gpt-4o-mini \
+  --system 'You answer gear repair questions for Ridgeline Outfitters.' \
+  --expect passed --json
+```
+
+For a successful, unflagged answer, terminal two reports `outcome: "passed"` and `expect_matched: true`. Find the `x-agentcc-request-id` header (case-insensitive) in `result.guardrail_headers`. In terminal one, compare it with `request.request_id` on the `request_observed` line. If they match, `request.status_code`, `request.provider` and `request.latency_ms` describe this call. The final `tail_finished` line summarizes the watch. If the IDs differ or the watch ends without a row, replace `ID` in `fagi api gateway request-logs list --request-id ID` with the playground request ID. An empty result means you have no matching log row to inspect; do not substitute a nearby request.
+
+</Step>
+</Steps>
+
+## Check a rule with a saved prompt
+
+Save a synthetic contact detail as a repeatable test for the email rule. Pass either prompt text or `--prompt-file`, not both. The file must be nonblank UTF-8 text, at most 1 MiB. Use `--prompt-file -` to read from standard input instead. This example uses `jq` to check the saved report without sending the prompt twice.
+
+```bash
+printf '%s\n' 'Please send the tent repair estimate to camper@example.com.' > ridgeline-email.txt
+fagi gateway try --prompt-file ridgeline-email.txt \
+  --gateway default --model gpt-4o-mini --expect blocked --json > ridgeline-result.json &&
+  jq -e '.result.body.error | .type == "guardrail_error" and .code == "content_blocked"' ridgeline-result.json
+```
+
+A content block prints `true` and the check exits `0`. The playground also labels HTTP `403` or legacy `446` as `blocked` based on status alone. A permission refusal can therefore satisfy `--expect blocked`, but `jq -e` prints `false` and exits nonzero. If `result.body.error.type` is `permission_error` in the saved report, check gateway access before changing the rule.
+
+| `outcome` | What it tells you |
+| --- | --- |
+| `passed` | The completion returned a 2xx status without a block or warning. |
+| `warned` | A check warned or logged the hit, but the completion went through. Use `--expect warned` for a rule configured this way. |
+| `blocked` | The playground marked the completion as blocked. Inspect the returned error to confirm the reason. |
+| `failed` | The completion returned a non-2xx status that the playground did not mark as blocked, for example a provider rate limit. `failed` is a result, not an allowed `--expect` value. |
+
+To see what a failed assertion looks like, rerun the email fixture with `--expect passed` instead of `--expect blocked`. With the blocking rule in effect, `ridgeline-result.json` still reports `outcome: "blocked"`, but `expect_matched` changes to `false` and the CLI exits `5`.
+
+## Exit codes and watch limits
+
+For a CI rule check, always set `--expect`. Without it, even `blocked` or `failed` exits `0` if the playground returned a valid report. Exit `5` means the CLI **received a verdict** and it differed from the assertion; the report is on stdout. An access denial from the platform API exits `3`; a network error, API rate limit or server outage exits `6`. Neither is a verdict on your prompt.
+
+Use `--since 2m` for the last two minutes, or an RFC 3339 timestamp to start at a particular instant. Narrow the watch with `--model`, `--provider`, `--status-code`, `--errors`, `--guardrail-triggered` or `--fallback-used`. For example, to inspect recent failed attempts to answer repair questions, filter by the model and whether the request failed:
+
+```bash
+fagi gateway tail --since 2m --model gpt-4o-mini --errors --max-polls 1
+```
+
+By default, the tail waits 2 seconds between polls and stops after 30 polls or 90 seconds. It can stop earlier at 1,000 events or 1 MiB of event JSON. With `--until-first`, exit `0` means a matching row appeared; exit `6` with `gateway_request_not_observed` means none appeared within the budget. Check the filters and time window before extending `--max-polls` or `--timeout`.
+
+**The tail is not an audit export.** Each poll reads at most 100 rows, skips IDs already shown, and advances by request start time. `window_truncated` means more rows matched than fit on the page. Even without that event, a request logged late can fall behind the window. A missing row does not prove the gateway never received the request.
+
+## Next steps
+
+- [Test a guardrail in the dashboard](/docs/protect/guides/test-a-guardrail) to inspect the response body and headers interactively.
+- [Review guardrail activity](/docs/protect/guides/review-guardrail-activity) to see which rules trigger across requests.

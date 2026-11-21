@@ -1,0 +1,167 @@
+---
+title: "Self-hosted video generation"
+description: "Configure Redis, artifact storage and a provider budget for video jobs. Verify a job survives a gateway restart and pause submissions without stopping downloads."
+---
+
+## About
+
+A gateway restart does not have to interrupt a video job: Redis keeps track of the job and its budget, and a separate store holds the finished file. You’ll set up a test gateway for Ridgeline Outfitters, request one tent-packing clip through OpenRouter and retrieve it after a restart.
+
+## 1. Prepare the two stores
+
+Start with a [self-hosted gateway](/docs/command-center/deployment/self-hosted) running v1.59.1. Set `GATEWAY_URL` in your shell to its base URL, without `/v1` or a trailing slash, and `RIDGELINE_GATEWAY_KEY` to a valid test organization key. For a new gateway, start with just the `auth` block from step 2 and set the same key in the gateway environment. Omit the `video` block for this check: generation is disabled by default.
+
+Run the following authenticated request. Expect HTTP `501` and `error.code: "not_configured"`. A `401` means authentication stopped the request before it reached the video handler.
+
+```bash
+curl -sS -i "${GATEWAY_URL:?Set GATEWAY_URL}/v1/videos?limit=1" \
+  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}"
+```
+
+| Store | What you need |
+| --- | --- |
+| Redis | Use persistent Redis with `maxmemory-policy noeviction`. Use AOF with `appendfsync everysec`, or choose a snapshot interval whose data loss you can tolerate. Every replica must use the same Redis database and prefix. Protect Redis and its backups: job records include prompts. There is no automatic fallback to memory for video. |
+| Video files | For one replica, mount a persistent directory writable by the gateway at `/var/lib/agentcc/video`. For multiple replicas, mount the **same** writable filesystem there on all replicas or use S3. Redis alone cannot restore a lost MP4. |
+
+For AWS S3, set `video.artifacts.backend: s3`. Under `video.artifacts.s3`, set `bucket`, `region`, a `prefix` ending in `/` (for example `video/`), and the `access_key` and `secret_key` for that bucket. The gateway sends a `private` ACL on upload. Use a bucket that accepts this ACL and credentials that can write, read and delete objects under the prefix. Mount a writable temporary directory for each gateway replica: it stages the file there before uploading it. The release container runs as UID `65532`; grant that UID write access to the chosen disk or temporary directory.
+
+## 2. Configure one provider and a spending limit
+
+The client uses an organization gateway key. The gateway uses a **different** key, your OpenRouter credential, to pay for generation. Supply these as `RIDGELINE_GATEWAY_KEY` and `OPENROUTER_API_KEY` in the gateway process environment. Also supply a separate `AGENTCC_ADMIN_TOKEN` for operator calls and your test Redis address (`host:port`) and password as `REDIS_ADDRESS` and `REDIS_PASSWORD`.
+
+Use this `config.yaml` on a dedicated test gateway. On an existing installation, merge the settings instead of replacing other keys, budgets or providers. The example allows one model and rejects a new job if its estimated cost would put the `ridgeline-video` key over its $2 daily budget. This is a gateway admission check, not a spending limit on your OpenRouter account. Set the provider limits to values within your account’s quotas.
+
+```yaml
+redis:
+  enabled: true
+  address: "${REDIS_ADDRESS}"
+  password: "${REDIS_PASSWORD}"
+  prefix: "ridgeline-test:"
+auth:
+  enabled: true
+  keys:
+    - name: ridgeline-video
+      key: "${RIDGELINE_GATEWAY_KEY}"
+      key_type: byok
+      metadata: { org_id: ridgeline }
+      providers: [openrouter]
+      models: [openrouter/bytedance/seedance-1-5-pro]
+budgets:
+  enabled: true
+  default_period: daily
+  keys:
+    ridgeline-video: { limit: 2, hard: true }
+video:
+  enabled: true
+  kill_switch: true
+  store: redis
+  artifacts:
+    backend: disk
+    disk: { root: /var/lib/agentcc/video }
+  providers:
+    openrouter:
+      enabled: true
+      api_key: "${OPENROUTER_API_KEY}"
+      base_url: https://openrouter.ai/api/v1
+      region: global
+      account_ref: ridgeline-openrouter
+      models: [bytedance/seedance-1-5-pro]
+      limits: { submit_rpm: 10, poll_qps: 2, max_active_tasks: 4 }
+      deadlines: { connect: 10s, read: 30s, submit: 30s, run: 30m, reconcile: 1m }
+      poll: { base_interval: 10s }
+      tariff_revision: openrouter-2026-11-06
+      safety_identifier_mode: none
+```
+
+If clients connect through a load balancer and you restrict access by IP, set `ip_acl.trusted_proxies` to the number of addresses your trusted proxy chain appends to `X-Forwarded-For`. The default, `0`, checks the direct peer instead.
+
+Restart the test gateway with the configuration, secrets and storage mount in place. If you run the binary directly, use `./agentcc-gateway --config config.yaml`. With a fresh Redis prefix, `kill_switch: true` starts the worker but blocks submissions. An existing prefix keeps its stored switch value across restarts. List jobs with the organization key to check that video is enabled without buying a clip:
+
+```bash
+curl -fsS "${GATEWAY_URL:?}/v1/videos?limit=1" \
+  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" | jq '{object, total}'
+```
+
+Expect `{"object":"list","total":0}` for an organization with no jobs. This confirms you can read jobs, not that OpenRouter accepts your credential. With your admin bearer token, `GET /-/admin/video/capabilities` lists the binary’s built-in models and input combinations, including models you did not enable. The gateway only accepts submissions for models you list under an enabled provider.
+
+The native `byteplus` adapter has its own model IDs, region and tariff (`byteplus-2026-10-02`). A successful OpenRouter clip does not verify native BytePlus access or billing. BytePlus output privacy is unknown: leave the adapter disabled unless you can accept that exposure. Enabling it requires `acknowledge_public_output: true`.
+
+## 3. Verify one job across a restart
+
+<Warning>
+  Opening submissions affects every organization on the test gateway. The next clip can incur a real charge on your OpenRouter account. Leave the switch closed if you only need to verify the installation.
+</Warning>
+
+Use cURL and `jq`. In your operator shell, set `AGENTCC_ADMIN_TOKEN` to the gateway's admin token and allow new submissions:
+
+```bash
+curl -fsS "${GATEWAY_URL:?}/-/admin/video/killswitch" \
+  -H "Authorization: Bearer ${AGENTCC_ADMIN_TOKEN:?}" \
+  -H 'Content-Type: application/json' -d '{"enabled":false}'
+```
+
+In your client shell, submit the clip with the organization key. If you lose the response, retry the same request with the same `Idempotency-Key`. While submissions are open and the binding is retained, a successful replay returns the original job. The key is scoped to the organization and operation: changing the prompt for this text-to-video request returns `409 idempotency_conflict`. Keep this shell open for the status and download commands.
+
+```bash
+set -o pipefail
+VIDEO_ID=$(curl -fsS "${GATEWAY_URL:?}/v1/videos" \
+  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" \
+  -H 'Idempotency-Key: ridgeline-tent-packing-take-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"openrouter/bytedance/seedance-1-5-pro","prompt":"Overhead view of a camper rolling a green tent into its stuff sack.","duration_seconds":4,"resolution":"480p","aspect_ratio":"16:9","audio":false}' \
+  | jq -er '.id') && printf 'Job ID: %s\n' "$VIDEO_ID"
+```
+
+A new job returns `202`. Check its status with the command below. `submitting` means the gateway has accepted the request but has not yet recorded an upstream job ID. Once you see `queued` or `running`, restart **only the test gateway**. Keep its Redis prefix, artifact mount, provider account, region and credentials unchanged. Repeat the same GET after restart. The worker resumes polling; the client does not need to submit again.
+
+```bash
+curl -fsS "${GATEWAY_URL:?}/v1/videos/${VIDEO_ID:?}" \
+  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" \
+  | jq '{id, status, estimate, cost, artifacts, error}'
+```
+
+When the same ID shows `completed` and `artifacts[0].state` is `available`, download the gateway's copy before `artifacts[0].expires_at`:
+
+```bash
+curl -fsS "${GATEWAY_URL:?}/v1/videos/${VIDEO_ID:?}/content" \
+  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" \
+  -o ridgeline-tent-packing.mp4
+```
+
+## 4. Pause submissions without stopping the worker
+
+Keep `video.enabled: true`. Set the runtime switch with the admin token:
+
+```bash
+curl -fsS "${GATEWAY_URL:?}/-/admin/video/killswitch" \
+  -H "Authorization: Bearer ${AGENTCC_ADMIN_TOKEN:?}" \
+  -H 'Content-Type: application/json' -d '{"enabled":true}'
+```
+
+The response is `{"enabled":true}`. Replicas sharing the prefix now reject new submissions with `503 video_submissions_disabled`. Jobs already sent upstream keep polling, copying results and settling costs. Accepted jobs **not yet sent** can expire at their submit deadline. You can still read status and download available files. Setting `video.enabled: false` instead stops the worker and disables the video routes; do not use it to drain jobs. Do not flush Redis during a rollback.
+
+## Limits and troubleshooting
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `video.limits.org_max_active_jobs` / `video.limits.org_submit_rpm` | `10` / `60` | Active jobs and submissions per minute per organization. An admission limit returns `429`; respect `Retry-After`. |
+| `video.poll.max_concurrent_total` / `video.poll.per_provider_max_concurrent` | `32` / `8` | Concurrent worker calls across the deployment and for a provider account. Client status reads come from Redis, not the provider. |
+| `video.copy.max_concurrent` / `video.copy.deadline` | `8` / `10m` | Concurrent output copies and the time allowed to copy a job's result. |
+| `video.artifacts.ttl` / `video.artifacts.max_bytes` | `24h` / `2147483648` | File retention and maximum bytes per artifact. A job can remain visible after its file expires. |
+| `video.retention.job_metadata` / `video.retention.idempotency` | `720h` / `720h` | Job and replay retention. Unresolved work and unsettled reservations are protected from normal cleanup. After a binding expires, reusing its key can buy another video. |
+
+With video and Redis enabled, replicas share the config-file budget counters. Ordinary requests and video reservations count against the same applicable limit. The gateway reserves the tariff’s upper-bound estimate before it sends a priced request upstream. `estimate.usd` is the reservation, not the bill. For OpenRouter, `cost.usd` reflects the charge reported by the provider after settlement. If OpenRouter omits the charge or reports `usage.is_byok: true` because the model vendor bills its own key directly, the gateway keeps the reservation rather than treating the cost as zero. Use the admin token with `GET /-/admin/video/unsettled` to identify jobs to compare with provider billing.
+
+| Symptom | What to check |
+| --- | --- |
+| `403 missing_org` or `503 managed_tariff_not_configured` | Use an organization-scoped BYOK gateway key, not a managed key, provider credential or admin token. |
+| `429 budget_exceeded` | Check remaining headroom, including outstanding reservations, before starting another job. |
+| `503 video_store_unavailable` or `503 budget_store_unavailable` | Restore Redis connectivity. Do not switch to an empty store; it has no record of work already paid for. |
+| `submission_unknown` | The provider may have received the request. Do not retry with a new idempotency key. OpenRouter cannot look up an unknown submission. Check the existing job and provider records; deleting the local job does not stop upstream spend. |
+| `409 result_not_ready` on download | Read the same job ID again. Download when the job is `completed` and the artifact is `available`; do not resubmit. |
+| `410 output_expired` or `410 output_unavailable` on download | Check the artifact's expiry and state. For an unavailable copy, check storage access and the size limit. The gateway does not regenerate the video. |
+
+## Next steps
+
+- [Self-hosted gateway deployment](/docs/command-center/deployment/self-hosted): configure the gateway listener, authentication and graceful shutdown.
+- [Rate limiting and budgets](/docs/command-center/features/rate-limiting): set spending limits for other keys and teams.

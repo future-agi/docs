@@ -230,6 +230,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Chat completions', href: '/docs/command-center/api/chat' },
                   { title: 'Embeddings & reranking', href: '/docs/command-center/api/embeddings' },
                   { title: 'Media endpoints', href: '/docs/command-center/api/media' },
+                  { title: 'Video generation jobs', href: '/docs/command-center/api/video' },
                   { title: 'Assistants API', href: '/docs/command-center/api/assistants' },
                   { title: 'Files & vector stores', href: '/docs/command-center/api/files' },
                   { title: 'Async & batch', href: '/docs/command-center/api/async-batch' },
@@ -283,6 +284,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Deployment',
             items: [
               { title: 'Self-hosted', href: '/docs/command-center/deployment/self-hosted' },
+              { title: 'Video generation', href: '/docs/command-center/deployment/video-generation' },
             ]
           },
           {
@@ -352,8 +354,10 @@ export const tabNavigation: NavTab[] = [
               { title: 'Turn on Error Feed', href: '/docs/error-feed/guides/turn-on-error-feed' },
               { title: 'Triage issues', href: '/docs/error-feed/guides/triage-issues' },
               { title: 'Investigate an issue', href: '/docs/error-feed/guides/investigate-an-issue' },
+              { title: 'Share an issue', href: '/docs/error-feed/guides/share-an-issue' },
               { title: 'Run a root cause analysis', href: '/docs/error-feed/guides/run-root-cause-analysis' },
               { title: 'Create a Linear issue', href: '/docs/error-feed/guides/create-linear-issue' },
+              { title: 'Send Error Feed alerts to Slack', href: '/docs/error-feed/guides/slack-alert-rules' },
             ]
           },
           {
@@ -463,6 +467,7 @@ export const tabNavigation: NavTab[] = [
                   {
                     title: 'Conversation & agents',
                     items: [
+                      { title: 'Voice and chat agent evals', href: '/docs/evaluation/builtin/voice-and-chat-agent-evals' },
                       { title: 'Conversation Coherence', href: '/docs/evaluation/builtin/conversation-coherence' },
                       { title: 'Conversation Resolution', href: '/docs/evaluation/builtin/conversation-resolution' },
                       { title: 'Evaluate Function Calling', href: '/docs/evaluation/builtin/llm-function-calling' },
@@ -590,6 +595,12 @@ export const tabNavigation: NavTab[] = [
               { title: 'Use the MCP Server in your IDE', href: '/docs/falcon-ai/guides/use-the-mcp-server' },
             ]
           },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Platform MCP tools', href: '/docs/falcon-ai/reference/platform-mcp-tools' },
+            ]
+          },
         ]
       },
       {
@@ -642,8 +653,10 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Display options', href: '/docs/observe/guides/explore-dashboard/display-options' },
                 ]
               },
+              { title: 'Query a project with MCP SQL', href: '/docs/observe/guides/query-project-sql-with-mcp' },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
+              { title: 'Sample whole contacts', href: '/docs/observe/guides/sample-eval-tasks' },
               { title: 'Instant eval', href: '/docs/observe/features/instant-eval' },
               { title: 'Insights', href: '/docs/observe/features/insights' },
               { title: 'Voice Observability', href: '/docs/observe/features/voice' },
@@ -816,6 +829,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'What you are billed for', href: '/docs/billing/concepts/what-you-are-billed-for' },
               { title: 'Pricing', href: '/docs/billing/reference/pricing' },
               { title: 'Manage your plan', href: '/docs/billing/guides/manage-your-plan' },
+              { title: 'Google Cloud Marketplace', href: '/docs/billing/guides/google-cloud-marketplace' },
               { title: 'Control spend', href: '/docs/billing/guides/control-spend' },
             ]
           },
@@ -1144,6 +1158,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'code',
         items: [
           { title: 'SDK Overview', href: '/docs/sdk' },
+          { title: 'Use the platform client reliably', href: '/docs/sdk/platform-client-reliability' },
           {
             title: 'List of SDKs',
             items: [
@@ -1152,6 +1167,17 @@ export const tabNavigation: NavTab[] = [
               { title: 'Core SDKs', href: '/docs/sdk/list/core' },
             ]
           },
+        ]
+      },
+      {
+        group: 'CLI',
+        icon: 'code',
+        items: [
+          { title: 'API command reference', href: '/docs/cli/api-reference' },
+          { title: 'Launch tracing and verify a span', href: '/docs/cli/tracing-setup' },
+          { title: 'Check stored traces in CI', href: '/docs/cli/trace-check' },
+          { title: 'Test a judge and gate a suite in CI', href: '/docs/cli/eval-suite' },
+          { title: 'Test gateway rules', href: '/docs/cli/test-gateway-guards' },
         ]
       },
       // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
@@ -1553,9 +1579,13 @@ export const topNav = tabNavigation.map(tab => ({
 
 // Helper function to get navigation for a specific tab based on current path
 export function getActiveTab(currentPath: string): NavTab | undefined {
+  // CLI pages live outside /docs/sdk but belong to its CLI sidebar group.
+  if (currentPath === '/docs/cli' || currentPath.startsWith('/docs/cli/')) {
+    return tabNavigation.find(tab => tab.tab === 'SDK');
+  }
   // Check specific tabs first (integrations, cookbook, sdk, api)
   for (const tab of tabNavigation) {
-    if (tab.href !== '/docs' && currentPath.startsWith(tab.href)) {
+    if (tab.href !== '/docs' && (currentPath === tab.href || currentPath.startsWith(tab.href + '/'))) {
       return tab;
     }
   }
