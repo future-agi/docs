@@ -352,6 +352,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Turn on Error Feed', href: '/docs/error-feed/guides/turn-on-error-feed' },
               { title: 'Triage issues', href: '/docs/error-feed/guides/triage-issues' },
               { title: 'Investigate an issue', href: '/docs/error-feed/guides/investigate-an-issue' },
+              { title: 'Share an issue', href: '/docs/error-feed/guides/share-an-issue' },
               { title: 'Run a root cause analysis', href: '/docs/error-feed/guides/run-root-cause-analysis' },
               { title: 'Create a Linear issue', href: '/docs/error-feed/guides/create-linear-issue' },
             ]
