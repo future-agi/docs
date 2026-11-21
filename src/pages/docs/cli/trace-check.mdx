@@ -1,0 +1,122 @@
+---
+title: "Check stored traces in CI"
+description: "Fail a CI job when a stored trace skips a required span or exceeds a budget. Compare two runs and export selected inputs and outputs as regression cases."
+---
+
+## About
+
+A refund reply can sound right even if the agent never looked up the order. Use `fagi trace check` to fail CI on what a [stored trace](/docs/observe/concepts/traces) shows, `trace diff` to see what changed between runs, and `trace export` to save examples for your next test. None of these commands runs your agent or waits for spans to arrive.
+
+## Choose two stored runs
+
+The example uses the Ridgeline Outfitters support agent. Its refund test expects a span named `lookup_order` before the agent confirms a refund. Keep a **base** trace that reproduces the skipped lookup and a **candidate** trace from the version you want to test. Prefer the same test input in both runs.
+
+1. Install the CLI with `npm install -g @future-agi/cli@0.2.2`. Supply `FI_API_KEY` and `FI_SECRET_KEY` through your shell or CI secret store. On a self-hosted installation, set `FI_BASE_URL` to the platform API, not the trace collector.
+2. Run `fagi api observability projects list --fields id,name` and find the UUID of the project that owns both traces. Use the **trace IDs** from your instrumented test or application logs, not span IDs. Set the following variables in your CI job, or enter them in Bash:
+
+   ```bash
+   read -r -p 'Project UUID: ' PROJECT_ID
+   read -r -p 'Base trace ID (skipped lookup): ' BASE_TRACE_ID
+   read -r -p 'Candidate trace ID: ' CANDIDATE_TRACE_ID
+   ```
+
+3. If your test just finished, wait for its own trace ID before you check it:
+
+   ```bash
+   fagi trace watch --project-id "$PROJECT_ID" --trace-id "$CANDIDATE_TRACE_ID" --until-first
+   ```
+
+   A match means a row for that trace is visible, not that all its children have arrived. `trace check` makes one read and checks the spans stored at that moment.
+
+## Gate the candidate and write a JUnit report
+
+Run this in a fresh CI job directory. Adjust the span name and budgets to match your test. Leave `check_refund` as the final command in the gate step so CI receives its exit code.
+
+```bash
+mkdir -p reports
+check_refund() {
+  fagi trace check "$1" --project-id "$PROJECT_ID" \
+    --require-span lookup_order --max-error-spans 0 \
+    --max-root-latency-ms 5000 --max-llm-tokens 2000 --max-llm-cost 0.05 \
+    --junit-file "$2"
+}
+check_refund "$CANDIDATE_TRACE_ID" reports/candidate.xml
+```
+
+Only the checks you request run. Supply at least one. A value equal to its limit passes.
+
+| Flag | What it checks |
+| --- | --- |
+| `--require-span NAME` | At least one span anywhere in the returned tree has this exact, case-sensitive name. Repeat the flag for additional names. It checks presence, not call order or whether the tool returned the right answer. |
+| `--max-error-spans N` | At most `N` spans have status `ERROR` or a nonempty `error` field. A successful root does not excuse an errored child. |
+| `--max-root-latency-ms N` | `latency_ms` on the single top-level span, not the sum of child durations. |
+| `--max-llm-tokens N` | Sum of `total_tokens` on `llm` spans only. Agent and chain spans may repeat those totals. |
+| `--max-llm-cost DECIMAL` | Sum of `cost` on `llm` spans only. Use a nonnegative plain decimal such as `0.05`, not a percentage or exponent. |
+
+If all five checks pass, the command exits `0`. To see what the gate catches, run `check_refund "$BASE_TRACE_ID" reports/base.xml` in the same shell. A base trace can have zero errors and meet every budget but still exit **`5`**. The JUnit suite `futureagi.trace.check` has one testcase per check. For the missing lookup, the failing testcase is `required_span:lookup_order` and its failure message is `required span lookup_order: no returned span has this exact name.` Configure CI to collect the XML even when the step fails.
+
+**Missing is not zero.** For example, a trace with no `llm` spans has unknown LLM cost; a trace with two roots has unknown root latency. An unusable metric or an unexpanded part of the tree can also make a check unknown. Unknowns fail by default. Add `--allow-unknown` only if that policy is intentional: it does not excuse a known overrun or a required span missing from a fully returned outline.
+
+## Compare the base and candidate
+
+```bash
+fagi trace diff "$BASE_TRACE_ID" "$CANDIDATE_TRACE_ID" --project-id "$PROJECT_ID"
+```
+
+Read the table from base to candidate. In the refund example, `+ lookup_order` and `+ issue_refund` are **added calls**. On the existing model-call row, `41 -> 139` tokens and an increase in cost are **changes to the same step**, not a third added call. A `-` before a span name marks a removed call. Check the error counts and any `New errors:` note as well as the timing and cost changes.
+
+The CLI matches a span by its name under its parents, using occurrence order for siblings with the same name. Renaming a span or moving it under another parent looks like a removal plus an addition. Add `--json` for the paths and per-span deltas; a missing metric is `null`, not zero. The report shows up to 500 aligned rows, but the counts and totals cover all rows.
+
+You choose the two IDs; the CLI does not find a baseline for you. For a candidate in another project, keep `--project-id` set to the base project and add `--candidate-project-id "$CANDIDATE_PROJECT_ID"` with the candidate project's UUID. Use that UUID for the candidate's `trace check` as well. A successful diff exits `0` **even if the candidate added errors**. Use `check`, not `diff`, as the gate.
+
+## Export two cases for review
+
+Export the two runs from the same project. `--ids-file -` reads one trace ID per line from standard input. `--file` writes JSONL to disk instead of printing the inputs and outputs in your CI log.
+
+```bash
+mkdir -p reports
+printf '%s\n' "$BASE_TRACE_ID" "$CANDIDATE_TRACE_ID" |
+  fagi trace export --ids-file - --project-id "$PROJECT_ID" --file reports/refunds.jsonl
+```
+
+To select traces from an [Error Feed issue](/docs/error-feed/guides/investigate-an-issue) instead, list the project's clusters, then enter the `cluster_id` for the issue you want. Pass the **member trace IDs**, not the cluster ID, to `trace export`:
+
+```bash
+set -o pipefail
+mkdir -p reports
+fagi api error-feed clusters list --project-id "$PROJECT_ID" --fields cluster_id,error,trace_count
+read -r -p 'Cluster ID: ' CLUSTER_ID
+fagi api error-feed clusters traces list --cluster-id "$CLUSTER_ID" --limit 2 --fields id -o jsonl |
+  fagi trace export --ids-file - --project-id "$PROJECT_ID" --file reports/issue-cases.jsonl
+```
+
+Each line is a flat record with `trace_id`, `trace_name`, `span_name`, `input`, `output`, `status`, `latency_ms`, and `model`. The default `--span root` selects the single top-level span. To export tool inputs and results instead, use `--span lookup_order` **only for traces with exactly one span of that name**. Inputs and outputs keep their JSON types; absent fields are `null`.
+
+Inspect which spans supplied your rows without logging their contents:
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+for line in Path('reports/refunds.jsonl').read_text().splitlines():
+    row = json.loads(line)
+    print(row['span_name'], row['status'], 'has input:', row['input'] is not None,
+          'has output:', row['output'] is not None)
+PY
+```
+
+<Warning>
+  The CLI does not mask exported inputs and outputs. Review them privately and remove sensitive details before sharing or uploading the file. An exported output is what the agent actually said, not a correct answer to use as the expected result.
+</Warning>
+
+## Limits and errors
+
+- **No partial export on a failed read.** The default is 25 distinct trace IDs; `--max-traces` accepts 1 to 100. Extra IDs cause an error, not silent truncation. The CLI deduplicates IDs, reads each in order, and buffers up to 16 MiB of JSONL before writing. A failed read or an ambiguous span leaves an existing `--file` unchanged. Its parent directory must exist.
+- **No fresh report on a failed request.** Exit `5` means the trace was read and a check failed; the report is on stdout. Other errors, such as an invalid project UUID (`2`), a credentials or access failure (`3`), HTTP 404 (`4`), or a network failure (`6`), are not assertion results. Check the diagnostic on stderr. A failed request leaves an old JUnit file untouched.
+
+## Next steps
+
+- [Send your first trace](/docs/get-started/send-your-first-trace) if your test does not yet record spans.
+- [Investigate incomplete traces](/docs/observe/troubleshooting/noisy-or-incomplete-traces) if expected spans or metrics are missing.
+- [Investigate an Error Feed issue](/docs/error-feed/guides/investigate-an-issue) to find other requests that exhibit the same failure.

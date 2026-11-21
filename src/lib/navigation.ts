@@ -1173,6 +1173,7 @@ export const tabNavigation: NavTab[] = [
         items: [
           { title: 'API command reference', href: '/docs/cli/api-reference' },
           { title: 'Launch tracing and verify a span', href: '/docs/cli/tracing-setup' },
+          { title: 'Check stored traces in CI', href: '/docs/cli/trace-check' },
         ]
       },
       // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
