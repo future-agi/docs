@@ -1,0 +1,114 @@
+---
+title: "Test a judge and gate a suite in CI"
+description: "Preview a judge rubric with fagi, grade support replies from a JSONL file, and use the match rate and named JUnit failures to gate a CI job."
+---
+
+## About
+
+Use `fagi eval test` to see how a judge grades one reply. Use `fagi eval suite` when you want CI to fail if too few verdicts match your expectations. In this example, Ridgeline Outfitters promises a 30-day return window. You supply the support agent's replies; neither command runs the agent for you.
+
+## Preview one judgment
+
+Install the CLI with `npm install -g @future-agi/cli@0.2.2`. On Linux and macOS the npm wrapper requires Node.js `^22.15.0` or `>=23.11.0`. Start with a dry run. You don't need Python, platform credentials or a provider key for the preview.
+
+```bash
+MODEL=gpt-4.1-mini
+RUBRIC='Pass only if the reply gives the exact return window in days. Policy: {{days}} days. Reply: {{reply}}'
+
+fagi eval test --criteria "$RUBRIC" \
+  --var-json days=30 --var 'reply=You can return the jacket within 30 days.' \
+  --model "$MODEL" --output-type pass-fail --dry-run --json
+```
+
+Look for `dry_run: true` and inspect `request.config.mapping`: `days` should be the number `30`, and `reply` should be the sentence you supplied. `--var` takes a literal string; `--var-json` takes one JSON value, including a number, array or object. You can repeat either flag, but each key must be unique.
+
+If you omit `--var-json days=30`, the CLI reports `criteria token {{days}} has no matching variable; add --var days=VALUE or remove the token` and exits `2` without calling the judge. Restore the mapping before continuing. This placeholder check applies when you supply inline criteria or variables.
+
+## Run one reply and read the verdict
+
+For a live run, sign in with `fagi auth login`, or set the matching `FI_API_KEY` and `FI_SECRET_KEY` as CI secrets. On a self-hosted install, set `FI_BASE_URL` to your platform's API URL. Set `MODEL` to a judge model [configured for your organization](/docs/admin-settings/ai-providers). A dry run doesn't verify model availability.
+
+Save the rubric as a JSON request so you can reuse it for the suite. Supply each example's reply separately. In the same shell, run:
+
+```bash
+cat > return-policy.json <<'JSON'
+{
+  "template_type": "Llm",
+  "name": "ridgeline-return-window",
+  "criteria": "Pass only if the reply gives the exact return window in days. Policy: {{days}} days. Reply: {{reply}}",
+  "config": {"mapping": {"days": 30}},
+  "output": "Pass/Fail",
+  "reason_column": true
+}
+JSON
+
+fagi eval test --data-file return-policy.json \
+  --var 'reply=You can return the jacket within 30 days.' \
+  --model "$MODEL" --output-type pass-fail --json
+```
+
+Read `output` for the verdict and `reason` for the explanation, if supplied. **Exit `0` means the evaluation completed, not that the reply passed.** For example, a verdict of `"Failed"` can still exit `0`. Check the actual JSON value and type before you write your suite expectations. If the CLI reports an invalid response instead, see [Limits and errors](#limits-and-errors) before running a suite.
+
+`--data-file` accepts one JSON object, or `-` for standard input. `--criteria` and `--name` override file fields; `--var` and `--var-json` add or replace individual keys in `config.mapping`. Use a file rather than putting sensitive text in shell history. Both commands require `--model` and `--output-type`; these flags set the request's model and output type even if the file specifies them. Accepted output types are `pass-fail`, `score`, `numeric`, `choices` and `reason`; use one your judge supports.
+
+## Label two cases and check the call count
+
+Both support replies should pass the same return policy. The pack reply deliberately promises 90 days so you can see which case breaks the gate. Save one JSON object per line:
+
+```bash
+cat > returns.jsonl <<'JSONL'
+{"id":"jacket-return","reply":"You can return the jacket within 30 days.","expected":"Passed"}
+{"id":"pack-return","reply":"You can return the pack within 90 days.","expected":"Passed"}
+JSONL
+
+fagi eval suite --template return-policy.json --cases returns.jsonl \
+  --id-column id --expect-column expected --min-match-rate 1 \
+  --model "$MODEL" --output-type pass-fail --dry-run --json
+```
+
+Check that `planned_calls` is `2`. Each previewed request should contain the template's `days` and that row's `reply`. With these flags, `id` names the case and `expected` stays local for comparison. All other row keys become judge inputs and override template mappings of the same name.
+
+## Gate CI and inspect a mismatch
+
+Run the suite in a fresh CI working directory with the template and case file. Create the report directory first. Use the command's exit code as the job result and collect `reports/returns.xml` even on failure.
+
+```bash
+mkdir -p reports
+fagi eval suite --template return-policy.json --cases returns.jsonl \
+  --id-column id --expect-column expected --min-match-rate 1 \
+  --model "$MODEL" --output-type pass-fail \
+  --junit-file reports/returns.xml -o jsonl
+```
+
+`-o jsonl` prints one `case` event per evaluated row, then `suite_finished`. If the judge returns `"Passed"` for the jacket and `"Failed"` for the pack, only one of two expectations matches. The match rate is `0.5`, below the required `1`, so the command exits `5`. In JUnit, look for the testcase named `pack-return`, with a `failure` message of `output did not match the expected value`. To print just the mismatches from the report:
+
+```python
+import json
+from xml.etree import ElementTree
+
+for case in ElementTree.parse("reports/returns.xml").findall("testcase"):
+    if case.find("failure") is not None:
+        result = json.loads(case.findtext("system-out"))
+        print(f"{case.get('name')}: expected {result['expected']!r}, got {result['output']!r}")
+```
+
+For those verdicts, the line is `pack-return: expected 'Passed', got 'Failed'`. If you're testing the agent, fix the 90-day promise. If you're testing the *judge's ability to spot a bad reply*, label the pack row `"Failed"` instead: rejecting that reply is then a match.
+
+| Gate setting | How it affects the result |
+| --- | --- |
+| `--expect-column expected` | Uses the row's JSON value, even `null`. To supply a default for rows without that key, add `--expect '"Passed"'`. Without either expectation, a row still makes a judge call but doesn't count toward the rate. |
+| `--min-match-rate` | Matches divided by cases with expectations. The range is `0` to `1`, inclusive; equality passes. A gate needs at least one scored case. Without a threshold, a completed suite reports mismatches but exits `0`. |
+| `--junit-file` | A mismatch is a failed testcase even if the overall gate passes. A request error is an `error`, not a mismatch; unscored cases and cases left after a stop are `skipped`. |
+
+Matching is JSON equality, not a second model judgment. Strings are case-sensitive, array order matters, and numeric `1` matches `1.0` but not the string `"1"`. A match-rate threshold is not a minimum judge score. The suite compares the current outputs with your labels, not two stored experiment runs.
+
+## Limits and errors
+
+- **Call budget:** The suite defaults to `--max-cases 20`. You can set it from `1` to `500`. A larger file is rejected in full before credentials or network calls, not truncated. For example, adding `--max-cases 1` to the two-row command exits `2` without grading either reply. The template and cases files are limited to 16 MiB each, and a JSONL line to 1 MiB.
+- **Billing and timeouts:** Each live case makes one charged call, sequentially, without an automatic retry. `--timeout` defaults to `2m` per call. A timeout does not cancel server work or refund a completed call; check what ran before retrying.
+- **Request or response errors:** The suite stops on the first API, network or invalid-response error. Check `stop_reason` in the partial report. For example, platform v1.59.1 can return HTTP `200` with `result.metadata` encoded as a string. CLI 0.2.2 expects an object there: it reports `invalid evaluation response` and exits `1`, not `5`. Check the evaluation log rather than rerunning the suite or lowering the threshold. You can also [test a single reply in the eval builder](/docs/evaluation/guides/custom-evals#test-the-eval) to inspect the judge's verdict without the CLI.
+
+## Next steps
+
+- [Eval templates and variables](/docs/evaluation/concepts/eval-templates): refine what the judge should check.
+- [Output types and scoring](/docs/evaluation/reference/output-types): choose a verdict format before labeling more cases.
