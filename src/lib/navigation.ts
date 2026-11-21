@@ -650,6 +650,7 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Display options', href: '/docs/observe/guides/explore-dashboard/display-options' },
                 ]
               },
+              { title: 'Query a project with MCP SQL', href: '/docs/observe/guides/query-project-sql-with-mcp' },
               { title: 'Setup alerts', href: '/docs/observe/guides/setup-alerts' },
               { title: 'Setup evals', href: '/docs/observe/guides/setup-evals' },
               { title: 'Sample whole contacts', href: '/docs/observe/guides/sample-eval-tasks' },
