@@ -20,31 +20,33 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Run a tool-calling agent through simulated conversations and trace every tool invocation as child spans in the Tracing dashboard.
+Run a simulated Ridgeline Outfitters order inquiry locally. Inspect the tool request, the mock lookup, and the final OpenAI response as children of the same agent turn in Tracing.
 </TLDR>
 
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 15 min | Intermediate | `agent-simulate`, `fi-instrumentation-otel` |
+| Time | Difficulty | Packages |
+|------|-----------|----------|
+| 15 min | Intermediate | `agent-learning-kit`, `fi-instrumentation-otel`, `traceai-openai`, `openai` |
 
 <Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- OpenAI API key
-- Python 3.11+
-- A simulation created in the dashboard (see [Run a simulation](/docs/environments/guides/run-a-simulation))
+- Python 3.12 and an OpenAI API key
+- A Future AGI account with [API keys](/docs/admin-settings) for the trace export
 </Prerequisites>
 
 ## Install
 
+Run these commands in a new directory. Keep the four Python files below in that directory.
+
 ```bash
-pip install agent-simulate fi-instrumentation-otel traceai-openai openai
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7 fi-instrumentation-otel==1.5.1 traceai-openai==0.1.16 openai
 ```
 
 ```bash
 export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
 export OPENAI_API_KEY="your-openai-api-key"
+export FI_TRACES_URL="https://api.futureagi.com"
 ```
 
 ## Tutorial
@@ -52,47 +54,23 @@ export OPENAI_API_KEY="your-openai-api-key"
 <Steps>
 <Step title="Set up tracing">
 
-Register a tracer for the project and instrument the OpenAI client so every chat completion becomes a span automatically.
+Save this as `tracing_setup.py`. Instrument OpenAI before creating the client so both chat completions become spans.
 
 ```python
-import os
-
-import openai
-from fi_instrumentation import register, FITracer
+from fi_instrumentation import register
 from fi_instrumentation.fi_types import ProjectType
 from traceai_openai import OpenAIInstrumentor
 
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="tool-calling-simulation",
-    set_global_tracer_provider=True,
-)
-OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
-
-tracer = FITracer(trace_provider.get_tracer(__name__))
-openai_client = openai.AsyncOpenAI()
+provider = register(project_name="tool-calling-simulation", project_type=ProjectType.OBSERVE,
+                    set_global_tracer_provider=True, verbose=False)
+OpenAIInstrumentor().instrument(tracer_provider=provider)
+tracer = provider.get_tracer("ridgeline.support")
 ```
-
-Call `register()` and `instrument()` once at import time, before the agent callback runs. Instrumenting after the client has already made a call misses those spans.
-
-`register()` runs with `verbose=True` by default, so it prints the tracing details as soon as it connects:
-
-```
-Tracer Provider: fi.instrumentation.provider.TracerProvider
-|  Project: tool-calling-simulation
-|  Project Type: observe
-|  Project Version Name: None
-|  Endpoint: https://app.futureagi.com:50051
-|  Transport: gRPC
-|  Transport Headers: {'x-api-key': '****', 'x-secret-key': '****'}
-```
-
-That's your confirmation the project exists in Future AGI and every span will ship there.
 
 </Step>
 <Step title="Define tools and mock execution">
 
-Define two OpenAI function schemas and a mock execution layer. In production, swap the mocks for real API calls.
+Save this as `order_tools.py`. Both tools return synthetic data; neither looks up a real shipment or issues a real refund.
 
 ```python
 import json
@@ -160,162 +138,86 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 ```
 
-You should see:
-
-```python
->>> execute_tool("check_order_status", {"order_id": "ORD-12345"})
-'{"order_id": "ORD-12345", "status": "shipped", "carrier": "FedEx", "tracking_number": "FX-9988776655", "estimated_delivery": "2026-03-06"}'
-```
-
 </Step>
 <Step title="Write the agent callback">
 
-The callback wraps each turn in a parent `agent-turn` span. Inside it, auto-instrumented OpenAI calls and manual tool-execution spans form a tree:
-
-```
-agent-turn
-├── OpenAI chat (tool-call request)    ← auto-instrumented
-├── execute: check_order_status        ← manual span
-├── execute: initiate_refund           ← manual span (if parallel tools)
-└── OpenAI chat (synthesis)            ← auto-instrumented
-```
-
-First try the naive version, which rebuilds message history directly from `input.messages`:
+Save this as `support_agent.py`. For this order inquiry, request a lookup explicitly. Append the assistant's tool call and the matching tool result before asking the model for its final reply. Return only the reply to the simulator; keep the tool exchange inside this turn.
 
 ```python
-messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-messages.extend(input.messages)
-```
+import json
+from fi.simulate import AgentInput
+from openai import AsyncOpenAI
+from order_tools import TOOLS, execute_tool
+from tracing_setup import tracer
 
-Run a turn where the previous turn included a tool call, and OpenAI rejects the request:
+client = AsyncOpenAI()
 
-```
-openai.BadRequestError: Error code: 400 - {'error': {'message': "An assistant
-message with 'tool_calls' must be followed by tool messages responding to
-each 'tool_call_id'. The following tool_call_ids did not have response
-messages: call_abc123", 'type': 'invalid_request_error'}}
-```
-
-The simulation SDK strips the follow-up `tool` messages before persisting history, so a replayed assistant message with `tool_calls` has nothing to respond to. The fix is to skip those assistant messages when rebuilding history:
-
-```python
-from fi.simulate import AgentInput, TestRunner
-
-SYSTEM_PROMPT = """You are a helpful customer support agent for ShopFast.
-You assist customers with order status inquiries and refund requests.
-Always use the available tools to look up order information before responding.
-Be concise, accurate, and empathetic."""
-
-
-async def agent_callback(input: AgentInput) -> str:
+async def agent_callback(turn: AgentInput) -> str:
     with tracer.start_as_current_span("agent-turn") as span:
-        span.set_attribute("thread_id", input.thread_id or "")
-
-        # Build message history, skipping assistant messages with tool_calls
-        # (the SDK strips tool-role responses from history, so these would be orphaned)
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for msg in input.messages:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                continue
-            messages.append(msg)
-
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-            temperature=0.2,
+        span.set_attribute("thread_id", turn.thread_id)
+        messages = [{"role": "system", "content": "You help Ridgeline Outfitters customers track orders. Give the carrier and tracking number from the lookup."}]
+        messages.extend({"role": m["role"], "content": m["content"]} for m in turn.messages)
+        request = await client.chat.completions.create(
+            model="gpt-4o-mini", messages=messages, tools=TOOLS,
+            tool_choice={"type": "function", "function": {"name": "check_order_status"}},
         )
+        assistant = request.choices[0].message
+        messages.append(assistant)
+        for call in assistant.tool_calls or []:
+            with tracer.start_as_current_span(f"execute: {call.function.name}") as tool_span:
+                tool_span.set_attribute("gen_ai.span.kind", "TOOL")
+                tool_span.set_attribute("tool.name", call.function.name)
+                tool_span.set_attribute("tool.parameters", call.function.arguments)
+                result = execute_tool(call.function.name, json.loads(call.function.arguments))
+                tool_span.set_attribute("tool.result", result)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
-        choice = response.choices[0]
-
-        if choice.finish_reason == "tool_calls":
-            messages.append(choice.message)
-
-            for tool_call in choice.message.tool_calls:
-                with tracer.start_as_current_span(
-                    f"execute: {tool_call.function.name}"
-                ) as tool_span:
-                    args = json.loads(tool_call.function.arguments)
-                    tool_span.set_attribute("tool.name", tool_call.function.name)
-                    tool_span.set_attribute("tool.parameters", json.dumps(args))
-
-                    tool_result = execute_tool(tool_call.function.name, args)
-                    tool_span.set_attribute("tool.result", tool_result)
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": tool_result,
-                })
-
-            follow_up = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                temperature=0.2,
-            )
-            return follow_up.choices[0].message.content or ""
-
-        return choice.message.content or ""
+        reply = await client.chat.completions.create(model="gpt-4o-mini", messages=messages)
+        return reply.choices[0].message.content or ""
 ```
-
-`set_attribute` only accepts primitives, not dicts, which is why `tool.parameters` and `tool.result` go through `json.dumps()` first.
-
-With the skip in place and the callback wired up, you have an `agent_callback` that emits one `agent-turn` span per turn, with the tool executions and OpenAI calls nested underneath as child spans.
 
 </Step>
 <Step title="Run the simulation">
 
+Save this as `simulate_order.py` and run `python simulate_order.py`. The scenario contains one customer. Setting both turn limits to one exercises the lookup once. The simulation report stays local; the tracing provider sends spans to your Observe project.
+
 ```python
 import asyncio
+from fi.simulate import Persona, Scenario, TestRunner
+from support_agent import agent_callback
+from tracing_setup import provider, tracer
 
+scenario = Scenario(name="track-order", dataset=[Persona(
+    persona={"name": "Casey"}, situation="Where is my order ORD-12345?",
+    outcome="Learn the carrier and tracking number.",
+)])
 
 async def main():
-    runner = TestRunner(
-        api_key=os.environ["FI_API_KEY"],
-        secret_key=os.environ["FI_SECRET_KEY"],
-    )
+    with tracer.start_as_current_span("order-inquiry") as root:
+        report = await TestRunner().run_test(scenario=scenario, agent_callback=agent_callback,
+                                             min_turns=1, max_turns=1)
+        print(report.results[0].transcript)
+        trace_id = root.get_span_context().trace_id
+    provider.force_flush()
+    print(f"Trace ID: {trace_id:032x}")
 
-    await runner.run_test(
-        run_test_name="tool-calling-test",
-        agent_callback=agent_callback,
-    )
-
-    print("Simulation complete.")
-
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-You should see:
-```
-🔍 Fetching Run Test ID for name: tool-calling-test
-✓ Found Run Test ID: <uuid>
-Starting Simulation for Run ID: <uuid>
-✓ Test Execution Started: <uuid>
-🔄 Fetching batch of scenarios...
-📥 Received batch: <n> calls
-▶️ Processing Call: <uuid>
-✓ Call Finished: <uuid> (<n> turns)
-✅ Cloud Simulation Completed.
-Simulation complete.
-```
-
-The batch size and turn counts follow the number of scenarios and turns configured on the simulation in the dashboard, so your numbers will differ.
-
-`run_test_name` must exactly match the simulation name in the dashboard, or the call returns a 404.
+The transcript should contain the synthetic tracking number `FX-9988776655`. The response wording and trace ID vary.
 
 </Step>
-<Step title="Inspect tool call spans in the Tracing dashboard">
+<Step title="Inspect the trace">
 
-Go to [app.futureagi.com](https://app.futureagi.com) → **Tracing** (left sidebar under OBSERVE) → find traces from `tool-calling-simulation`. Click any trace to expand the span tree. Each turn that triggered a tool call shows this hierarchy:
+Open **Tracing**, select `tool-calling-simulation`, and find the printed trace ID. Expand `order-inquiry`, then `agent-turn`:
 
-- **agent-turn** (parent): has `thread_id` attribute
-  - **OpenAI chat**: the initial request with `finish_reason: tool_calls`
-  - **execute: check_order_status**: tool name, parameters, and result as span attributes
-  - **OpenAI chat**: the synthesis call that produces the final response
-
-Turns where the model responds directly (no tool call) show a single OpenAI child span under `agent-turn`.
+```text
+agent-turn
+├── OpenAI chat (requests the lookup)
+├── execute: check_order_status (stores the arguments and mock result)
+└── OpenAI chat (writes the reply)
+```
 
 <video autoPlay muted loop playsInline width="100%" style={{borderRadius: "8px"}}>
   <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/quickstart/tool-calling-simulation/step-4-tracing-spans.mp4" type="video/mp4" />
@@ -326,13 +228,10 @@ Turns where the model responds directly (no tool call) show a single OpenAI chil
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `run_test()` fails with a 404 | `run_test_name` doesn't match a simulation name in the dashboard | Copy the exact simulation name from the dashboard, or create one first |
-| OpenAI error: "messages with role 'tool' must be a response to a preceding message with 'tool_calls'" | History includes an assistant tool-call message with no matching tool response | Skip assistant messages carrying `tool_calls` when rebuilding history (Step 3) |
-| `TestRunner(...)` raises an authentication error | `FI_API_KEY` / `FI_SECRET_KEY` aren't exported, or the shell you're running from didn't pick them up | Confirm both env vars are exported, then re-run |
-| No spans appear under Tracing for the project | `register()` or `OpenAIInstrumentor().instrument()` ran after the OpenAI client was already used | Call `register()` and `instrument()` once at import time, before `agent_callback` runs (Step 1) |
-| `tool_span.set_attribute(...)` raises `TypeError` | OTel span attributes accept only primitives, not dicts | `json.dumps()` the tool arguments and result before calling `set_attribute` |
-| Output shows "Received batch: 0 calls" and exits immediately | No simulation or scenarios exist under that name yet | Create the simulation and scenarios first (see [Run a simulation](/docs/environments/guides/run-a-simulation)) |
+| Symptom | What to check |
+|---|---|
+| OpenAI rejects a tool message | Each result must follow the assistant message containing its `tool_call_id`. |
+| The transcript prints but you cannot find the trace | Check the Future AGI key pair and collector URL, and select the Observe project named in `register()`. |
+| The tool span appears but the two model calls do not | Instrument OpenAI before making either request and pass the same provider to the instrumentor. |
 
-See [Inline Evals in Tracing](/docs/cookbook/quickstart/inline-evals-tracing) to score these traced calls.
+See [Inline Evals in Tracing](/docs/cookbook/quickstart/inline-evals-tracing) to score traced calls, or [Environments](/docs/environments) to run hosted simulations.
