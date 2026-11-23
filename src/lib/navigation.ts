@@ -1147,12 +1147,23 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'List of SDKs',
             items: [
-              { title: 'Agent Learning Kit', href: '/docs/sdk/agent-learning-kit' },
               { title: 'Evaluation', href: '/docs/sdk/list/evaluation' },
               { title: 'TraceAI', href: '/docs/sdk/list/traceai' },
               { title: 'Core SDKs', href: '/docs/sdk/list/core' },
             ]
           },
+        ]
+      },
+      {
+        group: 'Agent Learning Kit',
+        icon: 'flask',
+        items: [
+          { title: 'Agent Learning Kit', href: '/docs/sdk/agent-learning-kit' },
+          { title: 'Simulate an agent', href: '/docs/sdk/agent-learning-kit/simulate-an-agent' },
+          { title: 'Evaluate responses', href: '/docs/sdk/agent-learning-kit/evaluate-responses' },
+          { title: 'Build an environment plugin', href: '/docs/sdk/agent-learning-kit/build-an-environment-plugin' },
+          { title: 'Author an environment', href: '/docs/sdk/agent-learning-kit/author-an-environment' },
+          { title: 'Python libraries', href: '/docs/sdk/agent-learning-kit/python-libraries' },
         ]
       },
       // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
