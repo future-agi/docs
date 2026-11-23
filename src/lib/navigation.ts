@@ -924,6 +924,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
               { title: 'Scenarios & Trials', href: '/docs/environments/concepts/scenarios-and-trials' },
               { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
+              { title: 'Multi-agent apps', href: '/docs/environments/concepts/multi-agent-apps' },
               { title: 'Actors', href: '/docs/environments/concepts/actors' },
               { title: 'Epoch', href: '/docs/environments/concepts/epoch' },
             ]
@@ -940,6 +941,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
+              { title: 'Read a multi-agent call', href: '/docs/environments/guides/read-a-multi-agent-call' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
