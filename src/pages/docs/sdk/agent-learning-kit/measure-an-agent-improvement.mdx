@@ -1,0 +1,166 @@
+---
+title: "Measure an agent improvement"
+description: "Compare candidate configurations, measure missed objectives, run practice callbacks, and test a proposed source edit on held-out tasks"
+---
+
+A refund agent can improve its score and still miss the threshold for release. Compare the starting agent with the best candidate, then check the threshold separately. Use the examples below independently, depending on whether you're changing a configuration, a scoring rule, or the agent's Python source.
+
+<Note>
+Install ALK with the [quickstart](/docs/sdk/agent-learning-kit) and activate the virtual environment. Run `export AGENT_LEARNING_SYNC=local AGENT_LEARNING_TELEMETRY=off LITELLM_LOCAL_MODEL_COST_MAP=True` in your shell. These examples use scripted agents, local scoring, and the bundled model cost map. They need no provider credentials.
+</Note>
+
+## Compare refund configurations
+
+Create the optimization preset in a fresh directory. Its manifest pairs a refund agent with a simulated order. The starting agent inspects the refund. The search tries combinations of the agent's tool call and the world's refund transition.
+
+```bash
+cd "$(mktemp -d)"
+agent-learn init . --preset optimize
+agent-learn optimize manifests/optimize.json --dry-run
+```
+
+The preview reports the search paths and candidate limit. Run the same manifest in Python to inspect the scores even when the best candidate misses the threshold.
+
+```python
+from fi.alk import optimize
+
+result = optimize.optimize_manifest_file("manifests/optimize.json")
+summary = result["summary"]
+print("Improved:", summary["candidate_lineage_selected_score_delta"] > 0)
+print("Passed:", summary["optimization_passed"])
+print("Score and threshold:", summary["optimization_score"], summary["threshold"])
+```
+
+With the 0.3.7 preset, expect `Improved: True` and `Passed: False`. The best score is 0.9353 against 0.95. Inspect `result["optimization"]["history"]` for each candidate's patch and findings. To try a different refund behavior, change the candidate values under `optimization.target` in the generated manifest and run it again.
+
+## Measure a missed objective
+
+Declare what counts as success and name a guard, such as an existing refund case you want to keep checking. A verdict row records one observation. The loss report tells you which combinations of intent, persona, and obligation still miss the objective.
+
+```python
+from fi.alk import loss
+
+objective = loss.compile_objective({
+    "source": "declared",
+    "evals": [{"eval": "refund_approved", "threshold": 0.9}],
+    "guards": {"sentinel_rows": ["approved-refund"], "min_guard_count": 1},
+})
+row = loss.verdict_row(
+    eval_ref="refund_approved", cell={"intent": "refund"}, scalar=0.6,
+    verdict="fail", evidence_class="local_gate",
+)
+report = loss.loss_report(objective, [row])
+print(report["scalar"], report["cells"][0]["loss"], report["conjunction"]["closed"])
+```
+
+Expect `0.6 0.4 False`. The scalar is the score. The cell's loss is one minus its admissible score. Remove `guards` and run the example again to see `objective_guards_missing`. Restore the guard to compile the objective. ALK accepts derived objectives for reproducing results and refuses them as training objectives. Declare your own terms and guards before starting practice.
+
+## Practice against your own checks
+
+Supply three callbacks to score each case, score a repeated drill, and replay a saved regression. Here the case scorer checks a recorded answer for the promised refund timeline. Use your agent and evaluator in those callbacks when you need a score from a fresh run.
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from fi.alk import loss, practice
+
+def score_answer(answer):
+    return float("3 days" in answer)
+
+answers = {"refund": "Your refund is pending."}
+frozen_answers = {"known-refund": "Refunds take 3 days."}
+
+def score_cell(cell):
+    score = score_answer(answers[cell["intent"]])
+    return {"scalar": score, "verdict": "pass" if score else "fail",
+            "eval": "refund_timeline", "evidence_class": "local_gate"}
+
+objective = loss.compile_objective({
+    "evals": [{"eval": "refund_timeline"}],
+    "guards": {"sentinel_rows": ["known-refund"], "min_guard_count": 1},
+})
+simulation = {
+    "name": "refund", "world": {"kind": "conversation"}, "objective": objective,
+    "scenarios": [{"scenario": {"coverage": {"intents": ["refund"]}},
+                   "cast": [{"persona": "customer"}]}],
+}
+with TemporaryDirectory() as directory:
+    manifest = {"practice": {
+        "name": "refund-practice", "simulation": {"inline": simulation},
+        "search_space": {"agent.instructions": ["Include the refund timeline."]},
+        "seed": 7, "eval_budget": 40, "max_rounds": 1,
+        "store": {"path": str(Path(directory) / "lessons.jsonl")},
+        "frozen_rows": ["known-refund"],
+    }}
+    run = practice.run_practice_loop(
+        manifest, cell_scorer=score_cell,
+        repeat_scorer=lambda sim, seed: score_answer(answers["refund"]),
+        replay_row=lambda row: bool(score_answer(frozen_answers[row])),
+    )
+print(run["rounds"][0]["report"]["loss_report"]["conjunction"]["closed"])
+```
+
+Expect `False` because the recorded answer omits the timeline. Change the answer to `Refunds take 3 days.` and rerun to see `True`. The default scorers pass every case, drill, and replay. Check `run["rounds"][0]["updates"]` before treating a round as an improvement. The list may be empty, and even a selected candidate can contain an empty patch.
+
+## Test a proposed source edit
+
+Use a trusted Python agent and a local proposer that returns replacement source. This example gives the agent one order-status tool per case. The training, held-out test, and regression cases use different order IDs. The original agent claims success without looking up the order.
+
+```python
+from fi.alk import improve, tasks
+
+objective = {
+    "evals": [{"eval": "task_success", "anchor": True},
+              {"eval": "tool_selection_accuracy", "anchor": True}],
+    "guards": {"sentinel_rows": ["prior-order"], "min_guard_count": 1},
+}
+
+def order_case(order_id):
+    tool = {"schema": {"description": "Look up this order",
+                       "parameters": {"type": "object", "properties": {}}},
+            "response": {"content": f"Order {order_id}: shipped.", "success": True}}
+    return {
+        "id": order_id, "title": f"Look up order {order_id}",
+        "world": {"kind": "tool_api", "spec": {"max_turns": 3}},
+        "objective": objective,
+        "scenario": {"name": order_id, "kind": "task", "dataset": [{
+            "persona": {"name": "Customer"}, "situation": f"Where is order {order_id}?",
+            "outcome": "Look up the order status."}]},
+        "verification": {"checks": [{"type": "contains", "value": "order"}]},
+        "environments": [{"type": "mock_tools", "data": {"tools": {"order_status": tool}}}],
+    }
+
+dataset = tasks.compile_task_dataset({
+    "name": "order-lookups", "tasks": [order_case(i) for i in ("4821", "6753", "9134")],
+    "splits": {"train": ["4821"], "test": ["6753"], "regression": ["9134"]},
+})
+original = """def reply(agent_input):
+    return {"content": "Your request has been handled.", "tool_calls": []}
+"""
+candidate = """def reply(agent_input):
+    call = {"id": "lookup", "name": "order_status", "arguments": {}}
+    return {"content": "Checking the order.", "tool_calls": [call]}
+"""
+report = improve.improve_agent_code(
+    source_text=original, symbol="reply", dataset=dataset, objective=objective,
+    propose_patch=lambda diagnosis: candidate, max_rounds=1, emit_telemetry=False,
+)
+print(report["fixed"], report["held_out_final"] > report["held_out_baseline"],
+      report["regression_held"])
+```
+
+Expect `True True True`. ALK runs the proposed source in a temporary directory. It accepts the edit when the held-out score rises and the regression score holds. Read `report["accepted_source"]` and review it before applying it to your own file. To exercise rejection, return `original` from the proposer. The report then contains `fixed=False` and `accepted_source=None`.
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Benchmark an agent" icon="gauge" href="/docs/sdk/agent-learning-kit/benchmark-an-agent">
+    Score a candidate against a task dataset
+  </Card>
+  <Card title="Run evaluation suites" icon="list-check" href="/docs/sdk/agent-learning-kit/run-evaluation-suites">
+    Keep a set of response checks together
+  </Card>
+  <Card title="Inspect run telemetry" icon="magnifying-glass" href="/docs/sdk/agent-learning-kit/inspect-run-telemetry">
+    Find a measured run in the local ledger
+  </Card>
+</CardGroup>
