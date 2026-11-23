@@ -1,0 +1,179 @@
+---
+title: "Pydantic AI Integration with Future AGI Tracing"
+description: "Trace Pydantic AI agent runs, streamed runs, model requests, tool calls and token usage in Future AGI with traceai-pydantic-ai."
+---
+
+Trace [Pydantic AI](https://ai.pydantic.dev) agents in Future AGI. The `traceai-pydantic-ai` instrumentor records each agent run with its input and output, every model request with its token usage, and every tool call with its arguments and result.
+
+## 1. Install
+
+`traceai-pydantic-ai` 0.2.0 needs Python 3.10 or later, and current Pydantic AI releases need Python 3.11 or later (on 3.10, `pip` installs an older Pydantic AI). The package installs `fi-instrumentation-otel` 1.3.0 or later; if your project pins an older version, raise the pin.
+
+The previous release, 0.1.0, still runs on Python 3.9, but this page doesn't apply to it: it doesn't apply `TraceConfig` privacy settings, doesn't support `run_stream` as an async context manager and doesn't record a streamed run's input and output.
+
+```bash
+pip install "traceai-pydantic-ai>=0.2.0" pydantic-ai
+```
+
+Install the `pydantic-ai` package. The instrumentor checks for it by name: if only `pydantic-ai-slim` is installed, `instrument()` logs an error and records nothing.
+
+---
+
+## 2. Set environment variables
+
+Set your [Future AGI API and secret keys](/docs/admin-settings/api-keys) and the key for your model provider. The examples on this page use OpenAI.
+
+```bash
+export FI_API_KEY="YOUR_FI_API_KEY"
+export FI_SECRET_KEY="YOUR_FI_SECRET_KEY"
+export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
+```
+
+---
+
+## 3. Initialize the trace provider
+
+Create a trace provider that sends spans to a Future AGI project.
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="pydantic_ai_project",
+)
+```
+
+---
+
+## 4. Instrument Pydantic AI
+
+Call `instrument()` once at startup, before your agents run.
+
+```python
+from traceai_pydantic_ai import PydanticAIInstrumentor
+
+PydanticAIInstrumentor().instrument(tracer_provider=trace_provider)
+```
+
+To keep prompts and outputs out of your traces, pass a `TraceConfig`:
+
+```python
+from fi_instrumentation import TraceConfig
+
+PydanticAIInstrumentor().instrument(
+    tracer_provider=trace_provider,
+    config=TraceConfig(hide_inputs=True, hide_outputs=True),
+)
+```
+
+With this setting, the run prompt, run output, tool arguments and tool results are all recorded as `__REDACTED__`. Token counts and model names are still recorded. See [Mask span attributes](/docs/sdk/tracing/mask-span-attributes) for the other settings and their environment variables.
+
+---
+
+## 5. Run an agent
+
+Use Pydantic AI as usual. `run`, `run_sync` and `run_stream` are traced.
+
+```python
+from pydantic_ai import Agent
+
+agent = Agent(
+    "openai:gpt-4o-mini",
+    instructions="Be concise and helpful.",
+)
+
+result = agent.run_sync("What is the capital of France?")
+print(result.output)
+
+trace_provider.force_flush()
+```
+
+`register()` exports spans in batches, so call `trace_provider.force_flush()` before a short script exits.
+
+---
+
+## 6. Trace tool calls and structured output
+
+Tools and structured output types need no extra setup. Each tool call gets its own span, nested under the agent run.
+
+```python
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent, RunContext
+
+
+class TaskResult(BaseModel):
+    status: str = Field(description="Task status: success, failed, pending")
+    result: str = Field(description="Task result or error message")
+
+
+agent = Agent(
+    "openai:gpt-4o-mini",
+    output_type=TaskResult,
+    instructions="Process tasks and return structured results.",
+)
+
+
+@agent.tool
+def process_data(ctx: RunContext, data: str) -> str:
+    """Process incoming data and return the result."""
+    return f"Processed '{data}'"
+
+
+result = agent.run_sync("Process the following data: 'user_event_12345'")
+print(result.output)
+
+trace_provider.force_flush()
+```
+
+Pydantic AI renamed `result_type` to `output_type`, and current releases no longer accept `result_type`.
+
+---
+
+## 7. Trace streamed runs
+
+`run_stream` is an async context manager, and the instrumented version works the same way. The streamed run's span records the prompt when the stream opens. It records the output once your code has read the stream to the end, through `stream_text()`, `stream_output()` or `get_output()`. If you leave the stream before the end, the span has no output.
+
+```python
+import asyncio
+
+from pydantic_ai import Agent
+
+agent = Agent("openai:gpt-4o-mini")
+
+
+async def main():
+    async with agent.run_stream("Write a haiku about Python") as result:
+        async for text in result.stream_text(delta=True):
+            print(text, end="", flush=True)
+
+
+asyncio.run(main())
+trace_provider.force_flush()
+```
+
+---
+
+## What gets traced
+
+Open **Observe** in Future AGI and select `pydantic_ai_project`. Each run is a trace with these spans:
+
+| Span | Created for | Key attributes |
+|------|-------------|----------------|
+| `pydantic_ai.agent.run` | Each `run` or `run_sync` call (the root span) | `gen_ai.span.kind` = `AGENT`, `input.value`, `output.value`, `gen_ai.request.model`, token usage for the whole run |
+| `pydantic_ai.agent.run_stream` | Each `run_stream` call (the root span) | `gen_ai.span.kind` = `AGENT`, `input.value`, `output.value` once the stream has been read to the end |
+| `pydantic_ai.model.request` | Each request to the model | `gen_ai.request.model`, `gen_ai.system`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` |
+| `pydantic_ai.tool.call.<tool name>` | Each tool call | `pydantic_ai.tool.name`, `pydantic_ai.tool.args`, `pydantic_ai.tool.result` |
+
+Every span also carries `pydantic_ai.span_kind` (`agent_run`, `stream`, `model_request` or `tool_call`). Failed runs, model requests and tool calls get an error status and the exception. A tool attempt that raises `ModelRetry` is also marked as an error, even when the run then succeeds.
+
+---
+
+## Troubleshooting
+
+- **No spans, and an error saying the instrumentor only instruments `pydantic-ai` and no installed version was found:** install the `pydantic-ai` package, not only `pydantic-ai-slim`.
+- **`pip` can't find `traceai-pydantic-ai` 0.2.0:** you are on Python 3.9 or older. Upgrade to Python 3.10 or later; 3.11 or later lets you use current Pydantic AI.
+- **`TypeError: ... unexpected keyword argument 'result_type'`:** use `output_type` instead.
+- **A streamed run has no output:** read the stream to the end inside the `async with` block.
+- **Spans missing when the script ends:** call `trace_provider.force_flush()` before exit.
