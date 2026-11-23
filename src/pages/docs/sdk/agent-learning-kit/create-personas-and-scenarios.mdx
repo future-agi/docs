@@ -1,0 +1,148 @@
+---
+title: "Create personas and scenarios"
+description: "Build a reusable customer, find missing order-status cases and generate scenario rows from a platform agent"
+---
+
+Give your order assistant a customer who knows their order number and wants a shipping date. Save that customer and their test case locally, then check which variations your library still needs. If you already have an agent in Future AGI, you can also generate rows from its instructions.
+
+<Note>
+Use the Python environment from the [ALK quickstart](/docs/sdk/agent-learning-kit). Local authoring, calibration and coverage need no API keys. The last section uses a Future AGI workspace.
+</Note>
+
+## Give the customer a fact they can reveal
+
+Create **order_cases.py**. The [persona](/docs/simulation/concepts/personas) describes Morgan’s situation, what they want and which facts they can share. `on_request` gives the agent a chance to ask for the order number.
+
+```python
+from fi.alk import studio
+
+customer = studio.build_persona(
+    name="Morgan",
+    role="customer",
+    situation="Ask when your order will ship.",
+    outcome="Learn the shipping day for your order.",
+    knowledge=[{"key": "order_id", "value": "A-104", "disclosure": "on_request"}],
+    behavior_policy={"cooperation_bounds": 0.8},
+)
+scenario = studio.Scenario(
+    name="shipping-day",
+    kind="task",
+    dataset=[customer],
+    constraints={"observable_state": {"order_id": "A-104"}},
+    coverage={"intents": ["shipping-day"], "personas": ["returning-customer"]},
+)
+print(studio.validate_persona(customer)["status"])
+calibration = studio.calibrate_persona(customer, scenario=scenario)
+print(calibration["status"], calibration.get("failed_probe"))
+```
+
+Run `python order_cases.py`. It prints `valid`, then `passed None`. Validation checks the persona’s structure. Calibration also checks whether its facts agree with the scenario and whether it answers consistently across repeated probes.
+
+Change the **observable_state** order ID to `B-205` and run the file again. The persona still validates, but calibration prints `failed external` because Morgan’s order ID conflicts with the scenario. Restore `A-104` before continuing.
+
+## Save the case and load it by reference
+
+Append this block to **order_cases.py**. A library reference identifies the exact saved contents. ALK checks the hash when loading the file. Use the calibrated persona from the result when admitting it to a library.
+
+```python
+calibrated = studio.Persona.model_validate(calibration["persona_payload"])
+lint = studio.bias_lint([calibrated])
+persona_entry = studio.save_persona(calibrated, admit=True, lint_result=lint)
+stored_customer = studio.load_persona(persona_entry["ref"])
+
+case_entry = studio.save_scenario(scenario)
+stored_case = studio.load_scenario(case_entry["ref"])
+print(stored_customer.identity.name, stored_case.name)
+print(case_entry["path"])
+```
+
+Run the file again. It prints `Morgan shipping-day` and a JSON path under `.agent-learning/library/scenarios/shipping-day/`. The saved scenario contains the customer row you originally put in its dataset. To admit a persona from a larger collection, pass the whole receiving collection to `bias_lint` so its checks can compare members.
+
+If your customer instructions already exist as Vapi or Retell text, `studio.import_vendor_persona(text, format="vapi")` or `format="retell"` returns a persona and an optional scenario goal. `studio.render_vendor_text(persona)` recovers the imported wording. Use `studio.upgrade_legacy_persona(row)` for an older embedded persona dictionary.
+
+## Find a missing case
+
+Append the following block. Morgan is a returning customer. You also want to test someone asking about their first purchase. A coverage report counts the obligations you declared on your scenarios. Supply the larger grid of values you intend to cover to find a missing combination.
+
+```python
+axes = {
+    "intents": ["shipping-day"],
+    "personas": ["returning-customer", "first-time-customer"],
+}
+cases = [stored_case]
+print(studio.coverage_report(cases)["obligation_coverage"]["per_axis"]["personas"])
+print(studio.residual_uncovered_estimate(cases, axes)["rate"])
+proposal = studio.synthesize_next_scenario(cases, axes)
+print(proposal["target_cell"])
+
+first_time = studio.build_persona(
+    name="Lee",
+    role="first-time customer",
+    situation="This is your first purchase. Ask when order A-105 ships.",
+    outcome="Learn the shipping day for your first order.",
+)
+new_case = studio.Scenario(
+    **proposal["spec"],
+    dataset=[first_time],
+)
+studio.save_scenario(new_case)
+print(new_case.name)
+```
+
+Run the file again. The last four lines are:
+
+```text
+{'declared': 1, 'covered': 1, 'uncovered': []}
+0.5
+{'axis': 'personas', 'value': 'first-time-customer', 'rows': 0}
+synth::personas=first-time-customer
+```
+
+Both grid combinations fit inside the estimator’s default sampling budget. One of the two is missing, even though the library covers its single declared customer type. `synthesize_next_scenario` proposes a name, kind and coverage declaration for the least represented value. You supply the actual conversation row. For a pairwise plan over more dimensions, `studio.expand_scenarios(stored_case, axes, k=2)` returns child scenarios with new coverage declarations. The children inherit the original dataset, so give each variation the appropriate customer row before running it.
+
+## Generate rows for a platform agent
+
+Use this route when you want Future AGI to write cases against an existing [agent definition](/docs/simulation/concepts/agent-definitions). Set `FI_API_KEY` and `FI_SECRET_KEY` to your workspace’s [API key pair](/docs/admin-settings/api-keys) and `AGENT_DEFINITION_ID` to that agent’s ID. Generation creates or reuses a named scenario in the workspace and can consume platform usage. Use a different name when you want fresh rows.
+
+Save this as **generate_orders.py** and run `python generate_orders.py` with those variables set.
+
+```python
+import os
+from pathlib import Path
+
+from fi.alk import studio
+
+request = studio.PlatformScenarioRequest(
+    name="order-shipping-days",
+    platform_agent_definition_id=os.environ["AGENT_DEFINITION_ID"],
+    custom_instruction="Ask about a shipping day. Include first-time customers.",
+    no_of_rows=10,
+)
+try:
+    generated = studio.generate_scenario(request)
+except studio.ScenarioGenerationError as error:
+    print("Scenario ID:", error.scenario_id, "Status:", error.status)
+    raise
+
+Path("generated-orders.json").write_text(
+    generated.scenario.model_dump_json(indent=2), encoding="utf-8"
+)
+print(generated.platform_scenario_id, generated.platform_dataset_id)
+print(len(generated.scenario.dataset))
+```
+
+A completed request prints the scenario and dataset IDs and the row count. Open **generated-orders.json** to review the situations and outcomes. The graph generator accepts 10 to 20,000 rows. On a polling timeout, resume with `studio.fetch_scenario(scenario_id)` using the ID from the error. If you only need existing workspace data in your local library, use `studio.pull_personas()` or `studio.pull_scenarios(ids=[scenario_id])`.
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Simulate an agent" icon="play" href="/docs/sdk/agent-learning-kit/simulate-an-agent">
+    Run a customer row against your Python agent
+  </Card>
+  <Card title="Create scenarios in the platform" icon="list-check" href="/docs/simulation/guides/create-scenarios">
+    Build rows from a workflow, dataset, script or procedure
+  </Card>
+  <Card title="Simulate an external voice agent" icon="microphone" href="/docs/sdk/agent-learning-kit/simulate-an-external-voice-agent">
+    Use a saved scenario to test a deployed voice agent
+  </Card>
+</CardGroup>
