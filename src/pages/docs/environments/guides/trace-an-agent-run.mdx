@@ -11,9 +11,11 @@ A transcript tells you what your agent said; a trace tells you which operations 
 
 Start with a code agent that sends spans through traceAI or OpenTelemetry over HTTP. The Environment checks Python imports for signs of instrumentation. That check does not run your code, verify delivery, or add tracing to an uninstrumented agent. A JavaScript tracing dependency is not detected by this Python check, and a gRPC-only OpenTelemetry exporter does not qualify.
 
-For example, the following Python module traces Ridgeline's policy lookup. Install `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` in the agent's dependencies and call `lookup_return_window` from the returns handler. If the agent already configures tracing, reuse its tracer instead of creating a second provider. Leave the exporter endpoint unset in the code so the sandbox can supply it.
+For example, the following Python module traces Ridgeline's policy lookup. Install `python -m pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http` in the agent's virtual environment and call `lookup_return_window` from the returns handler. If the agent already configures tracing, reuse its tracer instead of creating a second provider. Leave the exporter endpoint unset in the code so the sandbox can supply it.
 
 ```python
+from uuid import UUID
+
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -32,9 +34,24 @@ def lookup_return_window(policy: str) -> int:
 
 
 if __name__ == "__main__":
-    print(lookup_return_window("clearance"))
+    with tracer.start_as_current_span("clearance_return") as request:
+        print(lookup_return_window("clearance"))
+        print(UUID(int=request.get_span_context().trace_id))
     provider.shutdown()
 ```
+
+### Check the exporter before deploying
+
+To send a standalone lookup to an ordinary Observe project, save the module as `policy.py`. In Bash, create a virtual environment with `python3 -m venv .trace-venv`, activate it with `source .trace-venv/bin/activate`, and install the two packages above. Set your workspace's `FI_API_KEY` and `FI_SECRET_KEY`, then run these commands **only in your local shell**, not in the hosted agent:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="X-Api-Key=${FI_API_KEY:?},X-Secret-Key=${FI_SECRET_KEY:?}"
+export OTEL_RESOURCE_ATTRIBUTES="project_name=ridgeline-policy-check"
+python policy.py
+```
+
+For a self-hosted collector, use its trusted HTTP traces endpoint instead. The script prints `14` and the trace ID. Export that UUID as `TRACE_ID` and wait for the trace to appear in the **ridgeline-policy-check** project before reading it with the SDK below. A standalone export checks delivery, not the link to a simulated call. Do not copy these local exporter settings into the Environment; its sandbox supplies its own route.
 
 ## Enable observability and open a call
 
@@ -74,16 +91,16 @@ The spans your code agent exports during a simulation go to its hidden project. 
 
 ### Find a trace ID without the drawer
 
-Use the run execution ID (the last path segment in the Environment's run detail URL) and the call's conversation ID. With `FI_API_KEY` and `FI_SECRET_KEY` set for that workspace, run this in Bash:
+Use the run execution ID (the last path segment in the Environment's run detail URL) and the call's conversation ID. With `FI_API_KEY` and `FI_SECRET_KEY` set for that workspace, replace the two ID placeholders and run this in Bash:
 
 ```bash
-read -r -p 'Run execution ID: ' run_id
-read -r -p 'Conversation ID: ' call_id
+export RUN_ID=YOUR_RUN_EXECUTION_ID
+export CALL_ID=YOUR_CONVERSATION_ID
 curl --silent --show-error --fail-with-body --get \
-  "${FI_BASE_URL:-https://api.futureagi.com}/simulate/v3/test-executions/${run_id}/traces/" \
+  "${FI_BASE_URL:-https://api.futureagi.com}/simulate/v3/test-executions/${RUN_ID}/traces/" \
   --header "X-Api-Key: ${FI_API_KEY}" \
   --header "X-Secret-Key: ${FI_SECRET_KEY}" \
-  --data-urlencode "call_execution_id=${call_id}"
+  --data-urlencode "call_execution_id=${CALL_ID}"
 ```
 
 The `traces` array contains up to 200 traces for that call. Choose the `trace_id` of the trace you want. An empty array is a successful read with no matching traces. If the call ID belongs to a different run, the request returns HTTP 400 instead.
@@ -92,17 +109,21 @@ The `traces` array contains up to 200 traces for that call. Choose the `trace_id
 
 Set `FI_API_KEY` and `FI_SECRET_KEY` for the workspace that owns the run. Use the **Conversation ID** and the dashboard's **Copy Trace ID** from the same call. The example walks the trace tree, checks the call mark, then opens the lookup by its span ID.
 
-- **Python:** Install `python -m pip install futureagi==0.8.0`. Run the script and paste the two IDs when prompted.
-- **TypeScript:** With Node.js 22.18 or later, install `npm install @future-agi/sdk@0.3.0`. Save the example as `lookup.mts` and run `node lookup.mts CONVERSATION_ID TRACE_ID`, replacing the arguments with the two copied IDs.
+- **Python:** Install `python -m pip install futureagi==0.8.0`. Save the script as `lookup.py`. For an Environment trace, run `python lookup.py "$TRACE_ID" "$CALL_ID"`, with both IDs exported. For the standalone lookup only, run `python lookup.py "$TRACE_ID"` with the ID printed by `policy.py`.
+- **TypeScript:** With Node.js 22.18 or later, install `npm install @future-agi/sdk@0.3.0`. Save the example as `lookup.mts` and run `node lookup.mts "$TRACE_ID" "$CALL_ID"`. For the standalone lookup only, run `node lookup.mts "$TRACE_ID"`.
 
 <CodeGroup titles={["Python", "TypeScript"]}>
 ```python
+import sys
 from fi import Client
 
+if len(sys.argv) not in (2, 3) or not all(arg.strip() for arg in sys.argv[1:]):
+    raise SystemExit("Usage: python lookup.py TRACE_ID [CONVERSATION_ID]")
 client = Client()
-call_id = input("Conversation ID: ").strip()
-trace_id = input("Trace ID: ").strip()
-trace = client.traces.get(trace_id, call_execution_id=call_id)
+trace_id = sys.argv[1]
+call_id = sys.argv[2] if len(sys.argv) == 3 else None
+scope = {"call_execution_id": call_id} if call_id else {}
+trace = client.traces.get(trace_id, **scope)
 nodes = list(trace.model_dump().get("observation_spans") or [])
 
 while nodes:
@@ -112,9 +133,9 @@ while nodes:
     attrs = span.get("span_attributes") or {}
     if (
         span["name"] == "lookup_return_window"
-        and attrs.get("fi.simulator.call_execution_id") == call_id
+        and (call_id is None or attrs.get("fi.simulator.call_execution_id") == call_id)
     ):
-        result = client.spans.get(span["id"], call_execution_id=call_id)
+        result = client.spans.get(span["id"], **scope)
         policy = result.observation_span["span_attributes"]
         print(policy["ridgeline.policy"], int(policy["ridgeline.window_days"]))
         break
@@ -128,10 +149,11 @@ import { Client } from "@future-agi/sdk";
 type Span = { id: string; name: string; span_attributes?: Record<string, unknown> };
 type Node = { observation_span: Span; children?: Node[] };
 
-const [callId, traceId] = process.argv.slice(2);
-if (!callId || !traceId) throw new Error("Usage: node lookup.mts CONVERSATION_ID TRACE_ID");
+const [traceId, callId] = process.argv.slice(2);
+if (!traceId || (callId !== undefined && !callId.trim()))
+  throw new Error("Usage: node lookup.mts TRACE_ID [CONVERSATION_ID]");
 const client = new Client();
-const scope = { call_execution_id: callId };
+const scope = callId ? { call_execution_id: callId } : {};
 const trace = await client.traces.get(traceId, scope);
 const nodes = [...((trace.observation_spans ?? []) as Node[])];
 let message = "No marked policy lookup in this trace for this call.";
@@ -139,7 +161,7 @@ while (nodes.length) {
   const { observation_span: span, children } = nodes.pop()!;
   nodes.push(...(children ?? []));
   if (span.name === "lookup_return_window" &&
-      span.span_attributes?.["fi.simulator.call_execution_id"] === callId) {
+      (!callId || span.span_attributes?.["fi.simulator.call_execution_id"] === callId)) {
     const result = await client.spans.get(span.id, scope);
     const attrs = (result.observation_span as Span).span_attributes!;
     message = `${attrs["ridgeline.policy"]} ${attrs["ridgeline.window_days"]}`;
