@@ -26,7 +26,8 @@ test('primary setup preloads a maintained package without app instrumentation', 
     assert.ok(page.includes(command), command);
   }
   const examples = [...page.matchAll(/```javascript\n([\s\S]*?)\n```/g)];
-  assert.equal(examples.length, 2);
+  // Two app examples (ESM, CommonJS) plus the routing example later on the page.
+  assert.equal(examples.length, 3);
   assert.match(examples[0][1], /import OpenAI from "openai"/);
   assert.doesNotMatch(examples[0][1], /traceai|opentelemetry|instrument|register/);
   assert.match(page, /open \*\*Tracing\*\* under \*\*Observe\*\* and select `ridgeline-support`/);
