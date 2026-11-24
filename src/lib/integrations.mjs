@@ -27,6 +27,9 @@ export const integrationCategories = [
 /** @type {ReadonlyArray<Integration>} */
 export const integrations = [
   { id: 'ragflow', name: 'RAGFlow', href: '/docs/integrations/no-code/ragflow', category: 'apps', summary: 'Trace chat turns, retrieval and model calls from the Future AGI RAGFlow fork.', method: 'RAGFlow settings', logo: 'generic-framework' },
+  { id: 'dify', name: 'Dify', href: '/docs/integrations/no-code/dify', category: 'apps', summary: 'Export self-hosted Dify app runs through its built-in OpenTelemetry tracing provider.', method: 'Native OTLP', logo: 'generic-framework' },
+  { id: 'langdock', name: 'Langdock', href: '/docs/integrations/no-code/langdock', category: 'apps', summary: 'Trace your calls to Langdock’s OpenAI-compatible Completion API.', method: 'OpenAI client', logo: 'generic-framework' },
+  { id: 'nvidia-nemo-agent-toolkit', name: 'NVIDIA NeMo Agent Toolkit', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks', summary: 'Export workflow, agent, tool and LLM spans with the toolkit’s OpenTelemetry exporter.', method: 'Native OTLP', logo: 'generic-framework', aliases: ['NeMo', 'NAT', 'NVIDIA NAT'] },
   { id: 'langflow', name: 'Langflow', href: '/docs/integrations/no-code/langflow', category: 'apps', summary: 'Export self-hosted Langflow API traces through its built-in Traceloop integration.', method: 'Native OTLP', logo: 'generic-framework' },
   { id: 'traceai-python-auto', name: 'Zero-code Python', href: '/docs/integrations/traceai/python-auto', category: 'frameworks', summary: 'Trace supported Python model calls at startup without adding tracing imports.', method: 'traceAI launcher', logo: 'generic-framework', aliases: ['fi-instrument', 'fi-instrumentation-otel', 'FI_AUTO_INSTRUMENT', 'auto instrumentation', 'zero code', 'bootstrap', 'doctor'] },
   { id: 'traceai-auto', name: 'Zero-code Node.js', href: '/docs/integrations/traceai/auto', category: 'frameworks', summary: 'Trace supported Node.js AI calls with one startup preload and no tracing imports.', method: 'traceAI preload', logo: 'generic-framework', aliases: ['@traceai/auto', 'Node.js', 'TypeScript', 'JavaScript', 'zero code', 'auto instrumentation'] },
@@ -108,6 +111,7 @@ export const integrations = [
   { id: 'llamaindex', name: 'LlamaIndex', href: '/docs/integrations/traceai/llamaindex', category: 'frameworks', summary: 'Trace retrieval and generation in RAG applications.', method: 'traceAI SDK', logo: 'llamaindex', aliases: ['RAG'] },
   { id: 'llamaindex-workflows', name: 'LlamaIndex Workflows', href: '/docs/integrations/traceai/llamaindex-workflows', category: 'frameworks', summary: 'Capture steps in event-driven agent workflows.', method: 'traceAI SDK', logo: 'llamaindex' },
   { id: 'openai-agents', name: 'OpenAI Agents SDK', href: '/docs/integrations/traceai/openai_agents', category: 'frameworks', summary: 'Trace agent runs, handoffs and tools.', method: 'traceAI SDK', logo: 'openai' },
+  { id: 'pydantic-ai', name: 'Pydantic AI', href: '/docs/integrations/traceai/pydantic-ai', category: 'frameworks', summary: 'Trace agent runs, streamed runs, model requests and tool calls.', method: 'traceAI SDK', logo: 'generic-framework', aliases: ['PydanticAI', 'traceai-pydantic-ai'] },
   { id: 'claude-agent-sdk-typescript', name: 'Claude Agent SDK (TypeScript)', href: '/docs/integrations/traceai/claude-agent-sdk-typescript', category: 'frameworks', summary: 'Trace Node.js agent conversations, tools and subagents.', method: 'traceAI SDK', logo: 'anthropic' },
   { id: 'google-adk', name: 'Google ADK', href: '/docs/integrations/traceai/google_adk', category: 'frameworks', summary: 'Instrument agents built with Google ADK for Python.', method: 'traceAI SDK', logo: 'google', aliases: ['Agent Development Kit'] },
   { id: 'google-discovery-engine', name: 'Google Discovery Engine', href: '/docs/integrations/traceai/google-discovery-engine', category: 'frameworks', summary: 'Trace Vertex AI Search queries and grounded-answer requests.', method: 'traceAI SDK', logo: 'google', aliases: ['Vertex AI Search', 'Agent Search'] },
@@ -202,10 +206,7 @@ export const integrations = [
 // Overview aids are links, not product-logo cards. Keep them in the same source.
 export const integrationAids = [
   { name: 'Coding agent overview', href: '/docs/integrations/coding-agents', category: 'coding' },
-  { name: 'Dify support status', href: '/docs/integrations/no-code/dify', category: 'apps' },
   { name: 'Flowise support status', href: '/docs/integrations/no-code/flowise', category: 'apps' },
-  { name: 'NeMo Agent Toolkit support status', href: '/docs/integrations/frameworks/nvidia-nemo-agent-toolkit', category: 'frameworks' },
-  { name: 'Langdock support status', href: '/docs/integrations/no-code/langdock', category: 'apps' },
   { name: 'Inferable support status', href: '/docs/integrations/inferable', category: 'frameworks' },
   { name: 'AI SDK C++ support status', href: '/docs/integrations/frameworks/ai-sdk-cpp', category: 'frameworks' },
   { name: 'OpenAI Assistants retirement', href: '/docs/integrations/traceai/openai_assistants', category: 'providers' },
