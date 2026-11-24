@@ -21,12 +21,13 @@ umask 077
 base=${GATEWAY_BASE_URL:?Set the gateway endpoint ending in /v1}
 export videos="${base%/}/videos"
 : "${GATEWAY_API_KEY:?Set your organization gateway key first}"
-if [[ ! -s rainfly.request-key ]]; then uuidgen > rainfly.request-key; fi
-read -r request_key < rainfly.request-key
+key_file=${VIDEO_REQUEST_KEY_FILE:-rainfly.request-key}
+if [[ ! -e "$key_file" ]]; then (set -C; uuidgen > "$key_file"); fi
+read -r request_key < "$key_file"
 export request_key
 ```
 
-Keep `rainfly.request-key`. If you restart the shell to retry the same clip, rerun setup in the same directory to reload it. Creating a job can incur a real provider charge. Only if you intend to pay for the clip, run `export CONFIRM_PAID_VIDEO=yes` and choose **one** request format. Both examples request the same clip: one second at 480p in landscape. Save the printed job ID so you can resume later without submitting again.
+Keep the key file (`rainfly.request-key` by default). If you restart the shell to retry the same clip, rerun setup with the same directory and filename. For a distinct clip, use a fresh directory or a new filename such as `export VIDEO_REQUEST_KEY_FILE=second-clip.request-key` before rerunning setup. Never change the filename just because a response timed out. Creating a job can incur a real provider charge. Only if you intend to pay for the clip, run `export CONFIRM_PAID_VIDEO=yes` and choose **one** request format. Both examples request the same clip: one second at 480p in landscape. Save the printed job ID so you can resume later without submitting again.
 
 <Tabs>
 <Tab title="Native JSON">
@@ -71,7 +72,7 @@ A new submission returns `202 Accepted`. That means the gateway recorded the job
 
 ### Retry the same job
 
-If your connection drops before you get the ID, run the **same create command with the same key and inputs**. The gateway compares the normalized request, including the contents of any input images. Within the same organization and operation, a matching replay returns the original ID: `202` while the job is active or `200` once it ends. It does not start or reserve budget for a second generation.
+If your connection drops before you get the ID, run the **same create command with the same key and inputs**. The gateway compares the normalized request, including the contents of any input images. While submissions remain enabled and your key still has access, a matching replay within the same organization and operation returns the original ID: `202` while the job is active or `200` once it ends. It does not start or reserve budget for a second generation.
 
 For example, changing the rainfly prompt to ask for a different camera angle with the same key returns `409 idempotency_conflict`. Give that edit a new key only if you intend to pay for a second clip. Use 1 to 255 printable ASCII characters per key. The default idempotency retention is 30 days; once the binding expires, the same key can create new paid work.
 
@@ -132,7 +133,7 @@ The content endpoint serves the gateway copy, not a provider URL. It defaults to
 
 List completed jobs for the example model. For Python, save the example as `list_videos.py` and run `python3 list_videos.py`. For Node.js 18 or later, save the module as `list_videos.mjs` and run `node list_videos.mjs`. The key determines the organization; a missing ID and another organization's ID both return `404 video_not_found` on lookup.
 
-<CodeGroup titles={["Python", "TypeScript", "cURL"]}>
+<CodeGroup titles={["Python", "JavaScript (Node.js)", "cURL"]}>
 
 ```python
 import json
@@ -146,10 +147,11 @@ url = os.environ["GATEWAY_BASE_URL"].rstrip("/") + "/videos?" + query
 request = Request(url, headers={"Authorization": "Bearer " + os.environ["GATEWAY_API_KEY"]})
 with urlopen(request) as response:
     page = json.load(response)
-print([job["id"] for job in page["data"]], page["has_more"], page["last_id"])
+print(json.dumps({"ids": [job["id"] for job in page["data"]],
+                  "has_more": page["has_more"], "last_id": page["last_id"]}))
 ```
 
-```typescript
+```javascript
 // Run as a module in Node.js 18 or later.
 const { GATEWAY_BASE_URL, GATEWAY_API_KEY } = process.env;
 if (!GATEWAY_BASE_URL || !GATEWAY_API_KEY) throw new Error("Set the gateway URL and key");
@@ -177,15 +179,31 @@ Results default to newest first (`order=desc`). `limit` defaults to 20 and accep
 
 ## Cancel work or delete your copy
 
-These are separate actions. If the rainfly clip is no longer needed **while it is being generated**, request cancellation and inspect the result:
+These are separate actions. To stop your clip **instead of downloading it**, set `cancel_video_id` to the ID of the active job you want to stop. For the clip you just submitted, use `export cancel_video_id=$video_id`. The example checks the status first so it does not request cancellation for a job already known to be finished.
 
 ```bash
-curl -sS --fail-with-body -X POST "$videos/${video_id:?Set the job ID}/cancel" \
-  -H "Authorization: Bearer $GATEWAY_API_KEY" -H 'X-AgentCC-Video-Dialect: native' \
-  | jq '{status, cancellation, error}'
+(
+  set -eo pipefail
+  url="$videos/${cancel_video_id:?Set the active job ID you want to cancel}"
+  headers=(-H "Authorization: Bearer $GATEWAY_API_KEY" -H 'X-AgentCC-Video-Dialect: native')
+  status=$(curl -fsS "$url" "${headers[@]}" | jq -er '.status')
+  case "$status" in
+    submitting|queued|running|submission_unknown)
+      body=$(mktemp)
+      trap 'rm -f -- "$body"' EXIT
+      http=$(curl -sS -o "$body" -w '%{http_code}' -X POST "$url/cancel" "${headers[@]}")
+      case "$http" in
+        200|202) jq -ce '{id, status, cancellation}' "$body" ;;
+        409) jq -ce 'if (.error.code == "cancel_unsupported" or .error.code == "cancel_not_available")
+                     then {error: .error.code} else error(.error.code // "unexpected conflict") end' "$body" ;;
+        *) printf 'Cancellation failed: HTTP %s\n' "$http" >&2; exit 1 ;;
+      esac ;;
+    *) printf 'No cancellation sent: job is %s.\n' "$status" ;;
+  esac
+)
 ```
 
-The gateway can confirm cancellation before sending work to the provider. After submission, OpenRouter has no cancel operation (`409 cancel_unsupported`); the direct BytePlus adapter only requests cancellation while queued (`409 cancel_not_available` otherwise). `202` with `cancellation.state: requested` is not confirmation. Keep polling. On an already completed job, cancellation returns `200` with `cancellation.state: not_applicable` and leaves the clip available.
+The gateway can confirm cancellation before sending work to the provider. After submission, OpenRouter has no cancel operation (`409 cancel_unsupported`); the direct BytePlus adapter only requests cancellation while queued (`409 cancel_not_available` otherwise). If the example prints one of these errors, it did not cancel the job. Poll the original ID; do not submit again. `202` with `cancellation.state: requested` is not confirmation. Keep polling. On an already completed job, cancellation returns `200` with `cancellation.state: not_applicable` and leaves the clip available.
 
 If you have saved the clip and want to **remove it from the gateway**, use local deletion instead:
 

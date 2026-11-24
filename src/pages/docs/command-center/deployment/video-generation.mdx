@@ -45,7 +45,7 @@ auth:
       key_type: byok
       metadata: { org_id: ridgeline }
       providers: [openrouter]
-      models: [openrouter/bytedance/seedance-1-5-pro]
+      models: [openrouter/x-ai/grok-imagine-video-1.5-lite]
 budgets:
   enabled: true
   default_period: daily
@@ -65,7 +65,7 @@ video:
       base_url: https://openrouter.ai/api/v1
       region: global
       account_ref: ridgeline-openrouter
-      models: [bytedance/seedance-1-5-pro]
+      models: [x-ai/grok-imagine-video-1.5-lite]
       limits: { submit_rpm: 10, poll_qps: 2, max_active_tasks: 4 }
       deadlines: { connect: 10s, read: 30s, submit: 30s, run: 30m, reconcile: 1m }
       poll: { base_interval: 10s }
@@ -78,11 +78,24 @@ If clients connect through a load balancer and you restrict access by IP, set `i
 Restart the test gateway with the configuration, secrets and storage mount in place. For a dedicated Docker Compose service named `gateway` that mounts this `config.yaml`, run `docker compose up -d --force-recreate --wait gateway` from the directory containing the file. If you run the binary directly, use `./agentcc-gateway --config config.yaml`. With a fresh Redis prefix, `kill_switch: true` starts the worker but blocks submissions. An existing prefix keeps its stored switch value across restarts. List jobs with the organization key to check that video is enabled without buying a clip:
 
 ```bash
+set -eo pipefail
 curl -fsS "${GATEWAY_URL:?}/v1/videos?limit=1" \
-  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" | jq '{object, total}'
+  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" |
+  jq -e 'select(.object == "list" and (.total | type) == "number") | {object, total}'
 ```
 
-Expect `{"object":"list","total":0}` for an organization with no jobs. This confirms you can read jobs, not that OpenRouter accepts your credential. With your admin bearer token, `GET /-/admin/video/capabilities` lists the binary’s built-in models and input combinations, including models you did not enable. The gateway only accepts submissions for models you list under an enabled provider.
+Expect `{"object":"list","total":0}` for an organization with no jobs. To check the OpenRouter adapter and the example model without submitting a clip, use the admin token:
+
+```bash
+set -eo pipefail
+curl -fsS "${GATEWAY_URL:?}/-/admin/video/capabilities" \
+  -H "Authorization: Bearer ${AGENTCC_ADMIN_TOKEN:?}" |
+  jq -e '.data[] | select(.service == "openrouter" and .configured) |
+    .models[] | select(.model_id == "x-ai/grok-imagine-video-1.5-lite") |
+    {model_id, durations, resolutions}'
+```
+
+`durations.min` should be `1` and `resolutions` should include `480p`. The catalog describes built-in capabilities; it does not authenticate to OpenRouter or check the account balance. The gateway only accepts submissions for models you list under an enabled provider.
 
 The native `byteplus` adapter has its own model IDs, region and tariff (`byteplus-2026-10-02`). A successful OpenRouter clip does not verify native BytePlus access or billing. BytePlus output privacy is unknown: leave the adapter disabled unless you can accept that exposure. Enabling it requires `acknowledge_public_output: true`.
 
@@ -92,15 +105,17 @@ The native `byteplus` adapter has its own model IDs, region and tariff (`byteplu
   Opening submissions affects every organization on the test gateway. The next clip can incur a real charge on your OpenRouter account. Leave the switch closed if you only need to verify the installation.
 </Warning>
 
-Use Bash, cURL and `jq`. To check the pause control without submitting a job, you can run the command in step 4 now. In your operator shell, set `AGENTCC_ADMIN_TOKEN` to the gateway's admin token and allow new submissions:
+Use Bash, cURL and `jq`. To check the pause control without submitting a job, run the command in step 4 and leave submissions paused. Only if you intend to buy the clip, run `export CONFIRM_PAID_VIDEO=yes` in your operator and client shells. In the operator shell, enable submissions on the dedicated test gateway:
 
 ```bash
+: "${AGENTCC_ADMIN_TOKEN:?Set the test gateway admin token}"
+[[ ${CONFIRM_PAID_VIDEO:-no} == yes ]] || { echo 'Leaving submissions paused.' >&2; exit 1; }
 curl -fsS "${GATEWAY_URL:?}/-/admin/video/killswitch" \
   -H "Authorization: Bearer ${AGENTCC_ADMIN_TOKEN:?}" \
   -H 'Content-Type: application/json' -d '{"enabled":false}'
 ```
 
-In your client shell, export `CONFIRM_PAID_VIDEO=yes` only if you intend to pay for this clip, then submit it with the organization key. Save the script below as `submit-video.sh`. Run `VIDEO_ID=$(bash submit-video.sh); export VIDEO_ID` and keep this shell open. The script prints the job ID only when the request succeeds. If you lose the response, retry the same request with the same `Idempotency-Key`. While submissions are open and the binding is retained, a successful replay returns the original job. The key is scoped to the organization and operation: changing the prompt for this text-to-video request returns `409 idempotency_conflict`.
+In the client shell, submit one second of 480p video with the organization key. Start in a fresh private directory with `uuidgen` installed and save the script below as `submit-video.sh`. Run `export VIDEO_ID; VIDEO_ID=$(bash submit-video.sh)` and keep this shell open. Use `printf '%s\n' "$VIDEO_ID"` to display the ID, save it, and keep `tent-packing.request-key`. If you lose the response, rerun the script from the **same directory**. While submissions are open and the binding is retained, the same request with the same key returns the original job. Changing the prompt for this text-to-video request without changing the key returns `409 idempotency_conflict`.
 
 ```bash
 set -eo pipefail
@@ -108,15 +123,18 @@ if [ "${CONFIRM_PAID_VIDEO:-no}" != yes ]; then
   printf 'Paid video submission not confirmed.\n' >&2
   exit 1
 fi
+umask 077
+if [[ ! -e tent-packing.request-key ]]; then (set -C; uuidgen > tent-packing.request-key); fi
+read -r request_key < tent-packing.request-key
 curl -fsS "${GATEWAY_URL:?}/v1/videos" \
   -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" \
-  -H 'Idempotency-Key: ridgeline-tent-packing-take-1' \
+  -H "Idempotency-Key: ${request_key:?Empty request key file}" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"openrouter/bytedance/seedance-1-5-pro","prompt":"Overhead view of a camper rolling a green tent into its stuff sack.","duration_seconds":4,"resolution":"480p","aspect_ratio":"16:9","audio":false}' \
+  -d '{"model":"openrouter/x-ai/grok-imagine-video-1.5-lite","prompt":"Overhead view of a camper rolling a green tent into its stuff sack.","duration_seconds":1,"resolution":"480p","aspect_ratio":"16:9"}' \
   | jq -er '.id'
 ```
 
-A new job returns `202`. Save the script below as `video-status.sh`. Run `bash video-status.sh active` to wait for the provider job ID. `submitting` means the gateway has accepted the request but has not yet recorded an upstream job ID. Once you see `queued` or `running`, restart **only the test gateway** (for the Compose service, `docker compose restart gateway`). Keep its Redis prefix, artifact mount, provider account, region and credentials unchanged. Wait for the gateway to be ready (in Compose, `docker compose up -d --wait gateway`), then run `bash video-status.sh completed`. If the job already completed before you could restart, you can still verify the download after restart, but not in-flight recovery. The worker resumes polling; the client does not need to submit again.
+A new job returns `202`. Save the script below as `video-status.sh`. Run `bash video-status.sh active` to wait for the provider job ID. `submitting` means the gateway has accepted the request but has not yet recorded an upstream job ID. Once you see `queued` or `running`, restart **only the test gateway** (for the Compose service, `docker compose restart gateway`). Keep its Redis prefix, artifact mount, provider account, region and credentials unchanged. Wait for the gateway to be ready (in Compose, `docker compose up -d --wait gateway`), then run `bash video-status.sh completed`. If the job completes before `active` observes it in progress, the script exits with code `3`. You can still check the download after restart, but that does not verify in-flight recovery. Do not submit a second clip just to repeat the check.
 
 ```bash
 set -eo pipefail
@@ -128,8 +146,10 @@ for ((attempt=0; attempt<180; attempt++)); do
   jq '{id, status, estimate, cost, artifacts, error}' <<<"$job"
   case "$status" in
     queued|running) if [ "$1" = active ]; then exit 0; fi ;;
-    completed) jq -e '.artifacts[0].state == "available"' <<<"$job" >/dev/null; exit 0 ;;
-    failed|cancelled|canceled|submission_unknown|submission_unresolved) exit 1 ;;
+    completed)
+      if [[ $1 == active ]]; then echo 'Job already completed before restart.' >&2; exit 3; fi
+      jq -e '.artifacts[0].state == "available"' <<<"$job" >/dev/null; exit 0 ;;
+    failed|cancelled|submission_unknown) exit 1 ;;
   esac
   sleep 10
 done
@@ -140,9 +160,22 @@ exit 1
 When the same ID shows `completed` and `artifacts[0].state` is `available`, download the gateway's copy before `artifacts[0].expires_at`:
 
 ```bash
-curl -fsS "${GATEWAY_URL:?}/v1/videos/${VIDEO_ID:?}/content" \
-  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" \
-  -o ridgeline-tent-packing.mp4
+(
+  set -eo pipefail
+  url="${GATEWAY_URL:?}/v1/videos/${VIDEO_ID:?}"
+  auth=(-H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}")
+  mime=$(curl -fsS "$url" "${auth[@]}" | jq -er '.artifacts[0].content_type')
+  case "$mime" in
+    video/mp4) file=ridgeline-tent-packing.mp4 ;;
+    video/quicktime) file=ridgeline-tent-packing.mov ;;
+    *) printf 'Unexpected content type: %s\n' "$mime" >&2; exit 1 ;;
+  esac
+  tmp=$(mktemp "./${file}.XXXXXX")
+  trap 'rm -f -- "$tmp"' EXIT
+  curl -fsS "$url/content" "${auth[@]}" -o "$tmp"
+  mv -- "$tmp" "$file"
+  printf 'Saved %s\n' "$file"
+)
 ```
 
 ## 4. Pause submissions without stopping the worker

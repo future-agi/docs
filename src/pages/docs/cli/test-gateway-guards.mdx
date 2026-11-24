@@ -12,28 +12,32 @@ Use `fagi gateway try` to check whether your gateway lets a prompt through, warn
 <Steps>
 <Step title="Choose your test gateway">
 
-Use a test gateway with a [configured provider](/docs/command-center/features/providers) and a model the playground key is allowed to call. A `permission_denied` response does not test a content rule. For the email test below, [turn on a guardrail](/docs/protect/guides/turn-on-a-guardrail) that blocks email addresses before the model call. Use a test configuration with no other blocking rule so you can attribute a content block to this rule.
+Choose a model listed by a [provider configured for your organization](/docs/command-center/features/providers). The playground creates a temporary gateway key for each call; `fagi gateway try` does not take a gateway key you created yourself. A `permission_denied` response is not a guardrail verdict.
 
-Use Node.js 22.15 or later in the 22.x series, or 23.11 or later. On a self-hosted install, set `FI_BASE_URL` to your platform API URL before logging in. Install the CLI:
+For the email test, [turn on PII Detection](/docs/protect/guides/turn-on-a-guardrail) for incoming requests, include email addresses, keep the default threshold of `0.8`, set the action to **Block**, and select **Save & Activate**. Use a test configuration with no other blocking rule so you can attribute a content block to this rule. If you self-host, the gateway must also start with [`guardrails.enabled` set to `true`](/docs/command-center/features/guardrails#setting-up-guardrails) in `config.yaml`. If you change that startup setting, restart the gateway. Saving the organization rule alone does not turn on enforcement.
+
+You need Bash, `jq` and Node.js (22.15 or later in the 22.x series, or 23.11 or later). On a self-hosted install, set `FI_BASE_URL` to your platform API URL before logging in. Install the CLI:
 
 ```bash
 npm install -g @future-agi/cli@0.2.2
 ```
 
-Run `fagi auth login` to enter your platform API key and secret key, or set `FI_API_KEY` and `FI_SECRET_KEY` as CI secrets. List the gateways your credentials can access:
+Run `fagi auth login` to enter your platform API key and secret key, or set `FI_API_KEY` and `FI_SECRET_KEY` as CI secrets. List the gateways you can access, then set the gateway ID and model for the rest of this shell session. Replace the example values with yours:
 
 ```bash
 fagi api gateway list
+export GATEWAY_ID=default
+export GATEWAY_MODEL=gpt-4o-mini
 ```
 
-The examples use gateway ID `default` and model `gpt-4o-mini`. Substitute your gateway ID and a model it serves throughout. If you omit `--gateway` from `try`, the CLI selects the only gateway in the list. A list with zero or multiple gateways exits `2` rather than guessing. If you omit `--model`, the playground tries to select a configured model.
+Use the exact model ID from your provider configuration, including any provider prefix. If you omit `--gateway` from `try`, the CLI selects the only gateway in the list. A list with zero or multiple gateways exits `2` rather than guessing. If you omit `--model`, the playground tries to select a configured model.
 
 </Step>
 <Step title="Preview the request without sending it">
 
 ```bash
 fagi gateway try 'Does Ridgeline Outfitters repair torn tent seams?' \
-  --gateway default --model gpt-4o-mini \
+  --gateway "$GATEWAY_ID" --model "$GATEWAY_MODEL" \
   --system 'You answer gear repair questions for Ridgeline Outfitters.' \
   --expect passed --dry-run --json
 ```
@@ -60,7 +64,7 @@ Without `--dry-run`, `try` attempts a real completion and can incur a model char
 (
   rc=0
   fagi gateway try 'Does Ridgeline Outfitters repair torn tent seams?' \
-    --gateway default --model gpt-4o-mini \
+    --gateway "$GATEWAY_ID" --model "$GATEWAY_MODEL" \
     --system 'You answer gear repair questions for Ridgeline Outfitters.' \
     --expect passed --json > repair-result.json || rc=$?
   if [[ -s repair-result.json ]]; then
@@ -73,11 +77,22 @@ Without `--dry-run`, `try` attempts a real completion and can incur a model char
 For a successful, unflagged answer, the CLI reports `outcome: "passed"` and `expect_matched: true`. Start the watch from the timestamp you saved:
 
 ```bash
-fagi gateway tail --since "$SINCE" --model gpt-4o-mini \
+fagi gateway tail --since "$SINCE" --model "$GATEWAY_MODEL" \
   --until-first --timeout 60s -o jsonl
 ```
 
-`--until-first` stops at the first matching row, which may belong to another caller. Find the `x-agentcc-request-id` header (case-insensitive) in `result.guardrail_headers` in `repair-result.json`. Compare it with `request.request_id` on the `request_observed` line. If they match, `request.status_code`, `request.provider` and `request.latency_ms` describe this call. The final `tail_finished` line summarizes the watch. If the IDs differ or the watch ends without a row, replace `ID` in `fagi api gateway request-logs list --request-id ID` with the playground request ID. An empty result means you have no matching log row to inspect; do not substitute a nearby request.
+`--until-first` stops at the first matching row, which may belong to another caller. The `tail_finished` line summarizes the watch. To identify **your** repair request, look up the request ID from the saved response:
+
+```bash
+(
+  set -eo pipefail
+  id=$(jq -er '.result.guardrail_headers | to_entries[] | select((.key | ascii_downcase) == "x-agentcc-request-id") | .value | strings | select(length > 0)' repair-result.json)
+  fagi api gateway request-logs list --request-id "$id" --json |
+    jq -e --arg id "$id" 'first(.results[] | select(.request_id == $id) | {request_id, status_code, provider, latency_ms})'
+)
+```
+
+Compare the returned `request_id` with `request.request_id` on the `request_observed` line. If they differ, only the lookup describes your repair request. If you have a request ID but the lookup returns no row, wait and repeat the lookup, not the completion.
 
 </Step>
 </Steps>
@@ -87,10 +102,17 @@ fagi gateway tail --since "$SINCE" --model gpt-4o-mini \
 Save a synthetic contact detail as a repeatable test for the email rule. Pass either prompt text or `--prompt-file`, not both. The file must be nonblank UTF-8 text, at most 1 MiB. Use `--prompt-file -` to read from standard input instead. This example uses `jq` to check the saved report without sending the prompt twice.
 
 ```bash
-printf '%s\n' 'Please send the tent repair estimate to camper@example.com.' > ridgeline-email.txt
-fagi gateway try --prompt-file ridgeline-email.txt \
-  --gateway default --model gpt-4o-mini --expect blocked --json > ridgeline-result.json &&
+(
+  set -e
+  printf '%s\n' 'Please send the tent repair estimate to camper@example.com.' > ridgeline-email.txt
+  fagi gateway try --prompt-file ridgeline-email.txt \
+    --gateway "$GATEWAY_ID" --model "$GATEWAY_MODEL" --expect blocked --json > ridgeline-result.json || {
+      rc=$?
+      jq '{outcome, expect_matched, status: .result.status_code}' ridgeline-result.json >&2 || true
+      exit "$rc"
+    }
   jq -e '.result.body.error | .type == "guardrail_error" and .code == "content_blocked"' ridgeline-result.json
+)
 ```
 
 A content block prints `true` and the check exits `0`. The playground also labels HTTP `403` or legacy `446` as `blocked` based on status alone. A permission refusal can therefore satisfy `--expect blocked`, but `jq -e` prints `false` and exits nonzero. If `result.body.error.type` is `permission_error` in the saved report, check gateway access before changing the rule.
@@ -111,7 +133,7 @@ For a CI rule check, always set `--expect`. Without it, even `blocked` or `faile
 Use `--since 2m` for the last two minutes, or an RFC 3339 timestamp to start at a particular instant. Narrow the watch with `--model`, `--provider`, `--status-code`, `--errors`, `--guardrail-triggered` or `--fallback-used`. For example, to inspect recent failed attempts to answer repair questions, filter by the model and whether the request failed:
 
 ```bash
-fagi gateway tail --since 2m --model gpt-4o-mini --errors --max-polls 1
+fagi gateway tail --since 2m --model "$GATEWAY_MODEL" --errors --max-polls 1
 ```
 
 By default, the tail waits 2 seconds between polls and stops after 30 polls or 90 seconds. It can stop earlier at 1,000 events or 1 MiB of event JSON. With `--until-first`, exit `0` means a matching row appeared; exit `6` with `gateway_request_not_observed` means none appeared within the budget. Check the filters and time window before extending `--max-polls` or `--timeout`.
