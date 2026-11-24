@@ -101,6 +101,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Release notes',
             items: [
               { title: "What's new", href: '/docs/release-notes' },
+              { title: 'Deprecations', href: '/docs/deprecations' },
             ]
           },
         ]
