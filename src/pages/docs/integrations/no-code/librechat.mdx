@@ -9,9 +9,42 @@ The agent exporter sends model usage, tool calls, conversation and user IDs. Opt
 
 See [Setup Observability](/docs/quickstart/setup-observability) for keys and projects.
 
+## Start with LibreChat
+
+If you already run LibreChat v0.8.8, keep your base Compose file and go to step 1. For a new, loopback-only example, save this minimal base as `docker-compose.yml` in an empty directory. You need Docker Compose, OpenSSL and an OpenAI API key. These services are for local use, not an internet-facing deployment.
+
+```yaml
+services:
+  mongodb:
+    image: mongo:8.0.20
+    volumes:
+      - mongo-data:/data/db
+  api:
+    image: registry.librechat.ai/librechat-ai/librechat-api:v0.8.8
+    depends_on: [mongodb]
+    ports: ["127.0.0.1:13080:3080"]
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      MONGO_URI: mongodb://mongodb:27017/LibreChat
+      ALLOW_REGISTRATION: "true"
+      ALLOW_EMAIL_LOGIN: "true"
+      ALLOW_UNVERIFIED_EMAIL_LOGIN: "true"
+      SEARCH: "false"
+      NO_INDEX: "true"
+      CONFIG_PATH: /app/librechat.yaml
+      ENDPOINTS: agents,custom
+      RIDGELINE_MODEL_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY}
+      RIDGELINE_MODEL_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+volumes:
+  mongo-data:
+```
+
 ## 1. Add the collector
 
-Copy the collector config below next to LibreChat's `docker-compose.yml` as `futureagi-otelcol.yaml`, and add the service with a `docker-compose.override.yml` (LibreChat reads that file next to its own compose file). Set `FI_PROJECT_NAME` to the Observe project the traces should go to. Future AGI creates the project on the first export if it does not exist yet. For a self-hosted Future AGI set `FI_TRACES_URL` to your collector, for example `http://<host>:4318/v1/traces`.
+Copy the collector config below next to LibreChat's `docker-compose.yml` as `futureagi-otelcol.yaml`, and add the service with a `docker-compose.override.yml` (LibreChat reads that file next to its own compose file). Set `FI_PROJECT_NAME` to the Observe project the traces should go to. Future AGI creates the project on the first export if it does not exist yet. For a self-hosted Future AGI set `FI_TRACES_URL` to your collector, for example `http://<host>:4318/tracer/v1/traces`.
 
 ```yaml
 # Add the Future AGI collector to LibreChat's Docker Compose stack.
@@ -59,7 +92,7 @@ The collector config. Each part is commented; the next sections explain what it 
 #
 # Environment:
 #   FI_TRACES_URL       Future AGI traces URL, for example https://api.futureagi.com/tracer/v1/traces
-#                       or http://<self-hosted collector>:4318/v1/traces
+#                       or http://<self-hosted collector>:4318/tracer/v1/traces
 #   FI_PROJECT_NAME     Observe project every LibreChat trace goes to (created on first export)
 #   FI_CAPTURE_CONTENT  optional, default false. `true` lets prompts, replies, tool arguments and results
 #                       and provider error text through to Future AGI.
@@ -223,9 +256,9 @@ service:
 
 ## 2. Point LibreChat at it
 
-Add this block to LibreChat's `.env` and restart LibreChat (`docker compose up -d`). Use the same Future AGI API key and secret key in both places: LibreChat sends them to the collector, the collector sends them to Future AGI.
+Add these lines to LibreChat's `.env`. Replace `YOUR_FUTURE_AGI_API_KEY` and `YOUR_FUTURE_AGI_SECRET_KEY` with your workspace keys. Use the same pair in both places: LibreChat sends them to the collector, the collector sends them to Future AGI.
 
-```bash
+```dotenv
 # Future AGI tracing for LibreChat. Add to LibreChat's .env and restart LibreChat.
 # Collector: the `futureagi-otelcol` service from docker-compose.override.yml.example.
 
@@ -256,23 +289,53 @@ OTEL_LOGS_EXPORTER=none
 - `OTEL_METRICS_EXPORTER=none` and `OTEL_LOGS_EXPORTER=none`: with tracing on, the Node SDK otherwise starts an OTLP metrics exporter as well, and Future AGI takes traces only. Do not set `OTEL_LOGS_ENABLED`.
 - If LibreChat already has `LANGFUSE_PUBLIC_KEY` for Langfuse, this recipe replaces that destination: LibreChat sends agent runs to one Langfuse-style destination at a time.
 
+For a **new** local installation only, append freshly generated app secrets once. Keep `.env` out of version control. Do not replace the secrets of an existing installation.
+
+```bash
+umask 077
+chmod 600 .env
+for setting in CREDS_KEY CREDS_IV JWT_SECRET JWT_REFRESH_SECRET; do
+  bytes=32; if [ "$setting" = CREDS_IV ]; then bytes=16; fi
+  printf '%s=' "$setting" >> .env
+  openssl rand -hex "$bytes" >> .env
+done
+```
+
 ### Token usage from custom endpoints
 
 LibreChat v0.8.8 disables streamed token usage for custom OpenAI-compatible endpoints unless you explicitly request it. With the real OpenAI API, a chat and its tools can work while the exported `langfuse.observation.usage_details` is `{}`. The collector cannot recover token counts that LibreChat did not export; missing usage is unknown, not zero usage.
 
-If your custom endpoint supports OpenAI's `stream_options.include_usage` (the OpenAI API does), merge this into that endpoint's existing entry in `librechat.yaml`, alongside `name`, `apiKey`, `baseURL` and `models`, then restart LibreChat:
+If an existing custom endpoint supports OpenAI's `stream_options.include_usage`, merge these two lines into that endpoint. The OpenAI API supports this option.
 
 ```yaml
-# Inside the existing endpoints.custom entry; keep its other settings.
 addParams:
   streamUsage: true
+```
+
+For the local example, save this complete configuration as `librechat.yaml`:
+
+```yaml
+version: 1.3.17
+cache: true
+endpoints:
+  custom:
+    - name: Ridgeline
+      apiKey: '${RIDGELINE_MODEL_KEY}'
+      baseURL: '${RIDGELINE_MODEL_URL}'
+      models:
+        default: ['gpt-4o-mini']
+        fetch: false
+      addParams:
+        streamUsage: true
+      titleConvo: false
+      modelDisplayLabel: Ridgeline
 ```
 
 This is LibreChat's supported model-parameter override, not a tracing header or a collector-generated estimate. The [example endpoint config](https://github.com/future-agi/docs/blob/main/examples/no-code/librechat/librechat.yaml) enables it. Do not enable it for a provider that rejects streaming-usage requests; that provider must supply usage through a supported path before token counts can appear in Observe.
 
 ## 3. Send a chat and open Observe
 
-Send a message in LibreChat, ideally one that uses a tool. Agent runs are batched for about five seconds by LibreChat and two seconds by the collector, then they appear in the Observe project.
+Run `docker compose up -d` from the directory containing the Compose files. For the local example, open `http://localhost:13080`, create a local account and choose **Ridgeline**. Ask “Can I return an unused tent on day 12 if the policy allows 30 days?” If your agent has a tool, you can also ask a question that uses it. Agent runs are batched for about five seconds by LibreChat and two seconds by the collector, then they appear in the Observe project.
 
 ## What is captured
 

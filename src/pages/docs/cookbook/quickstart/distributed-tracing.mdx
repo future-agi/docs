@@ -24,13 +24,79 @@ Ridgeline Outfitters’ Node.js support gateway asks a Java returns service whet
 
 ## 1. Start the Java returns service
 
-You need a JDK (17 or later), Node.js 20.6 or later, npm, cURL and a pair of [Future AGI API keys](/docs/admin-settings/api-keys). Set `FI_API_KEY` and `FI_SECRET_KEY` in both terminals. Use the same `FI_PROJECT_NAME` so you can see both services in one project. The `traceparent` header, not the project name, connects the spans.
+You need a JDK (17 or later), Node.js 20.6 or later, npm, cURL and a pair of [Future AGI API keys](/docs/admin-settings/api-keys). Set `FI_API_KEY` and `FI_SECRET_KEY` in your shell. Use the same `FI_PROJECT_NAME` so you can see both services in one project. The `traceparent` header, not the project name, connects the spans.
 
-If you host Future AGI yourself, set `FI_BASE_URL` for these Node and Java processes to your trace collector (for example, `http://localhost:4318` when both processes run on the collector host).
+Set the collector URL for this example. If you host Future AGI yourself, replace the URL with your trace collector (for example, `http://localhost:4318`).
+
+```bash
+export COLLECTOR_URL=https://api.futureagi.com
+```
 
 For an existing Jakarta or Javax servlet that makes an instrumented AI call on the request thread, add `-javaagent:/path/to/traceai-javaagent-1.4.0.jar` to your Java command **before** `-jar` or the main class. You don't need to add a servlet filter or call `extract()` yourself.
 
-For a standalone example, run the following in an empty directory. The [example servlet](/examples/tracing/distributed/ReturnsServlet.java) listens on loopback. Its `/return-policy` handler uses the JDK HTTP client to call a local chat-completions fixture, so you don't need a model account. Leave it running.
+For a standalone example, save this as `ReturnsServlet.java` in an empty directory. The servlet listens on loopback. Its `/return-policy` handler uses the JDK HTTP client to call a local chat-completions fixture, so you don't need a model account.
+
+```java
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import org.apache.catalina.Context;
+import org.apache.catalina.startup.Tomcat;
+
+// A loopback-only servlet and a fixed chat-completions response for the cookbook.
+public class ReturnsServlet {
+    public static void main(String[] args) throws Exception {
+        var tomcat = new Tomcat();
+        tomcat.setBaseDir(Files.createTempDirectory("ridgeline-tomcat").toString());
+        tomcat.setPort(5101);
+        tomcat.getConnector().setProperty("address", "127.0.0.1");
+        Context app = tomcat.addContext("", Files.createTempDirectory("ridgeline-web").toString());
+        var client = HttpClient.newHttpClient();
+
+        Tomcat.addServlet(app, "policy", new HttpServlet() {
+            @Override protected void doGet(HttpServletRequest req, HttpServletResponse res) throws IOException {
+                var query = HttpRequest.newBuilder(URI.create("http://127.0.0.1:5101/v1/chat/completions"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("""
+                        {"model":"returns-fixture","messages":[{"role":"user","content":"Can I return an unused tent?"}]}
+                        """)).build();
+                try {
+                    var reply = client.send(query, HttpResponse.BodyHandlers.ofString());
+                    res.setStatus(reply.statusCode());
+                    res.setContentType("text/plain");
+                    res.getWriter().println("Servlet received: " + req.getHeader("traceparent"));
+                    res.getWriter().println(reply.body());
+                } catch (InterruptedException err) {
+                    Thread.currentThread().interrupt();
+                    res.sendError(503);
+                }
+            }
+        });
+        app.addServletMappingDecoded("/return-policy", "policy");
+
+        Tomcat.addServlet(app, "model", new HttpServlet() {
+            @Override protected void doPost(HttpServletRequest req, HttpServletResponse res) throws IOException {
+                req.getInputStream().readAllBytes();
+                res.setContentType("application/json");
+                res.getWriter().print("""
+                    {"id":"ridgeline-demo","object":"chat.completion","model":"returns-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"Yes, within 30 days."},"finish_reason":"stop"}]}
+                    """);
+            }
+        });
+        app.addServletMappingDecoded("/v1/chat/completions", "model");
+        tomcat.start();
+        tomcat.getServer().await();
+    }
+}
+```
+
+Download the dependencies and start the servlet in the background:
 
 ```bash
 export FI_PROJECT_NAME=ridgeline-returns
@@ -39,16 +105,16 @@ curl -fsSLO "$base/com/futureagi/traceai-javaagent/1.4.0/traceai-javaagent-1.4.0
 mkdir -p lib
 curl -fsSL "$base/org/apache/tomcat/embed/tomcat-embed-core/10.1.42/tomcat-embed-core-10.1.42.jar" -o lib/tomcat.jar
 curl -fsSL "$base/jakarta/annotation/jakarta.annotation-api/2.1.1/jakarta.annotation-api-2.1.1.jar" -o lib/annotation.jar
-curl -fsSLO https://docs.futureagi.com/examples/tracing/distributed/ReturnsServlet.java
-java -javaagent:traceai-javaagent-1.4.0.jar -cp 'lib/*' ReturnsServlet.java
+FI_BASE_URL="$COLLECTOR_URL" java -javaagent:traceai-javaagent-1.4.0.jar -cp 'lib/*' ReturnsServlet.java >servlet.log 2>&1 &
+export SERVLET_PID=$!
+curl -sS --retry-connrefused --retry 30 --retry-delay 1 -o /dev/null http://127.0.0.1:5101/
 ```
 
 ## 2. Enable propagation in the Node gateway
 
-In a second terminal, create an npm project. Opt in to the experimental native HTTP/HTTPS adapter and allow the servlet host. In an application, replace `127.0.0.1` with the hostname of your downstream service, not a URL or `host:port`.
+In the same directory and shell, create an npm project. Opt in to the experimental native HTTP/HTTPS adapter and allow the servlet host. In an application, replace `127.0.0.1` with the hostname of your downstream service, not a URL or `host:port`.
 
 ```bash
-mkdir ridgeline-gateway && cd ridgeline-gateway
 npm init -y
 npm install @traceai/auto@0.4.0 @opentelemetry/api@1.9.0 @opentelemetry/sdk-trace-node@2.0.1
 export FI_PROJECT_NAME=ridgeline-returns
@@ -92,9 +158,13 @@ async function main() {
         isRemote: true, traceFlags: TraceFlags.NONE,
       });
       console.log(await context.with(upstream, askReturns));
+      console.log(`Trace: ${trace.getSpanContext(upstream).traceId}`);
     } else {
       await trace.getTracer('support-gateway').startActiveSpan('Check return policy', async span => {
-        try { console.log(await askReturns()); } finally { span.end(); }
+        try {
+          console.log(await askReturns());
+          console.log(`Trace: ${span.spanContext().traceId}`);
+        } finally { span.end(); }
       });
     }
   } finally {
@@ -109,16 +179,16 @@ main().catch(err => { console.error(err.message); process.exitCode = 1; });
 
 ## 3. Compare a sampled and an unsampled request
 
-With the servlet still running, run each command from `ridgeline-gateway`. The third command bypasses the gateway so you can see what happens without an incoming parent.
+With the servlet still running, run each command from the example directory. The third command bypasses the gateway so you can see what happens without an incoming parent.
 
 <CodeGroup titles={["Sampled", "Unsampled", "No parent"]}>
 
 ```bash
-node gateway.cjs
+FI_BASE_URL="$COLLECTOR_URL" node gateway.cjs
 ```
 
 ```bash
-node gateway.cjs unsampled
+FI_BASE_URL="$COLLECTOR_URL" node gateway.cjs unsampled
 ```
 
 ```bash
@@ -144,6 +214,8 @@ curl -fsS http://127.0.0.1:5101/return-policy \
   -H "traceparent: 00-$(openssl rand -hex 16)-$(openssl rand -hex 8)-01" \
   -H 'tracestate: fi=r:0.5'
 ```
+
+Stop the example servlet when you finish: `kill "$SERVLET_PID"`.
 
 ## Choose which destinations receive context
 
@@ -172,10 +244,12 @@ On other transports the same rule applies: inject while the sender's span is act
 This version uses a Python HTTP server and a local policy lookup instead of a model. In a Python environment with `FI_API_KEY` and `FI_SECRET_KEY` set, install the tracing SDK:
 
 ```bash
+python3 -m venv .returns-venv
+. .returns-venv/bin/activate
 python -m pip install fi-instrumentation-otel==1.5.0
 ```
 
-Save the following as `returns.py`. Run `python returns.py serve` in one terminal, then `python returns.py ask` in another using the same environment. The server handles one request and exits.
+Save the following as `returns.py`. Use the same collector URL and credentials as above. The server handles one request and exits.
 
 ```python
 import os
@@ -188,7 +262,7 @@ from fi_instrumentation.fi_types import ProjectType
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 provider = register(project_name=os.environ.get("FI_PROJECT_NAME", "ridgeline-returns"),
-                    project_type=ProjectType.OBSERVE)
+                    project_type=ProjectType.OBSERVE, verbose=False)
 tracer = provider.get_tracer("ridgeline-returns")
 w3c = TraceContextTextMapPropagator()
 
@@ -205,6 +279,7 @@ class Returns(BaseHTTPRequestHandler):
 try:
     if sys.argv[1:] == ["serve"]:
         with HTTPServer(("127.0.0.1", 5102), Returns) as server:
+            print("Ready", flush=True)
             server.handle_request()
     elif sys.argv[1:] == ["ask"]:
         with tracer.start_as_current_span("Check tent return") as span:
@@ -217,6 +292,16 @@ try:
         raise SystemExit("Use: python returns.py serve | ask")
 finally:
     provider.shutdown()
+```
+
+Start the server, wait for it to bind, then send the request:
+
+```bash
+FI_TRACES_URL="$COLLECTOR_URL" python returns.py serve >returns.log 2>&1 &
+server_pid=$!
+while ! grep -qx Ready returns.log; do kill -0 "$server_pid" || exit 1; sleep 0.2; done
+FI_TRACES_URL="$COLLECTOR_URL" python returns.py ask
+wait "$server_pid"
 ```
 
 Open the printed trace. `Look up tent policy` should be a child of `Check tent return`.

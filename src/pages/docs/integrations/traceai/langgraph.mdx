@@ -9,9 +9,10 @@ Trace a return request through Ridgeline Outfitters' support graph without a mod
 
 ## Trace a local Python graph
 
-Set `FI_API_KEY` and `FI_SECRET_KEY` from your [Future AGI API keys](/docs/admin-settings/api-keys) in your environment. Start in a new, empty directory so the examples do not change an existing project's configuration. Create a Python 3.12 environment there:
+Set `FI_API_KEY` and `FI_SECRET_KEY` from your [Future AGI API keys](/docs/admin-settings/api-keys) in your environment. Start in a new, empty directory so the examples do not change an existing project's configuration. Create a Python 3.12 environment there. If you self-host, replace the hosted collector origin with yours:
 
 ```bash
+export FI_TRACES_URL=https://api.futureagi.com
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install 'traceAI-langchain==0.2.4' 'fi-instrumentation-otel==1.5.1' 'langgraph==1.2.24'
@@ -48,7 +49,7 @@ builder.add_edge("route_ticket", END)
 graph = builder.compile()
 
 if __name__ == "__main__":
-    provider = register(project_name="ridgeline-returns-langgraph", project_type=ProjectType.OBSERVE)
+    provider = register(project_name="ridgeline-returns-langgraph", project_type=ProjectType.OBSERVE, verbose=False)
     LangChainInstrumentor().instrument(tracer_provider=provider)
     try:
         for update in graph.stream({"question": "Can I return my hiking boots?"}, stream_mode="updates"):
@@ -71,14 +72,17 @@ Use this path when the graph runs in another process. You need its API URL and a
 {"dependencies":["."],"graphs":{"support":"./support.py:graph"}}
 ```
 
-Install and start the development server:
+Use a free local port (2024 below). Start the development server in the background and wait for its health endpoint; startup details go to `graph-server.log`:
 
 ```bash
 python -m pip install 'langgraph-cli[inmem]==0.4.43' 'langgraph-api==0.18.4'
-langgraph dev --no-browser --no-reload
+export LANGGRAPH_CLI_NO_ANALYTICS=1
+langgraph dev --no-browser --no-reload >graph-server.log 2>&1 &
+export GRAPH_SERVER_PID=$!
+curl -fsS --retry 45 --retry-connrefused --retry-delay 1 http://127.0.0.1:2024/ok
 ```
 
-In a second terminal, open the example directory and set the Future AGI keys as above. The settings, input and expected output below are for the `support` graph. For another deployment, use its URL and assistant ID, change `input` to match its schema, and look for its own node names and output. Use Node.js 22.18 or later to run the `.mts` file directly.
+Continue in the same shell so you keep the project credentials and server PID. The settings, input and expected output below are for the `support` graph. For another deployment, use its URL and assistant ID, change `input` to match its schema, and look for its own node names and output. Use Node.js 22.18 or later to run the `.mts` file directly.
 
 ```bash
 export LANGGRAPH_API_URL=http://127.0.0.1:2024
@@ -103,7 +107,7 @@ const assistant = process.env.LANGGRAPH_ASSISTANT_ID;
 if (!apiUrl || !assistant) throw new Error("Set LANGGRAPH_API_URL and LANGGRAPH_ASSISTANT_ID");
 
 propagation.setGlobalPropagator(new W3CTraceContextPropagator());
-const provider = register({ projectName: "ridgeline-returns-langgraph", projectType: ProjectType.OBSERVE });
+const provider = register({ projectName: "ridgeline-returns-langgraph", projectType: ProjectType.OBSERVE, verbose: false });
 const client = wrapLangGraphClient(new Client({
   apiUrl, apiKey: process.env.LANGGRAPH_API_KEY || null, onRequest: langGraphTraceRequestHook(),
 }), { tracerProvider: provider });
@@ -145,7 +149,7 @@ Run `node remote.mts`. `wait` returns the final state with `queue: 'returns'`; `
 
 The client alone cannot tell you that `route_ticket` ran. To see it beneath the client span, export both sides to the same Observe project, extract the W3C `traceparent` at the server, and keep that context active where the worker runs the graph. A header at the HTTP boundary is not enough if a queue or worker drops its parent context.
 
-For the Python development server above, stop the server, install the HTTP instrumentor, and save the following as `serve.py` next to `langgraph.json`. It instruments both the HTTP request and the LangChain callbacks before starting the server.
+For the Python development server above, run `kill "$GRAPH_SERVER_PID"` to stop the server, install the HTTP instrumentor, and save the following as `serve.py` next to `langgraph.json`. It instruments both the HTTP request and the LangChain callbacks before starting the server.
 
 ```bash
 python -m pip install 'opentelemetry-instrumentation-starlette==0.66b2'
@@ -160,7 +164,7 @@ from opentelemetry.instrumentation.starlette import StarletteInstrumentor
 from traceai_langchain import LangChainInstrumentor
 
 provider = register(project_name="ridgeline-returns-langgraph", project_type=ProjectType.OBSERVE,
-                    set_global_tracer_provider=True)
+                    set_global_tracer_provider=True, verbose=False)
 StarletteInstrumentor().instrument(tracer_provider=provider)
 LangChainInstrumentor().instrument(tracer_provider=provider)
 
@@ -177,7 +181,9 @@ finally:
 Start the server with worker context propagation enabled:
 
 ```bash
-OTEL_ENABLED=true python serve.py dev --no-browser --no-reload
+OTEL_ENABLED=true python serve.py dev --no-browser --no-reload >graph-server.log 2>&1 &
+export GRAPH_SERVER_PID=$!
+curl -fsS --retry 45 --retry-connrefused --retry-delay 1 http://127.0.0.1:2024/ok
 ```
 
 Leave `LANGGRAPH_THREAD_ID` unset to create a fresh thread, or set it to the printed ID if that thread still exists on this server and you want to reuse its state. The thread ID does not control trace propagation. Run `node remote.mts` again and open the new `LangGraph runs.wait` trace. Follow the server's `POST` request to `worker.stream_run`, then expand `support` to see `route_ticket`. These are descendants of the client span, not additional client calls. The streaming run has the same hierarchy under `LangGraph runs.stream`. If your graph calls a model or tool, look for its server-side spans inside the graph.
@@ -194,6 +200,8 @@ Leave `LANGGRAPH_THREAD_ID` unset to create a fresh thread, or set it to the pri
 | A failed span | A thrown non-abort error still reaches the caller. An `error` event in the stream marks its span as an error and still reaches the consumer. |
 | No prompt, result or stream event body on the client span | The wrapper records identifiers and operation status, not request or response content. Server-side instrumentation has its own [capture controls](/docs/sdk/tracing/trace-config). |
 | Client and graph appear as separate traces | Check that your SDK supports `ClientConfig.onRequest` (1.12.9 does), the client uses a W3C propagator, and the server continues that context in the worker. Older SDKs without the hook can still create client spans. A matching thread ID alone does not join two traces. |
+
+After your final client call, stop the development server with `kill "$GRAPH_SERVER_PID"`.
 
 ## Next steps
 

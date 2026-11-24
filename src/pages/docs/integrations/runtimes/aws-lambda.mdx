@@ -9,11 +9,13 @@ Wrap your Lambda handler to see one invocation span and the work it called. For 
 
 ## 1. Install the wrapper for your runtime
 
-Install the dependencies in your function project and include them in your deployment package. The Python SDK supports Python 3.10 through 3.15. Choose a Python runtime available for your function. For TypeScript, use a promise handler on Node.js 22, 24, or 26. For Go, start in a new module directory and build with Go 1.26 or later.
+Install the dependencies in your function project and include them in your deployment package. The Python SDK supports Python 3.10 through 3.15. Choose a Python runtime available for your function. For TypeScript, use a promise handler on Node.js 22, 24, or 26. For Go, start in a new module directory and build with Go 1.26 or later. If `go` is not already on your `PATH`, replace `/path/to/go` with your Go installation directory.
 
 <CodeGroup titles={["Python", "TypeScript", "Go"]}>
 
 ```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
 python -m pip install fi-instrumentation-otel==1.5.1
 ```
 
@@ -24,13 +26,19 @@ npm install --save-dev typescript@5.9.3 @types/node@22
 ```
 
 ```bash
+export PATH="$PATH:/path/to/go/bin"
 go mod init example.com/ridgeline-stock
 go get github.com/future-agi/traceAI/go/lambda@v0.1.1
 ```
 
 </CodeGroup>
 
-Set `FI_API_KEY` and `FI_SECRET_KEY` in the function environment using your [Future AGI credentials](/docs/admin-settings/api-keys). Set `FI_PROJECT_NAME` to `ridgeline-stock`. For self-hosted Future AGI, also set `FI_BASE_URL` to your collector's base URL. The examples send both keys to the trace endpoint at `/tracer/v1/traces`; keep them out of event payloads and source control.
+Set `FI_API_KEY` and `FI_SECRET_KEY` in the function environment using your [Future AGI credentials](/docs/admin-settings/api-keys). Set the project and collector in that environment as well. Replace the hosted `FI_TRACES_URL` below with your collector origin if you self-host. The examples send both keys to the trace endpoint at `/tracer/v1/traces`; keep them out of event payloads and source control.
+
+```bash
+export FI_PROJECT_NAME="ridgeline-stock"
+export FI_TRACES_URL="https://api.futureagi.com"
+```
 
 ## 2. Wrap the handler once
 
@@ -55,18 +63,19 @@ stock = {"TRAIL-40": 6}
 @lifecycle.wrap
 def handler(event, context):
     sku = (event.get("queryStringParameters") or {}).get("sku")
-    with tracer.start_as_current_span("lookup_stock", attributes={"fi.span.kind": "TOOL"}):
+    with tracer.start_as_current_span("lookup_stock", attributes={"fi.span.kind": "TOOL"}) as lookup:
+        trace_id = f"{lookup.get_span_context().trace_id:032x}"
         quantity = stock.get(sku)
     if quantity is None:
         raise LookupError("Stock snapshot unavailable")
-    return {"statusCode": 200, "body": f"{quantity} packs available"}
+    return {"statusCode": 200, "headers": {"x-trace-id": trace_id}, "body": f"{quantity} packs available"}
 ```
 
 ```typescript
 import { ProjectType, register, traceLambdaHandler } from "@traceai/fi-core";
 
 const provider = register({
-  projectName: process.env.FI_PROJECT_NAME, projectType: ProjectType.OBSERVE, batch: true,
+  projectName: process.env.FI_PROJECT_NAME, projectType: ProjectType.OBSERVE, batch: true, verbose: false, setGlobalTracerProvider: true,
 });
 const tracer = provider.getTracer("ridgeline.stock");
 const stock = new Map([["TRAIL-40", 6]]);
@@ -81,7 +90,7 @@ export const handler = traceLambdaHandler(async (event: StockEvent) => {
     lookup.end();
   }
   if (quantity === undefined) throw new Error("Stock snapshot unavailable");
-  return { statusCode: 200, body: `${quantity} packs available` };
+  return { statusCode: 200, headers: { "x-trace-id": lookup.spanContext().traceId }, body: `${quantity} packs available` };
 }, { provider });
 ```
 
@@ -110,7 +119,7 @@ type stockEvent struct {
 }
 
 func wrapped() lambda.Handler {
-    base := cmp.Or(os.Getenv("FI_BASE_URL"), "https://api.futureagi.com")
+    base := cmp.Or(os.Getenv("FI_TRACES_URL"), os.Getenv("FI_BASE_URL"), "https://api.futureagi.com")
     project := os.Getenv("FI_PROJECT_NAME")
     opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(resource.NewSchemaless(
         attribute.String("project_name", project), attribute.String("project_type", "observe"),
@@ -132,12 +141,23 @@ func wrapped() lambda.Handler {
         quantity, ok := stock[event.Query["sku"]]
         lookup.End()
         if !ok { return nil, errors.New("stock snapshot unavailable") }
-        return map[string]any{"statusCode": 200, "body": fmt.Sprintf("%d packs available", quantity)}, nil
+        return map[string]any{"statusCode": 200, "headers": map[string]string{"x-trace-id": lookup.SpanContext().TraceID().String()}, "body": fmt.Sprintf("%d packs available", quantity)}, nil
     }
     return traceailambda.WrapHandler(lambda.NewHandler(handle), provider)
 }
 
-func main() { lambda.StartHandler(wrapped()) }
+func main() {
+    handler := wrapped()
+    if len(os.Args) == 3 && os.Args[1] == "--event" { // Invoke locally with a saved event.
+        payload, err := os.ReadFile(os.Args[2])
+        if err != nil { panic(err) }
+        response, err := handler.Invoke(context.Background(), payload)
+        if err != nil { panic(err) }
+        fmt.Println(string(response))
+        return
+    }
+    lambda.StartHandler(handler)
+}
 ```
 
 </CodeGroup>
@@ -146,7 +166,7 @@ For Python, set the handler to `stock.handler`. For TypeScript, compile with `np
 
 ## 3. Invoke the function and inspect the trace
 
-Send this HTTP API v2 event to your function. The synthetic SKU is present in the stock snapshot, so the handler returns status `200` and the body `6 packs available`.
+Save this HTTP API v2 event as `event.json`. You can send it to your deployed function or invoke the wrapped handler locally. The synthetic SKU is present in the stock snapshot, so the handler returns status `200` and the body `6 packs available`.
 
 ```json
 {
@@ -155,6 +175,24 @@ Send this HTTP API v2 event to your function. The synthetic SKU is present in th
   "queryStringParameters": { "sku": "TRAIL-40" }
 }
 ```
+
+To try the event locally without deploying to AWS, use the command for your runtime. Each successful response includes an `x-trace-id` header you can use to find that invocation.
+
+<CodeGroup titles={["Python", "TypeScript (after compiling)", "Go (after go mod tidy)"]}>
+
+```bash
+python -c 'import json, stock; print(json.dumps(stock.handler(json.load(open("event.json")), None)))'
+```
+
+```bash
+node -e 'require("./index.js").handler(require("./event.json"), { getRemainingTimeInMillis: () => 30000 }).then(r => console.log(JSON.stringify(r)))'
+```
+
+```bash
+go run . --event event.json
+```
+
+</CodeGroup>
 
 1. Under **Observe**, select **Tracing**, open `ridgeline-stock`, then select the trace. Look for `lookup_stock` directly beneath `lambda.handler` (Python and Go) or `aws.lambda.invoke` (TypeScript). Without an incoming parent, the invocation starts its own trace.
 2. Send the event again. Each attempt has its own invocation span. Look for the Lambda request ID in `faas.invocation_id`. `faas.coldstart` is `true` on the first call to a wrapper and `false` if Lambda reuses that execution environment. Two consecutive calls need not reach the same environment.
