@@ -9,7 +9,7 @@ A gateway restart does not have to interrupt a video job: Redis keeps track of t
 
 ## 1. Prepare the two stores
 
-Start with a [self-hosted gateway](/docs/command-center/deployment/self-hosted) running v1.59.1. Set `GATEWAY_URL` in your shell to its base URL, without `/v1` or a trailing slash, and `RIDGELINE_GATEWAY_KEY` to a valid test organization key. For a new gateway, start with just the `auth` block from step 2 and set the same key in the gateway environment. Omit the `video` block for this check: generation is disabled by default.
+Start with a [self-hosted gateway](/docs/command-center/deployment/self-hosted) running v1.59.1. Set `GATEWAY_URL` in your shell to its base URL, without `/v1` or a trailing slash, and `RIDGELINE_GATEWAY_KEY` to a valid test organization key. If you keep these values in a private shell environment file, set `export VIDEO_GATEWAY_ENV=/path/to/private-gateway-env` and load it with `source "$VIDEO_GATEWAY_ENV"` before running the commands. For a new gateway, start with just the `auth` block from step 2 and set the same key in the gateway environment. Omit the `video` block for this check: generation is disabled by default. Alternatively, save the full `config.yaml` from step 2 first. On a dedicated Docker Compose service named `gateway` that mounts the file and passes through `AGENTCC_VIDEO_ENABLED`, run `AGENTCC_VIDEO_ENABLED=false docker compose up -d --force-recreate --wait gateway` for this first check only.
 
 Run the following authenticated request. Expect HTTP `501` and `error.code: "not_configured"`. A `401` means authentication stopped the request before it reached the video handler.
 
@@ -75,7 +75,7 @@ video:
 
 If clients connect through a load balancer and you restrict access by IP, set `ip_acl.trusted_proxies` to the number of addresses your trusted proxy chain appends to `X-Forwarded-For`. The default, `0`, checks the direct peer instead.
 
-Restart the test gateway with the configuration, secrets and storage mount in place. If you run the binary directly, use `./agentcc-gateway --config config.yaml`. With a fresh Redis prefix, `kill_switch: true` starts the worker but blocks submissions. An existing prefix keeps its stored switch value across restarts. List jobs with the organization key to check that video is enabled without buying a clip:
+Restart the test gateway with the configuration, secrets and storage mount in place. For a dedicated Docker Compose service named `gateway` that mounts this `config.yaml`, run `docker compose up -d --force-recreate --wait gateway` from the directory containing the file. If you run the binary directly, use `./agentcc-gateway --config config.yaml`. With a fresh Redis prefix, `kill_switch: true` starts the worker but blocks submissions. An existing prefix keeps its stored switch value across restarts. List jobs with the organization key to check that video is enabled without buying a clip:
 
 ```bash
 curl -fsS "${GATEWAY_URL:?}/v1/videos?limit=1" \
@@ -92,7 +92,7 @@ The native `byteplus` adapter has its own model IDs, region and tariff (`byteplu
   Opening submissions affects every organization on the test gateway. The next clip can incur a real charge on your OpenRouter account. Leave the switch closed if you only need to verify the installation.
 </Warning>
 
-Use cURL and `jq`. In your operator shell, set `AGENTCC_ADMIN_TOKEN` to the gateway's admin token and allow new submissions:
+Use Bash, cURL and `jq`. To check the pause control without submitting a job, you can run the command in step 4 now. In your operator shell, set `AGENTCC_ADMIN_TOKEN` to the gateway's admin token and allow new submissions:
 
 ```bash
 curl -fsS "${GATEWAY_URL:?}/-/admin/video/killswitch" \
@@ -100,24 +100,41 @@ curl -fsS "${GATEWAY_URL:?}/-/admin/video/killswitch" \
   -H 'Content-Type: application/json' -d '{"enabled":false}'
 ```
 
-In your client shell, submit the clip with the organization key. If you lose the response, retry the same request with the same `Idempotency-Key`. While submissions are open and the binding is retained, a successful replay returns the original job. The key is scoped to the organization and operation: changing the prompt for this text-to-video request returns `409 idempotency_conflict`. Keep this shell open for the status and download commands.
+In your client shell, export `CONFIRM_PAID_VIDEO=yes` only if you intend to pay for this clip, then submit it with the organization key. Save the script below as `submit-video.sh`. Run `VIDEO_ID=$(bash submit-video.sh); export VIDEO_ID` and keep this shell open. The script prints the job ID only when the request succeeds. If you lose the response, retry the same request with the same `Idempotency-Key`. While submissions are open and the binding is retained, a successful replay returns the original job. The key is scoped to the organization and operation: changing the prompt for this text-to-video request returns `409 idempotency_conflict`.
 
 ```bash
-set -o pipefail
-VIDEO_ID=$(curl -fsS "${GATEWAY_URL:?}/v1/videos" \
+set -eo pipefail
+if [ "${CONFIRM_PAID_VIDEO:-no}" != yes ]; then
+  printf 'Paid video submission not confirmed.\n' >&2
+  exit 1
+fi
+curl -fsS "${GATEWAY_URL:?}/v1/videos" \
   -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" \
   -H 'Idempotency-Key: ridgeline-tent-packing-take-1' \
   -H 'Content-Type: application/json' \
   -d '{"model":"openrouter/bytedance/seedance-1-5-pro","prompt":"Overhead view of a camper rolling a green tent into its stuff sack.","duration_seconds":4,"resolution":"480p","aspect_ratio":"16:9","audio":false}' \
-  | jq -er '.id') && printf 'Job ID: %s\n' "$VIDEO_ID"
+  | jq -er '.id'
 ```
 
-A new job returns `202`. Check its status with the command below. `submitting` means the gateway has accepted the request but has not yet recorded an upstream job ID. Once you see `queued` or `running`, restart **only the test gateway**. Keep its Redis prefix, artifact mount, provider account, region and credentials unchanged. Repeat the same GET after restart. The worker resumes polling; the client does not need to submit again.
+A new job returns `202`. Save the script below as `video-status.sh`. Run `bash video-status.sh active` to wait for the provider job ID. `submitting` means the gateway has accepted the request but has not yet recorded an upstream job ID. Once you see `queued` or `running`, restart **only the test gateway** (for the Compose service, `docker compose restart gateway`). Keep its Redis prefix, artifact mount, provider account, region and credentials unchanged. Wait for the gateway to be ready (in Compose, `docker compose up -d --wait gateway`), then run `bash video-status.sh completed`. If the job already completed before you could restart, you can still verify the download after restart, but not in-flight recovery. The worker resumes polling; the client does not need to submit again.
 
 ```bash
-curl -fsS "${GATEWAY_URL:?}/v1/videos/${VIDEO_ID:?}" \
-  -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}" \
-  | jq '{id, status, estimate, cost, artifacts, error}'
+set -eo pipefail
+case "${1:-}" in active|completed) ;; *) exit 2 ;; esac
+for ((attempt=0; attempt<180; attempt++)); do
+  job=$(curl -fsS "${GATEWAY_URL:?}/v1/videos/${VIDEO_ID:?}" \
+    -H "Authorization: Bearer ${RIDGELINE_GATEWAY_KEY:?}")
+  status=$(jq -er '.status' <<<"$job")
+  jq '{id, status, estimate, cost, artifacts, error}' <<<"$job"
+  case "$status" in
+    queued|running) if [ "$1" = active ]; then exit 0; fi ;;
+    completed) jq -e '.artifacts[0].state == "available"' <<<"$job" >/dev/null; exit 0 ;;
+    failed|cancelled|canceled|submission_unknown|submission_unresolved) exit 1 ;;
+  esac
+  sleep 10
+done
+printf 'Timed out waiting for video job. Do not resubmit automatically.\n' >&2
+exit 1
 ```
 
 When the same ID shows `completed` and `artifacts[0].state` is `available`, download the gateway's copy before `artifacts[0].expires_at`:
