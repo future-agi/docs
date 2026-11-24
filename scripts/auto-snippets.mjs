@@ -11,8 +11,9 @@ import { gunzipSync } from 'node:zlib';
 
 const exec = promisify(execFile);
 const page = await readFile(new URL('../src/pages/docs/integrations/traceai/auto.mdx', import.meta.url), 'utf8');
-const blocks = [...page.matchAll(/```(bash|javascript)\n([\s\S]*?)\n```/g)].map((m, index) => ({ index, language: m[1], code: m[2] }));
-assert.equal(blocks.length, 14, 'Every new fenced block needs an execution case');
+const blocks = [...page.matchAll(/^```([^\n]*)\n([\s\S]*?)\n```$/gm)].map((m, index) => ({ index, language: m[1], code: m[2] }));
+assert.equal(blocks.length, 15, 'Every new fenced block needs an execution case');
+for (const { language } of blocks) assert.ok(['bash', 'javascript'].includes(language), `Unsupported code fence: ${language}`);
 const block = prefix => {
   const found = blocks.find(b => b.code.startsWith(prefix));
   assert.ok(found, prefix);
@@ -63,7 +64,8 @@ const env = {
   PATH: process.env.PATH,
   HOME: join(app, 'home'),
   XDG_CONFIG_HOME: join(app, 'config'),
-  FI_BASE_URL: url,
+  // Never fall back to Cloud; each documented launch must select the actual collector.
+  FI_BASE_URL: 'http://127.0.0.1:1',
   OPENAI_BASE_URL: `${url}/v1`,
   OPENAI_API_KEY: 'synthetic-provider-key',
   OPENAI_MODEL: 'docs-test-model',
@@ -73,7 +75,11 @@ const env = {
   npm_config_fund: 'false',
 };
 const setup = block('export FI_API_KEY');
-const config = setup.code.replaceAll('YOUR_API_KEY', 'synthetic-fi-api-key').replaceAll('YOUR_SECRET_KEY', 'synthetic-fi-secret-key');
+const collectorSetting = 'export FI_TRACES_URL="https://api.futureagi.com"';
+assert.ok(setup.code.split('\n').includes(collectorSetting), 'Substitute the documented collector origin before launching any app');
+const config = setup.code.replace(collectorSetting, `export FI_TRACES_URL="${url}"`)
+  .replaceAll('YOUR_API_KEY', 'synthetic-fi-api-key').replaceAll('YOUR_SECRET_KEY', 'synthetic-fi-secret-key');
+const useCollector = 'FI_BASE_URL="$FI_TRACES_URL" ';
 const allSpans = from => batches.slice(from).flatMap(batch => batch.resourceSpans.flatMap(resource => resource.scopeSpans.flatMap(scope => scope.spans)));
 async function run(name, command, { expected = 'model', hidden = false, overrides = {} } = {}) {
   const from = batches.length;
@@ -151,34 +157,36 @@ async function execute(prefix, options) {
 }
 try {
   await mkdir(env.HOME, { recursive: true });
-  await writeFile(join(app, 'package.json'), JSON.stringify({ name: 'auto-docs-example', private: true, scripts: { start: 'node app.mjs' } }));
+  await writeFile(join(app, 'package.json'), JSON.stringify({ name: 'auto-docs-example', private: true }));
   await execute('npm install @traceai/auto', { expected: 'install' });
   await execute('npm install openai', { expected: 'install' });
   const example = block('import OpenAI');
   assert.doesNotMatch(example.code, /traceai|opentelemetry/);
   await writeFile(join(app, 'app.mjs'), example.code);
-  // The CommonJS startup variant uses an equivalent normal application, no tracing imports.
-  await writeFile(join(app, 'app.cjs'), `const OpenAI = require('openai');\n(async () => {\n${example.code.split('\n').slice(1).join('\n')}\n})().catch(error => { console.error(error); process.exitCode = 1; });\n`);
+  const commonjs = block('const OpenAI = require');
+  assert.doesNotMatch(commonjs.code, /traceai|opentelemetry/);
+  await writeFile(join(app, 'app.cjs'), commonjs.code);
   done.add(example.index);
   done.add(setup.index); // Executed before every shell command with synthetic substitutions.
-  await execute('node --import');
+  await execute(useCollector + 'node --import');
   // An npm launch must retain an existing preload in the app process, not just in npm itself.
   await writeFile(join(app, 'existing-preload.cjs'), `if (process.argv[1]?.endsWith('/app.mjs')) require('node:fs').writeFileSync('preload-result', 'loaded');`);
-  await execute('NODE_OPTIONS=', { overrides: { NODE_OPTIONS: '--require ./existing-preload.cjs' } });
+  await execute(useCollector + 'NODE_OPTIONS=', { overrides: { NODE_OPTIONS: '--require ./existing-preload.cjs' } });
   assert.equal(await readFile(join(app, 'preload-result'), 'utf8'), 'loaded');
-  await execute('node --require');
+  await execute(useCollector + 'node --require @traceai/auto/register app.cjs');
+  done.add(commonjs.index);
   await execute('npm install @opentelemetry/api', { expected: 'install' });
   const request = block('import { trace }');
   await writeFile(join(app, 'support-request.mjs'), request.code);
   done.add(request.index);
-  await execute('FI_FORWARD_APP_SPANS=false', { expected: 'routing-off' });
-  await execute('FI_FORWARD_APP_SPANS=true', { expected: 'routing-on' });
+  await execute(useCollector + 'FI_FORWARD_APP_SPANS=false', { expected: 'routing-off' });
+  await execute(useCollector + 'FI_FORWARD_APP_SPANS=true', { expected: 'routing-on' });
   await execute('npx --no-install traceai-auto bootstrap', { expected: 'bootstrap' });
   await execute('FI_HIDE_INPUTS=', { hidden: true });
-  await execute('npx --no-install traceai-auto doctor', { expected: 'doctor' });
+  await execute(useCollector + 'npx --no-install traceai-auto doctor', { expected: 'doctor' });
   // Regression: doctor exit code can be zero even when collection fails.
   collectorStatus = 400;
-  await run('doctor rejects collector errors despite exit zero', block('npx --no-install traceai-auto doctor').code, { expected: 'doctor' });
+  await run('doctor rejects collector errors despite exit zero', block(useCollector + 'npx --no-install traceai-auto doctor').code, { expected: 'doctor' });
   collectorStatus = 200;
   assert.equal(done.size, blocks.length, 'All page blocks executed');
   // Ordinary HTTP is not AI traffic. The optional integration traces only the
@@ -202,7 +210,7 @@ try {
   console.log(body);
 } finally { await new Promise(resolve => server.close(resolve)); }
 `);
-  const httpCommand = block('node --import').code.replace('app.mjs', 'http.mjs');
+  const httpCommand = block(useCollector + 'node --import').code.replace('app.mjs', 'http.mjs');
   await run('HTTP without the optional instrumentor', httpCommand, { expected: 'no-http' });
   await run('install optional HTTP instrumentor', 'npm install @opentelemetry/instrumentation-http@0.202.0', { expected: 'install' });
   await run('Installed HTTP integration stays off without explicit selection', httpCommand, { expected: 'http-model-only', overrides: { REQUEST_PATH: '/support' } });

@@ -65,6 +65,7 @@ class Stub:
     def __init__(self, api_key, with_object=False):
         self.api_key = api_key
         self.with_object = with_object
+        self.response_model = None  # Override to simulate a resolved model ID on non-streamed calls.
         self.requests = []
         self.lock = threading.Lock()
         self.counter = 0
@@ -143,7 +144,7 @@ def build_response(stub, body, n):
         "id": str(n),
         "request_id": f"stub-req-{n:06d}",
         "created": int(time.time()),
-        "model": body.get("model"),
+        "model": stub.response_model or body.get("model"),
         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
         "usage": _usage(body, plan),
     }

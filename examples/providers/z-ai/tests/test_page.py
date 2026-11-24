@@ -1,16 +1,17 @@
-"""The docs page and the code on it.
-
-The Python snippet on src/pages/docs/integrations/providers/z-ai.mdx is run exactly as written,
-with the Z.ai base URL swapped for the local stand-in and a configured model, and must produce the span the page describes."""
+"""Run both Python files from the Z.ai page with a loopback collector and provider."""
+import base64
 from importlib.metadata import version
+import json
 import re
 import subprocess
 import sys
 
 import pytest
-from conftest import CODING_PLAN_URLS, FI_API_KEY, FI_SECRET_KEY, MODEL, ROOT, ZAI_KEY, ZAI_URL, clean_env, kind, llm_spans
+from conftest import CODING_PLAN_URLS, FI_API_KEY, FI_SECRET_KEY, ROOT, ZAI_KEY, ZAI_URL, clean_env, kind, llm_spans, zai_requests
 
 PAGE = ROOT.parents[2] / "src" / "pages" / "docs" / "integrations" / "providers" / "z-ai.mdx"
+PAGE_MODEL = "glm-4.5-flash"
+QUESTION = "We accept unused packs within 30 days. Can I return an unused pack on day 12?"
 
 
 @pytest.fixture(scope="module")
@@ -22,10 +23,33 @@ def snippets(text, lang):
     return re.findall(rf"```{lang}\n(.*?)```", text, flags=re.S)
 
 
+@pytest.fixture
+def scripts(page, tmp_path):
+    tracing, returns = snippets(page, "python")
+    assert returns.count(f'base_url="{ZAI_URL}"') == 1
+    assert returns.count('model=os.environ["ZAI_MODEL"]') == 1
+    for url in CODING_PLAN_URLS:
+        assert url not in tracing and url not in returns, "this example must use the general platform route"
+    (tmp_path / "tracing.py").write_text(tracing)
+    (tmp_path / "returns.py").write_text(returns)
+    return tmp_path
+
+
+def run(script, collector, **env_extra):
+    env = clean_env()
+    env.update(FI_API_KEY=FI_API_KEY, FI_SECRET_KEY=FI_SECRET_KEY, FI_BASE_URL=collector.url,
+               FI_TRACES_URL=collector.url, OTEL_EXPORTER_OTLP_TRACES_TIMEOUT="3", NO_PROXY="127.0.0.1,localhost")
+    env.update(env_extra)
+    # Ignore ambient Python settings and user packages, but allow the documented sibling import.
+    return subprocess.run([sys.executable, "-E", "-s", script.name], cwd=script.parent, env=env,
+                          capture_output=True, text=True, timeout=120)
+
+
 def test_the_page_has_the_required_sections(page):
     for heading in (
         "## About",
         "## Configure the endpoint",
+        "## Connect to Observe",
         "## Send the return question",
         "## Limits and troubleshooting",
         "## Next steps",
@@ -36,6 +60,7 @@ def test_the_page_has_the_required_sections(page):
 
 def test_the_page_states_version_url_and_provider_label(page):
     assert page.count(f'base_url="{ZAI_URL}"') == 1
+    assert f'export ZAI_MODEL="{PAGE_MODEL}"' in page
     assert "'traceAI-openai==0.1.16' 'fi-instrumentation-otel==1.5.1' 'openai==3.57.0'" in page
     assert "`gen_ai.provider.name` is `zai`" in page
 
@@ -45,9 +70,6 @@ def test_the_page_uses_the_general_platform_and_openai_client(page):
     assert "https://docs.z.ai/devpack/quick-start" in page
     assert "not `ZaiClient`" in page
     assert "pip install zai-sdk" not in page, "the recipe must not depend on zai-sdk"
-    (code,) = [s for s in snippets(page, "python") if "OpenAIInstrumentor" in s]
-    for url in CODING_PLAN_URLS:
-        assert url not in code, "this example must use the general platform route"
 
 
 def test_page_is_customer_facing_and_preserves_data_handling_guidance(page):
@@ -72,27 +94,23 @@ def test_no_credentials_in_the_page_or_the_example():
             assert not secrets.search(path.read_text()), path
 
 
+def test_connection_prints_the_exported_trace_id_without_inference(scripts, collector, probe):
+    done = run(scripts / "tracing.py", collector, HTTPS_PROXY=probe.url)
+    assert done.returncode == 0, done.stderr[-1500:]
+    (span,) = collector.spans()
+    assert span["name"] == "zai.connection"
+    assert span["_resource"]["project_name"] == "ridgeline-returns"
+    assert base64.b64decode(span["trace_id"]).hex() in done.stdout.splitlines()
+    assert not probe.seen
+
+
 @pytest.mark.parametrize("original_host", [False, True], ids=["loopback-success", "original-host-refused"])
-def test_the_python_snippet_runs_as_written(page, stub, collector, probe, original_host):
-    (code,) = [s for s in snippets(page, "python") if "OpenAIInstrumentor" in s]
-    assert code.count(f'base_url="{ZAI_URL}"') == 1 and code.count('model=os.environ["ZAI_MODEL"]') == 1
+def test_the_python_snippet_runs_as_written(scripts, stub, collector, probe, original_host):
+    script = scripts / "returns.py"
     if not original_host:
-        code = code.replace(f'base_url="{ZAI_URL}"', f'base_url="{stub.url}"')
-    env = clean_env()
-    env.update(
-        {
-            "ZAI_API_KEY": ZAI_KEY,
-            "ZAI_MODEL": MODEL,
-            "FI_API_KEY": FI_API_KEY,
-            "FI_SECRET_KEY": FI_SECRET_KEY,
-            "FI_BASE_URL": collector.url,
-            "NO_PROXY": "127.0.0.1,localhost",
-            "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "3",
-        }
-    )
-    if original_host:
-        env["HTTPS_PROXY"] = probe.url
-    done = subprocess.run([sys.executable, "-I", "-c", code], env=env, capture_output=True, text=True, timeout=120, cwd="/")
+        script.write_text(script.read_text().replace(ZAI_URL, stub.url))
+        stub.stub.response_model = "glm-resolved-test-model"
+    done = run(script, collector, ZAI_API_KEY=ZAI_KEY, ZAI_MODEL=PAGE_MODEL, HTTPS_PROXY=probe.url)
     if original_host:
         assert done.returncode != 0
         assert {p["target"] for p in probe.seen} == {"api.z.ai:443"}
@@ -101,9 +119,24 @@ def test_the_python_snippet_runs_as_written(page, stub, collector, probe, origin
         assert failed["_attrs"]["gen_ai.provider.name"] == ("openai" if version("traceAI-openai") == "0.1.10" else "zai")
         return
     assert done.returncode == 0, done.stderr[-1500:]
-    assert "Z.ai stand-in reply to: We accept unused packs within 30 days. Can I return an unused pack on day 12?" in done.stdout
+    assert not probe.seen
+    (request,) = zai_requests(stub)
+    assert request["body"]["model"] == PAGE_MODEL
+    answer = f"Z.ai stand-in reply to: {QUESTION}"
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    assert result == {
+        "answer": answer,
+        "model": stub.stub.response_model,
+        "input_tokens": len(QUESTION.split()),
+        "output_tokens": len(answer.split()),
+    }
     (llm,) = llm_spans(collector)
-    assert llm["_attrs"]["gen_ai.request.model"] == MODEL
-    assert llm["_attrs"]["gen_ai.provider.name"] == "openai"
+    attrs = llm["_attrs"]
+    assert json.loads(attrs["gen_ai.request.parameters"])["model"] == PAGE_MODEL
+    assert attrs["gen_ai.request.model"] == result["model"]
+    assert attrs["gen_ai.output.messages.0.message.content"] == result["answer"]
+    assert int(attrs["gen_ai.usage.input_tokens"]) == result["input_tokens"]
+    assert int(attrs["gen_ai.usage.output_tokens"]) == result["output_tokens"]
+    assert attrs["gen_ai.provider.name"] == "openai"
     assert llm["_resource"]["project_name"] == "ridgeline-returns"
     assert {kind(s) for s in collector.spans()} == {"LLM"}

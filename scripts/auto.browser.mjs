@@ -16,7 +16,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   assert.equal((await page.goto(base + route, { waitUntil: 'networkidle' })).status(), 200);
   await page.getByRole('heading', { name: 'Zero-code Node.js tracing', exact: true }).waitFor();
-  assert.equal(await page.locator('.docs-content pre code').count(), 14);
+  assert.equal(await page.locator('.docs-content pre code').count(), 15);
   const code = page.locator('.docs-content pre').filter({ hasText: 'npm install @traceai/auto' });
   await code.locator('.copy-button').click();
   assert.equal((await page.evaluate(() => navigator.clipboard.readText())).trim(), 'npm install @traceai/auto@0.4.1');
@@ -33,7 +33,7 @@ try {
   for (const href of await page.locator('.docs-content a[href^="#"]').evaluateAll(links => links.map(a => a.getAttribute('href')))) {
     assert.equal(await page.locator(href).count(), 1, `Missing local anchor ${href}`);
   }
-  results.push('page, 14 code blocks, copy button, current sidebar item, trace image and anchors');
+  results.push('page, 15 code blocks, copy button, current sidebar item, trace image and anchors');
   for (const source of ['/docs/quickstart/setup-observability', '/docs/integrations/traceai']) {
     await page.goto(base + source, { waitUntil: 'networkidle' });
     await page.locator(`.docs-content a[href="${route}"]`).first().click();
