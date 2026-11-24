@@ -357,7 +357,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Share an issue', href: '/docs/error-feed/guides/share-an-issue' },
               { title: 'Run a root cause analysis', href: '/docs/error-feed/guides/run-root-cause-analysis' },
               { title: 'Create a Linear issue', href: '/docs/error-feed/guides/create-linear-issue' },
-              { title: 'Send Error Feed alerts to Slack', href: '/docs/error-feed/guides/slack-alert-rules' },
             ]
           },
           {
