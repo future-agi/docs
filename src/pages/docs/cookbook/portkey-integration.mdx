@@ -30,19 +30,23 @@ Send the same prompts to GPT-4o, Claude, and Llama through Portkey's gateway, tr
 - A Portkey account with virtual keys for each provider you want to test (OpenAI, Anthropic, Groq, etc.) → [app.portkey.ai/virtual-keys](https://app.portkey.ai/virtual-keys)
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- Python 3.11
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install portkey-ai fi-instrumentation-otel traceai-portkey python-dotenv
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install portkey-ai==2.3.4 fi-instrumentation-otel==1.5.1 traceai-portkey==0.1.4
 ```
 
 ```bash
+export BENCHMARK_PROJECT="Model-Benchmarking-$(date -u +%Y%m%dT%H%M%SZ)"
 export PORTKEY_API_KEY="your-portkey-api-key"
 export FI_API_KEY="your-fi-api-key"
 export FI_SECRET_KEY="your-fi-secret-key"
+export FI_TRACES_URL="https://api.futureagi.com"  # or your self-hosted collector
 ```
 
 ## Tutorial
@@ -50,26 +54,18 @@ export FI_SECRET_KEY="your-fi-secret-key"
 <Steps>
 <Step title="Import libraries and define the data shapes">
 
-Import the instrumentation and gateway libraries, then define two dataclasses: `ModelConfig` for each provider under test, and `TestResult` for what a single run produces.
+Run the Python blocks in order in the same interpreter. Import the instrumentation and gateway libraries, then define two dataclasses: `ModelConfig` for each provider under test, and `TestResult` for what a single run produces.
 
 ```python
+import os
 import time
 from dataclasses import dataclass
+from uuid import UUID
 
 from portkey_ai import Portkey
 from traceai_portkey import PortkeyInstrumentor
 from fi_instrumentation import register
-from fi_instrumentation.fi_types import (
-    ProjectType,
-    EvalTag,
-    EvalTagType,
-    EvalSpanKind,
-    EvalName,
-    ModelChoices,
-)
-from dotenv import load_dotenv
-
-load_dotenv()
+from fi_instrumentation.fi_types import ProjectType
 
 # 1024 tokens comfortably covers every scenario's response, including the
 # SQL query with its explanatory clauses, without truncating any of them
@@ -98,70 +94,43 @@ class TestResult:
 **You should see:** no output yet, just a clean import.
 </Step>
 
-<Step title="Set up tracing with Future AGI eval tags">
+<Step title="Set up tracing in Observe">
 
-`setup_tracing` registers a Future AGI project and attaches three `EvalTag` objects, one per built-in eval. Each `mapping` tells the evaluator which span attribute holds the prompt and which holds the response. Call it once for the whole run: `register()` raises a `ValidationError` if you call it again with the same `eval_tags` under the same project, so this cannot live inside a per-model loop.
+Set up one project for the benchmark so its traces are easy to find. Register the provider and instrument the gateway client before sending requests.
 
 ```python
-def setup_tracing(project_version_name: str):
-    """Register a Future AGI project and instrument the Portkey client."""
+PROJECT_NAME = os.environ["BENCHMARK_PROJECT"]
+
+def setup_tracing():
     tracer_provider = register(
-        project_name="Model-Benchmarking",
-        project_type=ProjectType.EXPERIMENT,
-        project_version_name=project_version_name,
-        eval_tags=[
-            EvalTag(
-                type=EvalTagType.OBSERVATION_SPAN,
-                value=EvalSpanKind.LLM,
-                eval_name=EvalName.IS_CONCISE,
-                custom_eval_name="Is_Concise",
-                mapping={"input": "llm.output_messages.0.message.content"},
-                model=ModelChoices.TURING_LARGE,
-            ),
-            EvalTag(
-                type=EvalTagType.OBSERVATION_SPAN,
-                value=EvalSpanKind.LLM,
-                eval_name=EvalName.CONTEXT_ADHERENCE,
-                custom_eval_name="Response_Quality",
-                mapping={
-                    "context": "llm.input_messages.0.message.content",
-                    "output": "llm.output_messages.0.message.content",
-                },
-                model=ModelChoices.TURING_LARGE,
-            ),
-            EvalTag(
-                type=EvalTagType.OBSERVATION_SPAN,
-                value=EvalSpanKind.LLM,
-                eval_name=EvalName.TASK_COMPLETION,
-                custom_eval_name="Task_Completion",
-                mapping={
-                    "input": "llm.input_messages.0.message.content",
-                    "output": "llm.output_messages.0.message.content",
-                },
-                model=ModelChoices.TURING_LARGE,
-            ),
-        ],
+        project_name=PROJECT_NAME,
+        project_type=ProjectType.OBSERVE,
+        verbose=False,
     )
     PortkeyInstrumentor().instrument(tracer_provider=tracer_provider)
     return tracer_provider
+
+tracer_provider = setup_tracing()
+with tracer_provider.get_tracer(__name__).start_as_current_span("benchmark-preflight") as span:
+    preflight_id = UUID(int=span.get_span_context().trace_id)
+tracer_provider.force_flush()
+print(f"Benchmark project: {PROJECT_NAME} / preflight trace: {preflight_id}")
 ```
 
-**You should see:** nothing printed yet, this only wires up tracing. `register()` must run, and `PortkeyInstrumentor().instrument()` must fire, before you create any `Portkey` client, or that client's calls won't be traced.
+**You should see:** a project name and a preflight trace ID. Look for `benchmark-preflight` in that project under **Observe → Traces**. `register()` must run, and `PortkeyInstrumentor().instrument()` must fire, before you create any `Portkey` client, or that client's calls won't be traced.
 </Step>
 
 <Step title="Send one prompt to one model and check the trace">
 
-Before building out the full benchmark, prove the pipeline end to end with a single call: one model, one prompt, one traced response with eval scores attached.
+Before building out the full benchmark, prove the pipeline end to end with a single call: one model, one prompt, one traced response. Replace `openai-virtual-key-id` with the ID for your OpenAI provider in Portkey.
 
 ```python
-tracer_provider = setup_tracing(project_version_name="Benchmark-Run")
-
 client = Portkey(virtual_key="openai-virtual-key-id")
 
 refund_policy_prompt = (
-    "Policy: Refunds are issued in full within 30 days of purchase if the item is "
-    "unopened. After 30 days, only store credit is issued, and opened items are not "
-    "eligible for any refund. A customer opened their order 35 days ago and wants a "
+    "Ridgeline Outfitters policy: Refunds are issued in full within 30 days of purchase if the item is "
+    "unopened. After 30 days, unopened items qualify only for store credit. Opened items are not "
+    "eligible for a refund or store credit. A customer opened their order 35 days ago and wants a "
     "refund. What can they receive, and why?"
 )
 
@@ -172,28 +141,25 @@ completion = client.chat.completions.create(
     temperature=COMPARISON_TEMPERATURE,
 )
 print(completion.choices[0].message.content)
+tracer_provider.force_flush()
 ```
 
-**You should see:** a printed answer citing store credit, since the order was opened and is past the 30-day window. Now open the Prototype tab in your Future AGI dashboard, find the `Model-Benchmarking` project, and open this single trace.
+**You should see:** a printed answer. Check that it denies both a refund and store credit because the item was opened. Now open Observe in your Future AGI dashboard, find the benchmark project printed in step 2, and open this single trace.
 
-<img src="/images/docs/cookbook/portkey-integration/trace-eval-scores.png" alt="Trace tree view showing a single LLM span with Response_Quality and Task_Completion eval scores attached" style={{ borderRadius: '5px' }} />
-
-*Every EvalTag from step 2 becomes a scored attribute on the LLM span*
-
-That's the whole pipeline working: a real call, traced, and scored. The rest of this cookbook widens it to every model and every scenario.
+The `Completions` span records the model call. Compare its input and output with what you printed before you widen the benchmark.
 </Step>
 
 <Step title="Define the models and prompts to benchmark">
 
-List the providers you want to compare and the prompts you'll send to each. Replace the placeholder `virtual_key` values with the real IDs from your Portkey dashboard.
+List the providers you want to compare and the prompts you'll send to each. Replace the virtual key IDs with yours. For Claude and Llama, replace `YOUR_CLAUDE_MODEL` and `YOUR_LLAMA_MODEL` with model IDs enabled on those keys.
 
 ```python
 def get_models() -> list[ModelConfig]:
     """Model configs, keyed to their Portkey virtual keys."""
     return [
         ModelConfig("GPT-4o", "OpenAI", "openai-virtual-key-id", "gpt-4o"),
-        ModelConfig("Claude-3.7-Sonnet", "Anthropic", "anthropic-virtual-key-id", "claude-3-7-sonnet-latest"),
-        ModelConfig("Llama-3-70b", "Groq", "groq-virtual-key-id", "llama3-70b-8192"),
+        ModelConfig("Claude", "Anthropic", "anthropic-virtual-key-id", "YOUR_CLAUDE_MODEL"),
+        ModelConfig("Llama", "Groq", "groq-virtual-key-id", "YOUR_LLAMA_MODEL"),
     ]
 
 
@@ -201,9 +167,9 @@ def get_test_scenarios() -> dict[str, str]:
     """Prompts to run against every model."""
     return {
         "refund_policy_qa": (
-            "Policy: Refunds are issued in full within 30 days of purchase if the item "
-            "is unopened. After 30 days, only store credit is issued, and opened items "
-            "are not eligible for any refund. A customer opened their order 35 days ago "
+            "Ridgeline Outfitters policy: Refunds are issued in full within 30 days of purchase if the item "
+            "is unopened. After 30 days, unopened items qualify only for store credit. Opened items "
+            "are not eligible for a refund or store credit. A customer opened their order 35 days ago "
             "and wants a refund. What can they receive, and why?"
         ),
         "ticket_summary": (
@@ -255,7 +221,7 @@ def test_model(model_config: ModelConfig, prompt_name: str, prompt: str) -> Test
 
 <Step title="Orchestrate the full benchmark run">
 
-`main` loops every scenario across every model. Tracing is already set up from step 3, so nothing here needs to call `setup_tracing` again.
+`main` loops every scenario across every model. Tracing is already set up from step 2, so nothing here needs to call `setup_tracing` again.
 
 ```python
 def main():
@@ -271,6 +237,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    tracer_provider.force_flush()
 ```
 
 **You should see:** one printed line per model/scenario pair, 9 lines total for 3 models and 3 scenarios, each ending in a response time.
@@ -278,18 +245,20 @@ if __name__ == "__main__":
 
 <Step title="Read the full-run quality scores in Future AGI">
 
-Open the `Model-Benchmarking` project's `Benchmark-Run` version again. It now holds every trace from step 6 alongside the single trace from step 3, each carrying the `Is_Concise`, `Response_Quality`, and `Task_Completion` scores from the eval tags you defined in step 2.
+Open the same project in Observe. Create a [historical Eval Task](/docs/observe/guides/setup-evals) for the `Completions` LLM spans. Leave the preflight span out. Inspect a completion's attributes before mapping the evaluator inputs:
 
-<img src="/images/docs/cookbook/portkey-integration/prototype-project-versions.png" alt="Future AGI Prototype dashboard listing traces under the Benchmark-Run project version, with eval scores per run" style={{ borderRadius: '5px' }} />
+| Evaluator | Inputs |
+|---|---|
+| Is Concise | `output`: `gen_ai.output.messages.0.message.content` |
+| Task Completion | `input`: `gen_ai.input.messages.0.message.content`; `output`: `gen_ai.output.messages.0.message.content` |
+| Context Adherence | On the refund scenario, `context`: `gen_ai.input.messages.0.message.content` (includes the policy); `output`: `gen_ai.output.messages.0.message.content` |
 
-*The Prototype dashboard lists every trace under one project version, one row per model and scenario*
-
-**You should see:** three eval scores per traced LLM call. A low `Response_Quality` or `Task_Completion` score on an otherwise fast model is the signal that latency and quality don't move together, which is the point of running both tools. The next step walks through one of those low scores.
+When the task finishes, open the span to read the scores alongside its latency. For the SQL task there is no reference policy, so compare task completion rather than context adherence.
 </Step>
 
 <Step title="Diagnose and fix a low-scoring response">
 
-Open the `Llama-3-70b` / `sql_query` trace from step 6. Its `Task_Completion` score comes back low because the response leaves out the 90-day filter, returning a count per `customer_id` with no `WHERE` clause on `created_at` at all. The prompt asked for a filtered count; the model gave an unfiltered one.
+Open the `Llama` / `sql_query` trace from step 6. For example, an answer that counts orders per `customer_id` but omits the 90-day filter should score poorly on task completion. Inspect the actual query before deciding what to change.
 
 Tighten the prompt to name the exact clauses the answer must include, then rerun only that case.
 
@@ -308,9 +277,10 @@ def rerun_with_tighter_prompt(model_config: ModelConfig) -> TestResult:
 llama_config = get_models()[2]
 result = rerun_with_tighter_prompt(llama_config)
 print(result.response_text)
+tracer_provider.force_flush()
 ```
 
-**You should see:** the rerun's response now includes both a `WHERE created_at >= ...` filter and a `GROUP BY customer_id` clause. Open its trace in the Future AGI dashboard and compare `Task_Completion` against the first attempt: naming the required clauses in the prompt is what moves the score, not the model choice.
+**You should see:** the rerun's response now includes both a `WHERE created_at >= ...` filter and a `GROUP BY customer_id` clause. Run the historical Eval Task again for the new trace and compare Task Completion against the first attempt: did naming the required clauses improve the answer?
 </Step>
 
 <Step title="Cross-check cost and latency in Portkey">
@@ -329,12 +299,10 @@ Open your Portkey dashboard to see the operational side: a unified log of every 
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `TypeError: setup_tracing() missing 1 required positional argument` | A leftover `self` parameter on a plain function | Drop `self` from `setup_tracing` and `get_models`, neither is a class method |
 | `TabError: inconsistent use of tabs and spaces in indentation` | Mixed tabs and spaces from a pasted code block | Reindent the function body with spaces only |
 | `NameError: name 'List' is not defined` | `List[ModelConfig]` used without importing `typing.List` or defining `ModelConfig` | Use the `ModelConfig` dataclass from step 1, or import `List` from `typing` if you keep the annotation |
 | No traces appear in the Future AGI dashboard | `Portkey` client created before `register()` and `PortkeyInstrumentor().instrument()` ran | Call `setup_tracing()` before creating any Portkey client |
-| `ValidationError: Custom eval configuration already exists for this project` | `setup_tracing()` called more than once with the same `eval_tags` under the same project | Call `setup_tracing()` exactly once per run, as in step 3, not inside the model loop |
 | `AuthenticationError` from Portkey on a specific model | Placeholder `virtual_key` value was never replaced | Copy the real virtual key ID for that provider from [app.portkey.ai/virtual-keys](https://app.portkey.ai/virtual-keys) |
-| Eval score is missing or `None` on a trace | The `mapping` path doesn't match the span's actual attribute path | Confirm the span has `llm.input_messages.0.message.content` and `llm.output_messages.0.message.content` before assuming the eval failed |
+| Eval score is missing or `None` on a trace | The `mapping` path doesn't match the span's actual attribute path | Confirm the span has `gen_ai.input.messages.0.message.content` and `gen_ai.output.messages.0.message.content` before assuming the eval failed |
 
 To go deeper on scoring traces by conversation and customer instead of one call at a time, see [Observing a LangGraph agent and obtaining insights](/docs/cookbook/observe-langgraph-agent-and-obtain-insights).

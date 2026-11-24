@@ -4,24 +4,29 @@ description: "Check LLM output token-by-token as it streams. Detect toxic conten
 ---
 
 <TLDR>
-- Score LLM output as it's being generated, word by word
-- Stop generation early if toxicity, PII, or quality drops are detected
+- Score buffered text while your model is still generating
+- Stop consuming a stream when a configured check trips
 - Built-in safety and quality presets, or write your own scorer
 </TLDR>
 
-Instead of waiting for the full response and scoring it afterwards, streaming checks run on each chunk as the LLM generates it. If something goes wrong mid-response, you can cut it off before the user sees it.
+The evaluator accumulates text and runs local scorer functions at chunk boundaries. It does not cancel your model request or retract text you have already displayed. If a failed check must block a reply, buffer the text and decide what to display after `finalize()`. The built-in scorers are heuristics, not a guarantee that text is safe.
 
-<Note>
-  For an existing standalone evaluator installation, keep its pinned environment. For new kit projects, start with the [Python installation guide](/docs/sdk/list/evaluation), not a second install of `ai-evaluation`. The streaming module uses local scorer functions, not the cloud Turing engine.
-</Note>
+Install the kit in a fresh environment. Run the Python snippets in order in one Python session. Only the OpenAI chatbot example needs an `OPENAI_API_KEY`; the scorers do not use a cloud evaluation service.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7
+```
 
 ## Quick Example
 
 ```python
-from fi.evals.streaming import StreamingEvaluator, EarlyStopPolicy
+from fi.evals.streaming import StreamingEvaluator, toxicity_scorer
 
-# Create a safety-focused assessor
-assessor = StreamingEvaluator.for_safety(toxicity_threshold=0.5)
+# A preset supplies a policy and buffering settings, not the scoring functions.
+assessor = StreamingEvaluator.for_safety()
+assessor.add_eval("toxicity", toxicity_scorer, threshold=0.5, pass_above=False)
 
 # Simulate a token stream (in practice, this comes from your LLM)
 tokens = ["Hello", " there", "!", " How", " can", " I", " help", " you", "?"]
@@ -43,14 +48,16 @@ print(final.summary())     # human-readable summary
 
 ### Creating an assessor
 
+Choose one configuration, then register the scorers whose names your policy checks. The quality preset disables early stopping.
+
 ```python
 from fi.evals.streaming import StreamingEvaluator, StreamingConfig, EarlyStopPolicy
 
 # Default settings
 assessor = StreamingEvaluator.with_defaults()
 
-# Safety-optimized (lower thresholds, stops on toxic content)
-assessor = StreamingEvaluator.for_safety(toxicity_threshold=0.3)
+# Strict policy, with stop-on-first-failure enabled
+assessor = StreamingEvaluator.for_safety()
 
 # Quality-optimized (larger chunks, less frequent checks)
 assessor = StreamingEvaluator.for_quality(min_chunk_size=50, eval_interval_ms=500)
@@ -83,7 +90,7 @@ assessor = StreamingEvaluator.with_defaults()
 
 # Built-in scorers
 assessor.add_eval("toxicity", toxicity_scorer, threshold=0.5, pass_above=False)
-assessor.add_eval("pii", pii_scorer, threshold=0.5, pass_above=False)
+assessor.add_eval("pii", pii_scorer, threshold=0.0, pass_above=False)
 assessor.add_eval("coherence", coherence_scorer, threshold=0.3, pass_above=True)
 
 # Custom scorer
@@ -102,41 +109,47 @@ assessor.add_eval("length", length_scorer, threshold=0.8, pass_above=False)
 | `eval_fn` | callable | required | `(chunk_text, cumulative_text) -> float` |
 | `threshold` | float | 0.7 | Passing threshold |
 | `weight` | float | 1.0 | Weight for final score |
-| `pass_above` | bool | True | If True, scores above threshold pass. If False, scores below pass. |
+| `pass_above` | bool | True | If True, scores at or above the threshold pass. If False, scores at or below pass. |
 
 ### Processing tokens
 
+`process_token()` and `process_chunk()` can return `None` while text is buffered. Reset between replies. The whole-stream helpers reset and finalize for you.
+
 ```python
-# One token at a time
-for token in llm_stream:
+import asyncio
+
+parts = ["Return unused gear", " within 30 days."]
+for token in parts:
     result = assessor.process_token(token)
     if result and result.should_stop:
         break
+print(assessor.finalize().final_text)
 
-# Or process larger chunks
-result = assessor.process_chunk("a larger piece of text")
+assessor.reset()
+assessor.process_chunk("Return unused gear within 30 days.")
+print(assessor.finalize().final_scores)
 
-# Or run an entire stream at once
-final = assessor.evaluate_stream(token_iterator)
+final = assessor.evaluate_stream(iter(parts))
 
-# Async version
-final = await assessor.evaluate_stream_async(async_token_iterator)
+async def reply_parts():
+    for text in parts:
+        yield text
+
+final = asyncio.run(assessor.evaluate_stream_async(reply_parts()))
 ```
 
 ### Getting results
 
 ```python
-final = assessor.finalize()
-
 print(final.passed)              # bool
-print(final.final_text)          # str — the full accumulated text
-print(final.total_chunks)        # int — chunks checked
-print(final.final_scores)        # dict — {name: final_score}
-print(final.early_stopped)       # bool — was generation stopped early?
+print(final.final_text)          # str: the full accumulated text
+print(final.total_chunks)        # int: chunks checked
+print(final.final_scores)        # dict: {name: final_score}
+print(final.early_stopped)       # bool: was generation stopped early?
 print(final.stop_reason)         # EarlyStopReason enum
 print(final.stopped_at_chunk)    # int or None
-print(final.total_latency_ms)    # float — total checking time
-print(final.summary())           # str — human-readable summary
+print(final.total_latency_ms)    # float: total checking time
+print(final.summary())           # str: human-readable summary
 ```
 
 ## StreamingConfig
@@ -148,11 +161,10 @@ Controls how often checks run and when to stop.
 | `min_chunk_size` | int | 1 | Minimum characters before triggering a check |
 | `max_chunk_size` | int | 100 | Maximum characters per chunk before forced check |
 | `eval_interval_ms` | int | 100 | Minimum milliseconds between checks |
-| `max_tokens` | int or None | None | Stop after this many tokens |
+| `max_tokens` | int or None | None | Limit on input pieces (`process_token` counts calls; `process_chunk` estimates words) |
 | `max_chars` | int or None | None | Stop after this many characters |
-| `chunk_timeout_ms` | int | 5000 | Timeout for a single chunk check |
-| `total_timeout_ms` | int | 60000 | Total timeout for the stream |
-| `enable_early_stop` | bool | True | Whether early stopping is enabled |
+| `total_timeout_ms` | int | 60000 | Elapsed time limit checked when text arrives |
+| `enable_early_stop` | bool | True | Enable policy-based stops; size and total time limits are separate |
 | `stop_on_first_failure` | bool | False | Stop immediately on any failure |
 | `eval_every_n_chunks` | int | 1 | Run checks every N chunks |
 | `eval_on_sentence_end` | bool | True | Also check at sentence boundaries |
@@ -171,7 +183,7 @@ policy = EarlyStopPolicy.default()      # toxicity + safety stops
 policy = EarlyStopPolicy.strict()       # lower thresholds, stops faster
 policy = EarlyStopPolicy.permissive()   # only stops on severe issues
 
-# Custom policy
+# Conditions only apply if you registered the named scorer.
 policy = EarlyStopPolicy()
 policy.add_toxicity_stop(threshold=0.7, consecutive=1)
 policy.add_safety_stop(threshold=0.3, consecutive=1)
@@ -179,8 +191,8 @@ policy.add_quality_stop(threshold=0.3, consecutive=3)
 
 # Custom condition
 policy.add_condition(
-    name="max_repetition",
-    eval_name="repetition",
+    name="long_reply",
+    eval_name="length",
     threshold=0.8,
     comparison="above",      # stop if score goes ABOVE threshold
     consecutive_chunks=2,    # must fail 2 chunks in a row
@@ -191,7 +203,7 @@ assessor.set_policy(policy)
 
 ### EarlyStopReason values
 
-When `result.should_stop` is True, `result.stop_reason` is one of:
+`result.stop_reason` is an enum. `NONE` means no stop. Common reasons include:
 
 | Value | Meaning |
 |-------|---------|
@@ -203,27 +215,28 @@ When `result.should_stop` is True, `result.stop_reason` is one of:
 | `MAX_TOKENS` | Token limit reached |
 | `MAX_CHARS` | Character limit reached |
 | `THRESHOLD` | Score dropped below threshold |
-| `CUSTOM` | Custom condition triggered |
+| `CUSTOM` | Custom check requested a stop |
 | `TIMEOUT` | Check timed out |
-| `ERROR` | Check errored |
 
 ## ChunkResult
 
 Returned by `process_token()` when a check is triggered.
 
 ```python
-result = assessor.process_token(token)
+assessor.reset()
+assessor.process_chunk("Unused gear can be returned within 30 days.")
+result = assessor.finalize().chunk_results[-1]
 
 if result:
-    print(result.chunk_index)      # int — which chunk this is
-    print(result.chunk_text)       # str — the chunk that was checked
-    print(result.cumulative_text)  # str — all text so far
-    print(result.scores)           # dict — {name: score}
-    print(result.flags)            # dict — {name: passed}
-    print(result.should_stop)      # bool — should we stop?
+    print(result.chunk_index)      # int: which chunk this is
+    print(result.chunk_text)       # str: the chunk that was checked
+    print(result.cumulative_text)  # str: all text so far
+    print(result.scores)           # dict: {name: score}
+    print(result.flags)            # dict: {name: passed}
+    print(result.should_stop)      # bool: should we stop?
     print(result.stop_reason)      # EarlyStopReason
-    print(result.all_passed)       # bool — all checks passed?
-    print(result.latency_ms)       # float — time for this chunk
+    print(result.all_passed)       # bool: all checks passed?
+    print(result.latency_ms)       # float: time for this chunk
 ```
 
 ## Built-in Scorers
@@ -231,12 +244,12 @@ if result:
 | Scorer | What it checks | Typical threshold | `pass_above` |
 |--------|---------------|-------------------|-------------|
 | `toxicity_scorer` | Toxic or harmful language | 0.5 | False |
-| `safety_scorer` | General safety violations | 0.5 | False |
-| `pii_scorer` | Personally identifiable information | 0.5 | False |
+| `safety_scorer` | Inverse of the toxicity score | 0.5 | True |
+| `pii_scorer` | Matches on built-in PII patterns | 0.0 | False |
 | `jailbreak_scorer` | Jailbreak attempts | 0.5 | False |
 | `coherence_scorer` | Text coherence and readability | 0.3 | True |
 | `quality_scorer` | Overall output quality | 0.3 | True |
-| `safety_composite_scorer` | Combined safety score | 0.5 | False |
+| `safety_composite_scorer` | Combined safety score (higher is better) | 0.5 | True |
 | `quality_composite_scorer` | Combined quality score | 0.3 | True |
 
 ```python
@@ -247,24 +260,33 @@ from fi.evals.streaming import toxicity_scorer, pii_scorer, coherence_scorer
 
 ### Guardrails on a streaming chatbot
 
+Set `OPENAI_API_KEY` first. This example closes the response stream on a stop and withholds the whole reply until the final check. Do **not** send `result.cumulative_text` to the customer on a failure: it includes the chunk that triggered it.
+
 ```python
-from fi.evals.streaming import StreamingEvaluator, EarlyStopPolicy, toxicity_scorer, pii_scorer
+from openai import OpenAI
+from fi.evals.streaming import EarlyStopPolicy, StreamingConfig, StreamingEvaluator, pii_scorer
 
-# Start from defaults and add your own scorers
-assessor = StreamingEvaluator.with_defaults()
-assessor.add_eval("toxicity", toxicity_scorer, threshold=0.3, pass_above=False)
-assessor.add_eval("pii", pii_scorer, threshold=0.3, pass_above=False)
-assessor.set_policy(EarlyStopPolicy.strict())
+policy = EarlyStopPolicy().add_condition("pii_stop", "pii", threshold=0.0, comparison="above")
+assessor = StreamingEvaluator(config=StreamingConfig(eval_interval_ms=0), policy=policy)
+assessor.add_eval("pii", pii_scorer, threshold=0.0, pass_above=False)
 
-safe_text = ""
-for token in llm.stream("Tell me about yourself"):
-    result = assessor.process_token(token)
-    if result and result.should_stop:
-        safe_text = result.cumulative_text
-        break
-    safe_text += token
+with OpenAI().chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "In one sentence, tell a customer they can return unused gear within 30 days."}],
+    stream=True,
+) as stream:
+    for event in stream:
+        text = event.choices[0].delta.content if event.choices else None
+        if text:
+            check = assessor.process_token(text)
+            if check and check.should_stop:
+                break
 
 final = assessor.finalize()
+if final.early_stopped or not final.passed:
+    print("Reply withheld.")
+else:
+    print(final.final_text)
 ```
 
 ### Callbacks for real-time monitoring
@@ -283,8 +305,13 @@ assessor = StreamingEvaluator(
     config=StreamingConfig(
         on_chunk_callback=on_chunk,
         on_stop_callback=on_stop,
-    )
+        eval_interval_ms=0,
+    ),
+    policy=policy,
 )
+assessor.add_eval("pii", pii_scorer, threshold=0.0, pass_above=False)
+final = assessor.evaluate_stream(iter(["Contact: ", "example@example.com", " for help."]))
+print(final.early_stopped, final.stop_reason.value)  # True pii
 ```
 
 ## Related

@@ -1,135 +1,75 @@
 ---
-title: "Langfuse Integration with Future AGI Evaluation Results"
-description: "Integrate Future AGI evaluations with Langfuse to attach evaluation scores and results directly to your Langfuse traces."
+title: "Attach Future AGI scores to Langfuse spans"
+description: "Run a hosted evaluation of a support reply and attach its score to the Langfuse observation that contains the reply."
 ---
 
-## About
+## When to use this integration
 
-Langfuse provides tracing but does not have a built-in evaluation engine. This integration adds that missing piece. By setting `platform="langfuse"` on `evaluator.evaluate()`, Future AGI runs the evaluation and attaches the result as a score directly to the active Langfuse span. Metrics like tone, groundedness, and relevance appear alongside trace data in the Langfuse dashboard.
+If you already trace your application in Langfuse, you can use a Future AGI template to score an individual reply. This example records a return-policy question and its answer on a Langfuse observation, then requests a toxicity score for **the answer**. A toxicity pass doesn't mean the answer matches your return policy.
 
----
+## Install the clients
 
-## When to use
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7 langfuse==3.15.0
+```
 
-- **Monitor LLM quality in Langfuse**: Correlate evaluation metrics (tone, groundedness, etc.) with specific spans and traces in the Langfuse UI.
-- **Per-span evaluation scores**: Attach evaluation results to any Langfuse span without configuring separate evaluation tasks.
-- **End-to-end observability**: Combine Future AGI evaluation templates with Langfuse tracing for comprehensive LLM application monitoring.
+Set `FI_API_KEY` and `FI_SECRET_KEY` from your [workspace API keys](/docs/admin-settings/api-keys). Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` for the Langfuse project where you want the score. The host is the base URL for your project region or self-hosted instance, not a trace URL. Both your application and the Future AGI server must be able to reach it.
 
----
+This integration sends the Langfuse project credentials, evaluation inputs, and observation identifiers to Future AGI so it can deliver the score. Use it only if your project permits that access.
 
-## How to
+## Choose the evaluation input
 
-<Steps>
-  <Step title="Install the required packages">
-    Install the necessary Python packages before you begin.
+Run the Python blocks in order in the same Python session. Check the template's required fields before submitting a score request. For `toxicity`, pass the agent's reply as `output`.
 
-    ```bash
-    python -m pip install agent-learning-kit==0.3.7 fi-instrumentation-otel
-    ```
-  </Step>
+```python
+import os
+from fi.evals import Evaluator
+from langfuse import Langfuse
 
-  <Step title="Set up your environment">
-    Initialize both the Langfuse and Future AGI clients.
+evaluator = Evaluator()
+templates = evaluator.list_evaluations()
+toxicity = next(t for t in templates if t["name"] == "toxicity" and t["owner"] == "system")
+print("Required fields:", toxicity["config"]["required_keys"])
 
-    ```python
-    import os
-    from langfuse import Langfuse
-    from fi.evals import Evaluator
+question = "Can I return unworn boots?"
+reply = "Yes. Bring your receipt and the unworn boots within 30 days of purchase."
+```
 
+## Request the score inside an observation
 
-    # 1. Initialize Langfuse
-    langfuse = Langfuse(
-      secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-      public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-      host=os.getenv("LANGFUSE_HOST")
-    )
+`platform="langfuse"` tells the evaluator to submit a configuration for background scoring. Call it **inside** the observation to capture its trace ID and span ID. `custom_eval_name` is the score label you'll look for in Langfuse.
 
-    # 2. Initialize the Future AGI Evaluator
-    evaluator = Evaluator(
-        fi_api_key=os.getenv("FI_API_KEY"),
-        fi_secret_key=os.getenv("FI_SECRET_KEY"),
-    )
-    ```
-
-    <Note>
-    Make sure you have `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_HOST` in your `.env` file, or pass them directly when initializing the `Evaluator`:
-
-    ```python
-    evaluator = Evaluator(
-        fi_api_key=os.getenv("FI_API_KEY"),
-        fi_secret_key=os.getenv("FI_SECRET_KEY"),
-        langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-        langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-        langfuse_host=os.getenv("LANGFUSE_HOST")
-    )
-    ```
-    </Note>
-  </Step>
-
-  <Step title="Run an evaluation within a Langfuse span">
-    Call `evaluator.evaluate()` with `platform="langfuse"` inside an active Langfuse span. The evaluation result will be automatically linked to that span as a score.
-
-    ```python
-    # Your application logic, e.g. an LLM call
-    response_from_llm = "this is a sample response."
-    expected_response = "this is a sample response."
-
-    # Start a Langfuse span
+```python
+langfuse = Langfuse(base_url=os.environ["LANGFUSE_HOST"])
+try:
     with langfuse.start_as_current_observation(
-        name="OpenAI call",
-        input={"user_query": user_query},
+        name="support-reply", input={"question": question}, output={"reply": reply}
     ) as span:
-
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "user", "content": user_query}
-            ]
+        ack = evaluator.evaluate(
+            eval_templates="toxicity",
+            inputs={"output": reply},
+            model_name="turing_flash",
+            custom_eval_name="reply-toxicity",
+            platform="langfuse",
         )
+        if not ack or not ack.get("status"):
+            raise RuntimeError("Future AGI did not accept the score request")
+        print("Request accepted for trace", span.trace_id, "observation", span.id)
+finally:
+    langfuse.flush()
+```
 
-        result = response.choices[0].message.content
-        span.update(output={"response": result})
+The acknowledgment means Future AGI accepted the configuration, **not** that Langfuse received a score. In your Langfuse project, open the printed trace, select `support-reply`, and look for `reply-toxicity` on that observation. For this binary template, `1` means passed and `0` means failed. If no score appears, check the Langfuse project keys and host used by both clients; don't treat a missing score as zero.
 
-        # Evaluate the tone of the OpenAI response
-        evaluator.evaluate(
-            eval_templates="tone",
-            inputs={
-                "input": result
-            },
-            custom_eval_name="evaluate_tone",
-            model_name="turing_large",
-            platform="langfuse"
-        )
-    ```
-
-    The results will appear as scores for the span in your Langfuse project.
-  </Step>
-</Steps>
-
----
-
-## Key concepts
-
-- **`platform="langfuse"`**:The essential parameter that directs evaluation results to Langfuse and links them with the current active span.
-- **`custom_eval_name`**:Required. A unique, human-readable name for your evaluation instance. This name appears as the score label in the Langfuse UI, helping you distinguish between different evaluations.
-- **`eval_templates`**:The name of the evaluation template from the Future AGI AI Evaluations library (e.g., `"tone"`, `"groundedness"`).
-- **`inputs`**:The data passed to the evaluation template (e.g., `input`, `output`, `context` depending on the template).
-
----
-
-## Next Steps
+## Next steps
 
 <CardGroup cols={2}>
   <Card title="Running Your First Eval" icon="play-circle" href="/docs/cookbook/quickstart/first-eval">
-    Learn how to run evaluations using the Future AGI AI Evaluations library.
+    Run an evaluation with Agent Learning Kit.
   </Card>
   <Card title="In-line Evaluations" icon="brain" href="/docs/sdk/tracing/in-line-evals">
-    Run evaluations directly inside a traced span with Future AGI tracing.
-  </Card>
-  <Card title="Set Up Tracing" icon="gear" href="/docs/sdk/tracing/set-up-tracing">
-    Register a tracer provider and add instrumentation.
-  </Card>
-  <Card title="Auto Instrumentation" icon="wand-magic-sparkles" href="/docs/integrations/traceai">
-    Browse all supported framework instrumentors.
+    Evaluate a reply inside a Future AGI span instead.
   </Card>
 </CardGroup>

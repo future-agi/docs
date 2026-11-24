@@ -9,7 +9,7 @@ products:
   - "fi.simulate"
   - "fi.evals"
 frameworks:
-  - "litellm"
+  - "OpenAI"
 difficulty: "intermediate"
 time-to-complete: "20 minutes"
 tags:
@@ -26,13 +26,13 @@ A Ridgeline Outfitters customer tells the support agent that a tent is torn, the
 
 ## Set up the two processes
 
-Use Python 3.12 and an empty directory. Set `OPENROUTER_API_KEY` in your shell for the agent's model calls. You don't need a hosted simulation: the synthetic customer, transcript, and evaluation all run in the Agent Learning Kit process. The addresses in this example are fictional; the agent never sends email.
+Use Python 3.12 and an empty directory. Set `OPENAI_API_KEY` in your shell for the agent's model calls. You don't need a hosted simulation: the synthetic customer, transcript, and evaluation all run in the Agent Learning Kit process. The addresses in this example are fictional; the agent never sends email.
 
 ```bash
 python3.12 -m venv .venv-platform
 .venv-platform/bin/python -m pip install futureagi==0.8.0
 python3.12 -m venv .venv-alk
-.venv-alk/bin/python -m pip install agent-learning-kit==0.3.7
+.venv-alk/bin/python -m pip install agent-learning-kit==0.3.7 openai==2.54.0
 ```
 
 | Process | What it does | What it shares |
@@ -78,9 +78,33 @@ for name, instruction in policies.items():
 .venv-platform/bin/python export_policies.py
 ```
 
-For the Ridgeline walkthrough, keep the two files you just created. To test your own managed agent instead, export **both** committed versions of the same template. Set `FI_API_KEY` and `FI_SECRET_KEY` to your [workspace credentials](/docs/admin-settings/api-keys), `PROMPT_NAME` to the template name, and `BASELINE_VERSION` and `CANDIDATE_VERSION` to the two version numbers. Use this variant for prompts with a single static system message. If your agent needs tools, examples, or prompt variables, this callback does not reproduce it. Adapt the cases and final-reply check to your agent’s output contract.
+**Optional: fetch committed versions.** For the local walkthrough you can skip straight to Step 2. To try the same comparison using the prompt registry, set `FI_API_KEY` and `FI_SECRET_KEY` to your [workspace credentials](/docs/admin-settings/api-keys). The following command creates a new practice prompt and commits your two local policies as `v1` and `v2`. It does not change a serving label.
 
-The model provider receives the exported system message and conversation on each turn.
+```bash
+export PROMPT_NAME="ridgeline-handoff-$(.venv-platform/bin/python -c 'import uuid; print(uuid.uuid4().hex)')"
+export BASELINE_VERSION=v1 CANDIDATE_VERSION=v2
+.venv-platform/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+from fi.prompt import Prompt
+from fi.prompt.types import ModelConfig, PromptTemplate, SystemMessage
+
+def template(policy):
+    snapshot = json.loads(Path(f"{policy}.json").read_text())
+    return PromptTemplate(name=os.environ["PROMPT_NAME"],
+                          messages=[SystemMessage(content=snapshot["content"])],
+                          model_configuration=ModelConfig(model_name="gpt-4o-mini"))
+
+prompt = Prompt(template=template("baseline"))
+prompt.create()
+prompt.commit_current_version(message="Baseline handoff policy")
+prompt.create_new_version(template=template("candidate"))
+prompt.commit_current_version(message="Route damaged gear to repairs")
+PY
+```
+
+Now fetch both versions by name and version number. If you already have a managed template, skip the creation command and set the three environment variables to your own template name and committed versions. Use only prompts with a single static system message: this callback does not reproduce tools, examples, or prompt variables. Your model provider receives the exported system message and conversation on each turn.
 
 ```bash
 .venv-platform/bin/python - <<'PY'
@@ -118,7 +142,7 @@ import argparse
 from pathlib import Path
 from fi.evals import evaluate
 from fi.simulate import AgentInput, Persona, Scenario, TestRunner
-from litellm import acompletion
+from openai import AsyncOpenAI
 
 customers = [
     ("Ari", "The seam on my tent tore.", "repairs@ridgeline.example"),
@@ -143,13 +167,18 @@ async def main():
     policy = args.policy
     system = json.loads(policy.read_text())
 
-    async def reply(turn: AgentInput) -> str:
-        response = await acompletion(model="openrouter/openai/gpt-4o-mini",
-                                     messages=[system, *turn.messages], temperature=0)
-        return response.choices[0].message.content
+    async with AsyncOpenAI() as client:
+        async def reply(turn: AgentInput) -> str:
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini", messages=[system, *turn.messages], temperature=0
+            )
+            content = response.choices[0].message.content
+            if not content:
+                raise RuntimeError("The model did not return a text reply")
+            return content
 
-    report = await TestRunner().run_test(scenario=scenario, agent_callback=reply,
-                                         min_turns=2, max_turns=2)
+        report = await TestRunner().run_test(scenario=scenario, agent_callback=reply,
+                                             min_turns=2, max_turns=2)
     names = [case.persona.persona["name"] for case in report.results]
     if sorted(names) != sorted(expected):
         raise RuntimeError("Missing conversation; inspect the run before scoring")
@@ -162,8 +191,8 @@ async def main():
             raise RuntimeError(f"Incomplete conversation for {name}; check the model call")
         result = evaluate("equals", engine="local", output=replies[-1],
                           expected_response=expected[name], config={"case_sensitive": True})
-        if result.error:
-            raise RuntimeError(result.error)
+        if result.error or result.passed is None:
+            raise RuntimeError(result.error or "Missing local eval verdict")
         failures += int(not result.passed)
         verdict = "PASS" if result.passed else "FAIL"
         print(f"{name}: {verdict} (expected {expected[name]})")

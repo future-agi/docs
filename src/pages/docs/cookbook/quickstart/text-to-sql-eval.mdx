@@ -34,12 +34,14 @@ Evaluate LLM-generated SQL queries using the built-in `text_to_sql` and `ground_
 <Prerequisites>
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- Python 3.11
+- Python 3.11 or 3.12
 </Prerequisites>
 
 ## Install
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install agent-learning-kit==0.3.7
 ```
 
@@ -48,14 +50,17 @@ export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
 ```
 
+Run the Python blocks in order in the same notebook or interpreter.
+
 ## Tutorial
 
 <Steps>
 <Step title="Set up the evaluator and test database">
 
-Create an in-memory SQLite database with sample data and define a test suite of natural language questions, expected SQL, and LLM-generated SQL.
+Create a disposable in-memory SQLite database with fictional Ridgeline Outfitters orders and define a test suite of natural language questions, expected SQL, and LLM-generated SQL.
 
 ```python
+import csv
 import os
 import sqlite3
 from fi.evals import Evaluator, evaluate
@@ -95,13 +100,12 @@ cursor.executescript("""
 """)
 
 
+conn.execute("PRAGMA query_only = ON")
+
+
 def run_sql(sql: str) -> list:
-    """Execute SQL and return sorted rows for deterministic comparison."""
-    try:
-        cursor.execute(sql)
-        return sorted(cursor.fetchall())
-    except Exception as e:
-        return [("ERROR", str(e))]
+    """Compare these fixed SELECT examples as unordered rows; preserve duplicates."""
+    return sorted(cursor.execute(sql).fetchall())
 
 
 test_cases = [
@@ -116,7 +120,7 @@ test_cases = [
         "generated_sql": "SELECT * FROM orders WHERE status='completed';",
     },
     {
-        "question": "Total spend per customer",
+        "question": "Total order amount per customer",
         "expected_sql": "SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id;",
         "generated_sql": "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id;",
     },
@@ -126,7 +130,7 @@ test_cases = [
         "generated_sql": "SELECT DISTINCT c.name FROM customers c JOIN orders o ON c.id = o.customer_id WHERE o.status = 'completed';",
     },
     {
-        "question": "Total revenue from all orders",
+        "question": "Total amount across all orders",
         "expected_sql": "SELECT SUM(amount) FROM orders;",
         "generated_sql": "SELECT SUM(amount) FROM orders WHERE status = 'completed';",
     },
@@ -156,27 +160,30 @@ for tc in test_cases:
         model_name="turing_small",
     )
     eval_result = result.eval_results[0]
+    if eval_result.output not in ("Passed", "Failed"):
+        raise RuntimeError(f"No verdict for {tc['question']}: {eval_result.reason}")
+    tc["intent"] = eval_result
     print(f"{tc['question']:<40}  {eval_result.output}")
 ```
 
-You should see (illustrative output, actual scores vary by model run):
+You should see (illustrative output, verdicts can vary by run):
 
 ```
 Question                                  text_to_sql
 -------------------------------------------------------
 Get all customer names                    Passed
 Find completed orders                     Passed
-Total spend per customer                  Passed
+Total order amount per customer           Passed
 Customers who placed completed orders     Passed
-Total revenue from all orders             Failed
+Total amount across all orders            Failed
 ```
 
-The `text_to_sql` metric catches the logic error in case 5: the question asks for "all orders" but the SQL filters to completed only. Cases 2 to 4 pass because the generated SQL is valid and matches the question intent, regardless of formatting or structure differences.
+Look at case 5: the question asks for all orders, but the query includes only completed orders. The judge assesses intent; it does not execute the query.
 
 </Step>
 <Step title="Compare against a reference with ground_truth_match">
 
-`ground_truth_match` checks whether the generated output matches a reference (expected) output. It evaluates semantic equivalence, not just string identity.
+`ground_truth_match` asks the judge to compare the generated SQL with the reference SQL. It can disagree with the execution check; for example, an alias changes the column header but not the returned values.
 
 ```python
 print(f"{'Question':<40}  ground_truth_match")
@@ -192,28 +199,31 @@ for tc in test_cases:
         model_name="turing_small",
     )
     eval_result = result.eval_results[0]
+    if eval_result.output not in ("Passed", "Failed"):
+        raise RuntimeError(f"No verdict for {tc['question']}: {eval_result.reason}")
+    tc["reference"] = eval_result
     print(f"{tc['question']:<40}  {eval_result.output}")
 ```
 
-You should see (illustrative output, actual scores vary by model run):
+You should see (illustrative output, verdicts can vary by run):
 
 ```
 Question                                  ground_truth_match
 --------------------------------------------------------------
 Get all customer names                    Passed
 Find completed orders                     Passed
-Total spend per customer                  Passed
+Total order amount per customer           Failed
 Customers who placed completed orders     Passed
-Total revenue from all orders             Failed
+Total amount across all orders            Failed
 ```
 
 </Step>
 <Step title="Run local string checks: equals and levenshtein_similarity">
 
-Local metrics run instantly with no API call. Use `equals` as a fast CI gate, and `levenshtein_similarity` to catch near-matches.
+Local metrics do not call the hosted evaluator. Use `equals` to compare text and `levenshtein_similarity` to measure how many edits separate the two strings.
 
 ```python
-SIMILARITY_THRESHOLD = 0.85  # below this, treat formatting drift as a real mismatch
+SIMILARITY_THRESHOLD = 0.85  # flag dissimilar text for review, not automatic rejection
 
 print(f"{'Question':<40}  {'Exact':>6}  {'Similarity':>11}")
 print("-" * 62)
@@ -221,29 +231,30 @@ print("-" * 62)
 for tc in test_cases:
     exact = evaluate(
         "equals",
-        output=tc["generated_sql"].strip().rstrip(";").lower(),
-        expected_output=tc["expected_sql"].strip().rstrip(";").lower(),
+        output=tc["generated_sql"],
+        expected_output=tc["expected_sql"],
     )
     sim = evaluate(
         "levenshtein_similarity",
         output=tc["generated_sql"],
         expected_output=tc["expected_sql"],
     )
+    tc["exact"], tc["similarity"] = exact.passed, sim.score
     exact_str = "PASS" if exact.passed else "FAIL"
     sim_str = f"{sim.score:.2f}" + ("  low" if sim.score < SIMILARITY_THRESHOLD else "")
     print(f"{tc['question']:<40}  {exact_str:>6}  {sim_str:>11}")
 ```
 
-You should see (illustrative scores):
+For these inputs the local metrics print:
 
 ```
-Question                                  Exact  Similarity
+Question                                   Exact   Similarity
 --------------------------------------------------------------
-Get all customer names                     PASS        1.00
-Find completed orders                      FAIL        0.97
-Total spend per customer                   FAIL        0.91
-Customers who placed completed orders      FAIL   0.47  low
-Total revenue from all orders              FAIL   0.71  low
+Get all customer names                      PASS         1.00
+Find completed orders                       FAIL         0.95
+Total order amount per customer             FAIL         0.87
+Customers who placed completed orders       FAIL    0.58  low
+Total amount across all orders              FAIL    0.54  low
 ```
 
 Case 2 (whitespace) and case 3 (alias) score high on similarity despite failing exact match. Case 4 and case 5 fall below `SIMILARITY_THRESHOLD` and print the `low` flag: case 4 because the JOIN structure looks very different from the subquery even though it's correct, case 5 because the logic error also happens to reword the query. String metrics alone are not enough to judge SQL correctness.
@@ -251,7 +262,7 @@ Case 2 (whitespace) and case 3 (alias) score high on similarity despite failing 
 </Step>
 <Step title="Add execution-based validation">
 
-The most reliable check: run both the generated and reference SQL on the same database and compare result sets. If they return the same rows, the generated SQL is correct regardless of structure.
+Run the fixed queries on the same fixture and compare the returned rows. None of these questions asks for sorted output, so row order and column aliases do not matter here. A match on one fixture is evidence, not proof that the queries agree on all data. Do not run arbitrary model-generated SQL against a production database.
 
 ```python
 print(f"{'Question':<40}  Execution Match")
@@ -261,6 +272,7 @@ for tc in test_cases:
     gen_rows = run_sql(tc["generated_sql"])
     ref_rows = run_sql(tc["expected_sql"])
     match = gen_rows == ref_rows
+    tc["exec_match"] = match
     status = "PASS" if match else "FAIL"
     print(f"{tc['question']:<40}  {status}")
     if not match:
@@ -275,9 +287,9 @@ Question                                  Execution Match
 ------------------------------------------------------------
 Get all customer names                    PASS
 Find completed orders                     PASS
-Total spend per customer                  PASS
+Total order amount per customer           PASS
 Customers who placed completed orders     PASS
-Total revenue from all orders             FAIL
+Total amount across all orders            FAIL
   Generated: [(255.75,)]
   Reference: [(630.75,)]
 ```
@@ -287,66 +299,26 @@ Cases 2 to 4 all pass execution even though they have different formatting, alia
 </Step>
 <Step title="Combine all four methods into one sweep">
 
-Run text_to_sql, ground_truth_match, the local string checks, and execution match together to see where each approach agrees or diverges.
+Reuse the results from the previous steps. Save the two hosted eval IDs with each question in `sql-eval-ids.csv` so you can look up the verdicts without paying for another run.
 
 ```python
-print(f"{'Question':<35}  {'SQL':>4}  {'GT':>4}  {'Exact':>6}  {'Sim':>5}  {'Exec':>5}")
-print("-" * 68)
+print(f"{'Question':<40}  {'SQL':>6}  {'GT':>6}  {'Exact':>6}  {'Sim':>5}  {'Exec':>5}")
+print("-" * 80)
 
-for tc in test_cases:
-    sql_eval = evaluator.evaluate(
-        eval_templates="text_to_sql",
-        inputs={"input": tc["question"], "output": tc["generated_sql"]},
-        model_name="turing_small",
-    )
-    gt_eval = evaluator.evaluate(
-        eval_templates="ground_truth_match",
-        inputs={"generated_value": tc["generated_sql"], "expected_value": tc["expected_sql"]},
-        model_name="turing_small",
-    )
-    exact = evaluate(
-        "equals",
-        output=tc["generated_sql"].strip().rstrip(";").lower(),
-        expected_output=tc["expected_sql"].strip().rstrip(";").lower(),
-    )
-    sim = evaluate(
-        "levenshtein_similarity",
-        output=tc["generated_sql"],
-        expected_output=tc["expected_sql"],
-    )
-    gen_rows = run_sql(tc["generated_sql"])
-    ref_rows = run_sql(tc["expected_sql"])
-    exec_pass = gen_rows == ref_rows
-
-    sql_str = "OK" if sql_eval.eval_results[0].output == "Passed" else "FAIL"
-    gt_str = "OK" if gt_eval.eval_results[0].output == "Passed" else "FAIL"
-    q = tc["question"][:33] + ".." if len(tc["question"]) > 33 else tc["question"]
-
-    print(
-        f"{q:<35}  "
-        f"{sql_str:>4}  "
-        f"{gt_str:>4}  "
-        f"{'OK' if exact.passed else 'FAIL':>6}  "
-        f"{sim.score:>5.2f}  "
-        f"{'OK' if exec_pass else 'FAIL':>5}"
-    )
+with open("sql-eval-ids.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["question", "intent_id", "intent_verdict", "reference_id", "reference_verdict"])
+    for tc in test_cases:
+        intent, reference = tc["intent"], tc["reference"]
+        writer.writerow([tc["question"], intent.eval_id, intent.output, reference.eval_id, reference.output])
+        print(f"{tc['question']:<40}  {intent.output:>6}  {reference.output:>6}  "
+              f"{'PASS' if tc['exact'] else 'FAIL':>6}  {tc['similarity']:>5.2f}  "
+              f"{'PASS' if tc['exec_match'] else 'FAIL':>5}")
 ```
 
-You should see (illustrative sweep):
+Read each row from left to right: the two hosted verdicts, exact text match, string similarity, and execution match. Cases 2 through 4 differ from the reference string but return the same rows. Case 5 returns a different sum.
 
-```
-Question                              SQL    GT  Exact    Sim   Exec
---------------------------------------------------------------------
-Get all customer names                 OK    OK     OK   1.00     OK
-Find completed orders                  OK    OK   FAIL   0.97     OK
-Total spend per customer               OK    OK   FAIL   0.91     OK
-Customers who placed completed o..     OK    OK   FAIL   0.47     OK
-Total revenue from all orders        FAIL  FAIL   FAIL   0.71   FAIL
-```
-
-Cases 2 to 4 fail exact match and score low on string similarity but pass every meaningful check (the Turing metrics and execution). Case 5 fails across all checks: a high-confidence logic error worth flagging.
-
-Fix case 5's generated SQL to match the question's intent (total revenue from *all* orders, not just completed ones), then rerun the sweep for that case alone:
+Fix case 5's generated SQL to match the question's intent (total amount across *all* orders, not just completed ones), then rerun the execution check for that case alone:
 
 ```python
 test_cases[4]["generated_sql"] = "SELECT SUM(amount) FROM orders;"
@@ -363,11 +335,11 @@ print(f"{tc['question']:<40}  {'PASS' if exec_pass else 'FAIL'}  {gen_rows}")
 You should see:
 
 ```
-Total revenue from all orders            Execution Match
-Total revenue from all orders            PASS  [(630.75,)]
+Total amount across all orders            Execution Match
+Total amount across all orders            PASS  [(630.75,)]
 ```
 
-Dropping the `WHERE status = 'completed'` filter flips case 5 from FAIL to OK: `text_to_sql` and `ground_truth_match` now pass, execution match returns `630.75` instead of `255.75`, and the sweep in this step would show `OK` across every column for all five cases.
+Dropping `WHERE status = 'completed'` includes the pending and cancelled orders too. The execution check now returns `630.75` on both sides. This last step does not rerun either hosted judge.
 
 </Step>
 </Steps>
@@ -377,12 +349,12 @@ Dropping the `WHERE status = 'completed'` filter flips case 5 from FAIL to OK: `
 | Symptom | Cause | Fix |
 |---|---|---|
 | `evaluator.evaluate()` raises an authentication error | `FI_API_KEY` or `FI_SECRET_KEY` is missing, blank, or copied from the wrong project | Re-export both keys from [Get your API keys](/docs/admin-settings) and confirm they belong to the project you're evaluating against |
-| `eval_result.output` is always `"Failed"` for correct SQL | `inputs` uses the wrong keys for the template (`text_to_sql` needs `input`/`output`, `ground_truth_match` needs `generated_value`/`expected_value`) | Match the input keys to the template being called; the two Turing metrics do not share a schema |
-| Local `evaluate()` call raises `KeyError` or returns no `.score` | `equals` and `levenshtein_similarity` are called with `generated_value=`/`expected_value=`, the Turing-template keys, instead of `output=`/`expected_output=` | Use `output` and `expected_output` for local metrics; they use a different parameter naming than the Turing templates |
+| No verdict is returned | `inputs` may use the wrong keys for the template (`text_to_sql` needs `input`/`output`, `ground_truth_match` needs `generated_value`/`expected_value`) | Match the input keys to the template being called; the two Turing metrics do not share a schema |
+| A local metric has no score | `equals` and `levenshtein_similarity` are called with `generated_value=`/`expected_value=`, the Turing-template keys, instead of `output=`/`expected_output=` | Use `output` and `expected_output` for local metrics; they use a different parameter naming than the Turing templates |
 | `sqlite3.OperationalError: no such table` | The `cursor.executescript()` block never ran, or `conn`/`cursor` were re-created without re-running the schema | Re-run step 1 top to bottom in the same session so the in-memory database exists before you query it |
-| Exact match (`equals`) fails on SQL you'd call identical | Case, trailing whitespace, or a trailing semicolon differs between generated and expected SQL | Normalize both strings first: `.strip().rstrip(";").lower()`, as shown in step 4 |
+| Exact match (`equals`) fails on SQL you'd call identical | Internal whitespace or a trailing semicolon differs between generated and expected SQL | Inspect both SQL strings, as shown in step 4 |
 | `levenshtein_similarity` scores a correct query low | The generated SQL is structurally different (JOIN vs subquery) even though it's logically equivalent | Don't gate on similarity alone; treat a low score as a prompt to check execution match, not as a failure by itself |
-| Execution match reports `[("ERROR", ...)]` for one side | The generated or reference SQL has a syntax error, or references a column/table that doesn't exist in the schema | Read the error string in the printed row; it's the raw `sqlite3` exception message from `run_sql()` |
-| `pip install agent-learning-kit==0.3.7` fails with a Python version error | The package requires Python 3.11+; an older interpreter is active | Use Python 3.11 as set in the prerequisites, and confirm with `python --version` before installing |
+| A query raises `sqlite3.Error` | A query has invalid SQLite syntax or references a missing column | Inspect the failing query. Do not treat two query errors as a successful match |
+| Installing the kit fails | The shell is using a different Python environment | Activate the virtual environment from Install and use `python -m pip` there |
 
 To run these same checks across a large SQL generation dataset instead of five test cases, see [Batch Evaluation](/docs/cookbook/quickstart/batch-eval).

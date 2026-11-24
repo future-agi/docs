@@ -44,19 +44,22 @@ flowchart TD
 - FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
 - An `OPENAI_API_KEY`
-- Python 3.11
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install fi-instrumentation-otel==1.0.0 traceAI-langchain==0.1.12 langgraph==1.0.1 langchain-openai==0.3.35 langchain-core==0.3.86
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install fi-instrumentation-otel==1.5.1 traceAI-langchain==0.1.12 langgraph==1.0.1 langchain-openai==0.3.35 langchain-core==0.3.86
 ```
 
 ```bash
 export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
 export OPENAI_API_KEY="your-openai-api-key"
+export FI_TRACES_URL="https://api.futureagi.com"  # or your self-hosted trace collector
 ```
 
 ## Tutorial
@@ -65,9 +68,11 @@ export OPENAI_API_KEY="your-openai-api-key"
 
 <Step title="Confirm tracing works">
 
-Prove your keys and ingestion work before writing any agent code. Register against an **Observe** project, emit one span, and flush.
+Prove your keys and ingestion work before writing any agent code. Register against an **Observe** project, emit one span, and flush. Save this as `tracing_setup.py` and run `python tracing_setup.py`.
 
 ```python
+from uuid import UUID
+
 from fi_instrumentation import register, FITracer
 from fi_instrumentation.fi_types import ProjectType
 
@@ -76,15 +81,17 @@ trace_provider = register(
     project_type=ProjectType.OBSERVE,
     project_name="support-agent",
     set_global_tracer_provider=True,
+    verbose=False,
 )
 tracer = FITracer(trace_provider.get_tracer(__name__))
 
-with tracer.start_as_current_span("preflight") as span:
-    span.set_attribute("raw.input", "ping")
-    span.set_attribute("raw.output", "pong")
-
-trace_provider.force_flush()
-print("sent preflight span")
+if __name__ == "__main__":
+    with tracer.start_as_current_span("preflight") as span:
+        span.set_attribute("raw.input", "ping")
+        span.set_attribute("raw.output", "pong")
+        trace_id = UUID(int=span.get_span_context().trace_id)
+    trace_provider.force_flush()
+    print(trace_id)
 ```
 
 **You should see** a `preflight` trace in **Observe → Traces → `support-agent`** within a few seconds. If it never lands, fix that here first (see [Troubleshooting](#troubleshooting)).
@@ -93,7 +100,7 @@ print("sent preflight span")
 
 <Step title="Build the support agent">
 
-The agent answers from a small inline knowledge base, so the recipe runs with no external data. The `search_help_center` tool stashes what it retrieved so you can score grounding later.
+The agent answers from a small inline knowledge base, so the recipe runs with no external data. The `search_help_center` tool stashes what it retrieved so you can score grounding later. Save this as `support_agent.py` beside `tracing_setup.py`.
 
 ```python
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -110,7 +117,7 @@ POLICIES = [
     "Returns must be shipped within 14 days of approval.",
 ]
 
-store = InMemoryVectorStore.from_texts(POLICIES, OpenAIEmbeddings())
+store = InMemoryVectorStore.from_texts(POLICIES, OpenAIEmbeddings(check_embedding_ctx_length=False))
 retriever = store.as_retriever(search_kwargs={"k": 2})
 
 last_context = {"text": ""}  # holds the policy retrieved this turn, for scoring
@@ -129,7 +136,7 @@ def lookup_order(order_id: str) -> str:
 
 # A "goodwill" override that contradicts the refund policy in the knowledge base.
 SYSTEM_PROMPT = (
-    "You are a customer-support agent for an online store. Use the tools to answer. "
+    "You are a customer-support agent for Ridgeline Outfitters. Look up the written policy with search_help_center before answering policy questions. "
     "COMPANY UPDATE: we now approve refunds on final-sale items as a goodwill policy, "
     "so reassure customers that final-sale orders can be refunded."
 )
@@ -139,16 +146,19 @@ agent = create_react_agent(llm, tools=[search_help_center, lookup_order], prompt
 ```
 
 <Note>
-That prompt is flawed on purpose, in a way production prompts really do break. Someone pasted a policy change into the system prompt and it now contradicts the help-center article the agent retrieves. On the final-sale turn the model follows the instruction and promises a refund the retrieved policy forbids, so retrieval looks healthy while the answer is ungrounded. Finding that split is what this cookbook is about.
+That prompt is flawed on purpose, in a way production prompts really do break. Someone pasted a policy change into the system prompt and it now contradicts the help-center article the agent retrieves. On the final-sale turn the model may follow the instruction and promise a refund the retrieved policy forbids, so retrieval looks healthy while the answer is ungrounded. Finding that split is what this cookbook is about.
 </Note>
 
 </Step>
 
 <Step title="Group each turn by session and user">
 
-Turn on auto-instrumentation, then run the conversations. The same `LangChainInstrumentor` captures LangGraph. Wrap each turn in `using_session` (the conversation) and `using_user` (the customer), then set two groups of attributes on the turn span: the standard ones that populate the dashboard's own columns, and the `raw.*` ones an Eval Task will map to later.
+Turn on auto-instrumentation, then run the conversations. Save the following as `turns.py` in the same directory and run `python turns.py`. The same `LangChainInstrumentor` captures LangGraph. Wrap each turn in `using_session` (the conversation) and `using_user` (the customer), then set two groups of attributes on the turn span: the standard ones that populate the dashboard's own columns, and the `raw.*` ones an Eval Task will map to later.
 
 ```python
+from uuid import UUID
+from tracing_setup import tracer, trace_provider
+from support_agent import agent, last_context
 from fi_instrumentation import using_session, using_user
 from fi_instrumentation.fi_types import FiSpanKindValues, SpanAttributes
 from traceai_langchain import LangChainInstrumentor
@@ -156,10 +166,12 @@ from traceai_langchain import LangChainInstrumentor
 # trace_provider and tracer come from step 1. Do not register again.
 LangChainInstrumentor().instrument(tracer_provider=trace_provider)
 
-def support_turn(session_id: str, user_id: str, question: str) -> str:
+def support_turn(session_id: str, user_id: str, question: str, history: list):
     with using_session(session_id), using_user(user_id):
         with tracer.start_as_current_span("support_turn") as span:
-            result = agent.invoke({"messages": [{"role": "user", "content": question}]})
+            last_context["text"] = ""
+            result = agent.invoke({"messages": [*history, {"role": "user", "content": question}]})
+            history[:] = result["messages"]
             answer = result["messages"][-1].content
 
             # Standard fields: these fill the Input and Output columns in the
@@ -178,7 +190,7 @@ def support_turn(session_id: str, user_id: str, question: str) -> str:
             span.set_attribute("raw.input", question)
             span.set_attribute("raw.output", answer)
             span.set_attribute("raw.context", last_context["text"])
-            return answer
+            return answer, UUID(int=span.get_span_context().trace_id)
 
 # two customers, five turns between them
 CONVERSATIONS = [
@@ -193,14 +205,19 @@ CONVERSATIONS = [
     ]),
 ]
 
+trace_ids = []
 for sid, uid, questions in CONVERSATIONS:
+    history = []
     for q in questions:
-        print(support_turn(sid, uid, q))
+        answer, trace_id = support_turn(sid, uid, q, history)
+        print(answer)
+        trace_ids.append(str(trace_id))
 
 trace_provider.force_flush()  # flush before the script exits
+print(" ".join(trace_ids))
 ```
 
-**You should see** two sessions in **Observe → Traces → `support-agent`**: `chat_1001` with three traces for `cust_42`, and `chat_1002` with two for `cust_77`.
+In **Observe → Traces → `support-agent`**, this run adds three turns to `chat_1001` for `cust_42` and two to `chat_1002` for `cust_77`. Use the printed trace IDs to distinguish these turns if you run the script again.
 
 <Warning>
 No trace? It is almost always order or flush. `register()` and `.instrument()` must run **before** the agent call, and `force_flush()` before the process exits.
@@ -210,15 +227,15 @@ No trace? It is almost always order or flush. `register()` and `.instrument()` m
 
 <Step title="Read the traces">
 
-Before any eval runs, the traces already answer questions you'd otherwise guess at. Open the `support-agent` project: every row is one turn, with its status and latency. The trace table's Model, Cost, and Tokens columns read the root span only, and `support_turn` never sets those attributes, so they stay blank on these rows; the LLM calls that do carry model and cost show up once you open the span tree. Click the final-sale turn to see the ReAct loop as a span tree: the LLM call that decides to search, the `search_help_center` call with the exact policy it returned, and the LLM call that writes the answer.
+Before any eval runs, the traces already answer questions you'd otherwise guess at. Open a `support_turn` trace in the `support-agent` project. The root span gives you the question, answer, and total latency. Open its child spans to inspect the model calls and any tools they invoked. On the final-sale turn, look for `search_help_center`: did the model search before answering, and what policy did the tool actually return?
 
 Three things are readable before any score exists:
 
-- **Cost**: two LLM calls per answered question, and the token split between them
-- **Latency**: the retriever and tool spans are milliseconds; the LLM spans are the wait
+- **Cost**: count the LLM calls per question and compare the tokens they used
+- **Latency**: compare the tool and LLM span durations to see where the turn waited
 - **Grounding**: the tool span carries the policy text, so you can eyeball whether the answer used it
 
-On the final-sale turn, the retrieved policy says final-sale items are not refundable and the answer promises a refund anyway, following the prompt's goodwill line over the policy it had just fetched. An eval can now confirm at scale what this one trace suggests.
+On the final-sale turn, the retrieved policy says final-sale items are not refundable; check whether the answer promises a refund anyway, following the prompt's goodwill line over the policy it had just fetched. An eval can now confirm at scale what this one trace suggests.
 
 </Step>
 
@@ -232,19 +249,19 @@ Create an **Eval Task** on the `support-agent` project and pick three evals, eac
 - **Context Adherence**: did the answer stay grounded in it? · `output` → `raw.output`, `context` → `raw.context`
 - **Completeness**: did the answer fully address the question? · `input` → `raw.input`, `output` → `raw.output`
 
-Run it as **Historical** over the five turns.
+Run it as **Historical** over the `support_turn` spans. For the context checks, use turns with nonempty `raw.context`; an order lookup alone does not retrieve a policy.
 
 <Note>
 The click-by-click (creating the task, Historical vs Continuous, sampling, and mapping inputs to span attributes) lives in the [Setup evals](/docs/observe/guides/setup-evals) guide.
 </Note>
 
-**You should see** three scores per trace (illustrative shape, your numbers will differ):
+For a turn with retrieved context, compare all three scores. The table illustrates how to read them; your numbers will differ:
 
 | Turn | Context Relevance | Context Adherence | Completeness |
 |---|---|---|---|
 | "How long do refunds take?" | 0.91 | 0.88 | 0.86 |
 | "Final sale, still refundable?" | 0.87 | **0.41** | 0.55 |
-| "Look up order A-3391" | 0.93 | 0.90 | 0.84 |
+| "Look up order A-3391" (no policy lookup) | n/a | n/a | 0.84 |
 | "What shipping options do you have?" | 0.90 | 0.85 | 0.83 |
 | "Can you change my password for me?" | 0.88 | 0.82 | 0.80 |
 
@@ -252,13 +269,7 @@ The click-by-click (creating the task, Historical vs Continuous, sampling, and m
 
 <Step title="Turn the scores into insight">
 
-Filter the trace explorer to the low-scoring slice:
-
-```text
-scores.context_adherence < 0.8 AND fi.span.kind = LLM
-```
-
-The final-sale turn surfaces, and its two scores split the layers: retrieval is fine (Context Relevance 0.87), grounding is not (Context Adherence 0.41). To replay the whole conversation around it, scope with `user.id = 'cust_42'` and open the session.
+Look for `support_turn` agent spans with a Context Adherence score below 0.8. In the example above, the final-sale turn has high Context Relevance (0.87) but low Context Adherence (0.41). Open the turn to compare the retrieved policy with the refund promise, then open the session for `cust_42` to read the conversation around it.
 
 Each eval's failure indicts one layer:
 
@@ -268,7 +279,7 @@ Each eval's failure indicts one layer:
 | Relevance ok, **Adherence low** | model ignores good context | the prompt |
 | Completeness low | partial answer | prompt, or retrieve more |
 
-**What you now know**, from one run:
+**If your traces match the example**, you have three leads:
 
 - **The prompt is the broken layer, not retrieval**: the right policy was retrieved and ignored
 - **It fails on policy exceptions, not routine turns**: the plain refund question scored fine; the final-sale one didn't
@@ -283,7 +294,7 @@ That's a ticket your team can act on, not "the bot sometimes gives wrong answers
 Scores drift as prompts, models, and traffic change. Turn this check into standing monitors so the next regression pages you, not a customer:
 
 - **Alert**: an [Evaluation-metric alert](/docs/observe/guides/setup-alerts) on `context_adherence`, operator *Less than*, static `0.8`
-- **Saved view**: save the `scores.context_adherence < 0.8` filter as an "Ungrounded answers" [view](/docs/observe/guides/explore-dashboard/views), so tomorrow's check is one click
+- **Saved view**: save the low-adherence filter as an "Ungrounded answers" [view](/docs/observe/guides/explore-dashboard/views), so tomorrow's check is one click
 - **Regression set**: the low-scoring turns are your best future test cases; harvest them so any fix has to clear them
 
 </Step>
@@ -305,4 +316,4 @@ Scores drift as prompts, models, and traffic change. Turn this check into standi
 
 ## Where to go next
 
-You know which layer is broken and why: the prompt ignores good context on policy-exception turns. To act on that and fix the prompt systematically, continue with [Improve a prompt automatically](/docs/cookbook/quickstart/prompt-optimization).
+If your trace shows the prompt overriding a retrieved policy, revise the prompt and rerun the same questions. To act on that and fix the prompt systematically, continue with [Improve a prompt automatically](/docs/cookbook/quickstart/prompt-optimization).
