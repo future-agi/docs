@@ -28,8 +28,8 @@ describe('flue.mdx', () => {
 
   test('names the Flue and OpenTelemetry versions the example installs', () => {
     const d = pkg.dependencies;
-    for (const name of ['@flue/runtime', '@flue/opentelemetry', '@flue/cli', '@flue/vite']) assert.equal(d[name], '2.3.0');
-    assert.match(page, /Flue 2\.3\.0/);
+    for (const name of ['@flue/runtime', '@flue/opentelemetry', '@flue/cli', '@flue/vite']) assert.equal(d[name], '2.3.1');
+    assert.match(page, /Flue 2\.3\.1/);
     for (const name of ['@opentelemetry/sdk-node', '@opentelemetry/exporter-trace-otlp-proto']) assert.match(page, new RegExp(`\`${name}\` ${d[name].replaceAll('.', '\\.')}`));
     assert.match(page, new RegExp(`\`@opentelemetry/sdk-trace-base\` ${d['@opentelemetry/sdk-trace-base'].replaceAll('.', '\\.')}`));
   });

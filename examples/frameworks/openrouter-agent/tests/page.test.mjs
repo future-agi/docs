@@ -16,9 +16,9 @@ test('the page embeds the helper with the clarified privacy comment', () => {
 
 test('the page states the recipe version and the pinned install', () => {
   const pkg = JSON.parse(read('../package.json')).dependencies;
-  assert.equal(pkg['@openrouter/agent'], '0.11.0');
-  assert.ok(page.includes('`@openrouter/agent` 0.11.0'));
-  assert.ok(page.includes('npm install @openrouter/agent@0.11.0 @openrouter/sdk@0.13.67'));
+  assert.equal(pkg['@openrouter/agent'], '1.3.0');
+  assert.ok(page.includes('`@openrouter/agent` 1.3.0'));
+  assert.ok(page.includes('npm install @openrouter/agent@1.3.0 @openrouter/sdk@1.5.137'));
 });
 
 test('the page states the privacy default and the opt-in', () => {

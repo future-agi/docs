@@ -14,10 +14,10 @@ after(() => server.close());
 
 const byName = (spans, prefix) => spans.filter((s) => s.name.startsWith(prefix));
 
-test('upstream guard: @openrouter/agent 0.11.0 contains no OpenTelemetry code', () => {
+test('upstream guard: @openrouter/agent 1.3.0 contains no OpenTelemetry code', () => {
   const root = fileURLToPath(new URL('../node_modules/@openrouter/agent/', import.meta.url));
   const pkg = JSON.parse(fs.readFileSync(`${root}package.json`, 'utf8'));
-  assert.equal(pkg.version, '0.11.0');
+  assert.equal(pkg.version, '1.3.0');
   const walk = (dir) =>
     fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(`${dir}${e.name}/`) : [`${dir}${e.name}`]));
   const hits = walk(`${root}esm/`).filter((f) => /\.(js|d\.ts)$/.test(f) && /opentelemetry/i.test(fs.readFileSync(f, 'utf8')));

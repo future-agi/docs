@@ -16,7 +16,7 @@ test('Genkit is discoverable as a maintained framework integration', () => {
 });
 
 test('Genkit primary recipe uses published packages and the OpenAI plugin', () => {
-  assert.match(page, /npm install @traceai\/genkit@0\.1\.0 @traceai\/fi-core@1\.1\.1 genkit@1\.42\.0 @genkit-ai\/compat-oai@1\.42\.0/);
+  assert.match(page, /npm install @traceai\/genkit@0\.1\.2 @traceai\/fi-core@1\.4\.1 genkit@1\.44\.0 @genkit-ai\/compat-oai@1\.44\.0/);
   assert.match(page, /export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"/);
   assert.match(example, /import \{ openAI \} from "@genkit-ai\/compat-oai\/openai";/);
   assert.match(example, /plugins: \[openAI\(\)\], model: openAI\.model\("gpt-4\.1-nano"\)/);
@@ -43,7 +43,7 @@ test('Genkit explains privacy boundaries without a public verification diary', (
   assert.match(page, /export FI_HIDE_INPUTS=true/);
   assert.match(page, /export FI_HIDE_OUTPUTS=true/);
   assert.match(page, /With either flag enabled, error messages are also redacted/);
-  assert.match(page, /FI_PII_REDACTION` is not applied/);
+  assert.match(page, /`FI_PII_REDACTION=true` to also mask recognized personal information/);
   assert.match(page, /Dev UI and other exporters still receive the original, unredacted spans/);
   assert.match(page, /npm install @opentelemetry\/api@1\.9\.0/);
   const sessions = page.split('## Sessions')[1]?.split('## Captured spans')[0];

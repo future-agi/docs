@@ -36,7 +36,7 @@ Ask for `Atlantis` to make the tool throw. `FI_CAPTURE_CONTENT=1` exports prompt
 | --- | --- | --- |
 | `npm test` | nothing | Settings and content policy, the telemetry module in a child process against a loopback recorder (URL, headers, uncompressed protobuf, resource), the wire checker (it must fail when the recipe leaks), the recorded fixture, and that the docs page shows these files exactly. |
 | `npm run test:flue` | nothing (about a minute) | `run_e2e.sh` against a deterministic OpenAI-compatible mock model and a loopback sink standing in for Future AGI: real `flue run`, built server, standalone script and an unreachable exporter. |
-| `./run_e2e.sh` | Future AGI keys and a real model | The same phases against a real Future AGI collector, through a recorder that forwards every request unchanged. Prints 27 PASS/FAIL checks on the bytes sent. |
+| `./run_e2e.sh` | Future AGI keys and a model endpoint (a real model, or `scripts/mock-model.mjs`) | The same phases against a real Future AGI collector, through a recorder that forwards every request unchanged. Prints 27 PASS/FAIL checks on the bytes sent. |
 
 ```bash
 FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:4318 FI_PROJECT_NAME=flue-e2e \
@@ -68,4 +68,4 @@ The fixture is in the OTLP/JSON shape the shared OTel GenAI conformance harness 
 
 ## Versions tested
 
-Flue 2.3.0 (latest on 2026-10-16: `@flue/runtime`, `@flue/opentelemetry`, `@flue/cli`, `@flue/vite`) with real runs against Future AGI. Flue 2.2.2 with `npm run test:flue` (mock model, loopback sink). `@opentelemetry/sdk-node` and `@opentelemetry/exporter-trace-otlp-proto` 0.223.0, `@opentelemetry/sdk-trace-base` and `@opentelemetry/resources` 2.12.0, `@opentelemetry/api` 1.9.1, Node 26.8.1.
+Flue 2.3.1 (latest on 2026-11-25: `@flue/runtime`, `@flue/opentelemetry`, `@flue/cli`, `@flue/vite`) with `npm test`, `npm run test:flue`, and `run_e2e.sh` against Future AGI cloud with the mock model from `scripts/mock-model.mjs` (all 27 checks passed); `@earendil-works/pi-ai` 1.6.0. Flue 2.3.0 (latest on 2026-10-16) with real runs against Future AGI; the recorded fixture comes from those runs. Flue 2.2.2 with `npm run test:flue` (mock model, loopback sink). `@opentelemetry/sdk-node` and `@opentelemetry/exporter-trace-otlp-proto` 0.223.0, `@opentelemetry/sdk-trace-base` and `@opentelemetry/resources` 2.12.0, `@opentelemetry/api` 1.9.1, Node 26.8.1.
