@@ -1,0 +1,125 @@
+---
+title: "Trace Temporal TypeScript workflows"
+description: "Send Temporal TypeScript workflow and activity spans to Future AGI with Temporal's native OpenTelemetry plugin."
+---
+
+Trace a TypeScript workflow from its starter through the worker and its activities in one Observe trace. Temporal's own [`OpenTelemetryPlugin`](https://docs.temporal.io/develop/typescript/observability) creates and propagates the spans; you do not need a second Temporal instrumentor.
+
+<Warning>
+The Temporal plugin API is experimental. Keep your `@temporalio/*` packages on the same version. The example uses the v2 plugin, which works with Temporal TypeScript SDK 1.19.0–1.25.0 and OpenTelemetry JS 2.x. Do not substitute OpenTelemetry JS 3.x for this setup.
+
+Do not replace `@temporalio/interceptors-opentelemetry` with `@temporalio/interceptors-opentelemetry-v2` in place for existing workflow histories: v2 can cause non-determinism errors on replay. Keep existing executions on compatible original-interceptor workers until they complete, or use a Worker Versioning migration that preserves replay compatibility. Use v2 for new executions.
+</Warning>
+
+## Set up tracing
+
+<Steps>
+
+<Step title="Install the native plugin and exporter">
+
+Use Node.js 20.6.0 or newer; Node.js 22 is recommended. From the [complete TypeScript example](https://github.com/future-agi/docs/tree/main/examples/frameworks/temporal-typescript), run:
+
+```bash
+npm ci
+```
+
+The example pins Temporal's `@temporalio/interceptors-opentelemetry-v2` and Client, Worker, and Workflow packages to 1.25.0. It uses the OpenTelemetry JS 2.x-compatible OTLP/HTTP **protobuf** exporter and SDK. If your application uses Temporal 1.19.0–1.24.0, install the matching version of each `@temporalio/*` package instead.
+</Step>
+
+<Step title="Set your Future AGI project and credentials">
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+export FI_PROJECT_NAME="temporal-weather-agent"
+```
+
+The example's [`tracing.ts`](https://github.com/future-agi/docs/blob/main/examples/frameworks/temporal-typescript/tracing.ts) configures the same resource and span processor in both Node.js processes:
+
+```ts
+const resource = resourceFromAttributes({
+  'service.name': 'temporal-weather-agent',
+  project_name: process.env.FI_PROJECT_NAME || 'temporal-weather-agent',
+  project_type: 'observe',
+});
+if (!process.env.FI_API_KEY || !process.env.FI_SECRET_KEY) {
+  throw new Error('Set FI_API_KEY and FI_SECRET_KEY before starting tracing');
+}
+const exporter = new OTLPTraceExporter({
+  url: process.env.FI_TRACES_URL || 'https://api.futureagi.com/tracer/v1/traces',
+  headers: {
+    'X-Api-Key': process.env.FI_API_KEY,
+    'X-Secret-Key': process.env.FI_SECRET_KEY,
+  },
+});
+export const spanProcessor = new BatchSpanProcessor(exporter);
+export const sdk = new NodeSDK({ resource, spanProcessors: [spanProcessor] });
+```
+
+`project_name` is a **resource** attribute, not a span attribute or `service.name`. Configure the exporter with both headers. For a self-hosted instance, set `FI_TRACES_URL` to its complete `/tracer/v1/traces` endpoint.
+</Step>
+
+<Step title="Enable the plugin in both processes">
+
+In [`worker.ts`](https://github.com/future-agi/docs/blob/main/examples/frameworks/temporal-typescript/worker.ts), start the Node SDK before creating the Worker and pass the plugin to `Worker.create`. The plugin configures workflow bundling, activity and Nexus interceptors, and the workflow exporter sink together; do not also install the same interceptors manually.
+
+```ts
+const worker = await Worker.create({
+  connection,
+  workflowsPath: require.resolve('./workflows'),
+  activities,
+  taskQueue: 'weather-agent',
+  plugins: [new OpenTelemetryPlugin({ resource, spanProcessor })],
+});
+await worker.run();
+```
+
+The [starter](https://github.com/future-agi/docs/blob/main/examples/frameworks/temporal-typescript/client.ts) starts its own Node SDK and adds the same plugin to the Client:
+
+```ts
+const client = new Client({
+  connection,
+  plugins: [new OpenTelemetryPlugin({ resource, spanProcessor })],
+});
+```
+
+Workflow code calls activities; run model and tool calls inside activities, where ordinary Node.js instrumentation can join the active trace. Keep calls to external services out of replayed workflow code. If you prebundle workflows with `bundleWorkflowCode`, pass the plugin to the bundling call as well as the Worker so workflow spans are included. On shutdown, stop the Worker before calling `sdk.shutdown()` to drain buffered spans; the example does this in `finally`.
+</Step>
+
+<Step title="Run a workflow and inspect its trace">
+
+Use three separate terminals. Run the Worker and starter from the complete TypeScript example directory. Set `FI_API_KEY`, `FI_SECRET_KEY`, and `FI_PROJECT_NAME` in both of those terminals as shown above (and `FI_TRACES_URL` for a self-hosted instance); exports in one terminal do not apply to another.
+
+**Terminal 1 — Temporal server:** Start a local [Temporal development server](https://docs.temporal.io/cli) and leave it running.
+
+```bash
+temporal server start-dev
+```
+
+**Terminal 2 — Worker:** Start the example Worker and leave it running. Wait until it reports `RUNNING` before executing the starter.
+
+```bash
+npm run worker
+```
+
+**Terminal 3 — starter:** Execute the workflow.
+
+```bash
+npm run start
+```
+
+The starter prints `Forecast for Oslo: sunny`. Open your project in Future AGI **Observe → Traces**. The trace contains `StartWorkflow:weather` → `RunWorkflow:weather` → `StartActivity:forecast` → `RunActivity:forecast`. Future AGI receives these as runtime spans; to see model-specific details, add your model SDK's own instrumentor inside an activity, using this same OpenTelemetry provider. Do not instrument Temporal a second time.
+
+When you finish, stop the Worker with Ctrl+C so buffered spans export, then stop the development server.
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+- **Workflow and activity spans have separate trace IDs:** Add the plugin to both the starter Client and the Worker, and keep both processes on matching Temporal SDK versions.
+- **Only activity spans appear:** Pass the plugin to `bundleWorkflowCode` if you prebundle workflow code. With `Worker.create({ workflowsPath, plugins })`, the plugin is included automatically.
+- **No spans reach Future AGI:** Confirm the complete OTLP/HTTP endpoint, both key headers, and `project_name` on the resource. Let the starter finish `sdk.shutdown()` and stop workers gracefully so buffered spans export.
+- **Sensitive error messages:** Temporal may record exception details in span status or events. Avoid putting secrets or user content in exception messages; filter these fields in your OpenTelemetry Collector before export if your application requires stricter data minimization.
+
+For Python workflows, use the [Temporal Python guide](/docs/integrations/frameworks/temporal).

@@ -7,6 +7,7 @@
  */
 
 import { integrationNavigation } from './integrations.mjs';
+import { sdkReferenceNavigation } from './sdk-reference.mjs';
 
 export interface NavItem {
   title: string;
@@ -65,6 +66,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Overview', href: '/docs/self-hosting' },
               { title: 'Requirements', href: '/docs/self-hosting/requirements' },
               { title: 'Installation', href: '/docs/self-hosting/installation' },
+              { title: 'Automatic updates', href: '/docs/self-hosting/automatic-updates' },
               { title: 'Helm (Kubernetes)', href: '/docs/self-hosting/helm' },
               { title: 'Container images', href: '/docs/self-hosting/images' },
               {
@@ -408,6 +410,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
               { title: 'Collect feedback', href: '/docs/evaluation/guides/collect-feedback' },
               { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
+              { title: 'Use decision models', href: '/docs/evaluation/guides/decision-models' },
               { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
               { title: 'Advanced usage', href: '/docs/evaluation/guides/advanced-usage' },
             ]
@@ -882,7 +885,6 @@ export const tabNavigation: NavTab[] = [
                   { title: 'Analytics & metrics', href: '/docs/simulation/guides/explore-results/analytics' },
                 ]
               },
-              { title: 'Fix My Agent', href: '/docs/simulation/guides/fix-my-agent' },
               {
                 title: 'Optimize using simulate',
                 items: [
@@ -922,6 +924,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
               { title: 'Scenarios & Trials', href: '/docs/environments/concepts/scenarios-and-trials' },
               { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
+              { title: 'Epoch', href: '/docs/environments/concepts/epoch' },
             ]
           },
           {
@@ -930,10 +933,13 @@ export const tabNavigation: NavTab[] = [
               { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
               { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
               { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
+              { title: 'Import evidence', href: '/docs/environments/guides/import-evidence' },
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
+              { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
+              { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
             ]
           },
           {
@@ -1006,7 +1012,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Session-Based Observability', href: '/docs/cookbook/quickstart/session-observability' },
               { title: 'LangGraph Agent Observability', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
               { title: 'Chat Simulation with Personas', href: '/docs/cookbook/quickstart/chat-simulation-personas' },
-              { title: 'Chat Simulation & Fix My Agent', href: '/docs/cookbook/chat-simulation-fix-agent' },
+              { title: 'Chat Simulation & Debug Failures', href: '/docs/cookbook/chat-simulation-fix-agent' },
               { title: 'Prompt Workbench Simulation', href: '/docs/cookbook/quickstart/prompt-workbench-simulation' },
               { title: 'End-to-End Agent Testing', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
             ]
@@ -1148,6 +1154,8 @@ export const tabNavigation: NavTab[] = [
           },
         ]
       },
+      // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
+      sdkReferenceNavigation,
       {
         group: 'Evaluation',
         icon: 'chart',
@@ -1426,9 +1434,11 @@ export const tabNavigation: NavTab[] = [
               { title: 'List Test Runs', href: '/docs/api/run-tests/listruntests' },
               { title: 'Create Run Test', href: '/docs/api/run-tests/createruntest' },
               { title: 'Get Test Run Details', href: '/docs/api/run-tests/getruntestdetails' },
+              { title: 'Update Run Test Components', href: '/docs/api/run-tests/updatetestcomponents' },
               { title: 'Delete Test Run', href: '/docs/api/run-tests/deleteruntest' },
               { title: 'Execute Run Test', href: '/docs/api/run-tests/executeruntest' },
               { title: 'Get Test Executions', href: '/docs/api/run-tests/gettestexecutions' },
+              { title: 'List Call Executions', href: '/docs/api/run-tests/getcallexecutions' },
               { title: 'Get Test Scenarios', href: '/docs/api/run-tests/gettestscenarios' },
               { title: 'Get Eval Summary', href: '/docs/api/run-tests/getevalsummary' },
               { title: 'Compare Eval Summaries', href: '/docs/api/run-tests/compareevalsummaries' },
