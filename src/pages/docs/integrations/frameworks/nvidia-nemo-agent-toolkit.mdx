@@ -1,12 +1,114 @@
 ---
 title: "NVIDIA NeMo Agent Toolkit"
-description: "Availability of the Future AGI exporter for NVIDIA NeMo Agent Toolkit."
+description: "Trace NVIDIA NeMo Agent Toolkit workflows, agents, tools and LLM calls in Future AGI with the toolkit's built-in OpenTelemetry exporter. YAML config only."
 ---
 
-The Future AGI exporter is not available in the published `nvidia-nat-opentelemetry` 1.9.0 package. Adding `_type: futureagi` to that installation does not install the exporter.
+Send NVIDIA NeMo Agent Toolkit (NAT) workflow runs to a Future AGI **Observe** project. The toolkit's OpenTelemetry package includes a generic `otelcollector` exporter, and the Future AGI collector accepts its OTLP/HTTP export directly. You add a telemetry block to the workflow's YAML config and set one environment variable; you do not change your workflow code.
 
-## Related guides
+## Before you start
 
-- [NVIDIA NeMo Agent Toolkit source](https://github.com/NVIDIA/NeMo-Agent-Toolkit)
-- [Published OpenTelemetry package](https://pypi.org/project/nvidia-nat-opentelemetry/1.9.0/)
-- [LangChain tracing](/docs/integrations/traceai/langchain) for applications that run LangChain directly, outside the toolkit.
+- A NeMo Agent Toolkit workflow on `nvidia-nat` **1.9.0**, with the `nvidia-nat-opentelemetry` package.
+- A [Future AGI API key and secret key](/docs/admin-settings/api-keys).
+- An Observe project name for the workflow. Create the project in Future AGI first.
+
+The toolkit does not ship a Future AGI exporter type. Use `_type: otelcollector` as shown below; `_type: futureagi` is not a registered exporter.
+
+## Install
+
+Add the OpenTelemetry package to the environment that runs your workflow:
+
+```bash
+pip install "nvidia-nat-opentelemetry==1.9.0"
+```
+
+If you installed the toolkit from source, install its `opentelemetry` extra instead, as described in NVIDIA's [OpenTelemetry Collector guide](https://github.com/NVIDIA/NeMo-Agent-Toolkit/blob/v1.9.0/docs/source/run-workflows/observe/observe-workflow-with-otel-collector.md).
+
+## Configure the exporter
+
+Add a tracing exporter under `general.telemetry` in the workflow's config file:
+
+```yaml
+general:
+  telemetry:
+    tracing:
+      futureagi:
+        _type: otelcollector
+        endpoint: https://api.futureagi.com/tracer/v1/traces
+        project: my-nat-workflow
+        resource_attributes:
+          project_name: my-nat-workflow
+          project_type: observe
+```
+
+| Field | Why |
+| --- | --- |
+| `endpoint` | The full Future AGI trace URL. The exporter sends OTLP over HTTP with protobuf encoding and uses the URL as given. For self-hosted Future AGI, use your collector's trace endpoint from [OpenTelemetry GenAI compatibility](/docs/integrations/traceai/otel-genai-conformance#export-settings). |
+| `project` | Required by the exporter. The toolkit sends it as `service.name`; it does not choose the Future AGI project. |
+| `resource_attributes.project_name` | Chooses the Observe project. The Future AGI collector rejects an export without it. |
+| `resource_attributes.project_type` | `observe`. |
+
+The `otelcollector` exporter has no `headers` field. Pass the Future AGI keys through the standard OpenTelemetry environment variable, which the exporter reads at startup. Percent-encode the values so that commas or other reserved characters in a key do not break parsing:
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="$(python -c 'import os; from urllib.parse import quote; print("X-Api-Key={0},X-Secret-Key={1}".format(quote(os.environ["FI_API_KEY"], safe=""), quote(os.environ["FI_SECRET_KEY"], safe="")))')"
+```
+
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` applies to every OTLP trace exporter in the process that has no headers of its own. If the same process exports to another OTLP backend, keep it in a separate process or give that exporter its own headers.
+
+## Run and verify
+
+Run the workflow as usual:
+
+```bash
+nat run --config_file workflow.yml --input "your test question"
+```
+
+The exporter batches spans and flushes them when the workflow finishes, so a short `nat run` sends its spans before it exits. The log shows `Started exporter 'futureagi'` at the beginning and `Stopped exporter 'futureagi'` at the end.
+
+Open **Observe** in Future AGI and select `my-nat-workflow`. Each run appears as one trace rooted at the workflow span.
+
+## What gets traced
+
+The toolkit turns its own workflow events into spans and labels each one with an OpenInference span kind, which Future AGI uses for the span type. Kinds that Future AGI does not recognize still appear in the trace tree with their attributes.
+
+| Toolkit event | `openinference.span.kind` |
+| --- | --- |
+| Workflow, function, task and custom steps | `CHAIN` |
+| Agent | `AGENT` |
+| LLM call | `LLM` |
+| Tool call | `TOOL` |
+| Retriever, embedder, reranker | `RETRIEVER`, `EMBEDDING`, `RERANKER` |
+| Guardrail, evaluator | `GUARDRAIL`, `EVALUATOR` |
+
+Each span carries:
+
+- `input.value` and `output.value` when the step has them, usually with their MIME types.
+- On LLM spans, `llm.model_name` and the framework as `llm.provider`.
+- `llm.token_count.prompt`, `llm.token_count.completion` and `llm.token_count.total` on spans where the toolkit has usage information. If that information has no token counts, the toolkit writes `0`.
+- `session.id` from the toolkit's conversation ID, when one is set, and `user.id` when the run has a user.
+- Toolkit attributes under the `nat.` prefix, such as `nat.event_type`, `nat.function.name`, `nat.workflow.run_id` and `nat.metadata`. Keep the default prefix: the exporter reads the span kind from `nat.event_type`, so with another `NAT_SPAN_PREFIX` every span kind becomes `UNKNOWN`.
+
+Toolkit 1.9.0 does not mark failed steps as errors: every span is exported with status OK.
+
+## Privacy
+
+The exporter sends the inputs and outputs of every step, including the user's question, prompts, model responses and tool results. Use synthetic or approved data, or route the export through an OpenTelemetry Collector that removes sensitive attributes before it reaches Future AGI. Future AGI SDK settings such as `FI_HIDE_INPUTS` do not apply to this exporter.
+
+## Troubleshooting
+
+| What you see | What to check |
+| --- | --- |
+| `nat run` cannot load the telemetry config | `nvidia-nat-opentelemetry` is not installed in the workflow's environment, or `_type` is not `otelcollector`. |
+| HTTP 401 in the log | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` is not set in the process that runs `nat`, or the key pair is wrong. Header names must be `X-Api-Key` and `X-Secret-Key`. |
+| HTTP 400 mentioning `project_name` | Add `project_name` under `resource_attributes`. `project` alone sets only `service.name`. |
+| Exports go to the wrong path | Give the full URL ending in `/tracer/v1/traces`. The exporter does not add a path. |
+| Token counts are `0` | The model did not report token usage for that call, and the toolkit recorded `0`. |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Observe overview" href="/docs/observe" />
+  <Card title="OpenTelemetry GenAI compatibility" href="/docs/integrations/traceai/otel-genai-conformance" />
+</CardGroup>
