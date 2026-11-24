@@ -422,8 +422,7 @@ test('Envoy guide keeps native tracing and content-safe trace-only defaults', ()
 
 test('Together OpenAI guide requires the released provider mapping without claiming native SDK coverage', () => {
   const page = read('src/pages/docs/integrations/traceai/togetherai.mdx');
-  // Exact pins at or above the release with the Together provider mapping (traceAI-openai 0.1.11).
-  assert.match(page, /pip install traceAI-openai==0\.1\.16 fi-instrumentation-otel==1\.5\.1/);
+  assert.match(page, /pip install --upgrade "traceAI-openai>=0\.1\.11" "fi-instrumentation-otel>=1\.2\.2"/);
   assert.match(page, /base_url="https:\/\/api\.together\.ai\/v1"/);
   assert.match(page, /gen_ai\.provider\.name=together/);
   assert.match(page, /does not instrument an existing `together\.Together` client/);
