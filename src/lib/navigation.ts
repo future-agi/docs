@@ -1283,13 +1283,44 @@ export const tabNavigation: NavTab[] = [
         group: 'CLI',
         icon: 'zap',
         items: [
-          { title: 'CLI Overview', href: '/docs/cli' },
+          { title: 'Overview', href: '/docs/cli' },
           { title: 'Quickstart', href: '/docs/cli/quickstart' },
           { title: 'Install and auth', href: '/docs/cli/install-and-auth' },
-          { title: 'Environments', href: '/docs/cli/environments' },
-          { title: 'Runs', href: '/docs/cli/runs' },
-          { title: 'Agents', href: '/docs/cli/agents' },
-          { title: 'API', href: '/docs/cli/api' },
+          {
+            title: 'Observe and evaluate',
+            items: [
+              { title: 'Tracing', href: '/docs/cli/tracing' },
+              { title: 'Datasets', href: '/docs/cli/datasets' },
+              { title: 'Evals', href: '/docs/cli/evals' },
+              { title: 'Prompts and gateway', href: '/docs/cli/prompts-and-gateway' },
+            ]
+          },
+          {
+            title: 'Simulate',
+            items: [
+              { title: 'Simulate quickstart', href: '/docs/cli/simulate-quickstart', badge: 'Next' },
+              { title: 'Environments', href: '/docs/cli/environments', badge: 'Next' },
+              { title: 'Scenarios, suites and personas', href: '/docs/cli/scenarios-suites-and-personas', badge: 'Next' },
+              { title: 'Runs', href: '/docs/cli/runs', badge: 'Next' },
+              { title: 'Epoch', href: '/docs/cli/epoch', badge: 'Next' },
+              { title: 'Actors and evaluations', href: '/docs/cli/actors-and-evaluations', badge: 'Next' },
+            ]
+          },
+          {
+            title: 'Automate',
+            items: [
+              { title: 'CI pipelines', href: '/docs/cli/ci' },
+              { title: 'Coding agents', href: '/docs/cli/coding-agents' },
+              { title: 'Skills', href: '/docs/cli/skills', badge: 'Preview' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Configuration and output', href: '/docs/cli/configuration-and-output' },
+              { title: 'Call any endpoint', href: '/docs/cli/api' },
+            ]
+          },
         ]
       },
     ]

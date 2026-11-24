@@ -1,0 +1,211 @@
+---
+title: "Prompts and gateway"
+description: "Keep prompt versions in git with pull and diff, check gateway guardrails with one test prompt, and follow live gateway requests from the terminal"
+---
+
+`fagi prompts` keeps prompt versions as JSON files you can review, commit and check for drift. `fagi gateway try` sends a test prompt through the AI gateway and reports what the guardrails did with it, and `fagi gateway tail` follows its request logs.
+
+<Prerequisites>
+- Signed in to the CLI (see [Sign in](/docs/cli/install-and-auth#sign-in))
+- A prompt template for `fagi prompts` (see [Commit and compare versions](/docs/prompt/guides/commit-and-compare-versions) for versions in the dashboard)
+- A gateway in your workspace for `fagi gateway` (see the [gateway quickstart](/docs/command-center/quickstart))
+</Prerequisites>
+
+Both prompt commands are read-only: they never create a draft, run a prompt, or change a version or the default. Each reads one page of at most 100 versions; a template with more versions exits 1, and the error names the next page to read with `fagi api prompts versions list --id ID --limit 100 --page 2`.
+
+## Pull a prompt version
+
+```bash
+fagi prompts pull support-agent                       # snapshot on stdout
+fagi prompts pull support-agent --version v3 --json
+fagi prompts pull support-agent --file prompts/support-agent.json
+```
+
+| Flag | What it does |
+|---|---|
+| `--version` | The version label, such as `v3`, or `default`. Defaults to `default` |
+| `--file` | Writes the snapshot to this path and prints a summary instead. The parent directory must exist; an existing file is replaced without a prompt |
+
+The first argument is an exact, case-sensitive template name or a template UUID. If several templates share the name, the command exits 2 and lists their UUIDs; pass one of them instead.
+
+The snapshot is one JSON object with sorted keys, so pulling an unchanged version writes the same bytes. It includes the version's `prompt_config`, plus `template_id`, `template_name`, `template_version`, `is_default`, `is_draft`, `commit_message`, a `kind` of `prompt_snapshot` and a short `note`. It is for review and drift checks only: no command uploads it.
+
+With `--file`, the summary ends with the drift check to run later:
+
+```text
+template_name     support-agent
+template_version  v2
+is_default        true
+path              prompts/support-agent.json
+Next: Review and commit the file. Check for drift later with:
+      fagi prompts diff support-agent --against prompts/support-agent.json --exit-code
+```
+
+## Diff two versions or a file
+
+```bash
+fagi prompts diff support-agent --from v3 --to v4
+fagi prompts diff support-agent --from v3            # --to defaults to default
+fagi prompts diff support-agent --against prompts/support-agent.json
+```
+
+| Flag | What it does |
+|---|---|
+| `--from` | The old side: a version label or `default` |
+| `--to` | The new side. Defaults to `default` |
+| `--against` | A file written by `prompts pull`, used as the old side in place of `--from` |
+| `--exit-code` | Exits 5 when the two sides differ, after printing the diff |
+
+Pass exactly one of `--from` and `--against`. Only `prompt_config` is compared, key by key, so a key reorder is not a change. Commit messages, labels and the default flag are not compared. Each changed value gets an `@@ path @@` header. This compares v1 with the default version, here v2:
+
+```bash
+fagi prompts diff support-agent --from v1
+```
+
+```text
+--- support-agent v1
++++ support-agent v2 (default)
+@@ messages[0].content @@
+-You are a helpful support agent.
++You are a concise support agent. Answer in at most 3 sentences.
+@@ model @@
+-gpt-4o
++gpt-4o-mini
+```
+
+With `--json`, the result is one object with `changed`, `from`, `to` and `unified`, the diff text.
+
+## Check for drift in CI
+
+Commit the pulled file, then fail the job when the platform's default version no longer matches it:
+
+```bash
+fagi prompts diff support-agent --against prompts/support-agent.json \
+  --exit-code --no-input
+```
+
+Without `--exit-code`, a successful comparison exits 0 whether or not the sides differ. With it, in table mode a warning on stderr names the pull command that refreshes the file. In JSON mode, read `changed` instead. To run the check in a CI job, see [CI pipelines](/docs/cli/ci).
+
+An ambiguous template name, or more than 100 name matches, exits 2; a missing template, version or default version exits 4. The other codes follow the [shared exit codes](/docs/cli/configuration-and-output#exit-codes).
+
+## Send a test prompt through the gateway
+
+Each try sends one real chat completion through the gateway's test playground.
+
+```bash
+fagi gateway try "Summarize our refund policy in one sentence." --model gpt-4o-mini
+```
+
+```text
+MODEL        STATUS  OUTCOME  CHECKS
+gpt-4o-mini  200     passed   -
+Answer: Refunds are accepted within 30 days of purchase.
+```
+
+| Flag | What it does |
+|---|---|
+| `--model` | The model to request. Sent only when you set it |
+| `--system` | A system prompt |
+| `--prompt-file` | Reads the prompt from a file, or from stdin with `-`, in place of the argument. At most 1 MiB of UTF-8 text and not blank, or it exits 2 |
+| `--gateway` | The gateway ID. Without it, the command uses the only gateway in your workspace and exits 2 if there are none or several |
+| `--expect` | `passed`, `warned` or `blocked`. Exits 5 when the outcome differs |
+| `--dry-run` | Prints the request without reading credentials or sending anything |
+
+<Warning>
+Each try is one model call through your gateway. It can charge like any other call, and the CLI never retries it. A timeout does not cancel or refund the call.
+</Warning>
+
+Check the request first, without sending it or being charged:
+
+```bash
+fagi gateway try "hello" --dry-run --json
+```
+
+The `OUTCOME` column takes one of four values, checked in this order:
+
+| Outcome | What it means |
+|---|---|
+| `blocked` | The gateway refused the prompt with HTTP 403 and a guardrail error |
+| `failed` | The completion did not go through, for example a provider error or rate limit |
+| `warned` | A check warned or logged, and the answer went through |
+| `passed` | A 2xx answer that was neither blocked nor warned |
+
+## Assert a guardrail outcome in CI
+
+Keep a prompt that must stay blocked, such as one containing PII, and assert the outcome:
+
+```bash
+fagi gateway try --prompt-file tests/pii-prompt.txt --expect blocked --json
+```
+
+The JSON object carries `gateway_id`, `model`, `outcome`, `status_code`, `triggered_checks`, `guardrail_action`, the full `result`, and `text` when an answer was returned, plus `expect` and `expect_matched`, which are `null` without `--expect`. A `failed` outcome never matches `--expect passed`. Without `--expect`, a `blocked` or `failed` outcome still exits 0.
+
+Model-based checks can vary between runs, so a single `--expect` run can flake. Use prompts that clearly pass or clearly trigger the check.
+
+After exit 1 (an invalid playground response) or exit 6, the model call may have run, so check before you rerun. The other codes follow the [shared exit codes](/docs/cli/configuration-and-output#exit-codes).
+
+## Follow gateway requests
+
+`fagi gateway tail` polls the gateway's request logs and prints each new request once. Start it, then send traffic from your application:
+
+```bash
+fagi gateway tail --since 10m
+fagi gateway tail --since 30m --errors --model gpt-4o-mini -o jsonl
+```
+
+```text
+Tailing gateway requests that started at or after 2026-11-24T09:04:00Z (UTC).
+Each poll reads one page of at most 100 requests; this is not a lossless tail.
+TIME_UTC  MODEL             PROVIDER    STATUS  LATENCY_MS  FLAGS
+09:14:02  gpt-4o-mini       openai      200     812         cache
+09:14:05  gpt-4o-mini       azure       429     95          fallback,error
+```
+
+`FLAGS` lists `cache`, `fallback`, `guardrail` and `error`. Tokens, cost, the error message and every other field are in `--json` and `-o jsonl`.
+
+| Flag | What it does |
+|---|---|
+| `--since` | Start of the window: a duration such as `10m`, or an RFC 3339 time. Default `5m` |
+| `--errors` | Only requests that ended in an error |
+| `--model`, `--provider`, `--status-code` | Filter by these values; each takes a comma-separated list |
+| `--guardrail-triggered`, `--fallback-used` | Filter on whether a guardrail fired or a fallback was used |
+| `--until-first` | Stops after the first new request; exits 6 if none arrives in time |
+| `--max-polls` | Poll budget from 1 to 300. Default 30 |
+| `--poll-interval` | Wait between polls, at least `1s`. Default `2s` |
+| `--timeout` | Deadline for the whole tail, not one request. Default `90s` |
+
+Use it as a deploy smoke check that exits 0 once one new request arrives:
+
+```bash
+fagi gateway tail --since 2m --until-first --timeout 60s --json
+```
+
+The tail exits 0 when it reaches `--max-polls`, `--timeout` or the output cap, and 6 when it is canceled (Ctrl-C) or `--until-first` sees no request. API errors use the [shared exit codes](/docs/cli/configuration-and-output#exit-codes).
+
+When the server reports more than one page, a `window_truncated` event says some requests may have been skipped; narrow the filters, for example with `--model` or `--errors`. The tail stops with a notice at 1,000 events or 1 MiB of event JSON, and it never retries. Gateway request logs carry no trace ID; to follow traces, use [`fagi trace watch`](/docs/cli/tracing#watch-for-new-traces).
+
+## Other prompt and gateway tasks
+
+For anything these commands don't cover, call the platform API with `fagi api` (see [Command groups](/docs/cli/api#command-groups)).
+
+| Command | What it does |
+|---|---|
+| `fagi api prompts versions list --id ID` | Lists every version of a template, page by page |
+| `fagi api prompts run --id ID --version v3 --data '{"is_run":"prompt"}'` | Runs a prompt version and can charge. It returns right away; read the output with `fagi api prompts run get --id ID --template-version v3`, using the same version |
+| `fagi api gateway playground test --id ID --prompt PROMPT` | The raw request behind [`gateway try`](#send-a-test-prompt-through-the-gateway), with no outcome |
+| `fagi api gateway request-logs list --request-id REQUEST_ID` | The current state of one gateway request |
+| `fagi api gateway guardrail-rules list` | Which guardrail rules exist and how often each fired |
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Evals" icon="check-circle" href="/docs/cli/evals">
+    Grade examples and gate CI on the match rate
+  </Card>
+  <Card title="CI pipelines" icon="play" href="/docs/cli/ci">
+    Run drift and guardrail checks in a CI job
+  </Card>
+  <Card title="Call any endpoint" icon="code" href="/docs/cli/api">
+    Call any platform endpoint with fagi api
+  </Card>
+</CardGroup>
