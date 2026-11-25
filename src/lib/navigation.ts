@@ -924,7 +924,7 @@ export const tabNavigation: NavTab[] = [
             title: 'Chat & Support Agents',
             collapsible: true,
             items: [
-              { title: 'Multi-Turn Conversation Eval', href: '/docs/cookbook/quickstart/conversation-eval' },
+              { title: 'Check booking claims with Write with AI', href: '/docs/cookbook/quickstart/conversation-eval' },
               { title: 'Session-Based Observability', href: '/docs/cookbook/quickstart/session-observability' },
               { title: 'LangGraph Agent Observability', href: '/docs/cookbook/observe-langgraph-agent-and-obtain-insights' },
               { title: 'End-to-End Agent Testing', href: '/docs/cookbook/use-cases/end-to-end-agent-testing' },
