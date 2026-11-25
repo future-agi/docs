@@ -1317,7 +1317,6 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Automate',
             items: [
-              { title: 'CI pipelines', href: '/docs/cli/ci' },
               { title: 'Coding agents', href: '/docs/cli/coding-agents' },
               { title: 'Skills', href: '/docs/cli/skills' },
             ]
