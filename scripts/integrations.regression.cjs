@@ -156,7 +156,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
             return route.continue();
           });
           const source = '/docs/integrations/traceai/anthropic';
-          const selector = href.includes('/integrations/') ? `.integration-sidebar a[href="${href}"]` : `.integration-sidebar nav a[href="${href}"]`;
+          const selector = href.includes('/integrations/') ? `.integration-sidebar a[href="${href}"]` : `#sidebar nav[aria-label="Documentation tabs"] a[href="${href}"]`;
           await p.goto(BASE + source, { waitUntil: 'networkidle' });
           await p.waitForTimeout(1200); // let source caching and prefetch complete
           if (cached) {

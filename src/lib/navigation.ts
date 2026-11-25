@@ -822,7 +822,16 @@ export const tabNavigation: NavTab[] = [
         ]
       },
       {
-        group: 'Environments',
+        group: 'Epoch',
+        icon: 'gauge',
+        items: [
+          { title: 'Overview', href: '/docs/epoch' },
+          { title: 'Run an epoch', href: '/docs/epoch/run-an-epoch' },
+          { title: 'Review an epoch', href: '/docs/epoch/review-an-epoch' },
+        ]
+      },
+      {
+        group: 'Environments & Simulations',
         icon: 'layers',
         items: [
           { title: 'Overview', href: '/docs/environments' },
@@ -834,7 +843,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Contracts', href: '/docs/environments/concepts/contracts' },
               { title: 'Scenarios & Trials', href: '/docs/environments/concepts/scenarios-and-trials' },
               { title: 'Chat orchestration', href: '/docs/environments/concepts/chat-orchestration' },
-              { title: 'Epoch', href: '/docs/environments/concepts/epoch' },
             ]
           },
           {
@@ -848,8 +856,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
-              { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
-              { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
             ]
           },
           {
