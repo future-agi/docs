@@ -1306,12 +1306,12 @@ export const tabNavigation: NavTab[] = [
           {
             title: 'Simulate',
             items: [
-              { title: 'Simulate quickstart', href: '/docs/cli/simulate-quickstart', badge: 'Next' },
-              { title: 'Environments', href: '/docs/cli/environments', badge: 'Next' },
-              { title: 'Scenarios, suites and personas', href: '/docs/cli/scenarios-suites-and-personas', badge: 'Next' },
-              { title: 'Runs', href: '/docs/cli/runs', badge: 'Next' },
-              { title: 'Epoch', href: '/docs/cli/epoch', badge: 'Next' },
-              { title: 'Actors and evaluations', href: '/docs/cli/actors-and-evaluations', badge: 'Next' },
+              { title: 'Simulate quickstart', href: '/docs/cli/simulate-quickstart' },
+              { title: 'Environments', href: '/docs/cli/environments' },
+              { title: 'Scenarios, suites and personas', href: '/docs/cli/scenarios-suites-and-personas' },
+              { title: 'Runs', href: '/docs/cli/runs' },
+              { title: 'Epoch', href: '/docs/cli/epoch' },
+              { title: 'Actors and evaluations', href: '/docs/cli/actors-and-evaluations' },
             ]
           },
           {
@@ -1319,7 +1319,7 @@ export const tabNavigation: NavTab[] = [
             items: [
               { title: 'CI pipelines', href: '/docs/cli/ci' },
               { title: 'Coding agents', href: '/docs/cli/coding-agents' },
-              { title: 'Skills', href: '/docs/cli/skills', badge: 'Preview' },
+              { title: 'Skills', href: '/docs/cli/skills' },
             ]
           },
           {
