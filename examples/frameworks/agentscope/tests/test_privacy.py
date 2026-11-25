@@ -21,7 +21,7 @@ from futureagi_tracing import METADATA_ATTRIBUTES, ContentFilterExporter
 SYSTEM = f"You are a helpful assistant. Internal note {MARKER}-SYSTEM."
 PROMPT = f"What is the weather? {MARKER}-USER"
 
-# Attributes AgentScope 2.0.10 writes that can hold what was said or done. A release that
+# Attributes AgentScope 2.0.11 writes that can hold what was said or done. A release that
 # adds an attribute to neither set fails test_every_attribute_is_classified until it is reviewed.
 CONTENT_ATTRIBUTES = {
     "gen_ai.input.messages",
