@@ -10,7 +10,7 @@ globalThis.fetch = async (url, options) => {
   assert.equal(options.headers["Content-Type"], "application/json");
   assert.ok(options.signal instanceof AbortSignal);
   assert.deepEqual(JSON.parse(options.body), {
-    model: "@cf/meta/llama-3.2-1b-instruct",
+    model: "@cf/meta/llama-4-scout-17b-16e-instruct",
     messages: [{ role: "user", content: "Say hello in one word." }],
     max_tokens: 16,
     stream: false,
@@ -20,7 +20,7 @@ globalThis.fetch = async (url, options) => {
     ? {
       id: "fixture-completion",
       object: "chat.completion",
-      model: "@cf/meta/llama-3.2-1b-instruct",
+      model: "@cf/meta/llama-4-scout-17b-16e-instruct",
       choices: [{ index: 0, message: { role: "assistant", content: "Hello-fixture!" }, finish_reason: "stop" }],
       usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
     }

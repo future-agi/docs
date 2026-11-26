@@ -60,7 +60,7 @@ test("published preload exports one model span and provider usage on natural exi
   const span = result.spans[0];
   const attrs = attributes(span.attributes);
   assert.equal(attrs["gen_ai.provider.name"], "cloudflare.workers_ai");
-  assert.equal(attrs["gen_ai.request.model"], "@cf/meta/llama-3.2-1b-instruct");
+  assert.equal(attrs["gen_ai.request.model"], "@cf/meta/llama-4-scout-17b-16e-instruct");
   assert.equal(Number(attrs["gen_ai.usage.input_tokens"]), 12);
   assert.equal(Number(attrs["gen_ai.usage.output_tokens"]), 4);
   assert.equal(attrs["traceai.capture.layer"], "wire");
@@ -99,7 +99,7 @@ test("page ships the exact app and maintained-package install, not a copied trac
   const page = await readFile(new URL("../../../../src/pages/docs/integrations/runtimes/cloudflare-workers-ai.mdx", import.meta.url), "utf8");
   const app = await readFile(new URL("../app.mjs", import.meta.url), "utf8");
   assert.equal(page.match(/```javascript\n([\s\S]*?)```/)[1], app);
-  assert.match(page, /npm install @traceai\/auto@0\.1\.2/);
+  assert.match(page, /npm install @traceai\/auto@0\.4\.1/);
   assert.match(page, /node --import @traceai\/auto\/register app\.mjs/);
   assert.match(page, /captured by default/);
   assert.match(page, /does not run inside a deployed Worker/);

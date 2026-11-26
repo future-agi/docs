@@ -12,7 +12,7 @@ const response = await fetch(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "@cf/meta/llama-3.2-1b-instruct",
+      model: "@cf/meta/llama-4-scout-17b-16e-instruct",
       messages: [{ role: "user", content: "Say hello in one word." }],
       max_tokens: 16,
       stream: false,
