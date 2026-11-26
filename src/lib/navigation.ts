@@ -1155,6 +1155,8 @@ export const tabNavigation: NavTab[] = [
           },
         ]
       },
+      // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
+      sdkReferenceNavigation,
       {
         group: 'Agent Learning Kit',
         icon: 'flask',
@@ -1163,8 +1165,6 @@ export const tabNavigation: NavTab[] = [
           { title: 'LangChain and LangGraph targets', href: '/docs/sdk/agent-learning-kit/framework-adapters' },
         ]
       },
-      // Generated from the SDK repository (scripts/sync-sdk-reference.mjs); one page per resource.
-      sdkReferenceNavigation,
       {
         group: 'Evaluation',
         icon: 'chart',
