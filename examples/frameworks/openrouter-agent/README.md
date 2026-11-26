@@ -15,7 +15,7 @@ them to Future AGI. There is no traceAI package for it and nothing wraps `callMo
 
 ```bash
 export FI_API_KEY=... FI_SECRET_KEY=...            # Future AGI
-export FI_BASE_URL=http://localhost:4318           # self-hosted only; default https://api.futureagi.com
+# export FI_BASE_URL=http://localhost:4318         # self-hosted only; default https://api.futureagi.com
 export OPENROUTER_API_KEY=sk-or-...
 MODEL=openai/gpt-4o-mini MAX_OUTPUT_TOKENS=100 ./run_e2e.sh
 ```

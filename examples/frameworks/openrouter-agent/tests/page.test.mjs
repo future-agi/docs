@@ -30,7 +30,7 @@ test('the page states the privacy default and the opt-in', () => {
 });
 
 test('the page describes its scope without a verification diary', () => {
-  assert.ok(page.includes('self-hosted Future AGI instance'));
+  assert.ok(page.includes('with string input, ordinary tools and non-streaming'));
   assert.ok(page.includes('one hooks object for each `callModel()`'));
   assert.ok(!page.includes('Live vendor verification'));
   assert.ok(!page.includes('How this was checked:'));
@@ -52,7 +52,7 @@ test('the literal install pins every dependency to the qualified set', () => {
   }
 });
 
-test('supported setup is self-hosted and excludes broader execution modes', () => {
-  assert.ok(page.includes('export FI_BASE_URL="http://localhost:4318"'));
+test('setup defaults to Future AGI cloud and excludes broader execution modes', () => {
+  assert.ok(page.includes('export FI_BASE_URL="https://api.futureagi.com"'));
   assert.ok(!/not tested|untested|unverified/i.test(page));
 });
