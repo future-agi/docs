@@ -1,13 +1,13 @@
 ---
 title: "Async & Batch Inference"
-description: "Run async inference jobs and bulk batch requests through Agent Command Center. Poll job IDs for results or submit large batches at reduced cost."
+description: "Run async inference jobs, scheduled completions and admin batch requests through Agent Command Center. Poll job IDs for results or run many requests at once."
 ---
 
 ## About
 
-Agent Command Center supports two modes for deferred processing: **async inference** sends a single request and returns a job ID you poll for the result, and **batch processing** submits many requests at once for bulk execution at lower cost.
+Agent Command Center supports two modes for deferred processing: **async inference** sends a single request and returns a job ID you poll for the result, and **batch processing** submits many requests at once and runs them concurrently through the gateway.
 
-Both modes support all the same models and parameters as synchronous chat completions.
+Both modes take the same chat completion request body as synchronous requests. Batch requests are billed at the provider's normal rate: the gateway sends each one as a regular chat completion, not through a provider's discounted batch API.
 
 ---
 
@@ -21,12 +21,26 @@ Both modes support all the same models and parameters as synchronous chat comple
 | GET | `/v1/scheduled` | List scheduled jobs |
 | GET | `/v1/scheduled/{job_id}` | Get a scheduled job |
 | DELETE | `/v1/scheduled/{job_id}` | Cancel a scheduled job |
+| POST | `/-/batches` | Submit a batch (admin token) |
+| GET | `/-/batches/{batch_id}` | Get batch status and results (admin token) |
+| POST | `/-/batches/{batch_id}/cancel` | Cancel a batch (admin token) |
 
 ---
 
 ## Async inference
 
-Send a chat completion request with async mode enabled. The gateway returns immediately with a job ID. Poll the job endpoint to get the result when it's ready.
+Send a chat completion request with the `x-agentcc-async: true` header. The gateway returns `202 Accepted` immediately with a job body instead of a chat completion:
+
+```json
+{
+  "job_id": "async-3f9c2a7d1e8b4c6a5d0f2e1b",
+  "status": "queued",
+  "created_at": "2026-04-05T09:00:00Z",
+  "expires_at": "2026-04-06T10:00:00Z"
+}
+```
+
+Poll the job endpoint to get the result when it's ready. Results are kept for one hour after the job finishes by default; set `x-agentcc-async-job-result-ttl` (seconds) to change this.
 
 ### Sending an async request
 
@@ -42,15 +56,15 @@ client = OpenAI(
     api_key="sk-agentcc-your-key",
 )
 
-# Send async request with x-agentcc-async header
-response = client.chat.completions.create(
+# Send async request with x-agentcc-async header.
+# The body is a job, not a chat completion, so read the raw response.
+raw = client.chat.completions.with_raw_response.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Write a detailed essay about climate change"}],
     extra_headers={"x-agentcc-async": "true"},
 )
 
-# Response contains the job ID
-job_id = response.id
+job_id = raw.http_response.json()["job_id"]
 print(f"Job ID: {job_id}")
 ```
 
@@ -89,7 +103,7 @@ while True:
     data = resp.json()
 
     if data["status"] == "completed":
-        print(data["result"]["choices"][0]["message"]["content"])
+        print(data["response"]["choices"][0]["message"]["content"])
         break
     elif data["status"] == "failed":
         print(f"Job failed: {data.get('error')}")
@@ -102,8 +116,8 @@ while True:
 
 | Status | Description |
 |---|---|
-| `pending` | Job is queued |
-| `running` | Job is being processed |
+| `queued` | Job is waiting for a worker |
+| `processing` | Job is being processed |
 | `completed` | Result is ready |
 | `failed` | Job failed (check `error` field) |
 | `cancelled` | Job was cancelled |
@@ -147,89 +161,97 @@ curl -X DELETE https://gateway.futureagi.com/v1/scheduled/job_123 \
 
 ## Batch processing
 
-For high-volume workloads, the OpenAI Batch API lets you submit a file of requests and retrieve results when processing is complete. Batch requests typically run at lower cost (50% discount with OpenAI).
+For high-volume workloads, submit a list of chat completion requests to `/-/batches`. The gateway runs them concurrently through the normal request pipeline and returns all results together once the batch finishes.
+
+<Note>
+Batch endpoints are admin endpoints. They require the gateway admin token (`AGENTCC_ADMIN_TOKEN`) as the Bearer token, not a virtual key. There is no OpenAI-compatible `/v1/batches` endpoint, so `client.batches.create()` from the OpenAI SDK does not work through the gateway.
+</Note>
 
 ### Creating a batch
 
+Send a `requests` array of chat completion bodies. `max_concurrency` is optional and defaults to 10.
+
+<Tabs items={["Python", "cURL"]}>
+
+<Tab title="Python">
+
 ```python
-from openai import OpenAI
-import json
+import requests
 
-client = OpenAI(
-    base_url="https://gateway.futureagi.com/v1",
-    api_key="sk-agentcc-your-key",
-)
+headers = {"Authorization": "Bearer your-admin-token"}
 
-# 1. Create a JSONL file with requests
-requests_data = [
-    {
-        "custom_id": "req-1",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": "Summarize: Machine learning is..."}],
-        },
+resp = requests.post(
+    "https://gateway.futureagi.com/-/batches",
+    headers=headers,
+    json={
+        "requests": [
+            {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "Summarize: Machine learning is..."}],
+            },
+            {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "Summarize: Neural networks are..."}],
+            },
+        ],
+        "max_concurrency": 5,
     },
-    {
-        "custom_id": "req-2",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": "Summarize: Neural networks are..."}],
-        },
-    },
-]
-
-with open("batch_input.jsonl", "w") as f:
-    for req in requests_data:
-        f.write(json.dumps(req) + "\n")
-
-# 2. Upload the input file
-input_file = client.files.create(
-    file=open("batch_input.jsonl", "rb"),
-    purpose="batch",
 )
-
-# 3. Create the batch
-batch = client.batches.create(
-    input_file_id=input_file.id,
-    endpoint="/v1/chat/completions",
-    completion_window="24h",
-)
-print(f"Batch ID: {batch.id}, Status: {batch.status}")
+batch = resp.json()
+print(f"Batch ID: {batch['batch_id']}, Status: {batch['status']}")
 ```
 
-### Checking batch status
+</Tab>
+
+<Tab title="cURL">
+
+```bash
+curl -X POST https://gateway.futureagi.com/-/batches \
+  -H "Authorization: Bearer your-admin-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requests": [
+      {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Summarize: Machine learning is..."}]},
+      {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Summarize: Neural networks are..."}]}
+    ],
+    "max_concurrency": 5
+  }'
+```
+
+</Tab>
+
+</Tabs>
+
+The gateway returns `202 Accepted` with `batch_id`, `status` (`processing`), `total`, `max_concurrency` and `created_at`.
+
+### Checking status and reading results
 
 ```python
 import time
 
 while True:
-    batch = client.batches.retrieve(batch.id)
-    print(f"Status: {batch.status} ({batch.request_counts.completed}/{batch.request_counts.total})")
+    batch = requests.get(
+        f"https://gateway.futureagi.com/-/batches/{batch['batch_id']}",
+        headers=headers,
+    ).json()
+    print(f"Status: {batch['status']}")
 
-    if batch.status == "completed":
+    if batch["status"] in ("completed", "cancelled"):
         break
-    elif batch.status in ("failed", "cancelled", "expired"):
-        print(f"Batch ended: {batch.status}")
-        break
+    time.sleep(5)
 
-    time.sleep(30)
+for result in batch["results"]:
+    if result["status"] == "success":
+        print(f"{result['index']}: {result['response']['choices'][0]['message']['content'][:100]}")
+    else:
+        print(f"{result['index']}: {result['status']} {result.get('error', '')}")
+
+print(batch["summary"])
 ```
 
-### Retrieving results
+A batch is `processing` until every request finishes, then `completed`. `results` and `summary` (total cost, input and output tokens, and completed, failed and cancelled counts) appear only once the batch is `completed` or `cancelled`. Each result has an `index` matching its position in `requests` and a `status` of `success`, `error` or `cancelled`.
 
-```python
-if batch.output_file_id:
-    content = client.files.content(batch.output_file_id)
-    results = content.text.strip().split("\n")
-
-    for line in results:
-        result = json.loads(line)
-        print(f"{result['custom_id']}: {result['response']['body']['choices'][0]['message']['content'][:100]}")
-```
+To stop a running batch, call `POST /-/batches/{batch_id}/cancel`. Batches are held in gateway memory and removed one hour after they finish, so read the results before then.
 
 ---
 
@@ -240,7 +262,7 @@ if batch.output_file_id:
 | Synchronous | Interactive apps, real-time responses | Lowest | Standard |
 | Async | Long-running requests, fire-and-forget | Medium (poll) | Standard |
 | Scheduled | Time-triggered jobs, deferred work | Scheduled | Standard |
-| Batch | High-volume processing, data pipelines | Hours | Discounted (up to 50% off) |
+| Batch | High-volume processing, data pipelines | Until the slowest request finishes | Standard |
 
 ---
 
@@ -254,7 +276,7 @@ if batch.output_file_id:
     Monitor batch and async job costs
   </Card>
   <Card title="Rate limiting" href="/docs/command-center/features/rate-limiting">
-    Per-key limits apply to batch submissions
+    Limit request rates per key and per organization
   </Card>
   <Card title="Endpoints overview" href="/docs/command-center/api/endpoints">
     Full list of all gateway endpoints
