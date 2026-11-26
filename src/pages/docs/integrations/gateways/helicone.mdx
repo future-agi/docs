@@ -1,0 +1,115 @@
+---
+title: "Trace Helicone gateway calls in Observe"
+description: "Instrument OpenAI-compatible client calls through a self-hosted Helicone AI Gateway with Future AGI."
+---
+
+Trace chat calls made by your application through a self-hosted Helicone AI Gateway in **Observe**. Non-streamed calls include the returned model and token usage when provided by the upstream. Instrument the OpenAI client with the published traceAI OpenAI integration; the gateway's own OTLP export contains internal pipeline spans rather than LLM calls and does not replace client tracing.
+
+This guide covers Helicone AI Gateway 0.2.0-beta.30 at its `/ai` route, with an OpenAI-compatible upstream. It does not cover Helicone's hosted service or legacy proxy. Configure your gateway's upstream provider and model using the [Helicone AI Gateway instructions](https://github.com/Helicone/ai-gateway/tree/v0.2.0-beta.30).
+
+## Install
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```bash Python
+pip install traceAI-openai==0.1.12 fi-instrumentation-otel==1.2.2 openai==3.42.1
+```
+
+```bash TypeScript
+npm install @traceai/openai@0.1.15 @traceai/fi-core@1.1.0 openai@7.47.0 @opentelemetry/instrumentation@0.202.0
+```
+
+</CodeGroup>
+
+The Python instrumentor accepts `openai>=1.69.0` on Python 3.10–3.13. Set your Future AGI credentials in the application process. Set `FI_BASE_URL` only if you use self-hosted Future AGI; it is the Future AGI collector origin, **not** the Helicone gateway URL. The example below uses the port forwarded in the [self-hosted Helm setup](/docs/self-hosting/helm); if you forward a different port, use that collector origin instead.
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+# For self-hosted Future AGI only:
+export FI_BASE_URL="http://localhost:4318"
+```
+
+Keep your upstream model credentials on the gateway, not in Future AGI's tracing headers.
+
+## Trace a chat call
+
+Register the tracer before creating the client. These examples assume gateway authentication is disabled on a **trusted local** gateway at `http://localhost:8080/ai`; never expose an unauthenticated gateway to the internet. Replace the model with one configured on your gateway. The `/ai` route requires a provider-prefixed name such as `openai/gpt-4o-mini`.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```python Python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from openai import OpenAI
+from traceai_openai import OpenAIInstrumentor
+
+provider = register(project_type=ProjectType.OBSERVE, project_name="my-chatbot")
+OpenAIInstrumentor().instrument(tracer_provider=provider)
+client = OpenAI(base_url="http://localhost:8080/ai", api_key="local-placeholder")
+response = client.chat.completions.create(
+    model="openai/gpt-4o-mini",
+    messages=[{"role": "user", "content": "Say hello in one sentence."}],
+)
+print(response.choices[0].message.content)
+provider.force_flush()  # flush before a short script exits
+```
+
+```typescript TypeScript
+import { register, ProjectType } from "@traceai/fi-core";
+import { OpenAIInstrumentation } from "@traceai/openai";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import * as openaiModule from "openai";
+import OpenAI from "openai";
+
+const provider = register({ projectType: ProjectType.OBSERVE, projectName: "my-chatbot" });
+const instrumentation = new OpenAIInstrumentation({});
+registerInstrumentations({ instrumentations: [instrumentation], tracerProvider: provider });
+// ESM imports do not pass through require(), so instrument the module explicitly.
+instrumentation.manuallyInstrument(openaiModule as any);
+const client = new OpenAI({ baseURL: "http://localhost:8080/ai", apiKey: "local-placeholder" });
+const response = await client.chat.completions.create({
+  model: "openai/gpt-4o-mini",
+  messages: [{ role: "user", content: "Say hello in one sentence." }],
+});
+console.log(response.choices[0].message.content);
+await provider.forceFlush();
+```
+
+</CodeGroup>
+
+Open **Observe** and choose `my-chatbot`. Each client call produces one LLM span. With the pinned SDK versions above:
+
+- **Non-streamed calls** use the response model and token usage when supplied by the upstream.
+- **Streamed calls in both SDKs retain the requested model**, not the response model, in span model attributes. They do not establish which model the gateway ultimately served. Use non-streamed calls when you need the resolved model identity.
+- **Streamed token usage:** Python records token counts when you set `stream_options={"include_usage": True}` and the upstream sends usage. **TypeScript `@traceai/openai` 0.1.15 does not map streamed Chat Completions token usage to span attributes**, even with `stream_options: { include_usage: true }`. Use Python when you need streamed token metrics.
+
+The gateway's own request ID, cache, routing decision, and cost are not copied onto client spans. `gen_ai.provider.name=openai` identifies the OpenAI-compatible client route, not necessarily the upstream model provider.
+
+Helicone's session and user headers are not mapped to Future AGI sessions. In Python, use [`using_session` and `using_user`](/docs/sdk/tracing/set-session-user-id) for Future AGI, and send Helicone's headers separately if you also need them there.
+
+## Protect prompt content
+
+Helicone receives your prompts because it sits on the request path. **For Python**, set these before starting your application to keep prompt, response, and invocation-parameter content out of **Future AGI** spans:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+export FI_HIDE_LLM_INVOCATION_PARAMETERS=true
+```
+
+The Python SDK also hides error messages and stack traces when content-hiding is enabled; you can set `FI_HIDE_ERROR_DETAILS=true` explicitly.
+
+**TypeScript privacy limitation:** The TypeScript SDK does not mask tool definitions or `gen_ai.request.parameters`, even with `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true`. Tool schemas, including descriptions and parameter names, can be exported to Future AGI. Use the Python SDK when tool schemas or invocation parameters are sensitive; do not rely on the TypeScript hide flags to protect them. TypeScript's hide flags mask ordinary chat input and output content, but this is not a complete privacy mode. Review any attributes your application adds itself (such as session identifiers) before export. See [mask span attributes](/docs/sdk/tracing/mask-span-attributes) for the full settings.
+
+## Troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| The gateway rejects a bare model name | Use the configured provider prefix, such as `openai/gpt-4o-mini`. |
+| No spans appear after a short script | Call `force_flush()` or `forceFlush()` before exit, and check `FI_API_KEY`, `FI_SECRET_KEY`, and the Future AGI project. |
+| Spans have no token usage | For non-streamed calls, check that the upstream returns usage. For streamed Python calls, also set `stream_options={"include_usage": True}`. TypeScript `@traceai/openai` 0.1.15 does not map streamed usage, even with `include_usage`; use Python for streamed token metrics. |
+| A streamed span shows the requested model | Both SDKs retain the requested model for streams. Use a non-streamed call to record the model returned by the upstream. |
+| Prompts appear despite hide settings | Set the flags in the process running the client **before** registering tracing; check for any explicitly supplied tracing config that overrides them. |
+
+For runnable local examples and a loopback OTLP receiver, see the [Helicone companion example](https://github.com/future-agi/docs/tree/main/examples/gateways/helicone). Do not enable a second OpenAI instrumentor on the same client.

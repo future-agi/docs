@@ -37,7 +37,7 @@ class OtlpWireTest {
                 assertEquals("fi-api-key-123", r.headers["x-api-key"])
                 assertEquals("fi-secret-456", r.headers["x-secret-key"])
                 assertEquals("application/x-protobuf", r.headers["content-type"])
-                assertFalse(r.headers["content-encoding"].orEmpty().contains("gzip"), "Future AGI rejects gzip")
+                assertFalse(r.headers["content-encoding"].orEmpty().contains("gzip"), "the recipe sends uncompressed bodies")
             }
             val body = receiver.requests.joinToString("") { it.body.decodeToString() }
             assertTrue("project_name" in body && "wire-project" in body)

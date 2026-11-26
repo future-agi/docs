@@ -2,7 +2,7 @@
 
 Runnable companion to the docs page `docs/integrations/gateways/vercel-ai-gateway`: trace OpenAI-SDK calls to the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions) (`https://ai-gateway.vercel.sh/v1`) with the existing `traceAI-openai` instrumentor, plus a drain-shaped fixture that shows why a gateway Trace Drain cannot reach an Observe project today.
 
-The tests never call Vercel: they run against a local stand-in whose status codes, error bodies, routes and stream usage copy the live gateway. `run_e2e.sh` calls the real gateway only when you set `GATEWAY_BASE_URL`. The recipe was run against the live gateway on 2026-10-18; see [What was and was not verified](#what-was-and-was-not-verified).
+The tests never call Vercel: they run against a local stand-in whose status codes, error bodies, routes and stream usage copy the live gateway. `run_e2e.sh` calls the real gateway only when you set `GATEWAY_BASE_URL`. The recipe was run against the live gateway on 2026-10-18; see [What was tested and what was not covered](#what-was-tested-and-what-was-not-covered).
 
 ## Layout
 
@@ -77,7 +77,7 @@ That makes six small calls: chat, stream, two for the tool round trip, a wrong k
 
 They do not remove: the model id, token counts, `session.id`, tool definitions, or error text (status message and the `exception` event with its stack trace on the wire). A 404 body names the model id sent, and a provider-side error body carries the gateway's routing block (providers tried, their request ids, a client session id). `test_documented_residue_of_the_hide_flags` pins that list so the docs page stays true.
 
-## What was and was not verified
+## What was tested and what was not covered
 
 Run on 2026-10-18 with `traceAI-openai` 0.1.10, `fi-instrumentation-otel` 1.1.0, `openai` 3.35.1, `opentelemetry-sdk` 1.45.1, Python 3.13.15, against the live gateway `https://ai-gateway.vercel.sh/v1` and a self-hosted Future AGI stack.
 
@@ -92,7 +92,7 @@ Run on 2026-10-18 with `traceAI-openai` 0.1.10, `fi-instrumentation-otel` 1.1.0,
 | Content hidden by `FI_HIDE_*`, shown by default | live marker scans, see Privacy |
 | Gateway key and Future AGI keys never cross | `tests/test_recipe.py`, and a by-value search of the stored rows |
 | A dead collector does not fail the request | `tests/test_recipe.py` |
-| A drain-shaped batch without `project_name` is rejected, with it accepted; Bearer is 401; gzip is refused | `drain/replay_drain.py` against the local collector |
+| A drain-shaped batch without `project_name` is rejected, with it accepted; Bearer is 401; gzip got HTTP 400 (a release before v1.56.0; current releases accept gzip) | `drain/replay_drain.py` against the local collector |
 | Tests pass on `traceAI-openai` 0.1.10 with `openai` 3.35.1 and 1.109.1, and on the open traceAI pull request 249 | three environments; with pull request 249 a live run also showed the model on streamed and failed spans |
 
 | **Not** verified | Why |

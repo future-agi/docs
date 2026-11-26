@@ -1,0 +1,152 @@
+---
+title: "OpenAI Codex SDK tracing with Future AGI"
+description: "Trace Codex SDK turns, tools, token usage, and errors in Future AGI with @traceai/codex-sdk. Prompts, outputs, and error details stay hidden by default."
+---
+
+Use `@traceai/codex-sdk` to trace [OpenAI Codex SDK](https://learn.chatgpt.com/docs/codex-sdk) turns and tool calls in Future AGI. Each `thread.run()` or `thread.runStreamed()` produces a **codex.turn** span with child spans for the agent's work; turns in the same thread share a session.
+
+This guide instruments `@openai/codex-sdk` in your application. Codex CLI, TUI, and IDE telemetry configured through `[otel]` in `config.toml` is a separate integration. An OpenAI API client instrumentor such as `@traceai/openai` cannot see model requests made inside the SDK's Codex subprocess.
+
+## Prerequisites
+
+- Node.js 22 or later and a Git repository with a `README.md` for the example.
+- A Future AGI API key and secret key, and your own OpenAI API key for Codex.
+- `@openai/codex-sdk` **0.162.1 or later, below 1.0**, as required by `@traceai/codex-sdk` 0.1.1. The example pins 0.162.1 and uses its bundled Codex binary.
+
+## Install
+
+In your application's repository, install the released packages:
+
+```bash
+npm install @traceai/codex-sdk@0.1.1 @traceai/fi-core@1.1.1 @openai/codex-sdk@0.162.1
+```
+
+## Configure credentials
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+For self-hosted Future AGI, also set `FI_BASE_URL` to your API base URL. The tracer sends spans to `$FI_BASE_URL/tracer/v1/traces`.
+
+## Trace a thread
+
+Save this as `codex-tracing.mjs` in the repository. The `.mjs` extension loads the ESM-only Codex SDK. You can also use these imports in an existing TypeScript application.
+
+```javascript
+import * as CodexSDK from "@openai/codex-sdk";
+import { register, ProjectType } from "@traceai/fi-core";
+import { CodexSDKInstrumentation, shutdown } from "@traceai/codex-sdk";
+
+const tracerProvider = register({
+  projectType: ProjectType.OBSERVE,
+  projectName: "codex-sdk-app",
+});
+
+new CodexSDKInstrumentation({ tracerProvider }).manuallyInstrument(CodexSDK);
+
+try {
+  const codex = new CodexSDK.Codex({ apiKey: process.env.OPENAI_API_KEY });
+  const thread = codex.startThread({
+    workingDirectory: process.cwd(),
+    sandboxMode: "read-only",
+    model: process.env.CODEX_MODEL,
+  });
+
+  const turn = await thread.run("Read README.md and summarize this repository.");
+  console.log(turn.finalResponse);
+
+  const { events } = await thread.runStreamed("List the setup steps from that README.");
+  for await (const event of events) {
+    console.log(event.type);
+  }
+} finally {
+  await shutdown(tracerProvider); // Flush spans, including failures, before exit.
+}
+```
+
+Run it from the same terminal where you set the credentials:
+
+```bash
+node codex-tracing.mjs
+```
+
+Optionally set `CODEX_MODEL` to a Codex model available to your account. Passing a model in the thread options records it on the spans; leaving it unset uses your Codex configuration without recording that model name.
+
+Pass the module namespace to `manuallyInstrument()`, not the `Codex` class. This instruments the SDK's `Thread` class for the process. To trace only selected clients, **replace** the `manuallyInstrument()` call with an instrumentation instance and wrap each selected client:
+
+```javascript
+const instrumentation = new CodexSDKInstrumentation({ tracerProvider });
+const codex = instrumentation.wrapCodex(
+  new CodexSDK.Codex({ apiKey: process.env.OPENAI_API_KEY }),
+);
+```
+
+Threads started or resumed through that client are traced.
+
+## View the trace
+
+Open **Observe** in Future AGI and select **codex-sdk-app**. Open a **codex.turn** trace to see the agent's work. The two turns in the example share `session.id`, so you can inspect them together in **Sessions**.
+
+| Span | Captured metadata |
+| --- | --- |
+| `codex.turn` | Thread ID, model when passed explicitly, thread options, prompt length, token usage, status |
+| `codex.agent_message`, `codex.reasoning` | Message or reasoning-summary length; agent messages are `LLM` spans |
+| `codex.command_execution` | `TOOL` span with exit code, output length, and status |
+| `codex.file_change` | `TOOL` span with change count, kinds, and status |
+| `codex.mcp_tool_call` | `TOOL` span with MCP server, tool name, and status |
+| `codex.web_search` | `TOOL` span for a search |
+| `codex.todo_list` | Item count and completed count |
+| `codex.error` | Non-fatal warning with message length and `codex.warning=true` |
+
+Failed turns and failed tool calls have `ERROR` status. Retried stream errors increment `codex.stream_error.count`; a turn that subsequently completes still ends `OK`. Prompt, tool, and message content is hidden unless you opt in below.
+
+### Token usage
+
+Token counts are recorded only on **codex.turn**, not on each message or tool span. The package treats `turn.completed.usage` as the thread's running total and records each turn's difference in `gen_ai.usage.*`. The original totals remain in `codex.cumulative.*`.
+
+A thread resumed in a process without its previous total has `codex.usage.baseline_unknown=true` and no per-turn token counts on its first completed turn. Later turns record the difference. Keep a thread's turns in one process; the package retains baselines for up to 1,000 threads. Failed or cancelled turns report no usage, so their tokens are included in the next completed turn. If a total decreases, the package records the reported value and sets `codex.usage.non_monotonic=true`.
+
+### Limits
+
+- The SDK exposes agent events, not individual model requests, so there are no per-request model spans or token counts. Unknown item types receive generic spans, without subagent trace links.
+- The model is recorded only when passed to `startThread()` or `resumeThread()`. The provider label is always `openai`, including when Codex uses a custom provider.
+- Codex does not report cost. Any cost shown in Future AGI is an estimate based on the recorded model and token counts.
+- Span durations reflect when events reach your process, not exact subprocess timings. Approval decisions are not included in the SDK event stream.
+
+## Privacy
+
+By default, `hideInputs`, `hideOutputs`, and `hideErrorDetails` are all `true`. The integration exports structure and metadata, including thread and item IDs, tool and MCP server names, statuses, exit codes, lengths, counts, and token usage. It does not capture prompts, commands, file paths, MCP arguments or results, search queries, reasoning text, agent messages, or to-do text.
+
+Error details are also hidden by default: no `codex.error.message`, error status descriptions, exception messages, or stack traces. `ERROR` status and error types remain available; thrown exceptions retain their type. This default does **not** export fixed error summaries.
+
+To capture ordinary input and output content while keeping error details hidden, replace the instrumentation setup with:
+
+```javascript
+new CodexSDKInstrumentation({
+  tracerProvider,
+  traceConfig: { hideInputs: false, hideOutputs: false, hideErrorDetails: true },
+}).manuallyInstrument(CodexSDK);
+```
+
+The environment equivalent is `FI_HIDE_INPUTS=false`, `FI_HIDE_OUTPUTS=false`, and `FI_HIDE_ERROR_DETAILS=true`. Explicit `traceConfig` options take precedence. For these three environment variables, only `false` (trimmed, case-insensitive) opts in; `0`, `no`, and `off` keep content hidden.
+
+**Setting `hideOutputs: false` alone does not expose error details.** To export error text for debugging, set **both** `hideOutputs: false` and `hideErrorDetails: false`, or both `FI_HIDE_OUTPUTS=false` and `FI_HIDE_ERROR_DETAILS=false` when those options are not set in code. With `hideErrorDetails: false` but outputs still hidden, thrown errors export fixed summaries such as `Codex Exec exited with code 1`, without a stack trace; failed turns use fixed labels such as `turn failed`.
+
+Opting into content can send source code, local paths, and secrets to Future AGI. Opting into error details can also send Codex stderr, provider error bodies, exception stack traces, and failed command or MCP output. Review your data policy before enabling either. The SDK still returns its original events and errors to your application regardless of the tracing settings.
+
+## Troubleshooting
+
+**No trace appears.** Pass `import * as CodexSDK` to `manuallyInstrument()`, and call `await shutdown(tracerProvider)` before a short script exits. If `register()` reports `FI_PROJECT_NAME is not set`, pass `projectName` or set that environment variable.
+
+**Item spans appear without their turn.** The turn ends and is exported after its items, so refresh the trace after the run finishes. Always consume `runStreamed()` to the end or close it with `break` or `events.return()`. Dropping an iterator partway leaves the turn unexported, even if some item spans have already been sent.
+
+**The turn is marked cancelled.** Breaking out of the stream before completion, closing the iterator early, or aborting with `TurnOptions.signal` marks the turn and open items `ERROR` with `codex.cancelled=true`. Consume the full stream, or let `run()` finish, to record a completed turn.
+
+**An error has no message.** Error details are hidden by default. Inspect the error returned to your application first. If you need to export it, use the two-setting opt-in in [Privacy](#privacy); `hideOutputs: false` alone is not enough.
+
+**A turn has no tokens or model.** Check for `codex.usage.baseline_unknown` as described in [Token usage](#token-usage). Failed or cancelled turns have no usage. For a model name, pass `model` in the thread options.
+
+See the [Codex SDK instrumentor source](https://github.com/future-agi/traceAI/tree/main/typescript/packages/traceai_codex_sdk) for the package API.

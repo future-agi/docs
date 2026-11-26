@@ -1,0 +1,105 @@
+---
+title: "BeeAI tracing with Future AGI"
+description: "Trace BeeAI tools and model calls with OpenInference and send them to Future AGI over OpenTelemetry. Migrate from traceai-beeai without a custom middleware."
+---
+
+Send BeeAI traces to an Observe project using BeeAI's [recommended OpenInference instrumentor](https://framework.beeai.dev/modules/observability) and the Future AGI tracer provider. You do not need `traceai-beeai`.
+
+## Install
+
+Use Python 3.11–3.13. This example uses these package versions:
+
+```bash
+pip install "beeai-framework==0.1.85" "openinference-instrumentation-beeai==0.1.31" "fi-instrumentation-otel==1.2.2"
+```
+
+## Set your credentials
+
+Create an API key and secret key in Future AGI, then set them in your application's environment:
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+# For a self-hosted deployment, set the origin, without /tracer/v1/traces:
+# export FI_BASE_URL="https://your-futureagi-host"
+```
+
+The default destination is Future AGI Cloud. `register()` configures OTLP/HTTP trace export and authentication; no separate exporter or global provider is needed.
+
+## Trace a tool
+
+Save this as `beeai_example.py`. The example runs a local tool without calling a model provider. Configure instrumentation once, before running BeeAI operations.
+
+```python
+import asyncio
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from fi_instrumentation.otel import SemanticConvention
+from openinference.instrumentation import TraceConfig, using_attributes
+from openinference.instrumentation.beeai import BeeAIInstrumentor
+
+provider = register(
+    project_name="beeai-agent",
+    project_type=ProjectType.OBSERVE,
+    semantic_convention=SemanticConvention.OPENINFERENCE,
+)
+instrumentor = BeeAIInstrumentor()
+instrumentor.instrument(
+    tracer_provider=provider,
+    config=TraceConfig(hide_inputs=True, hide_outputs=True),
+)
+
+from beeai_framework.tools import tool
+
+
+@tool
+def shipping_days(region: str) -> str:
+    """Estimate delivery time for a shipping region."""
+    return "3 business days" if region == "domestic" else "7 business days"
+
+
+async def main():
+    with using_attributes(session_id="shipping-session", user_id="example-user"):
+        result = await shipping_days.run({"region": "domestic"})
+        print(result.get_text_content())
+
+
+try:
+    asyncio.run(main())
+finally:
+    provider.force_flush()
+    instrumentor.uninstrument()
+    provider.shutdown()
+```
+
+```bash
+python beeai_example.py
+```
+
+In Future AGI, open **Observe**, select **beeai-agent**, and open the `shipping_days` tool trace. Model calls made through BeeAI's `ChatModel` are also instrumented; configure your model provider separately when you add one.
+
+`SemanticConvention.OPENINFERENCE` tells Future AGI how to interpret these spans. Keep it explicit rather than using the default Future AGI attribute convention.
+
+The example hides input and output content. To capture it, change both `TraceConfig` options to `False` after reviewing your data policy. Hiding content does not sanitize every metadata field or exception message; avoid putting secrets in session IDs, user IDs, metadata, or errors.
+
+## Migrate from traceai-beeai
+
+Replace the wrapper with the setup above, then remove `traceai-beeai` from your dependencies. Do not enable both instrumentors for the same BeeAI operations.
+
+| Previous API | Replacement |
+| --- | --- |
+| `configure_beeai_tracing(tracer_provider=provider)` | `BeeAIInstrumentor().instrument(tracer_provider=provider)` |
+| `BeeAIInstrumentorWrapper` | `openinference.instrumentation.beeai.BeeAIInstrumentor` |
+| Endpoint-only `configure_beeai_tracing(...)` | Create a provider with `register()` first; set `FI_BASE_URL` for a self-hosted Future AGI origin. |
+| `setup_traceai_exporter(...)` from `traceai_beeai._instrumentor` | Use `register()` for Future AGI export. For a custom OTLP destination, pass a standard `OTLPSpanExporter` as `register(span_exporter=...)`, with your endpoint and headers. |
+| Middleware `session_id` / `user_id` | Wrap the operation in `openinference.instrumentation.using_attributes(...)`, as above. |
+
+Existing `traceai-beeai==0.1.0` installations remain available on PyPI. If your application calls `TraceAIMiddleware.on_*`, `create_tracing_middleware()`, or attribute helpers directly, keep that pin until you replace those calls with standard OpenTelemetry spans or BeeAI's upstream instrumentation. These custom callbacks are not a drop-in match for OpenInference events. Preserve any custom attributes, exporter settings, and dashboards you depend on before uninstalling the package.
+
+## Troubleshooting
+
+- **No spans:** use the package versions above, call `.instrument()` before executing tools or model calls, and pass the provider returned by `register()`. Setting an OTLP endpoint environment variable alone does not create an exporter.
+- **Unexpected span fields:** confirm the provider uses `SemanticConvention.OPENINFERENCE`.
+- **Duplicate spans:** remove the old wrapper and custom tracing middleware for operations now handled upstream. Do not add another model instrumentor for the same BeeAI model calls.
+- **Missing final traces:** flush and shut down the provider when a short-lived process exits, as in the example.

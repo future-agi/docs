@@ -1,0 +1,159 @@
+---
+title: "FastMCP Python tracing"
+description: "Send native FastMCP client and server spans to Future AGI with OpenTelemetry, without a second instrumentor."
+---
+
+Trace Python FastMCP tool calls across client and server processes in Future AGI. FastMCP creates the spans and propagates their context; a standard OpenTelemetry provider exports them.
+
+This guide uses **FastMCP 4.1.x** and **Python 3.10 or later**. It covers the Python `fastmcp` package, not the unrelated TypeScript package. You do not need `traceAI-mcp`, a model API key, or an additional MCP instrumentation wrapper for this native route. For older or non-native MCP implementations, use the [generic MCP integration](/docs/integrations/traceai/mcp).
+
+## Install
+
+Create and activate a virtual environment, then install:
+
+```bash
+python -m pip install "fastmcp>=4.1.0,<4.2" opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+```
+
+## Configure tracing
+
+Set these variables in **both** the client and server environments. Get your keys from [API keys](/docs/admin-settings/api-keys).
+
+```bash
+export FI_API_KEY="your-api-key"
+export FI_SECRET_KEY="your-secret-key"
+export FI_PROJECT_NAME="fastmcp-calculator"
+export FASTMCP_TELEMETRY_MODE="native"
+```
+
+<Warning>
+Native spans can contain exception messages and stack traces, tool/prompt names, resource URIs, and authenticated identity metadata. Normal tool arguments and return values are not automatically captured by this setup, but they can appear in an exception. Keep secrets and personal data out of names, URIs and errors, or route through an OpenTelemetry Collector with your redaction policy before exporting. `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` and `FI_HIDE_ERROR_DETAILS` do not sanitize this standard OpenTelemetry route.
+</Warning>
+
+Save this standard exporter configuration as `tracing.py`:
+
+```python
+# tracing.py
+import os
+
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+provider = TracerProvider(
+    resource=Resource.create({
+        "service.name": "fastmcp-calculator",
+        "project_name": os.environ["FI_PROJECT_NAME"],
+        "project_type": "observe",
+    })
+)
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
+    endpoint=os.environ.get(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "https://api.futureagi.com/tracer/v1/traces",
+    ),
+    headers={
+        "X-Api-Key": os.environ["FI_API_KEY"],
+        "X-Secret-Key": os.environ["FI_SECRET_KEY"],
+    },
+)))
+trace.set_tracer_provider(provider)
+```
+
+`project_name` and `project_type` must be **resource attributes**. `service.name` alone does not select a Future AGI project. The exporter sends OTLP/HTTP protobuf to the full traces URL, with both authentication headers; do not point it at a gRPC port or a metrics/logs endpoint.
+
+For self-hosted Future AGI, set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to your deployment's full `/tracer/v1/traces` URL. Leave compression unset for uncompressed export. If your deployment accepts gzip, set `OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=gzip`.
+
+<Note>
+Use one global provider per process. If your application already configures OpenTelemetry, add this exporter to that provider instead of creating another one. Initialize it before starting the FastMCP client or server, and shut it down after the application finishes. Do not add a second MCP span-producing wrapper on top of native tracing.
+</Note>
+
+## Start a server
+
+Save `server.py` beside `tracing.py`:
+
+```python
+# server.py
+import asyncio
+import os
+
+from tracing import provider
+from fastmcp import FastMCP
+
+server = FastMCP("calculator")
+
+@server.tool
+def add(a: int, b: int) -> int:
+    """Add two integers."""
+    return a + b
+
+if __name__ == "__main__":
+    try:
+        server.run(
+            transport="http",
+            host="127.0.0.1",
+            port=int(os.environ.get("MCP_PORT", "8000")),
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        provider.shutdown()
+```
+
+```bash
+python server.py
+```
+
+The example binds only to loopback. Add [FastMCP authentication](https://gofastmcp.com/servers/auth/authentication) before exposing a server beyond your machine. Future AGI exporter credentials authenticate telemetry export, not MCP requests.
+
+## Call the tool
+
+Save `client.py` in the same directory. In a second terminal, activate the same virtual environment and set the same tracing variables, then run:
+
+```python
+# client.py
+import asyncio
+import os
+
+from tracing import provider
+from fastmcp import Client
+
+async def main():
+    port = int(os.environ.get("MCP_PORT", "8000"))
+    async with Client(f"http://127.0.0.1:{port}/mcp") as client:
+        result = await client.call_tool("add", {"a": 2, "b": 3})
+        print(result.data)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    finally:
+        provider.shutdown()
+```
+
+```bash
+python client.py
+```
+
+The client prints `5`. Stop the server with Ctrl+C when finished so its provider drains pending spans too.
+
+### Stdio or in-process clients
+
+The same provider configuration works with FastMCP's [stdio transport](https://gofastmcp.com/clients/transports) and `Client(server)` in-process clients. A stdio server is a separate process: configure its provider and pass its tracing environment explicitly. Keep stdout reserved for the MCP protocol. An in-process client and server share **one** provider; do not initialize it twice.
+
+## View the trace
+
+Open **Observe**, select **fastmcp-calculator**, and find the `tools/call add` spans. The client operation and server execution belong to the same trace. The MCP SDK can also create intermediate transport spans; those are not additional tool executions.
+
+Inspect native attributes such as `mcp.method.name`, `gen_ai.tool.name` and `fastmcp.server.name`. Native MCP spans do not set a Future AGI span-kind label, so they can appear with an **Unknown** type; inspect their names and attributes to identify tool executions. These are operation spans, not model usage spans: FastMCP does not infer token counts, model costs or tool input/output panels. Instrument model clients separately when you need model telemetry.
+
+`mcp.session.id` identifies an MCP transport session where available; it is **not** a Future AGI conversation grouping key. If your application needs conversation grouping, set `session.id` or `gen_ai.conversation.id` on the application spans that represent that conversation. Do not rename an MCP transport ID into an end-user conversation ID.
+
+## Troubleshooting
+
+- **No native spans:** check that the SDK is installed, the provider is registered before requests, and `FASTMCP_TELEMETRY_MODE` is `native`. `propagation_only` forwards context without creating FastMCP spans; `off` disables FastMCP's own spans and context handling. MCP SDK or HTTP instrumentation can still emit its own spans.
+- **Only one side of the call appears:** configure the provider and exporter in both processes, using the same project name. A client exporter cannot export a remote server's spans.
+- **Export fails or the project is missing:** check the full traces endpoint, both key headers and the resource attributes. Give the process time to shut down cleanly; a forced kill cannot drain a batch queue.
+- **Duplicate operation spans:** remove overlapping MCP instrumentation. If another tracing stack owns your MCP operation spans, use FastMCP's `propagation_only` mode instead of its native mode.

@@ -1,19 +1,18 @@
-# Ruby LLM with Future AGI
+# RubyLLM legacy regression fixture
 
-Runnable companion to the page `docs/integrations/frameworks/ruby-llm`.
+For application setup, use the [native RubyLLM integration guide](https://docs.futureagi.com/docs/integrations/frameworks/ruby-llm). This directory retains the old 1.x implementation for regression tests; it is not a maintained, installable integration package or a replacement for the native setup.
 
-- `futureagi_tracing.rb` is the whole integration: OpenTelemetry SDK + OTLP/HTTP exporter (both auth headers, `project_name` resource attribute, no gzip), the `opentelemetry-instrumentation-ruby_llm` instrumentation, and a `SanitizingExporter` that keeps spans metadata-only unless `FI_CAPTURE_CONTENT=1`.
-- `app.rb` is a demo with six scenarios: `chat`, `stream`, `tool`, `agent`, `session`, `error`.
-- `test/` runs with a WebMock stand-in for the model (canned OpenAI-shaped replies, NOT a real model) and a WebMock stand-in for Future AGI (the real OTLP exporter posts to it). No network needed.
-- `run_e2e.sh` installs the gems, runs the tests, then runs the scenarios against a real model and a real Future AGI, once metadata only and once with the opt-in.
+The earlier helper trusted entire `gen_ai.request.*`, `gen_ai.response.*` and `gen_ai.usage.*` namespaces, allowing custom attributes to export content without opt-in. The retained fixture now allows only the exact span-attribute names in `METADATA_ATTRIBUTES`. It still drops events and, in metadata-only mode, error status descriptions. This is not a secret scanner: values of allowed attributes, span names, resource attributes and other instrumentation remain application-owned. Content opt-in keeps arbitrary span attributes.
 
-Tested: `ruby_llm` 1.16.0 and 1.15.0 with `opentelemetry-instrumentation-ruby_llm` 0.7.1, Ruby 3.2.2 and 3.4.11. `ruby_llm` 2.x is not supported by that instrumentation (it raises `NoMethodError` on `model_id`); `RUBY_LLM_VERSION=2.1.1 bundle install` reproduces it.
+Do not remove the sanitizer from an exporting legacy installation. Follow the guide's instructions to disable legacy tracing until you can migrate to native tracing or use a maintained privacy-filtering package. This fixture does not supply that package.
+
+## Run the regression tests
+
+Use Ruby 3.2 or newer. The fixture covers RubyLLM 1.15.0 and 1.16.0 with third-party instrumentation 0.7.1; that instrumentation does not support RubyLLM 2.x.
 
 ```bash
-export FI_API_KEY=... FI_SECRET_KEY=... OPENAI_API_KEY=...
-# self-hosted Future AGI / OpenAI-compatible endpoint:
-# export FI_BASE_URL=http://localhost:4318 OPENAI_API_BASE=http://127.0.0.1:8317/v1 MODEL_ID=my-model
-./run_e2e.sh
+bundle install
+bundle exec rake test
 ```
 
-Needs Ruby 3.2 or newer on PATH. Knobs: `RUBY_LLM_VERSION` (default 1.16.0), `SCENARIOS`, `SKIP_TESTS=1`, `FI_PROJECT_NAME`, `MARKER`.
+Set `RUBY_LLM_VERSION=1.15.0` for the older compatibility leg. The tests use synthetic data and WebMock for both model requests and OTLP export. Native 2.1 tests live in `scripts/ruby-llm-native.test.rb` at the repository root. The historical `app.rb` and `run_e2e.sh` are not the current customer setup.

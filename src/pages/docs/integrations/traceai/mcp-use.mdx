@@ -1,0 +1,173 @@
+---
+title: "Trace mcp-use agents with Future AGI"
+description: "Trace Python mcp-use agent runs, model calls and MCP tool calls with the traceAI-mcp-use callback."
+---
+
+Use the maintained `traceAI-mcp-use` package to send [mcp-use](https://pypi.org/project/mcp-use/) agent runs to Future AGI. Pass `FutureAGICallback` to `MCPAgent` to capture an agent span with model and MCP tool calls as children, without patching your application.
+
+## Prerequisites
+
+- Python 3.11–3.13.
+- Future AGI API and secret keys from your account.
+- An OpenAI API key for the example, or another LangChain chat model with its own provider credentials.
+
+## 1. Install
+
+```bash
+pip install "traceAI-mcp-use==0.1.1" "mcp-use==1.7.1" "langchain-openai==1.7.2"
+```
+
+The callback requires `mcp-use>=1.7.1,<2`, `langchain-core>=1.6.12,<2` and `fi-instrumentation-otel>=1.1.0`; pip installs these dependencies. The example pins mcp-use 1.7.1. `langchain-openai` supplies the example's chat model.
+
+## 2. Set environment variables
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export OPENAI_API_KEY="YOUR_OPENAI_KEY"
+```
+
+<Note>
+Prompts, model output and tool content are captured by default. To exclude them, set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before running the application. See [Content and privacy](#content-and-privacy) for the scope of these controls.
+</Note>
+
+## 3. Create a calculator server
+
+Save this as `calculator_server.py`. This small application uses the MCP Python SDK installed with mcp-use; it is not tracing code.
+
+```python
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("calculator")
+
+
+@mcp.tool()
+def add(a: int, b: int) -> str:
+    """Add two integers."""
+    return str(a + b)
+
+
+if __name__ == "__main__":
+    mcp.run("stdio")
+```
+
+## 4. Register and pass the callback
+
+Save this as `agent.py` next to `calculator_server.py`. The client starts the server as a subprocess over stdio; you do not need to start it separately.
+
+```python
+import asyncio
+import sys
+from pathlib import Path
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from langchain_openai import ChatOpenAI
+from mcp_use import MCPAgent, MCPClient
+from traceai_mcp_use import FutureAGICallback
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="my-mcp-use-agent",
+)
+server = str(Path(__file__).resolve().with_name("calculator_server.py"))
+
+
+async def main():
+    client = MCPClient.from_dict(
+        {"mcpServers": {"calculator": {"command": sys.executable, "args": [server]}}}
+    )
+    try:
+        agent = MCPAgent(
+            llm=ChatOpenAI(model="gpt-4o-mini"),
+            client=client,
+            callbacks=[FutureAGICallback(tracer_provider=trace_provider)],
+        )
+        print(await agent.run("What is 2 + 3? Use the add tool."))
+    finally:
+        await client.close_all_sessions()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    finally:
+        trace_provider.shutdown()
+```
+
+Run the agent from the directory containing both files:
+
+```bash
+python agent.py
+```
+
+Pass the provider returned by `register()` to the callback: registration does not set the global provider by default. One callback can serve multiple agents and concurrent runs. For long-running applications, call `trace_provider.force_flush()` when you need pending spans exported; shut down the provider only when the application exits.
+
+## 5. View the trace
+
+Open **Observe** in Future AGI, select **my-mcp-use-agent**, and open the latest trace. Expand `mcp_use.agent` to see the model calls and `execute_tool add` span. The tool result is `5`; token usage appears on the LLM spans, not on the agent span.
+
+## What is captured
+
+| Span | Name | Captures |
+|---|---|---|
+| Agent | `mcp_use.agent` | One span per `run()`, `stream()` or `stream_events()` call; query, final answer and model/tool/error counts |
+| LLM | `chat <model>` | Model, provider, request settings, finish reasons, messages and reported token usage |
+| Tool | `execute_tool <tool>` | Tool name, tool-call ID, arguments and result |
+
+LLM and tool spans are children of the agent span. LangGraph nodes and middleware do not produce spans, so tool spans are siblings of the model calls that requested them. The agent span uses the current span as its parent, or starts a new trace if none is current.
+
+A streamed completion produces one LLM span. Its first 128 chunk events contain indexes, not token text; `mcp_use.llm.chunk_count` records the full count. Content is capped at 4 KB per value, with up to 32 input messages per LLM span. Costs are not emitted, and unavailable usage values are omitted.
+
+Use the [traceAI context helpers](/docs/sdk/tracing/context-helpers) for sessions, users, metadata and tags. For example, inside your async function before closing the client:
+
+```python
+from fi_instrumentation import using_session, using_user
+
+with using_session("chat-123"), using_user("user-1"):
+    await agent.run("What is 2 + 3?")
+```
+
+## Errors
+
+- **Failed tool call:** the tool span ends `ERROR` with an exception event. mcp-use 1.7.1 returns the error to the model, so the agent can still finish `OK`. Check `mcp_use.agent.tool_error_count` for these failures.
+- **Failed model call or run:** the affected spans end `ERROR`, and the exception reaches your application unchanged.
+- **Cancellation or early stream exit:** open spans end `ERROR` with description `cancelled` and `mcp_use.cancelled=true`.
+
+Error status descriptions include the exception message by default. Setting either `FI_HIDE_INPUTS` or `FI_HIDE_OUTPUTS` restricts error details to the exception type.
+
+## Content and privacy
+
+Set these before creating the callback to exclude prompts, messages, model output, tool arguments, tool results and error messages:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
+```
+
+With both flags enabled, `input.value` and `output.value` are `__REDACTED__`. Spans retain names, kinds, model, tokens, counts and statuses. You can also pass `config=TraceConfig(hide_inputs=True, hide_outputs=True)` to `FutureAGICallback` after importing `TraceConfig` from `fi_instrumentation`.
+
+mcp-use keeps conversation memory by default. `FI_HIDE_OUTPUTS` also hides earlier model replies and tool results replayed as input on later turns. Hidden text matching does not cover every transformed or reworded copy; avoid placing sensitive content in names or custom metadata.
+
+The callback removes Python tracebacks, recognized local paths, and matching local user/host names from its text. It redacts known secret values of at least eight characters from credential-like environment variables and `FutureAGICallback(redact=[...])`, plus common credential patterns. These filters are not a guarantee of detecting arbitrary secrets. Use the hide flags for sensitive payloads, and `FI_PII_REDACTION=true` for supported PII patterns.
+
+<Note>
+mcp-use's console logs are separate from exported spans and can contain queries, tool results and error tracebacks. `from mcp_use import Logger; Logger.set_debug(0)` suppresses INFO output. To suppress its error output too, use `import logging; logging.getLogger("mcp_use").setLevel(logging.CRITICAL)`. Set `MCP_USE_ANONYMIZED_TELEMETRY=false` to disable mcp-use's separate usage telemetry.
+</Note>
+
+## Related integrations and limits
+
+- Use [MCP](/docs/integrations/traceai/mcp) for transport-level context propagation, rather than the agent loop documented here.
+- Do not also instrument the same agent with [traceAI-langchain](/docs/integrations/traceai/langchain): it creates a second model/tool tracing tree.
+- Pass `callbacks=[]` to disable callbacks. Leaving `callbacks=None` can activate mcp-use's default Langfuse handler when Langfuse is configured. If you also use Laminar, `MCP_USE_LAMINAR=false` disables mcp-use's separate Laminar integration.
+- This callback covers local Python agents, not TypeScript agents or remote `MCPAgent(agent_id=...)` runs.
+- With `use_server_manager=True`, graph restarts produce separate agent traces. Server-manager tool errors can appear as `OK` tool spans with an error result; inspect those results rather than relying on status alone.
+- The final formatting model call made with `output_schema` does not receive callbacks and has no span.
+- Callback spans are not made current during execution. Instrumentation inside a tool, such as an HTTP client, does not automatically become a child of the tool span.
+
+## Troubleshooting
+
+- **No traces:** check your Future AGI keys, project name and `tracer_provider` argument. Flush pending spans in long-running applications, or shut down the provider when the application exits.
+- **Calculator cannot start:** keep `calculator_server.py` next to `agent.py` and use the Python environment where you installed the packages.
+- **Duplicate trees:** remove `traceAI-langchain` instrumentation for this agent and check for another configured tracing integration.
+- **Content missing:** check `FI_HIDE_*` variables and `TraceConfig` flags.

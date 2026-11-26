@@ -67,7 +67,7 @@ def test_request_shape_matches_the_collector_contract(run_app, collector):
     assert collector.exports, "nothing exported"
     for export in collector.exports:
         assert export["path"] == "/tracer/v1/traces", "traces only, on the documented path"
-        assert export["headers"].get("content-encoding") in (None, "identity"), "the collector refuses gzip"
+        assert export["headers"].get("content-encoding") in (None, "identity"), "the recipe sends uncompressed bodies"
         assert export["headers"]["x-api-key"] == FI_API_KEY
         assert export["headers"]["x-secret-key"] == FI_SECRET_KEY
         assert "authorization" not in export["headers"]
@@ -109,7 +109,9 @@ def test_tool_exception_does_not_fail_the_tool_span(run_app, collector):
     spans = spans_of(collector)
     _, _, tools = tree(spans)
     assert tools[0]["status"]["code"] == "STATUS_CODE_OK"
-    assert "ToolResultState.ERROR" in tools[0]["_attrs"]["gen_ai.tool.call.result"]
+    result = tools[0]["_attrs"]["gen_ai.tool.call.result"]
+    # 2.0.11 and later serialize the error result as JSON; 2.0.10 and earlier as a repr.
+    assert '"state": "error"' in result or "ToolResultState.ERROR" in result, result
     assert not tools[0].get("events")
 
 

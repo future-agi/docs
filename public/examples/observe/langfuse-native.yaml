@@ -1,0 +1,95 @@
+# Native Langfuse-style attributes -> Future AGI, without creating spans.
+# Run with otelcol-contrib 0.164.0 on the SAME HOST as the instrumented app.
+# The loopback hop can contain error text. Only the outgoing batch is scrubbed.
+# Required: FI_TRACES_ENDPOINT (full URL), FI_API_KEY, FI_SECRET_KEY.
+# Optional: FI_PROJECT_NAME, FI_CAPTURE_CONTENT (literal "true" to opt in),
+#           FI_OTLP_LISTEN (keep loopback unless you secure the receiver).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: ${env:FI_OTLP_LISTEN:-127.0.0.1:4318}
+
+processors:
+  # Fail closed: transformation errors must not forward unprocessed content.
+  transform/native:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["project_name"], "${env:FI_PROJECT_NAME:-everos-memory}") where attributes["project_name"] == nil or attributes["project_name"] == ""
+          - set(attributes["project_type"], "observe")
+      - context: span
+        statements:
+          # Preserve canonical fields from other instrumentors. Unknown native
+          # types remain unclassified instead of guessing a model/tool call.
+          - set(attributes["gen_ai.span.kind"], "LLM") where attributes["gen_ai.span.kind"] == nil and attributes["langfuse.observation.type"] == "generation"
+          - set(attributes["gen_ai.span.kind"], "CHAIN") where attributes["gen_ai.span.kind"] == nil and attributes["langfuse.observation.type"] == "span"
+          - set(attributes["gen_ai.span.kind"], "EMBEDDING") where attributes["gen_ai.span.kind"] == nil and attributes["langfuse.observation.type"] == "embedding"
+          - set(attributes["gen_ai.span.kind"], "RETRIEVER") where attributes["gen_ai.span.kind"] == nil and attributes["langfuse.observation.type"] == "retriever"
+          - set(attributes["gen_ai.span.kind"], "AGENT") where attributes["gen_ai.span.kind"] == nil and attributes["langfuse.observation.type"] == "agent"
+          - set(attributes["gen_ai.span.kind"], "TOOL") where attributes["gen_ai.span.kind"] == nil and attributes["langfuse.observation.type"] == "tool"
+          - set(attributes["session.id"], attributes["langfuse.session.id"]) where attributes["session.id"] == nil and attributes["langfuse.session.id"] != nil
+          - set(attributes["user.id"], attributes["langfuse.user.id"]) where attributes["user.id"] == nil and attributes["langfuse.user.id"] != nil
+          - set(attributes["tag.tags"], attributes["langfuse.trace.tags"]) where attributes["tag.tags"] == nil and attributes["langfuse.trace.tags"] != nil
+          - set(attributes["input.value"], attributes["langfuse.observation.input"]) where attributes["input.value"] == nil and attributes["langfuse.observation.input"] != nil
+          - set(attributes["output.value"], attributes["langfuse.observation.output"]) where attributes["output.value"] == nil and attributes["langfuse.observation.output"] != nil
+          # Consume mapped aliases so a downstream normalizer cannot overwrite
+          # canonical fields. Keep unknown types for diagnosis.
+          - delete_key(attributes, "langfuse.observation.type") where attributes["gen_ai.span.kind"] != nil
+          - delete_key(attributes, "langfuse.session.id") where attributes["session.id"] != nil
+          - delete_key(attributes, "langfuse.user.id") where attributes["user.id"] != nil
+          - delete_key(attributes, "langfuse.trace.tags") where attributes["tag.tags"] != nil
+          # Remove the source content aliases too: hiding only the normalized
+          # values would leave the same content in raw attributes.
+          - delete_key(attributes, "langfuse.observation.input")
+          - delete_key(attributes, "langfuse.observation.output")
+          - delete_key(attributes, "input.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "output.value") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "input.mime_type") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          - delete_key(attributes, "output.mime_type") where "${env:FI_CAPTURE_CONTENT:-false}" != "true"
+          # The error status code and exception.type remain useful without text.
+          - set(status.message, "")
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+          - delete_key(attributes, "error.message")
+          - delete_key(attributes, "error.stack")
+          - delete_key(attributes, "langfuse.observation.status_message")
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+          - delete_key(attributes, "error.message")
+          - delete_key(attributes, "error.stack")
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+    send_batch_max_size: 512
+
+exporters:
+  otlp_http/futureagi:
+    traces_endpoint: ${env:FI_TRACES_ENDPOINT}
+    compression: none
+    headers:
+      X-Api-Key: ${env:FI_API_KEY}
+      X-Secret-Key: ${env:FI_SECRET_KEY}
+  nop: {}
+
+service:
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/native, batch]
+      exporters: [otlp_http/futureagi]
+    # Future AGI accepts traces, not OTLP logs or metrics.
+    logs:
+      receivers: [otlp]
+      exporters: [nop]
+    metrics:
+      receivers: [otlp]
+      exporters: [nop]

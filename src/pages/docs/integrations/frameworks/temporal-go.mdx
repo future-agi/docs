@@ -1,0 +1,96 @@
+---
+title: "Trace Temporal Go workflows"
+description: "Send Temporal Go workflow and activity spans to Future AGI with Temporal's OpenTelemetry interceptor and an OTLP/HTTP exporter."
+---
+
+Temporal's [official Go OpenTelemetry extension](https://pkg.go.dev/go.temporal.io/sdk/contrib/opentelemetry) traces workflow and activity execution. Send those spans to Future AGI to follow an execution across the starter and worker processes. For the Python SDK, see [Temporal Python tracing](/docs/integrations/frameworks/temporal).
+
+The interceptor creates `StartWorkflow`, `RunWorkflow`, `StartActivity`, and `RunActivity` spans; it propagates the W3C trace context through Temporal headers. Model and tool spans belong in activities and require instrumentation for the library you use. This guide exports **traces only**, not Temporal metrics or logs. See the [runnable Go example](https://github.com/future-agi/docs/tree/main/examples/frameworks/temporal-go) for complete source and an OTLP receiver test.
+
+<Warning>
+Workflow IDs, activity names, baggage and exception messages may appear in exported traces. Keep credentials and personal data out of these values; remove or redact sensitive attributes before export if your application requires it.
+</Warning>
+
+## Set up
+
+<Steps>
+
+<Step title="Install the Go SDK and its OpenTelemetry extension">
+
+In your application module, install the [independently versioned extension](https://github.com/temporalio/sdk-go/tree/main/contrib/opentelemetry):
+
+```bash
+go get go.temporal.io/sdk@v1.46.0 go.temporal.io/sdk/contrib/opentelemetry@v0.8.1
+go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.43.0
+```
+
+This example uses the extension's declared SDK dependency (`v1.46.0`). Use Go 1.25.4 or later; the latest SDK may require a newer Go toolchain. These modules can be updated independently.
+</Step>
+
+<Step title="Configure OTLP/HTTP export">
+
+Create an OTLP trace exporter and a tracer provider with a **resource** attribute named `project_name`. Put both Future AGI credentials in exporter request headers, not span attributes. The following is excerpted from [`main.go`](https://github.com/future-agi/docs/blob/main/examples/frameworks/temporal-go/main.go):
+
+```go
+exporter, err := otlptracehttp.New(ctx,
+    otlptracehttp.WithEndpointURL("https://api.futureagi.com/tracer/v1/traces"),
+    otlptracehttp.WithHeaders(map[string]string{
+        "X-Api-Key": os.Getenv("FI_API_KEY"),
+        "X-Secret-Key": os.Getenv("FI_SECRET_KEY"),
+    }),
+)
+if err != nil { return err }
+provider := sdktrace.NewTracerProvider(
+    sdktrace.WithResource(resource.NewWithAttributes("",
+        attribute.String("project_name", os.Getenv("FI_PROJECT_NAME")),
+        attribute.String("project_type", "observe"),
+        attribute.String("service.name", "temporal-go-example"),
+    )),
+    sdktrace.WithBatcher(exporter),
+)
+defer provider.Shutdown(context.Background())
+```
+
+Use the same project name in starter and worker. The example's `provider` function checks for missing keys and project name before connecting. Shut down the provider after the worker stops or the starter completes so batched spans are exported.
+</Step>
+
+<Step title="Attach Temporal's tracing interceptor">
+
+Pass the provider's tracer to the official extension and attach the interceptor to the Temporal client **in each process**:
+
+```go
+tracing, err := temporalotel.NewTracingInterceptor(
+    temporalotel.TracerOptions{Tracer: provider.Tracer("temporal-sdk-go")},
+)
+if err != nil { return err }
+c, err := client.Dial(client.Options{
+    HostPort: os.Getenv("TEMPORAL_ADDRESS"),
+    Interceptors: []interceptor.ClientInterceptor{tracing},
+})
+if err != nil { return err }
+defer c.Close()
+```
+
+A worker created from this client inherits its interceptor; do not register the same interceptor on the worker again. The extension's default propagator handles W3C `traceparent` and baggage. When an activity also creates OTel spans, use this provider for its instrumentor so they join the activity trace. Keep network calls and model instrumentation out of replayed workflow code.
+</Step>
+
+<Step title="Run a workflow">
+
+Start a [Temporal development server](https://docs.temporal.io/cli/server#start-dev) or set `TEMPORAL_ADDRESS` for your cluster. From the [example directory](https://github.com/future-agi/docs/tree/main/examples/frameworks/temporal-go):
+
+```bash
+export FI_API_KEY=... FI_SECRET_KEY=... FI_PROJECT_NAME=temporal-go-demo
+go run . worker          # terminal 1
+go run . starter Ada     # terminal 2, with the same FI_* values
+```
+
+The sample activity returns `Hello, Ada` without calling a model. Open **Observe** in the `temporal-go-demo` project to inspect the workflow and activity spans. Instrument the model client inside your own activity to add model spans under `RunActivity`.
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+- **No spans:** Check the exporter endpoint, both key headers, and the `project_name` **resource** attribute in each process. `service.name` does not select an Observe project.
+- **Separate traces:** Configure the interceptor on the starter's client and the worker's client. A workflow started by a process without the interceptor cannot carry its parent trace context.
+- **Duplicate spans:** Do not also attach the same tracing interceptor to the worker, or add a second exporter for the same provider.

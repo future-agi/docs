@@ -1,6 +1,7 @@
 // Regressions adapted from verify-scripts/{acceptance,matrix,race-proof}.cjs.
 // Run against the actual built docs shell, never a standalone logo atlas.
 const { chromium } = require('playwright');
+const { createDocsContext } = require('./docs-browser.cjs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
@@ -55,7 +56,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
   const manifest = JSON.parse(await fs.readFile(path.join(__dirname, '../public/images/integrations/manifest.json')));
   const browser = await chromium.launch({ headless: true });
   for (const width of [1440, 768, 390, 375]) {
-    const context = await browser.newContext({ viewport: { width, height: 1000 }, colorScheme: 'dark', reducedMotion: 'reduce' });
+    const context = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 }, colorScheme: 'dark', reducedMotion: 'reduce' });
     const page = await context.newPage();
     await record(`F1 logo navigation unobscured and scrollable ${width}`, async () => {
       await page.goto(BASE + '/docs/integrations', { waitUntil: 'networkidle' });
@@ -89,7 +90,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
     await record(`F4 slow uncached navigation cannot inherit pending query ${width}`, async () => {
       // New context ensures no FastNav/prefetch cache. Hold the network response
       // for 1s exactly as the independent real-fill/real-click reproduction did.
-      const c = await browser.newContext({ viewport: { width, height: 1000 } });
+      const c = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 } });
       try {
         const p = await c.newPage(), href = '/docs/integrations/traceai/anthropic';
         await p.route('**' + href, async r => { await new Promise(resolve => setTimeout(resolve, 1000)); await r.continue(); });
@@ -113,7 +114,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
       } finally { await c.close(); }
     });
     for (const javaScriptEnabled of [true, false]) await record(`F5 legacy fragments ${width} JS=${javaScriptEnabled}`, async () => {
-      const c = await browser.newContext({ viewport: { width, height: 1000 }, javaScriptEnabled });
+      const c = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 }, javaScriptEnabled });
       try {
         const p = await c.newPage(), rows = [];
         for (const [fragment, target] of Object.entries({ traceai: 'directory-setup', 'llm-models': 'providers', 'orchestration-frameworks': 'frameworks', other: 'apps', 'import-traces': 'import', 'export--alerts': 'export' })) {
@@ -145,7 +146,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
     });
     if (width < 1024) for (const cached of [false, true]) for (const href of ['/docs/integrations/traceai/bedrock', '/docs', '/docs/cookbook', '/docs/sdk', '/docs/api']) {
       await record(`F2 mobile dismissal ${width} ${cached ? 'cached' : 'uncached'} ${href}`, async () => {
-        const c = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
+        const c = await createDocsContext(browser, BASE,{ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
         try {
           const p = await c.newPage(); let permit = false, actualRequests = 0;
           await p.route('**' + href, async route => {
@@ -196,7 +197,7 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
       const source = await fs.readFile(path.join(__dirname, '../public', asset.file), 'utf8');
       if (source.includes('prefers-color-scheme')) rows.push({ key, tile: asset.tile });
     }
-    const c = await browser.newContext({ colorScheme: 'dark' });
+    const c = await createDocsContext(browser, BASE,{ colorScheme: 'dark' });
     try {
       const p = await c.newPage(); await p.goto(BASE + '/docs/integrations', { waitUntil: 'networkidle' });
       for (const row of rows) {
@@ -218,6 +219,39 @@ function luminance(rgb) { return rgb.map(v => v / 255).map(v => v <= 0.04045 ? v
       assert.ok(overview.includes(entry.method), entry.id + ' method');
     }
     return { overview: true, entries: integrations.length };
+  });
+  await record('RAGFlow customer guide renders native settings and pinned build', async () => {
+    const context = await createDocsContext(browser, BASE, { viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+    try {
+      const page = await context.newPage();
+      const response = await page.goto(BASE + '/docs/integrations/no-code/ragflow', { waitUntil: 'networkidle' });
+      assert.equal(response.status(), 200);
+      assert.equal((await page.locator('h1').innerText()).trim(), 'RAGFlow');
+      const text = await page.locator('body').innerText();
+      assert.ok(text.includes('Configure trace export'));
+      assert.ok(text.includes('avatar menu → API'));
+      assert.ok(text.includes('Upstream status:'));
+      assert.ok(text.includes('under review'));
+      assert.equal(await page.locator('blockquote a[href="https://github.com/infiniflow/ragflow/pull/22183"]').count(), 1);
+      assert.ok(text.includes('ALLOW_ANY_HOST=true'));
+      assert.ok(text.includes('deployment-wide'));
+      assert.ok(text.includes('Provider error bodies are never exported'));
+      assert.ok(text.includes('plaintext database columns'));
+      assert.ok(text.includes('ragflow.retrieval'));
+      assert.doesNotMatch(text, /Verified development scope|fork-only prototype|Required before an installation guide/i);
+      const build = page.locator('pre').filter({ hasText: 'docker buildx build' });
+      assert.equal(await build.count(), 1);
+      assert.ok((await build.innerText()).includes('9b2bcb1d1864c75e35ed7d06d3e750725547290e'));
+      assert.ok((await build.innerText()).includes('tag v1.0.0'));
+      assert.ok((await build.innerText()).includes('https://registry.npmjs.org'));
+      for (const target of ['go-builder', 'web-builder', 'production']) {
+        assert.ok((await build.innerText()).includes(`--target ${target}`));
+      }
+      assert.ok(text.includes('Infinity v0.7.5'));
+      assert.equal(await page.locator('table').count(), 1);
+      await page.screenshot({ path: path.join(OUT, 'ragflow-customer-guide.png'), fullPage: true });
+      return { pathname: new URL(page.url()).pathname, settingsTable: true, pinnedBuild: true };
+    } finally { await context.close(); }
   });
   await browser.close();
   console.log(JSON.stringify({ tests: results.length, failed: results.filter(r => r.status === 'FAIL').length }));

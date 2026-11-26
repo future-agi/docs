@@ -102,6 +102,22 @@ class RecipeTest < Minitest::Test
     refute attrs.key?("custom.note")
   end
 
+  def test_metadata_namespaces_do_not_allow_arbitrary_content
+    FakeOpenAI.stub_chat(FakeOpenAI.completion(content: "ok"))
+    private_attributes = {
+      "gen_ai.request.parameters" => JSON.generate(api_key: "SYNTHETIC_PRIVATE_KEY", prompt: "SYNTHETIC_PRIVATE_PROMPT"),
+      "gen_ai.response.content" => "SYNTHETIC_PRIVATE_RESPONSE",
+      "gen_ai.usage.details" => "SYNTHETIC_PRIVATE_USAGE",
+      "gen_ai.request.model.extra" => "SYNTHETIC_PRIVATE_SUFFIX"
+    }
+    new_chat.with_otel_attributes(private_attributes).ask("hi")
+    spans = finished
+    private_attributes.each_key { |key| refute spans.first.attributes.key?(key), "exported #{key}" }
+    refute_includes all_text(spans), "SYNTHETIC_PRIVATE"
+    assert_equal "fake-model", spans.first.attributes["gen_ai.request.model"]
+    assert_equal 11, spans.first.attributes["gen_ai.usage.input_tokens"]
+  end
+
   def test_no_credentials_or_paths_on_any_span
     FakeOpenAI.stub_chat(FakeOpenAI.completion(content: "ok"))
     new_chat.ask("hi")

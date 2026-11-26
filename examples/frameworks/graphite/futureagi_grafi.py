@@ -197,7 +197,7 @@ def create_tracer_provider(
     exporter = OTLPSpanExporter(
         endpoint=f"{base_url}/tracer/v1/traces",
         headers={"X-Api-Key": api_key, "X-Secret-Key": secret_key},
-        compression=Compression.NoCompression,  # the Future AGI collector refuses gzip
+        compression=Compression.NoCompression,  # optional: Future AGI cloud and self-hosted v1.56.0+ also accept gzip
     )
     provider = TracerProvider(
         resource=Resource.create({"project_name": project_name, "project_type": "observe"})

@@ -12,7 +12,7 @@ Tested with `aigw` v1.2.0 (standalone CLI). No Kubernetes files here were applie
 | `tests/test_contract.py` | Offline: assertions on spans recorded from a real `aigw` v1.2.0 run (`tests/fixtures/`) |
 | `tests/record_fixtures.sh` | Re-records the fixtures against a local capture server |
 | `tests/scan_local_stack.py` | Scans all stored columns of a local self-hosted stack for a marker |
-| `k8s/` | `GatewayConfig` (v1beta1) and Helm values. UNVERIFIED on a cluster |
+| `k8s/` | `GatewayConfig` (v1beta1) and Helm values. not yet run on a cluster |
 
 ## Run
 

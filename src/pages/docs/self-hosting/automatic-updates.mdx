@@ -1,0 +1,265 @@
+---
+title: "Automatic updates"
+description: "Opt in to host-managed Standalone updates, choose a maintenance window, inspect status, and understand backups, restore limits and recovery."
+---
+
+## About
+
+Automatic updates let a supported Standalone installation check for signed releases and apply qualified updates during a maintenance window. They are off by default. You authorize them once on the Docker host, not in the app.
+
+<Note>
+Use a released version that includes automatic updates; consult the [release notes](https://github.com/future-agi/future-agi/releases) for availability before using these commands. Checking out `dev`, or merging the implementation, does not make an installation eligible. Automatic apply requires both a release containing the feature and published, signed proof for your exact upgrade and restore.
+</Note>
+
+You can keep using [manual upgrades](/docs/self-hosting/production/upgrades-rollback). Releases without usable proof stay notify-only even when you select `apply`.
+
+<Warning>
+An automatic update stops Future AGI for a cold backup and startup, including database migrations. Expect downtime, usually several minutes and longer for large databases. A restore can discard writes accepted by the candidate version, reset in-flight jobs and Redis cache, and cannot undo calls already made to webhooks or model providers. Some failures require manual recovery.
+</Warning>
+
+## Before you opt in
+
+Use the installation checkout from a released version that includes this feature. Run commands from that checkout as its original host user. Check the normal [host requirements](/docs/self-hosting/requirements) and these additional restrictions:
+
+| Requirement | Supported configuration |
+|---|---|
+| Installation | Base Standalone with `app`, `postgres` and `clickhouse`, using published images whose running digests match their signed release manifest. No `--from-source` builds, Distributed, production overlay or Helm |
+| Layout | Shipped deployment files, no `ml` or `sandbox` profile, no extra service, volume or mount, and no build section. Restart policies must be `unless-stopped` or `no`, not `always` or `on-failure` |
+| Host tools | Python 3.9+, Docker Compose v2.24+ (not v2.25.0), and **host** `cosign` v3+ on the original user's `PATH` |
+| Scheduler | A running cron daemon, or an already usable systemd manager. A systemd user manager needs lingering enabled beforehand |
+| `.env` target and preserving-commit storage | An ordinary user-owned file on local **ext4 (Linux) or APFS (macOS)**, with native atomic exchange, hard links and durable file/directory sync. Private commit storage lives beside the canonical `.env` target, not in the cold-backup destination |
+| Docker storage for `download` and `apply` | A local Linux Docker daemon on its Unix socket, with measurable overlay2 storage or Docker's containerd image store at its default paths. Docker Desktop, other VM-backed contexts and remote contexts are refused |
+| Backup destination for `apply` | Private local storage on ext4 or APFS, outside the checkout, build contexts and bind mounts, with room for full backups and protected restore capacity |
+
+The `.env`, backup and Docker-storage requirements are separate. An ext4 backup destination does not make `.env` on XFS or Btrfs supported. Setup needs preserving commits when normalizing empty/`latest` pins; already-pinned installations still need them when an update changes versions. See the [env-commit restrictions](https://github.com/future-agi/future-agi/blob/dev/deploy/update/README.md#env-commit-and-private-retention) for ownership and file-metadata limits. APFS support for `.env` or backups does **not** make Docker Desktop eligible for automatic apply.
+
+Native Windows and `bin/install.ps1` do not support this setup; WSL still has to meet the host and Docker-storage requirements. The host needs access to the release publisher, signature verification services and image registry. Setup installs no packages, starts no cron daemon, uses no `sudo`, and changes no global Docker context or permissions.
+
+The optional host-status overlay adds a mount outside this supported layout. Do not add it to an automatically managed installation just to connect the app's Updates page.
+
+## Choose your settings once
+
+Choose the mode before enrollment. There is no supported command to change an enrolled mode or its saved settings later.
+
+| Mode | What scheduled checks do |
+|---|---|
+| `notify` | Verify and report releases, without downloading images or stopping the stack |
+| `download` | Also cache qualified, verified images, without stopping the stack |
+| `apply` | Also take a cold backup and apply a qualified release in the maintenance window |
+
+The defaults are the stable channel, a maximum minor-version jump, checks every six hours, and an apply window of **02:00–06:00 UTC every day**. The scheduler wakes every five minutes; that is not the release-check interval. Checks have jitter and back off after failures.
+
+For custom settings, finish the normal installation without opting in, then pass your choices to `./bin/update setup`:
+
+| Setup option | Purpose |
+|---|---|
+| `--window 01:00-07:00 --timezone UTC` | Example six-hour apply window. Use an IANA time zone installed on the host for another zone |
+| `--policy patch` | Limit version jumps to patches instead of the default `minor` |
+| `--check-interval 21600` | Release-check interval in seconds, from 300 to 86400 |
+| `--backup-destination /absolute/private/path` | Choose backup storage before enrollment. The default is `~/.futureagi-backups-<id>` |
+| `--docker-context NAME` | Bind this existing context instead of recording the current one. Shell `DOCKER_HOST` or `DOCKER_CONFIG` overrides are refused |
+| `--scheduler systemd --scheduler-scope user` | Use an already configured user manager instead of the default current-user cron |
+
+Apply starts at most once per window occurrence, only when the remaining time can cover both the forward attempt and protected recovery. A window is not a downtime guarantee or a cutoff that cancels recovery. Large installations may need larger budgets chosen at setup; see the [host budget reference](https://github.com/future-agi/future-agi/blob/dev/deploy/update/README.md#budgets).
+
+## Opt in once
+
+### During a new installation
+
+After confirming release availability and reading the downtime and restore limits above, use this explicit opt-in instead of the normal installer command:
+
+```bash
+./bin/install --auto-update apply
+```
+
+Setup runs only after the stack is ready and the first-account step has finished. The flag authorizes enrollment without another confirmation. You can select `notify` or `download` instead. It cannot be combined with `--no-up`, `--from-source` or `--distributed`.
+
+An interactive `./bin/install` also asks `Opt in once to supported automatic updates? [y/N]` when there is no automation state. Answering `y` is consent: setup prints its full disclosure and proceeds without asking again. To read the disclosure before agreeing, answer `N` and use the existing-installation command below. **`-y` alone never opts in**; unattended installation needs an explicit `--auto-update` choice.
+
+### On an existing installation
+
+To see the summary and disclosure before deciding, run:
+
+```bash
+./bin/update setup --mode apply
+```
+
+It asks `Acknowledge the disclosure and authorize automatic migration updates with mandatory restore? [y/N]`. For a deliberate unattended opt-in, this command acknowledges the same disclosure:
+
+```bash
+./bin/update setup --mode apply --yes
+```
+
+Pass any custom settings from the previous section on this first setup command. Without a terminal or `--yes`, setup declines without changing configuration or installing a scheduler.
+
+Setup verifies ownership, the current signed images and deployment files, and the running state. It can pin empty or `latest` version keys to the verified version of the same running images; this does not restart containers. It records a baseline and private configuration, installs and verifies its owned scheduler, and enables new work last. Setup itself does not run migrations or recreate the stack.
+
+### Confirm setup completed
+
+`Setup active` with exit `0` confirms activation and prints the verified Docker target and next apply window. `Setup incomplete: <reason>` exits `3`: do not assume unattended work is active. Correct the named prerequisite and repeat the **identical** setup command; partial progress is retained. A previous disable or pause is preserved, not silently reversed by setup.
+
+The installer can finish with a ready application but exit `3` when automatic setup is incomplete. First-account failure still takes precedence with exit `1`.
+
+## What can update automatically
+
+A valid signature alone is not eligibility. The signed compatibility proof must cover the exact installed-to-target version transition, Standalone topology, empty profile set, host platform, deployment files, migrations and restoration. The running installation must still match its recorded baseline.
+
+Before stopping the stack, the updater downloads and verifies the target images, then checks measured data sizes, backup and restore time, migration time and growth, and free disk space. Missing measurements, data beyond the rehearsed bounds, insufficient space, or a window too short leave the release notify-only.
+
+Example reasons and what to do:
+
+- `uncertified_release`, `transition_not_rehearsed`, `platform_not_rehearsed`
+
+  Wait for a release with proof for this installation, or plan a manual upgrade
+- `signature_rejected`, `image_digest_mismatch`
+
+  Investigate the release or image identity. Do not bypass verification
+- `configuration_changed`, `deployment_files_mismatch`
+
+  Review configuration drift; see [Retain the enrolled configuration](#retain-the-enrolled-configuration)
+- `outside_window`, `insufficient_window`
+
+  Wait for an eligible window
+- `restore_capacity_unknown`, `backup_exceeds_window`, `migration_exceeds_window`
+
+  Review the reported measurements and budgets; do not assume a larger window alone resolves missing proof
+- `insufficient_disk_for_backup`, `insufficient_disk_for_migration`
+
+  Add capacity or remove unrelated disposable data, not retained recovery evidence
+- `failed_target_latched`
+
+  Review the failed attempt before [authorizing another attempt](#retry-a-restored-release)
+
+The manual updater's version floor is only a minimum for its manual upgrade path. Being at or above that floor does not promise automatic eligibility.
+
+## During the maintenance window
+
+A qualified apply follows this sequence:
+
+1. Stop the current stack and verify it is stopped.
+2. Take and seal a cold backup of `postgres-data`, `clickhouse-data`, `app-data` and the private configuration file mounted by the app. The old version stays stopped.
+3. Change only the version values in `.env` and start the candidate's verified images on the normal ports and volumes. The candidate runs its normal bootstrap migrations; this is not an image-only update.
+4. Check migration progress, disk reserve, health and stable restart counts. During bootstrap the app returns a `503` starting page. After health and the stability period pass, record durable success and the new baseline.
+
+The candidate can begin serving **before** the stability period ends. If it fails after the backup is sealed but before durable success, the updater attempts to restore the sealed data and exact previous images. Anything the candidate accepted in that interval is discarded, along with its migration and bootstrap writes. External effects cannot be reversed.
+
+A successful restore records `restored_after_update_failure` and quarantines that exact failed release. Restoration has its own protected budget. Ambiguous or unverifiable recovery stops for operator attention; it is not a promise of zero data loss or automatic recovery from every failure.
+
+## Inspect status and control new work
+
+Run these from the original checkout on the host, even when the app is unavailable. Set `ENROLLED_CONTEXT` to the exact context name in setup's `Verified Docker target` line. Use the original host user's Docker configuration, without an alternate `DOCKER_CONFIG`:
+
+```bash
+: "${ENROLLED_CONTEXT:?Set this to the verified context name printed by setup}"
+DOCKER_CONTEXT="$ENROLLED_CONTEXT" ./bin/update status
+DOCKER_CONTEXT="$ENROLLED_CONTEXT" ./bin/update status --format json
+```
+
+Ordinary `status` (text, JSON and `--export-public`) uses the shell's Docker selection. Set it per command as above; do not switch the global context. `run` and `download` already pin the enrolled context, while controls such as `disable` change private host state without probing Docker. None of those commands accepts `--docker-context`; that flag belongs to enrollment.
+
+The JSON contains private host paths and must not be served to the app. When Docker is unavailable, running versions are unknown and status exits `2`. Its `pending_transaction` flag observes only the engine journal, not reserved automatic attempts or pending finalization. A `false` value is not permission for manual changes; use the [safe handoff](#safe-handoff-to-manual-operations).
+
+| Command | Effect |
+|---|---|
+| `./bin/update disable` | Stop new forward work; keep the scheduler and private state |
+| `./bin/update enable --yes` | Re-enable a completed setup with an active scheduler; does not change mode, clear a pause or clear a failed release |
+| `./bin/update pause --indefinite` | Pause new work until resumed |
+| `./bin/update pause --until TIMESTAMP` | Pause until a future RFC3339 timestamp with an explicit UTC offset |
+| `./bin/update resume` | Clear a pause only; does not enable disabled automation or clear a failed release |
+| `./bin/update setup --deactivate --yes` | Disable and remove only the owned scheduler; keep backups, baselines, receipts and unrelated scheduler entries |
+
+Disable, pause and a closed window do not cancel an already-started transaction. Later ticks still reconcile its recovery or finish accepted success. Deactivation exits `3` with `automatic_recovery_pending` and keeps the scheduler while recovery is unresolved; repeat it after recovery finishes. Once removed, the registration cannot be reactivated by setup or `enable`. Use disable or pause for a temporary stop.
+
+Check command output and exit status. `busy; nothing recorded; retry the command` means the control was not saved; do not assume it took effect.
+
+### Optional host reporting, not app control
+
+Setup does not register the detailed sanitized report. To retain discovery reasons and time/disk estimates for inspection on the host, choose a new dedicated directory outside the checkout and private state:
+
+```bash
+./bin/update reporting init --directory "$HOME/futureagi-update-status"
+```
+
+The command prints its status slot; later ticks and controls write the report there. It does not mount anything or recreate containers. Keep the same directory if initialization needs to be retried.
+
+The app's **Settings > Updates** page is read-only for Owners and Admins and needs the separate host-status overlay. That overlay is outside automatic base-layout qualification, so an installation enrolled here uses host status instead. The app has no update approval, retry or control authority and receives no Docker socket or private automation state.
+
+## Retain the enrolled configuration
+
+Setup saves its choices privately. Later changes to `update.conf` or exported updater variables do not change scheduled policy, and repeating setup with different options is refused. Choose storage, mode, window and budgets before enrolling.
+
+Keep the checkout, `.env`, Docker target and deployment files as enrolled. Editing any line of `.env`, pulling files that change Compose or bootstrap, or manually applying a release makes automatic checks refuse with `configuration_changed` or `deployment_files_mismatch`. There is no supported rebaseline command in this implementation. Do not delete private state to bypass that refusal.
+
+If you need a manual configuration change or upgrade, complete the [safe handoff](#safe-handoff-to-manual-operations) before following the [manual upgrade procedure](/docs/self-hosting/production/upgrades-rollback). Do not expect `enable` to adopt the changed installation.
+
+### Safe handoff to manual operations
+
+Use this before editing files, manually upgrading, stopping or uninstalling an enrolled installation. Keep its checkout, configuration and recovery evidence unchanged until the handoff completes. Coordinate with other operators so nobody enables automation or starts a manual updater during the handoff or maintenance.
+
+1. Record disable from the original checkout as the original host user:
+
+   ```bash
+   ./bin/update disable
+   printf 'exit=%s\n' "$?"
+   ```
+
+   Require exit `0` and `disable: recorded; no update or scheduler started.` A busy message saying nothing was recorded is not success. If exit `3` explicitly says `control recorded; public report busy`, disable was saved but its report was not. After contention clears, repeat `disable` for a clean confirmation.
+2. Invoke the normal retained recovery path:
+
+   ```bash
+   ./bin/update run
+   printf 'exit=%s\n' "$?"
+   ```
+
+   `run` prints JSON without a `--format` flag and uses the enrolled Docker context. It finishes retained work before honoring disable, so this tick can still restore data or stop/start containers for an existing attempt.
+3. Before manual mutation, require exit `0` and all three JSON fields: `"code": 0`, `"disposition": "skipped"`, `"skip_reason": "disabled"`.
+   - `busy` also exits `0`, but proves nothing about completion. Wait for the active invocation to finish, then run one fresh tick. Do not kill it or remove locks to proceed.
+   - A tick that completes recovery can report `applied`, `restored` or `failed_available`. Run one subsequent tick and require the disabled result above. `restored` and `failed_available` can exit `5` to retain the original forward failure.
+   - For any other result, missing JSON, `recovery_required` or ambiguous evidence, stop and follow [recovery guidance](#when-recovery-needs-your-attention). Manual recovery needs a plan for that exact state, not a blind retry loop. Retry retained recovery only after resolving a confirmed transient host problem.
+
+The runner checks retained attempts, the engine journal and pending success/restore finalization under its runner and engine locks before the disabled skip. Status alone cannot make that check. Keep automation disabled and use the enrolled Docker context for subsequent manual work. This handoff is not a health check or a resolution of any separate manual staged update. Do not delete ledgers or backups, rerun setup or bypass guards to resume automation after changing its baseline.
+
+## Plan backup capacity and retention
+
+The default backup directory is private under your home directory, named `~/.futureagi-backups-<id>`, with owner-only permissions. Budget for a full cold backup per update attempt, retained previous backups, downloaded images, migration growth, and the protected restore reserve. Checks use the actual backup and Docker data filesystems, not just free space in the checkout.
+
+Backups and failed-attempt evidence are retained indefinitely; there is no automatic pruning or pruning command. Do not delete attempt directories by hand: recovery rereads their evidence. When capacity is insufficient, updates stay notify-only. Add capacity or remove unrelated disposable data instead. These local update snapshots do not replace your independent [backup and disaster-recovery plan](/docs/self-hosting/production/backups-restore).
+
+## Retry a restored release
+
+After reviewing and resolving the failed attempt's cause, read its exact target version and manifest SHA-256 from the retained private attempt record. Cross-check [host JSON status in the enrolled context](#inspect-status-and-control-new-work) and the matching backup evidence. Set `FAILED_TARGET` and `FAILED_MANIFEST_HASH` to those values, then run:
+
+```bash
+./bin/update retry \
+  --target "${FAILED_TARGET:?Set this from the retained failed attempt}" \
+  --manifest-hash "${FAILED_MANIFEST_HASH:?Set this from the same attempt}" \
+  --yes
+```
+
+`retry` clears only that exact quarantine. It does not apply or recover immediately, erase evidence, or reopen the already-used window. The release must still qualify at a later window. Do not substitute the result of `./bin/update check --format json`: it can identify a newer manifest instead of the one that failed.
+
+## When recovery needs your attention
+
+`recovery_required` means the updater cannot safely finish or classify the retained attempt. The installed version may be unknown and the app may stay down. It is **not** an instruction to restore a snapshot blindly.
+
+1. Do not run `./bin/install`, manual apply/rollback, or Compose start/stop/recreate commands. Do not replace containers, volumes, `.futureagi-updates/` or anything in the backup directory.
+2. Inspect without mutating the installation. Set `ENROLLED_CONTEXT` to the exact verified context name printed by setup, not the current global context:
+
+   ```bash
+   : "${ENROLLED_CONTEXT:?Set this to the verified context name printed by setup}"
+   DOCKER_CONTEXT="$ENROLLED_CONTEXT" ./bin/update status
+   DOCKER_CONTEXT="$ENROLLED_CONTEXT" ./bin/update status --format json
+   docker --context "$ENROLLED_CONTEXT" compose ps -a
+   docker --context "$ENROLLED_CONTEXT" compose logs app
+   ```
+
+3. Preserve the attempt directory, recovery ledger, proof, hash inventory and bounded logs. Fix only an independently confirmed transient host problem, such as Docker being unavailable or exhausted storage. A generic `recovery_required` code does not establish the cause. After resolving it, wait for the next tick or run `./bin/update run` once to invoke the same retained recovery path.
+4. If identity, evidence or restored data cannot be verified, ask for [support](/docs/self-hosting/support) with the retained diagnostics through an appropriate private channel. Manual recovery needs a plan for that exact state; there is no command to force an arbitrary restore.
+
+Before a backup is sealed, recovery reconciles the original stopped containers rather than restoring a nonexistent snapshot. After sealing but before durable success, it restores the previous state. After durable success, it finishes the accepted candidate's metadata instead of restoring old data. Do not infer the correct direction from a displayed version alone.
+
+## Next Steps
+
+- [Manual upgrades and rollback](/docs/self-hosting/production/upgrades-rollback), including the separate production-overlay procedure.
+- [Backups and restore](/docs/self-hosting/production/backups-restore) for your independent backup plan.
+- [Advanced host updater reference](https://github.com/future-agi/future-agi/blob/dev/deploy/update/README.md#automatic-updates-standalone) for all reason codes, budgets and host commands. This is the development reference; use the release notes and the reference shipped with your installed release when available.

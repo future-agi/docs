@@ -1,0 +1,138 @@
+---
+title: "Trace Google Discovery Engine requests"
+description: "Trace Vertex AI Search search, search_lite, and answer_query calls in Future AGI with the maintained traceAI-discoveryengine Python package."
+---
+
+Trace Google Discovery Engine (Vertex AI Search) requests as retrieval spans in Future AGI with `traceAI-discoveryengine`.
+
+## Before you start
+
+You need Python 3.10–3.13, [Future AGI API keys](/docs/admin-settings/api-keys), and a Google Cloud project with the Discovery Engine API enabled. Create a search app connected to an indexed data store, and give your Google credentials permission to query its serving config.
+
+## Install
+
+```bash
+pip install 'traceAI-discoveryengine==0.1.1' 'fi-instrumentation-otel==1.2.3' 'google-cloud-discoveryengine==0.20.5'
+```
+
+The instrumentor accepts `google-cloud-discoveryengine>=0.20.5,<1`. Use the versioned `google.cloud.discoveryengine_v1` clients: the unversioned `google.cloud.discoveryengine` module re-exports v1beta clients in 0.20.5 and is not instrumented.
+
+## Configure credentials and privacy
+
+Use [Application Default Credentials](https://cloud.google.com/docs/authentication/provide-credentials-adc) for Google Cloud. For local development:
+
+```bash
+gcloud auth application-default login
+export FI_API_KEY="your-future-agi-api-key"
+export FI_SECRET_KEY="your-future-agi-secret-key"
+```
+
+In a deployed application, use its service account or another supported ADC configuration instead of interactive login. Google credentials authenticate the search request; the Future AGI keys authenticate trace export. The Future AGI `project_name` is separate from your Google Cloud project ID.
+
+Queries and sanitized server error messages are recorded by default. To hide them, set these before initializing tracing:
+
+```bash
+export FI_HIDE_INPUTS=true
+export FI_HIDE_ERROR_DETAILS=true
+```
+
+Counts, answer states, and resource names remain visible. These settings do not remove arbitrary custom attributes; review the [privacy limits](#privacy-limits) before sending sensitive data.
+
+## Run a traced search
+
+Save this as `discoveryengine_example.py`. Replace the project and engine IDs in `serving_config` with your search app's values. This example uses the `global` location.
+
+```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from google.cloud import discoveryengine_v1 as discoveryengine
+from traceai_discoveryengine import DiscoveryEngineInstrumentor
+
+trace_provider = register(
+    project_type=ProjectType.OBSERVE,
+    project_name="support-search",
+)
+DiscoveryEngineInstrumentor().instrument(tracer_provider=trace_provider)
+
+serving_config = (
+    "projects/my-gcp-project/locations/global/collections/default_collection/"
+    "engines/my-engine/servingConfigs/default_search"
+)
+try:
+    client = discoveryengine.SearchServiceClient()
+    pager = client.search(
+        request={"serving_config": serving_config, "query": "rotate an API key"}
+    )
+    first_page = next(pager.pages)
+    print(f"Results on the first page: {len(first_page.results)}")
+finally:
+    trace_provider.force_flush()
+```
+
+```bash
+python discoveryengine_example.py
+```
+
+For a multi-region app, change the location in the resource name and set the matching endpoint on each client, for example `client_options={"api_endpoint": "eu-discoveryengine.googleapis.com"}` for `eu`. See Google's [location configuration](https://cloud.google.com/generative-ai-app-builder/docs/locations#specify_a_multi-region_for_your_data_store).
+
+Open **Observe → Traces** in Future AGI and select the `support-search` project. Open the `discoveryengine.search` span to inspect its retrieval kind, latency, serving config, and first-page result count. The query appears only when input capture is enabled. Calls inside an existing agent or pipeline span become children of that span.
+
+## Trace answers and public website search
+
+The same instrumentor also traces these v1 methods:
+
+| Client method | Span name | Prerequisite |
+|---|---|---|
+| `SearchServiceClient.search_lite` | `discoveryengine.search_lite` | Public website search with a Google API key, passed as `client_options={"api_key": ...}`. Use `search` with ADC for other data stores. |
+| `ConversationalSearchServiceClient.answer_query` | `discoveryengine.answer_query` | Enable Enterprise edition features and Generative responses (the Large Language Model add-on). Website data stores also need Advanced website indexing. See Google's [answer prerequisites](https://cloud.google.com/generative-ai-app-builder/docs/answer#before_you_begin). |
+
+For an app configured for answers, replace the contents of the example's `try` block with the following, indented inside that block. Keep the `finally` block to flush the trace:
+
+```python
+answers = discoveryengine.ConversationalSearchServiceClient()
+response = answers.answer_query(
+    request={
+        "serving_config": serving_config,
+        "query": {"text": "How do I rotate an API key?"},
+    }
+)
+print(response.answer.state.name)
+```
+
+The corresponding methods on `SearchServiceAsyncClient` and `ConversationalSearchServiceAsyncClient` are also instrumented. Use the gRPC transport for async clients; synchronous clients can use gRPC (the default) or `transport="rest"`.
+
+## What is captured
+
+Each instrumented call creates one `RETRIEVER` span. Search results and generated answer text are not added as response attributes.
+
+| Attribute | Value |
+|---|---|
+| `gen_ai.retrieval.query`, `input.value` | Query text, with recognized credentials removed and truncated to 1 KB; hidden when `FI_HIDE_INPUTS=true`. |
+| `discoveryengine.serving_config` | Serving config resource name. |
+| `discoveryengine.result_count` | Results on the first page for search; number of answer references for `answer_query`. |
+| `discoveryengine.answer.length`, `discoveryengine.answer.state` | Answer length in characters and state, such as `SUCCEEDED` or `FAILED`; not the answer text. |
+| `discoveryengine.session` | Discovery Engine session resource name, when supplied or returned. |
+| `discoveryengine.error.status`, `discoveryengine.error.code` | Error status and code, such as `PERMISSION_DENIED` and `403`. |
+
+Iterating a search pager past the first page creates no additional spans; the result count covers only the first page. Client exceptions set the span status to `ERROR` and are re-raised unchanged. An answer with state `FAILED` also marks the span as `ERROR`, without raising an exception.
+
+Model names, token usage, and cost are not captured. Conversation/session management, `converse_conversation`, `stream_answer_query`, ingestion, and administration calls are not instrumented. Only the Python v1 clients are covered, not `discoveryengine_v1beta`, `discoveryengine_v1alpha`, Java, or Node clients.
+
+## Privacy limits
+
+- `FI_HIDE_INPUTS=true` replaces `input.value` with `__REDACTED__` and omits `gen_ai.retrieval.query`. With the core version installed above, hiding inputs also hides error details unless you explicitly disable that behavior. `FI_HIDE_ERROR_DETAILS=true` removes error messages and status descriptions while preserving error status and exception types.
+- If you explicitly keep error details enabled, query redaction matches the original query and known escaped forms, not reworded or truncated copies. Other fields quoted by the server, such as `filter` or `user_pseudo_id`, can remain in error text. Keep error details hidden when requests contain sensitive data.
+- Serving config and session names remain in traces. `FI_PII_REDACTION=true` applies pattern-based redaction to recorded text; it can also redact part of a numeric Google Cloud project ID. It is not a guarantee that all sensitive text is removed.
+- The instrumentor removes credentials visible on the client or authentication metadata, plus recognized Google token patterns. Tokens supplied only through a custom gRPC channel may not be visible to it; do not put secrets in query text or custom attributes. The instrumentor does not add stack traces, result documents, or answer content as span fields.
+
+## Troubleshooting
+
+- **No spans:** use `google.cloud.discoveryengine_v1`, call `register()` and `instrument()` before requests, and check your Future AGI keys. Flush the provider before a short-lived script exits.
+- **Version error during instrumentation:** install `google-cloud-discoveryengine` within `>=0.20.5,<1`.
+- **`FailedPrecondition` on `answer_query`:** enable the app's LLM add-on and required Enterprise features, or use `search` instead.
+- **`FailedPrecondition` on `search_lite`:** use a public website data store and API key. For private data, use `search` with OAuth or service account credentials.
+- **`NotFound` or permission errors:** check the serving config's project, engine ID, location, matching endpoint, and Google credentials. Wait for a newly created engine to become available.
+- **Empty results after adding documents:** wait for indexing to finish before searching.
+- **Duplicate spans:** do not enable two instrumentors that wrap the same Discovery Engine methods. Separate gRPC transport spans can nest under the retrieval span.
+
+For Gemini model calls rather than search, use the [Google GenAI](/docs/integrations/traceai/google_genai) or [Vertex AI](/docs/integrations/traceai/vertexai) guide. You can use those integrations alongside Discovery Engine tracing in a RAG application.

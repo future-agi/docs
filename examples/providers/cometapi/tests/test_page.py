@@ -56,12 +56,9 @@ def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
     text = PAGE.read_text()
     assert text.count("https://api.cometapi.com/v1") >= 3
     assert "https://api.cometapi.com/v1/chat/completions" in text
-    # G3: Responses-only, image, video (and audio) are listed as not covered
-    covered = text.split("## What this page covers", 1)[1].split("## What you get", 1)[0]
-    for route in ("/v1/responses", "Image generation", "Video generation", "Audio"):
-        assert route in covered
-    assert covered.count("| No") >= 4
-    # R-09: no model-count claim and no package claim
+    # The documented recipe is chat-only and does not promise a dedicated package.
+    for route in ("Responses", "image", "video", "audio"):
+        assert route in text
     assert "500+" not in text and "500 models" not in text
     assert "There is no `traceai-cometapi`" in text
 
@@ -69,11 +66,16 @@ def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
 def test_the_page_follows_the_docs_style_and_carries_no_secret():
     text = PAGE.read_text()
     assert chr(0x2014) not in text, "the docs style guide forbids em dashes"
-    assert text.split("---", 2)[2].lstrip().startswith("## About")
+    assert text.split("---", 2)[2].lstrip().startswith("Trace your CometAPI")
+    assert "traceAI-openai==0.1.10 fi-instrumentation-otel==1.1.0 openai==3.31.0" in text
+    code = snippet()
+    assert "finally:" in code and "trace_provider.force_flush()" in code and "trace_provider.shutdown()" in code
     assert 'COMETAPI_KEY="YOUR_COMETAPI_KEY"' in text  # placeholders only, no key in the page
     for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
         assert name in text
-    assert "Live vendor verification (2026-10-17)" in text and "stand-in" in text and "traceAI-openai 0.1.10" in text
+    assert "Live vendor verification" not in text and "stand-in" not in text
+    assert "error messages" in text and "tool definitions" in text
+    assert "Open **Observe**" in text and "traceAI-openai 0.1.10" in text
 
 
 def test_no_key_in_the_diff_and_no_other_cometapi_endpoint_client():

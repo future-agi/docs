@@ -1,0 +1,132 @@
+---
+title: "Azure OpenAI with C#"
+description: "Send native non-streaming Azure OpenAI chat traces from the OpenAI .NET client to Future AGI."
+---
+
+Trace non-streaming Azure OpenAI chat completions with the OpenAI .NET client's native OpenTelemetry support. See request duration, deployment, response model, token usage and errors in Future AGI without wrapping the client.
+
+## Prerequisites
+
+- .NET 8 or .NET 10.
+- An Azure OpenAI deployment that supports Chat Completions through the `/openai/v1/` endpoint.
+- Your Future AGI API key and secret key from [Settings → API keys](/docs/admin-settings/api-keys).
+
+This guide uses the `OpenAI` package directly, following [Microsoft's Azure OpenAI v1 configuration](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle). Do not add `Azure.AI.OpenAI` to this example. If you use Azure-specific client extensions, follow [Microsoft's migration guidance](https://github.com/Azure/azure-sdk-for-net/blob/main/sdk/openai/Azure.AI.OpenAI/migration-guidance.md) before switching clients.
+
+## Install the packages
+
+```bash
+dotnet new console --framework net8.0 --name AzureChat
+cd AzureChat
+dotnet add package OpenAI --version 2.14.0
+dotnet add package OpenTelemetry --version 1.20.1
+dotnet add package OpenTelemetry.Exporter.OpenTelemetryProtocol --version 1.20.1
+```
+
+For .NET 10, use `--framework net10.0` when creating the project. The native tracing API is experimental in OpenAI 2.14.0; keep these package versions pinned when following this guide.
+
+## Configure credentials
+
+Set the complete Azure v1 endpoint and your **deployment name**, which can differ from the underlying model name.
+
+```bash
+export AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/"
+export AZURE_OPENAI_API_KEY="<your-azure-api-key>"
+export AZURE_OPENAI_DEPLOYMENT="<your-chat-deployment>"
+export FI_API_KEY="<your-future-agi-api-key>"
+export FI_SECRET_KEY="<your-future-agi-secret-key>"
+export FI_PROJECT_NAME="azure-chat"
+```
+
+The Azure key authenticates model requests. The Future AGI keys authenticate trace exports; they are not sent to Azure. For production authentication without Azure API keys, see [Microsoft's Microsoft Entra ID setup](https://learn.microsoft.com/en-us/azure/foundry/openai/supported-languages).
+
+<Warning>
+Native chat spans do not capture prompt, completion or tool bodies, but SDK error descriptions can include text returned in an Azure error response. Do not treat this as a sensitive-content filter. The `FI_HIDE_*` settings do not apply to upstream native spans. If error text must not leave your application environment, do not enable this direct-export setup until your telemetry pipeline removes it.
+</Warning>
+
+## Enable native tracing and make a chat request
+
+Replace `Program.cs` with the following. Use one trace provider for the application; do not also call `TraceAI.Register` or add a manual model span around the same request.
+
+```csharp
+using System.ClientModel;
+using System.Diagnostics;
+using OpenAI;
+using OpenAI.Chat;
+using OpenTelemetry;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+
+string endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")
+    ?? throw new InvalidOperationException("Set AZURE_OPENAI_ENDPOINT.");
+string azureKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY")
+    ?? throw new InvalidOperationException("Set AZURE_OPENAI_API_KEY.");
+string deployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT")
+    ?? throw new InvalidOperationException("Set AZURE_OPENAI_DEPLOYMENT.");
+string apiKey = Environment.GetEnvironmentVariable("FI_API_KEY")
+    ?? throw new InvalidOperationException("Set FI_API_KEY.");
+string secretKey = Environment.GetEnvironmentVariable("FI_SECRET_KEY")
+    ?? throw new InvalidOperationException("Set FI_SECRET_KEY.");
+string project = Environment.GetEnvironmentVariable("FI_PROJECT_NAME")
+    ?? throw new InvalidOperationException("Set FI_PROJECT_NAME.");
+
+AppContext.SetSwitch("OpenAI.Experimental.EnableOpenTelemetry", true);
+using var provider = Sdk.CreateTracerProviderBuilder()
+    .SetResourceBuilder(ResourceBuilder.CreateDefault()
+        .AddService("azure-openai-csharp")
+        .AddAttributes(new Dictionary<string, object>
+        {
+            ["project_name"] = project,
+            ["project_type"] = "observe",
+        }))
+    .AddSource("OpenAI.ChatClient", "AzureOpenAI.Application")
+    .AddOtlpExporter(options =>
+    {
+        options.Endpoint = new Uri(
+            Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+            ?? "https://api.futureagi.com/tracer/v1/traces");
+        options.Protocol = OtlpExportProtocol.HttpProtobuf;
+        options.Headers = $"X-Api-Key={apiKey},X-Secret-Key={secretKey},fi-project-name={project}";
+    })
+    .Build();
+
+using var source = new ActivitySource("AzureOpenAI.Application");
+using (var request = source.StartActivity("answer-question"))
+{
+    ChatClient client = new(
+        model: deployment,
+        credential: new ApiKeyCredential(azureKey),
+        options: new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+
+    ChatCompletion completion = await client.CompleteChatAsync(
+        [new UserChatMessage("Explain what an API is in one sentence.")]);
+    Console.WriteLine(completion.Content[0].Text);
+}
+
+if (!provider.ForceFlush(10000))
+    throw new InvalidOperationException("Trace export did not finish before shutdown.");
+```
+
+```bash
+dotnet run
+```
+
+Keep the provider alive for your application's lifetime and dispose it on shutdown. The example exports **traces only**, using OTLP HTTP/protobuf. The full trace URL ends in `/tracer/v1/traces`; do not append another `/v1/traces`.
+
+## Inspect the trace
+
+Open **Observe**, select the project named by `FI_PROJECT_NAME`, and open the `answer-question` trace. Its child model span contains the deployment in `gen_ai.request.model`, the returned model in `gen_ai.response.model`, input and output token counts when returned by Azure, and the finish reason. The parent groups your application request; it is not a second model call.
+
+The native SDK reports its provider as `openai`, including calls to Azure. Use the Azure endpoint and deployment attributes to distinguish the service; do not infer Azure pricing from the deployment alias.
+
+## Coverage
+
+This setup captures typed, non-streaming `CompleteChat` and `CompleteChatAsync` calls. In OpenAI 2.14.0 it does **not** create model spans for streaming chat, raw/protocol calls, Responses, embeddings or other APIs. It also does not capture message bodies, tool arguments, tool execution spans or time to first token. Request duration is not time to first token.
+
+## Troubleshooting
+
+- **The request succeeds but there is no model span.** Set the feature switch and build the provider before creating clients. Subscribe to `OpenAI.ChatClient`. Use a typed, non-streaming chat call and allow the exporter to flush.
+- **Azure returns 404.** Check that the endpoint ends in `/openai/v1/` and the model argument is your deployment name. The v1 endpoint does not need a dated `api-version` parameter.
+- **Trace export fails authentication.** Check both Future AGI keys. Setting `FI_API_KEY` alone does not configure a stock OpenTelemetry exporter; the example sets both HTTP headers explicitly.
+- **`MissingMethodException` mentions `SerializedAdditionalRawData`.** Do not combine `Azure.AI.OpenAI` 2.1.0 with OpenAI 2.14.0. This guide uses `OpenAI` directly; remove the Azure package only after migrating any Azure-specific extensions.

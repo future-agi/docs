@@ -13,13 +13,19 @@ Environment:
                                 "true" keeps prompts, responses, tool arguments/results and model
                                 request parameters out of spans
 """
-import asyncio
 import json
 import os
-import signal
+import sys
 
-import hypercorn.asyncio
-import hypercorn.config
+# Keep the script entry point, but let Hypercorn's CLI own the process lifecycle.
+# Exec before importing the app dependencies so only the worker creates clients/exporters.
+if __name__ == "__main__":
+    os.execv(sys.executable, [
+        sys.executable, "-m", "hypercorn", f"{os.path.abspath(__file__)}:app",
+        "--workers", "1", "--bind", f"127.0.0.1:{os.environ.get('SERVICE_PORT', '9080')}",
+        "--graceful-timeout", "30",
+    ])
+
 import restate
 from fi_instrumentation import FITracer, TraceConfig, register, using_session
 from fi_instrumentation.fi_types import ProjectType
@@ -136,38 +142,3 @@ async def ask(ctx: restate.ObjectContext, req: dict) -> dict:
 
 
 app = restate.app(services=[agent])
-
-
-async def _let_sdk_install_sigterm_handler() -> None:
-    """Call the app once, as hypercorn's startup does. restate-sdk 1.0.5 installs its SIGTERM handler then."""
-
-    async def receive() -> dict:
-        return {"type": "lifespan.startup"}
-
-    async def send(_message: dict) -> None:
-        pass
-
-    try:
-        await app({"type": "lifespan", "asgi": {"version": "3.0"}}, receive, send)
-    except Exception:
-        pass  # the SDK has no lifespan support and says so by raising
-
-
-async def serve() -> None:
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    # restate-sdk 1.0.5 adds its own asyncio SIGTERM handler the first time the app is called. It tells
-    # running invocations to wind down, but it replaces the server's handler, so SIGTERM alone would
-    # never stop the server or flush spans. Let the SDK install it first, then add a Python-level
-    # handler on top: asyncio still runs the SDK's handler, and this one stops the server.
-    await _let_sdk_install_sigterm_handler()
-    signal.signal(signal.SIGTERM, lambda *_: loop.call_soon_threadsafe(stop.set))
-    loop.add_signal_handler(signal.SIGINT, stop.set)
-    config = hypercorn.config.Config()
-    config.bind = [f"127.0.0.1:{os.environ.get('SERVICE_PORT', '9080')}"]
-    await hypercorn.asyncio.serve(app, config, shutdown_trigger=stop.wait)
-
-
-if __name__ == "__main__":
-    asyncio.run(serve())
-    tracer_provider.shutdown()  # flush spans still buffered when SIGTERM arrives

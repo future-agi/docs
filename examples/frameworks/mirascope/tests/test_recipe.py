@@ -30,7 +30,7 @@ def test_wire_format(runs):
     assert request["headers"]["x-api-key"] == FI_API_KEY
     assert request["headers"]["x-secret-key"] == FI_SECRET_KEY
     assert request["headers"]["content-type"] == "application/x-protobuf"
-    assert "content-encoding" not in request["headers"], "the Future AGI collector rejects gzip"
+    assert "content-encoding" not in request["headers"], "the recipe sends uncompressed bodies"
 
 
 def test_resource_names_the_project(runs):
