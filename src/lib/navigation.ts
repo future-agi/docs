@@ -936,6 +936,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Import evidence', href: '/docs/environments/guides/import-evidence' },
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
+              { title: 'Run a split', href: '/docs/environments/guides/run-a-split' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
               { title: 'Lock versions', href: '/docs/environments/guides/lock-versions' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
