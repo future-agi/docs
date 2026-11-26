@@ -90,9 +90,9 @@ test('Devin alternatives remain true independently of the Desktop guide', () => 
   assert.doesNotMatch(page, /not published|in progress|until it is published|Future AGI supports/);
 });
 
-test('Devin next steps resolve and link to supported hook tracing', () => {
+test('Devin next steps resolve and link to supported coding-agent tracing', () => {
   const next = section('## Next Steps');
-  for (const route of ['/docs/integrations/coding-agents/cursor', '/docs/integrations/coding-agents/hook-to-otlp']) {
+  for (const route of ['/docs/integrations/coding-agents/cursor', '/docs/integrations/coding-agents']) {
     assert.ok(next.includes(`](${route})`));
   }
   for (const [, route] of page.matchAll(/\]\((\/docs\/[^)#\s]+)/g)) {
