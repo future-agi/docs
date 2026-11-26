@@ -1,0 +1,113 @@
+---
+title: "OpenAI with C#"
+description: "Trace non-streaming OpenAI .NET chat calls in Future AGI with native OpenTelemetry."
+---
+
+Trace non-streaming Chat Completions from the OpenAI .NET client in Future AGI **Observe**, without installing another instrumentor.
+
+## Prerequisites
+
+- .NET 8 or .NET 10, and an OpenAI API key with access to a chat model.
+- Your Future AGI API key and secret key from [Settings → API keys](/docs/admin-settings/api-keys).
+
+## Install
+
+```bash
+dotnet new console --framework net8.0 --name OpenAIChat
+cd OpenAIChat
+dotnet add package OpenAI --version 2.14.0
+dotnet add package OpenTelemetry --version 1.20.1
+dotnet add package OpenTelemetry.Exporter.OpenTelemetryProtocol --version 1.20.1
+```
+
+Use `--framework net10.0` instead if your application targets .NET 10. Native OpenAI tracing is experimental in OpenAI 2.14.0; keep these versions pinned when following this guide.
+
+## Configure credentials
+
+```bash
+export OPENAI_API_KEY="<your-openai-api-key>"
+export OPENAI_MODEL="<your-chat-model-id>"
+export FI_API_KEY="<your-future-agi-api-key>"
+export FI_SECRET_KEY="<your-future-agi-secret-key>"
+export FI_PROJECT_NAME="openai-chat"
+```
+
+The OpenAI key authenticates model requests; the Future AGI keys authenticate trace exports and are not sent to OpenAI.
+
+<Warning>
+Native chat spans omit prompt, completion and tool bodies, but SDK error descriptions can include text returned in an OpenAI error response. `FI_HIDE_*` settings do not filter native spans. If error text must stay in your environment, remove it in a telemetry pipeline before forwarding traces rather than exporting directly.
+</Warning>
+
+## Enable tracing and make a request
+
+Replace `Program.cs` with the following. Configure one trace provider for the application, before creating the chat client. Do not also wrap this request in a second model instrumentor.
+
+```csharp
+using System.ClientModel;
+using System.Diagnostics;
+using OpenAI.Chat;
+using OpenTelemetry;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+
+string openAIKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+    ?? throw new InvalidOperationException("Set OPENAI_API_KEY.");
+string model = Environment.GetEnvironmentVariable("OPENAI_MODEL")
+    ?? throw new InvalidOperationException("Set OPENAI_MODEL.");
+string apiKey = Environment.GetEnvironmentVariable("FI_API_KEY")
+    ?? throw new InvalidOperationException("Set FI_API_KEY.");
+string secretKey = Environment.GetEnvironmentVariable("FI_SECRET_KEY")
+    ?? throw new InvalidOperationException("Set FI_SECRET_KEY.");
+string project = Environment.GetEnvironmentVariable("FI_PROJECT_NAME")
+    ?? throw new InvalidOperationException("Set FI_PROJECT_NAME.");
+
+AppContext.SetSwitch("OpenAI.Experimental.EnableOpenTelemetry", true);
+using var provider = Sdk.CreateTracerProviderBuilder()
+    .SetResourceBuilder(ResourceBuilder.CreateDefault()
+        .AddService("openai-csharp")
+        .AddAttributes(new Dictionary<string, object>
+        {
+            ["project_name"] = project,
+            ["project_type"] = "observe",
+        }))
+    .AddSource("OpenAI.ChatClient", "OpenAIChat.Application")
+    .AddOtlpExporter(options =>
+    {
+        options.Endpoint = new Uri("https://api.futureagi.com/tracer/v1/traces");
+        options.Protocol = OtlpExportProtocol.HttpProtobuf;
+        options.Headers = $"X-Api-Key={apiKey},X-Secret-Key={secretKey},fi-project-name={project}";
+    })
+    .Build();
+
+using var source = new ActivitySource("OpenAIChat.Application");
+using (source.StartActivity("answer-question"))
+{
+    ChatClient client = new(model: model, credential: new ApiKeyCredential(openAIKey));
+    ChatCompletion completion = await client.CompleteChatAsync(
+        [new UserChatMessage("Explain what an API is in one sentence.")]);
+    Console.WriteLine(completion.Content[0].Text);
+}
+
+if (!provider.ForceFlush(10000))
+    throw new InvalidOperationException("Trace export did not finish before shutdown.");
+```
+
+```bash
+dotnet run
+```
+
+Keep the provider alive for the application's lifetime and dispose it on shutdown. The example exports **traces only** over OTLP HTTP/protobuf; do not append another `/v1/traces` to the endpoint.
+
+## Inspect the trace
+
+Open **Observe**, select the project named by `FI_PROJECT_NAME`, and open the `answer-question` trace. Its child chat span contains `gen_ai.request.model`, the returned model, input/output token counts when reported by OpenAI, and the finish reason. The parent groups the application request; it is not another model call.
+
+## Coverage
+
+OpenAI 2.14.0 emits native model spans for typed, non-streaming `CompleteChat` and `CompleteChatAsync` calls. This version does not emit model spans for streaming chat, raw/protocol calls, Responses, embeddings or other APIs. Native spans do not include message bodies, tool execution spans or time to first token. For Python and JavaScript tracing, see the [OpenAI client guide](/docs/integrations/traceai/openai).
+
+## Troubleshooting
+
+- **The request succeeds but no model span appears.** Enable the switch and subscribe to `OpenAI.ChatClient` before making the request. Use a typed, non-streaming chat call and flush the provider on shutdown.
+- **Trace export fails authentication.** Check both Future AGI keys. The stock OpenTelemetry exporter needs the explicit `X-Api-Key` and `X-Secret-Key` headers shown above; setting environment variables alone does not add them.

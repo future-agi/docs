@@ -173,6 +173,11 @@ export const apiNavigation: ApiNavGroup[] = [
         "method": "GET"
       },
       {
+        "title": "Update test run components",
+        "href": "/docs/api/run-tests/updatetestcomponents",
+        "method": "PATCH"
+      },
+      {
         "title": "Delete a test run",
         "href": "/docs/api/run-tests/deleteruntest",
         "method": "DELETE"
@@ -185,6 +190,11 @@ export const apiNavigation: ApiNavGroup[] = [
       {
         "title": "Get test executions",
         "href": "/docs/api/run-tests/gettestexecutions",
+        "method": "GET"
+      },
+      {
+        "title": "Get call executions for a test run",
+        "href": "/docs/api/run-tests/getcallexecutions",
         "method": "GET"
       },
       {

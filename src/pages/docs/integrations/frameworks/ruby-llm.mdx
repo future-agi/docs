@@ -1,294 +1,174 @@
 ---
 title: "Ruby LLM tracing with Future AGI"
-description: "Send ruby_llm chat, tool and agent spans to Future AGI with the OpenTelemetry Ruby SDK and the opentelemetry-instrumentation-ruby_llm gem. Covers the tested version pair, the metadata-only default, the opt-in for content, and ruby_llm 2.x, which this gem does not support."
+description: "Trace RubyLLM with its native OpenTelemetry integration. Send model, token usage, tool and error metadata to Future AGI without capturing message content."
 ---
 
-## About
+## Prerequisites
 
-This page is for **RubyLLM**, the Ruby library for calling LLMs: RubyGems package `ruby_llm`, repository `crmne/ruby_llm`, MIT. It is not about `llm.rb`, which is a different gem.
+- Ruby 3.2 or newer and RubyLLM 2.1. This guide uses the released `ruby_llm` 2.1.1 gem.
+- Future AGI API and secret keys, and an OpenAI API key for the example.
 
-RubyLLM does not export traces on its own. A third-party OpenTelemetry gem, `opentelemetry-instrumentation-ruby_llm` (MIT, thoughtbot), patches `RubyLLM::Chat` so that every chat call writes a GenAI span. You depend on both gems. Future AGI publishes no Ruby gem, there is no `ruby/` tree in traceAI, and nothing is vendored. What you add is one Ruby file that configures the OpenTelemetry SDK for Future AGI and strips content from the spans.
+<Note>
+Native tracing in RubyLLM 2.1.1 sends metadata only: it does not export prompts, responses, tool arguments or results, or exception messages. It does not provide a content-capture option. If your existing 1.x application relies on content capture, agent root spans, or session and user attributes, read [Existing RubyLLM 1.x installations](#existing-rubyllm-1x-installations) before migrating.
+</Note>
 
-This is not the traceAI Python or TypeScript instrumentors: they trace Python and Node processes and do nothing for a Ruby app.
-
-<Warning>
-This page is beta. It was tested end to end against a self-hosted Future AGI stack, using RubyLLM's OpenAI provider: with a real model behind an OpenAI-compatible endpoint, and on 2026-10-19 against the real OpenAI API (`gpt-4o-mini`, see [Live model verification](#live-model-verification-2026-10-19)). This guide does not cover the hosted `api.futureagi.com` endpoint, other RubyLLM providers, Rails (`acts_as_chat`), or embeddings.
-
-**`ruby_llm` 2.x is not supported.** With `opentelemetry-instrumentation-ruby_llm` 0.7.1 on `ruby_llm` 2.0.0 and 2.1.1 the first `chat.ask` raises `NoMethodError: undefined method 'model_id'` from inside the instrumentation, so the instrumentation breaks your call, not just your trace. Stay on `ruby_llm` 1.x until the instrumentation gem supports 2.x. Its README lists only 1.x as tested.
-</Warning>
-
-| | |
-| --- | --- |
-| Tested with | `ruby_llm` 1.16.0 (latest 1.x, published 2026-06-09) and 1.15.0, with `opentelemetry-instrumentation-ruby_llm` 0.7.1 (latest, published 2026-07-31). Ruby 3.2.2 with `opentelemetry-sdk` 1.10.0 and `opentelemetry-exporter-otlp` 0.32.0, and Ruby 3.4.11 with `opentelemetry-sdk` 1.13.1 and `opentelemetry-exporter-otlp` 0.37.0. |
-| Not supported | `ruby_llm` 2.0.0 and 2.1.1 (latest on RubyGems, 2026-10-11): the instrumentation raises, see above. `ruby_llm` before 1.8.0: the instrumentation does not install. |
-| Model | The real OpenAI API (`gpt-4o-mini`, 2026-10-19), and a real model behind an OpenAI-compatible endpoint called with `assume_model_exists: true`. Both through `provider: :openai`. |
-| Future AGI | Self-hosted stack on localhost, 2026-10-16 and 2026-10-19. |
-| Outside this guide’s scope | The hosted `api.futureagi.com`, Anthropic, Gemini and other RubyLLM providers, `acts_as_chat` and Rails, embeddings, Ruby 3.1. |
-| Source | [examples/frameworks/ruby-llm](https://github.com/future-agi/docs/tree/main/examples/frameworks/ruby-llm): the helper below, a demo app, tests and an end-to-end script. |
-
-Ruby: `opentelemetry-exporter-otlp` 0.33 and later needs Ruby 3.3 or newer. On Ruby 3.2 Bundler picks 0.32.0, which is what the first leg above used.
-
-## 1. Install
+## Install
 
 ```ruby title="Gemfile"
 source "https://rubygems.org"
 
-gem "ruby_llm", "1.16.0"
-gem "opentelemetry-instrumentation-ruby_llm", "0.7.1"
-gem "opentelemetry-sdk"
-gem "opentelemetry-exporter-otlp"
+gem "ruby_llm", "2.1.1"
+gem "opentelemetry-sdk", "1.10.0"
+gem "opentelemetry-exporter-otlp", "0.32.0"
 ```
 
-The instrumentation gem depends only on `opentelemetry-api` and `opentelemetry-instrumentation-base`. The SDK and the OTLP exporter are yours to add. Pin `ruby_llm` below 2.0 (`"~> 1.16"`).
+```bash
+bundle install
+```
 
-## 2. Set environment variables
+The exporter version above supports Ruby 3.2. Exporter 0.33 and later requires Ruby 3.3 or newer. You do not need the third-party `opentelemetry-instrumentation-ruby_llm` gem for native tracing.
+
+## Configure tracing
 
 ```bash
 export FI_API_KEY="YOUR_API_KEY"
 export FI_SECRET_KEY="YOUR_SECRET_KEY"
-export FI_PROJECT_NAME="my-chatbot"           # the Observe project the traces land in
-# Self-hosted Future AGI only. Traces go to $FI_BASE_URL/tracer/v1/traces.
-# export FI_BASE_URL="http://localhost:4318"  # default: https://api.futureagi.com
-# export FI_CAPTURE_CONTENT=1                 # opt in to prompts, answers and tool input/output
+export FI_PROJECT_NAME="ruby-llm"
+export FI_BASE_URL="https://api.futureagi.com"
+export OPENAI_API_KEY="YOUR_OPENAI_KEY"
 ```
 
-Set `FI_BASE_URL` to the origin only. The code adds `/tracer/v1/traces`.
+For self-hosted Future AGI, set `FI_BASE_URL` to your instance's origin without a path. The configuration below adds `/tracer/v1/traces` and sends both authentication headers. `project_name` must be a **resource attribute**, not a span attribute.
 
-## 3. Add the helper file
+Save this standard OpenTelemetry configuration as `tracing.rb` and load it once at application startup, before making RubyLLM calls:
 
-The instrumentation gem sets no endpoint, headers or project. The OpenTelemetry SDK you configure does, and Future AGI needs all three: the OTLP/HTTP endpoint, both `X-Api-Key` and `X-Secret-Key`, and the resource attribute `project_name` (a span attribute of that name is not a substitute). Save this as `futureagi_tracing.rb`:
-
-```ruby title="futureagi_tracing.rb"
-# frozen_string_literal: true
-
-# Future AGI tracing for ruby_llm. This file is the whole integration: it configures the
-# OpenTelemetry Ruby SDK, enables opentelemetry-instrumentation-ruby_llm, and (by default)
-# keeps only metadata on every span, because that instrumentation exports tool arguments and
-# results even when capture_content is off.
-#
-#   require_relative "futureagi_tracing"
-#   FutureAGITracing.setup          # once, at boot
-#   ...
-#   FutureAGITracing.shutdown       # before the process exits (also registered with at_exit)
-#
-# Environment:
-#   FI_API_KEY, FI_SECRET_KEY   required
-#   FI_PROJECT_NAME             Observe project the traces land in (default "ruby-llm")
-#   FI_BASE_URL                 self-hosted origin only; default https://api.futureagi.com
-#   FI_CAPTURE_CONTENT=1        opt in to prompts, answers, tool arguments and tool results
-
+```ruby title="tracing.rb"
+require "ruby_llm"
 require "opentelemetry/sdk"
 require "opentelemetry/exporter/otlp"
-require "opentelemetry-instrumentation-ruby_llm"
 
-module FutureAGITracing
-  # Attributes that describe a call without containing what was said or done. Anything not
-  # listed is dropped unless content is opted in, so an attribute added by a later release of
-  # the instrumentation (or one your code sets with with_otel_attributes) stays private until
-  # you add it here. opentelemetry-instrumentation-ruby_llm 0.7.1 writes tool arguments,
-  # tool results and tool descriptions onto execute_tool spans even with capture_content off
-  # (patches/chat.rb, execute_tool), so its own switch is not enough.
-  METADATA_ATTRIBUTES = %w[
-    gen_ai.operation.name
-    gen_ai.provider.name
-    gen_ai.tool.name
-    gen_ai.tool.call.id
-    gen_ai.tool.type
-    gen_ai.agent.name
-    gen_ai.conversation.id
-    error.type
-    session.id
-    user.id
-  ].freeze
-  METADATA_PREFIXES = %w[gen_ai.request. gen_ai.response. gen_ai.usage.].freeze
+exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
+  endpoint: "#{ENV.fetch('FI_BASE_URL').chomp('/')}/tracer/v1/traces",
+  headers: {
+    "X-Api-Key" => ENV.fetch("FI_API_KEY"),
+    "X-Secret-Key" => ENV.fetch("FI_SECRET_KEY")
+  },
+  compression: "none"
+)
 
-  # Wraps an exporter. Always drops span events (the instrumentation records exception
-  # messages and stack traces there, which contain local paths and raw provider text). Unless
-  # content is opted in, also keeps only METADATA_ATTRIBUTES, and keeps the ERROR status
-  # without its text.
-  class SanitizingExporter
-    def initialize(inner, keep_content:)
-      @inner = inner
-      @keep_content = keep_content
-    end
+OpenTelemetry::SDK.configure do |config|
+  config.service_name = "ruby-llm-app"
+  config.resource = OpenTelemetry::SDK::Resources::Resource.create(
+    "project_name" => ENV.fetch("FI_PROJECT_NAME"),
+    "project_type" => "observe"
+  )
+  config.add_span_processor(
+    OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(exporter)
+  )
+end
 
-    def export(span_datas, timeout: nil)
-      @inner.export(span_datas.map { |sd| sanitize(sd) }, timeout: timeout)
-    end
+RubyLLM::OpenTelemetry.enable
+at_exit { OpenTelemetry.tracer_provider.shutdown }
+```
 
-    def force_flush(timeout: nil) = @inner.force_flush(timeout: timeout)
+`compression: "none"` also works with self-hosted releases before v1.56.0, which reject gzip. Cloud and self-hosted v1.56.0 or later also accept `compression: "gzip"`. The Ruby exporter sends OTLP/HTTP protobuf.
 
-    def shutdown(timeout: nil) = @inner.shutdown(timeout: timeout)
+If your application already configures OpenTelemetry, add the exporter, processor and project resource to that existing setup rather than configuring a second provider. Then call `RubyLLM::OpenTelemetry.enable` once.
 
-    private
+<Warning>
+Do not enable the third-party instrumentation gem and native tracing together. When migrating, remove the old gem and its `config.use "OpenTelemetry::Instrumentation::RubyLLM"` call, stop loading `futureagi_tracing.rb`, and restart the process. Removing the configuration without restarting does not undo an already installed patch.
+</Warning>
 
-    def metadata?(key)
-      METADATA_ATTRIBUTES.include?(key) || METADATA_PREFIXES.any? { |prefix| key.start_with?(prefix) }
-    end
+## Run a chat
 
-    def sanitize(span_data)
-      copy = span_data.dup
-      copy.events = nil
-      copy.total_recorded_events = 0
-      unless @keep_content
-        copy.attributes = (span_data.attributes || {}).select { |key, _| metadata?(key) }
-        status = span_data.status
-        copy.status = OpenTelemetry::Trace::Status.error if status && status.code == OpenTelemetry::Trace::Status::ERROR
-      end
-      copy
-    end
-  end
+Save `chat.rb` next to `tracing.rb`:
 
-  class << self
-    # Configure the SDK. Pass exporter: to replace the OTLP exporter (tests do).
-    def setup(project_name: ENV.fetch("FI_PROJECT_NAME", "ruby-llm"),
-              capture_content: ENV["FI_CAPTURE_CONTENT"] == "1",
-              exporter: nil, batch: true, flush_at_exit: true)
-      exporter ||= otlp_exporter
-      exporter = SanitizingExporter.new(exporter, keep_content: capture_content)
-      processor = if batch
-                    OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(exporter)
-                  else
-                    OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
-                  end
+```ruby title="chat.rb"
+require_relative "tracing"
 
-      OpenTelemetry::SDK.configure do |c|
-        c.service_name = ENV.fetch("OTEL_SERVICE_NAME", project_name)
-        c.resource = OpenTelemetry::SDK::Resources::Resource.create(
-          "project_name" => project_name,
-          "project_type" => "observe"
-        )
-        c.add_span_processor(processor)
-        c.use "OpenTelemetry::Instrumentation::RubyLLM", capture_content: capture_content
-      end
-      at_exit { shutdown } if flush_at_exit
-      self
-    end
+RubyLLM.configure { |config| config.openai_api_key = ENV.fetch("OPENAI_API_KEY") }
 
-    # Flush and stop. Safe to call twice.
-    def shutdown
-      return if @shut_down
+chat = RubyLLM.chat(model: "gpt-4o-mini")
+response = chat.ask("What is OpenTelemetry?")
+puts response.content
+```
 
-      @shut_down = true
-      OpenTelemetry.tracer_provider.shutdown
-    end
+```bash
+bundle exec ruby chat.rb
+```
 
-    def endpoint
-      "#{ENV.fetch('FI_BASE_URL', 'https://api.futureagi.com').chomp('/')}/tracer/v1/traces"
-    end
+Open **Observe** in Future AGI and select the project named by `FI_PROJECT_NAME`. Look for `chat gpt-4o-mini` and inspect its model, provider, duration and token usage. Prompt and response panels remain empty because native RubyLLM 2.1.1 does not export content.
 
-    private
+The exit hook flushes pending spans on a normal process exit. For a managed server, call `OpenTelemetry.tracer_provider.shutdown` in its stop hook. Do not shut down the provider after each request.
 
-    def otlp_exporter
-      OpenTelemetry::Exporter::OTLP::Exporter.new(
-        endpoint: endpoint,
-        headers: { "X-Api-Key" => ENV.fetch("FI_API_KEY"), "X-Secret-Key" => ENV.fetch("FI_SECRET_KEY") },
-        compression: "none" # the exporter gzips by default; do not
-      )
-    end
-  end
+## What native tracing captures
+
+- **Chat and streaming:** a `chat <model>` span for each model request, with model/provider metadata and token usage when reported by the provider. Streaming produces one span for the request, not one per chunk.
+- **Tools:** `execute_tool <name>` spans with the tool name and call ID, without arguments, results or descriptions. Follow-up model requests are separate chat spans.
+- **Errors:** exceptions derived from `StandardError` that escape an instrumented operation set `ERROR` and `error.type`, without the error message or exception stack trace. This includes provider errors and ordinary tool exceptions; forced interruption is different, as described below.
+
+These privacy defaults apply to RubyLLM's native spans, not to attributes or events added by your application or other instrumentation. Use non-sensitive tool and workflow names because names are exported.
+
+Native RubyLLM 2.1.1 does not add an `invoke_agent` root or session and user attributes, and does not expose the third-party `with_otel_attributes` API. Do not expect a 1.x application's content capture or session grouping to carry over automatically. Follow the [RubyLLM upgrade guide](https://rubyllm.com/upgrading/) for application API changes as well.
+
+## Timeouts and cancellation
+
+<Warning>
+In RubyLLM 2.1.0–2.1.1, an outer `Timeout.timeout`, `Interrupt`, or `Thread#kill` can finish a native request span with status `UNSET` and no `error.type`, even though the request did not complete. `UNSET` is not evidence of success. Do not use native span status alone to count successful requests when your application uses forced interruption.
+</Warning>
+
+For HTTP timeouts, configure RubyLLM before creating the chat instead of wrapping the call in `Timeout.timeout`:
+
+```ruby title="timeouts.rb"
+RubyLLM.configure do |config|
+  config.request_timeout = 30
+  config.max_retries = 0
 end
 ```
 
-Two details in it matter. `compression: "none"` is there because the Ruby OTLP exporter gzips by default and the Future AGI collector rejects gzip. The `SanitizingExporter` is there because of what the instrumentation exports, described under privacy below.
+An HTTP timeout that raises `Faraday::TimeoutError` inside the native request span is recorded as an error. The HTTP timeout is not a wall-clock deadline for an entire conversation, tool loop, or continuously active stream. Adjust retries deliberately because they can extend the total duration.
 
-## 4. Use it
-
-Call `setup` once at boot, before any `RubyLLM` call, and use RubyLLM as usual.
-
-```ruby
-require_relative "futureagi_tracing"
-require "ruby_llm"
-
-FutureAGITracing.setup
-
-RubyLLM.configure { |c| c.openai_api_key = ENV.fetch("OPENAI_API_KEY") }
-
-chat = RubyLLM.chat(model: "gpt-4o-mini")
-chat.ask("What is OpenTelemetry?")
-
-FutureAGITracing.shutdown # flush before the process exits
-```
-
-`setup` also registers `at_exit { shutdown }`, so a normal exit flushes. A short script that is killed (`kill -9`) loses the last batch. In Rails, call `FutureAGITracing.setup` from an initializer and `FutureAGITracing.shutdown` from your server's stop hook if it does not exit normally.
-
-To tie several calls to one session and one user, set the attributes on the chat:
-
-```ruby
-chat = RubyLLM.chat(model: "gpt-4o-mini")
-       .with_otel_attributes("session.id" => conversation.id.to_s, "user.id" => current_user.id.to_s)
-chat.ask("Hi")
-chat.ask("And now?")
-```
-
-Both calls land in one Future AGI session (tested with `session.id`). RubyLLM spans carry no session or user unless you set them. The instrumentation sets `gen_ai.conversation.id` only for persisted `acts_as_chat` records or when you set it yourself; `gen_ai.conversation.id` on its own is outside this guide’s coverage as a session key.
-
-## What is captured
-
-Verified in Future AGI on the versions above. One run of each case:
-
-| Case | What you get |
-| --- | --- |
-| `chat.ask` | One `llm` span `chat <model>` with the request and response model, provider (`openai`), and input and output token counts. |
-| Streaming (`chat.ask` with a block) | One span for the whole stream, not one per chunk, with token counts (the provider reports usage on the last chunk) and `gen_ai.request.stream=true`. The instrumentation README still lists streaming as planned, but it worked on every version tested. |
-| Tool call | One `execute_tool <name>` span of type `tool` (tool name and call id), a child of the chat span that ran it. The follow-up completion is a second `chat` span under it. Tool arguments, results and the tool description are not exported by default. |
-| `RubyLLM::Agent` | One `invoke_agent <Class>` span as trace root, with the chat and tool spans below it. Needs `ruby_llm` 1.12.1 or newer. |
-| Provider error | The chat span has status `ERROR` and `error.type` (for example `RubyLLM::BadRequestError` for an HTTP 400, and the base `RubyLLM::Error` for OpenAI's 404 on an unknown model id). The error text and stack trace are not exported. |
-| Session and user | `session.id` and `user.id` when you set them as above. |
-
-Everything RubyLLM does not report is absent, not zero.
-
-## Privacy: metadata only by default
-
-With no opt-in, Future AGI receives model, provider, token counts, span names and timing, tool names, agent names, status and `error.type`, and the `session.id`, `user.id` and `gen_ai.conversation.id` you set. It does not receive prompts, answers, system instructions, tool arguments, tool results, tool descriptions, error messages, stack traces, local paths, host names, or any other attribute you set with `with_otel_attributes`.
-
-The instrumentation's own switch, `capture_content`, is not enough on its own. Its README says content is off by default, and that holds for messages, but in 0.7.1 the `execute_tool` span always carries `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` (first 500 characters) and `gen_ai.tool.description`, and a failed call records an exception event with the provider's error text and a stack trace with local file paths. This was reproduced with the instrumentation alone: with `capture_content` off, a tool argument, a tool result and the text of a 401 response (including the key fragment the provider echoed) were on the exported spans. `SanitizingExporter` removes them before export. Do not replace it with a bare `c.use "OpenTelemetry::Instrumentation::RubyLLM"` if you want content off.
-
-Checked with a unique marker in the prompt, in the tool argument and in the tool result: after a run with content off, the marker was in none of the Future AGI `spans` columns (name, status message, attributes, resource attributes, metadata, input, output, tags, span events). The same run with the opt-in had it in the span attributes. The scan also looked for `/Users/`, the account name, the host name, `@`, `sk-`, the first characters of the Future AGI key and `.rb:` (stack frames), and found none.
-
-To opt in, set `FI_CAPTURE_CONTENT=1` or call `FutureAGITracing.setup(capture_content: true)`. That turns on `gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.system_instructions` (prompts and answers), keeps the tool arguments, results and descriptions, and keeps every other attribute you set. Span events, and so exception messages and stack traces, are never exported, in either mode. Content arrives as span attributes: in the self-hosted build tested it was not copied into the trace's Input and Output panels.
-
-## Limitations
-
-- `ruby_llm` 2.x is not supported (above).
-- In a tool loop the outer `chat` span reports the token counts of the final response, the same numbers as the follow-up `chat` span under it, so summed token counts for the trace are inflated. This comes from the instrumentation: it reads the last message after the nested completion returns.
-- `invoke_agent` spans show as type `unknown` in Future AGI: the instrumentation sets no `fi.span.kind`.
-- The instrumentation exports `gen_ai.usage.cache_creation.input_tokens=0` when the provider reports none. Future AGI tokens are unaffected.
-- No Rails or `acts_as_chat` run, no embeddings run, no provider other than OpenAI (the OpenAI API and an OpenAI-compatible endpoint).
-
-## Live model verification (2026-10-19)
-
-Run against the real OpenAI API (`https://api.openai.com/v1`, `gpt-4o-mini`) with `examples/frameworks/ruby-llm/run_e2e.sh`, not a stand-in model. Versions: Ruby 3.2.2, `ruby_llm` 1.16.0, `opentelemetry-instrumentation-ruby_llm` 0.7.1, `opentelemetry-sdk` 1.10.0, `opentelemetry-exporter-otlp` 0.32.0. Traces went to a self-hosted Future AGI as project `th8103-livefill-TH-8276` (metadata only) and `th8103-livefill-TH-8276-content` (opt-in).
-
-| Scenario | Trace id in Observe | Result |
-| --- | --- | --- |
-| chat | `2ff58443-4905-a7c9-7dd5-17dc3f681b61` | `chat gpt-4o-mini` LLM span, 23 / 16 tokens |
-| stream | `b13d44b6-1b0f-7961-6320-fa10df5b1d25` | one span, 23 / 14 tokens |
-| tool | `6c02b8c6-8e19-39e4-8af4-7935d5815773` | `chat`, with `execute_tool lookup` (type tool) and a second `chat` below it |
-| agent | `9b5eb924-3f55-e0bf-ee8c-5757ac17588f` | `invoke_agent SupportAgent` root (type unknown, as documented) with chat and tool below |
-| session | `c913b1e8-a247-6ee6-3c65-5745b8df9ff4`, `1e573056-9656-3d0d-0c69-3c604f0156ce` | both traces share one session |
-| error (`no-such-model`) | `d1b0e3cf-1fe2-e1e0-14e7-681d2611cab7` | `chat` span status ERROR, `error.type=RubyLLM::Error` |
-
-Privacy: with the default, the unique marker (in the prompt, tool argument and tool result) was in none of the 12 stored rows, in any column, and the OpenAI key was not either. With `FI_CAPTURE_CONTENT=1` the marker was stored in 9 of 12 rows (attributes).
-
-Difference found: OpenAI answers an unknown model id with HTTP 404, which `ruby_llm` raises as the base `RubyLLM::Error`, not `RubyLLM::BadRequestError`. The error table above now says so.
+To cancel an active stream, call `chat.cancel` from your application's cancellation handler or stream callback, and handle `RubyLLM::CancelledError` around `chat.ask`. Cancellation is cooperative: it takes effect at a cancellation checkpoint, not immediately while a network read or tool is blocked. When that exception leaves the active request span, native tracing records `ERROR` and `error.type`. Let the operation unwind before shutting down tracing; do not kill its worker thread to cancel it. If you must enforce a hard deadline or terminate a worker, track that outcome in your application's own request lifecycle rather than infer it from a native span's status.
 
 ## Troubleshooting
 
-- **`NoMethodError ... 'model_id'` on `chat.ask`.** You are on `ruby_llm` 2.x. Pin `ruby_llm` to 1.x.
-- **No traces for the project.** `project_name` must be a resource attribute, which `setup` sets. A missing `FI_PROJECT_NAME` falls back to `ruby-llm`: look there.
-- **`KeyError: key not found: "FI_API_KEY"`.** Both `FI_API_KEY` and `FI_SECRET_KEY` are required.
-- **HTTP errors from the exporter in the log.** Check the endpoint (`FI_BASE_URL` is the origin, no path) and do not turn gzip back on.
-- **Short script, zero spans.** Call `FutureAGITracing.shutdown` before exit, and do not `kill -9` the process.
-- **Content shows up when you did not opt in.** Check that `FI_CAPTURE_CONTENT` is unset and that you are using `SanitizingExporter` through `setup`. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` turns the instrumentation's content on, but the exporter still drops it unless you opted in here.
-- **`RubyLLM::ModelNotFoundError: Unknown model`**. Pass `provider: :openai, assume_model_exists: true` for a model RubyLLM does not list, such as a model behind an OpenAI-compatible endpoint.
+- **No traces:** confirm both Future AGI keys, the origin in `FI_BASE_URL`, and the `project_name` resource attribute. Check exporter logs for HTTP failures.
+- **`NoMethodError` mentioning `model_id`:** the old third-party patch is still active with RubyLLM 2.x. Remove it and restart the process before using native tracing.
+- **No prompt or response text:** expected for native tracing in 2.1.1. Setting `FI_CAPTURE_CONTENT` or the third-party capture environment variable does not enable native content capture.
+- **Missing spans at exit:** allow the shutdown hook to complete. Forced termination such as `kill -9` cannot flush queued spans.
 
-## Run the example
+## Existing RubyLLM 1.x installations
 
-```bash
-cd examples/frameworks/ruby-llm
-export FI_API_KEY=... FI_SECRET_KEY=... OPENAI_API_KEY=...   # plus FI_BASE_URL and OPENAI_API_BASE if not hosted / OpenAI
-./run_e2e.sh
+<Warning>
+Stop exporting traces from the old RubyLLM 1.x helper when you require metadata-only capture. Its prefix filter accepts arbitrary `gen_ai.request.*`, `gen_ai.response.*`, and `gen_ai.usage.*` attributes: for example, `with_otel_attributes` can put prompts or credentials in `gen_ai.request.parameters`. Neither `capture_content: false` nor leaving `FI_CAPTURE_CONTENT` unset prevents this bypass. The instrumentation's capture switch also leaves tool data and exception events enabled.
+</Warning>
+
+Do not remove `SanitizingExporter` while leaving the third-party instrumentation exporting: that exposes additional data. To pause the old integration:
+
+1. In startup configuration, stop loading `futureagi_tracing.rb` and calling `FutureAGITracing.setup`. Remove any separate `config.use "OpenTelemetry::Instrumentation::RubyLLM"` call and disable automatic loading of that instrumentation. If tracing shares a provider with other instrumentation, keep that provider and its exporter for the other integrations rather than shutting it down globally.
+2. Remove instrumentation-only application calls such as `with_otel_attributes` before restarting, including calls that attach session, conversation or user attributes. That method comes from the third-party patch, not RubyLLM 1.x; leaving it in a chat chain raises `NoMethodError` once the patch is disabled. Keep the chat object and ordinary RubyLLM calls, but omit the telemetry-only chain as shown below. Future AGI session/user grouping is unavailable while this tracing is paused; the chat's conversation history still works.
+3. Restart the application with both changes. Changes to startup configuration do not remove an already installed patch. Do not reinstall the patch just to retain its attribute methods.
+
+For example, replace a session chain such as `RubyLLM.chat(model: "gpt-4o-mini").with_otel_attributes(...)` with an ordinary chat, reusing it for each turn:
+
+```ruby title="legacy-paused.rb"
+require "ruby_llm"
+
+RubyLLM.configure { |config| config.openai_api_key = ENV.fetch("OPENAI_API_KEY") }
+
+chat = RubyLLM.chat(model: "gpt-4o-mini")
+chat.ask("Say hi")
+chat.ask("Say bye")
 ```
 
-It installs the gems into `./.bundle-vendor`, runs the tests (a stand-in model and a stand-in Future AGI, no network), then runs six scenarios against your model and your Future AGI, once metadata only and once with the opt-in. Set `RUBY_LLM_VERSION=1.15.0` to run the older leg.
+This example does not load the old helper or enable RubyLLM tracing.
+
+Keep your application on its pinned RubyLLM 1.x dependencies while you prepare the upgrade, but leave its legacy tracing disabled. Resume RubyLLM tracing with the native setup above after migrating to 2.1.1, or with a maintained privacy-filtering package that explicitly supports your 1.x version. This guide does not provide an installable legacy replacement; do not replace the old helper with an unfiltered exporter.
+
+Before switching to native tracing, account for these differences:
+
+- Native tracing does not provide content capture, `with_otel_attributes`, automatic session/user attributes, or `invoke_agent` roots. Migrate application calls that rely on the old API; simply updating the gem version is not enough.
+- The third-party instrumentation 0.7.1 does not support RubyLLM 2.x. Remove that gem and its configuration, then restart before enabling native tracing. Do not run both integrations together.
+- Use only non-sensitive model, tool and workflow names. Native privacy defaults do not sanitize attributes, events, resource values or names supplied by your own application or other instrumentation.
+
+Follow the [RubyLLM upgrade guide](https://rubyllm.com/upgrading/) for the application migration.

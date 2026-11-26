@@ -1,0 +1,161 @@
+---
+title: "Python MCP tracing with Future AGI"
+description: "Send native Python MCP client and server spans to Future AGI with OpenTelemetry."
+---
+
+Trace Python MCP requests and tool execution in Future AGI using the MCP SDK's native OpenTelemetry support. This example runs a local calculator over stdio; it needs no model API key or Node.js installation.
+
+Use Python 3.11–3.13 and MCP 2.3 or later in the 2.x series. This guide uses the `mcp` package, not the separate `fastmcp` package.
+
+<Note>
+Do not enable `MCPInstrumentor` for this native route. MCP already creates request spans and propagates W3C trace context. If you use MCP 1.x, see [existing traceAI installations](#existing-traceai-installations).
+</Note>
+
+## Install
+
+```bash
+pip install "mcp>=2.3.0,<3" opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+```
+
+## Configure tracing
+
+Set your Future AGI credentials and the OTLP/HTTP trace endpoint:
+
+```bash
+export FI_API_KEY="your-futureagi-api-key"
+export FI_SECRET_KEY="your-futureagi-secret-key"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.futureagi.com/tracer/v1/traces"
+```
+
+Save this standard OpenTelemetry configuration as `telemetry.py`. Both the client and server load it. The resource attributes route spans to the `mcp_project` Observe project; `service.name` alone does not select a Future AGI project.
+
+```python title="telemetry.py"
+import os
+
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+provider = TracerProvider(
+    resource=Resource.create({
+        "service.name": "mcp-example",
+        "project_name": "mcp_project",
+        "project_type": "observe",
+    })
+)
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
+    endpoint=os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"],
+    headers={
+        "X-Api-Key": os.environ["FI_API_KEY"],
+        "X-Secret-Key": os.environ["FI_SECRET_KEY"],
+    },
+)))
+trace.set_tracer_provider(provider)
+```
+
+If your application already configures a global OpenTelemetry provider, add the resource attributes and exporter to that configuration instead of installing a second provider.
+
+<Warning>
+Native MCP spans include method and tool names. Successful tool calls do not include arguments or results by default, but failures can include exception messages and stack traces. Do not put secrets in tool names or exception messages. Apply your OpenTelemetry Collector's redaction policy before export if error details may contain sensitive data. `FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS`, and `FI_HIDE_ERROR_DETAILS` do not control native MCP telemetry.
+</Warning>
+
+## Create the server
+
+Save this as `server.py` beside `telemetry.py`:
+
+```python title="server.py"
+from telemetry import provider
+from mcp.server.mcpserver import MCPServer
+
+server = MCPServer("calculator")
+
+
+@server.tool()
+async def add(a: int, b: int) -> int:
+    return a + b
+
+
+if __name__ == "__main__":
+    try:
+        server.run(transport="stdio")
+    finally:
+        provider.shutdown()
+```
+
+Keep stdout reserved for the MCP protocol. Send server logs to stderr.
+
+## Call the tool
+
+Save this as `client.py` in the same directory. The client starts the server and passes only the tracing environment variables it needs.
+
+```python title="client.py"
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+from telemetry import provider
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+async def main():
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=[str(Path(__file__).with_name("server.py"))],
+        env={key: os.environ[key] for key in (
+            "FI_API_KEY", "FI_SECRET_KEY", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+        )},
+    )
+    async with stdio_client(parameters) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("add", {"a": 2, "b": 3})
+            print(result.content[0].text)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    finally:
+        provider.shutdown()
+```
+
+Run it from that directory:
+
+```bash
+python client.py
+```
+
+The result is `5`. Open **Observe** in Future AGI and select **mcp_project**. Find the `tools/call` client span and its `tools/call add` server child. The server span carries `gen_ai.operation.name=execute_tool` and `gen_ai.tool.name=add`, so Future AGI can classify the tool operation. Initialization has its own spans; a client span and its server child represent the two sides of one request, not duplicate instrumentation.
+
+For a remote MCP server, configure tracing in the server process too. A client cannot export a server's spans on its behalf. Instrument any model SDK used inside your tools separately if you also need model usage and token counts.
+
+## Existing traceAI installations
+
+On MCP 1.x, `traceAI-mcp` propagates context between transports and handlers; it does not create spans. Keep your existing application, agent, or model instrumentation to produce spans on both sides of the connection. Install the published package with Python 3.11–3.13:
+
+```bash
+pip install "traceAI-mcp>=0.1.3" "mcp>=1.8.1,<2"
+```
+
+Enable it in each process before importing the transport functions:
+
+```python
+from traceai_mcp import MCPInstrumentor
+
+MCPInstrumentor().instrument()
+```
+
+Configure your existing tracer provider and exporter in both processes. If you must remain on MCP 1.8.1, also pin `pydantic==2.11.10`; that MCP release uses a private Pydantic API removed in newer versions. Prefer upgrading MCP instead of applying this Pydantic pin to newer releases.
+
+When migrating to the native MCP 2.x route, remove `MCPInstrumentor` setup and retain one provider/export pipeline per process. See the [package lifecycle reference](https://github.com/future-agi/traceAI/tree/dev/python/frameworks/mcp#instrumentation-lifecycle) for disabling existing wrappers.
+
+## Troubleshooting
+
+- **No spans:** install the SDK and exporter, configure the global provider in each process before requests run, and call `provider.shutdown()` on exit. Check exporter errors on stderr.
+- **Only client spans:** the remote server also needs a provider and exporter. Installing the client package does not instrument a separately deployed server.
+- **Authentication or routing errors:** check both Future AGI keys, the `/tracer/v1/traces` endpoint, and the `project_name` / `project_type` resource attributes.
+- **No tool arguments or model tokens:** native MCP operation spans are not model instrumentation or a transcript of tool payloads. Instrument the model SDK separately and review its content-capture controls.

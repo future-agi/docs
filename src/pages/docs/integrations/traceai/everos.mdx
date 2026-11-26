@@ -1,0 +1,136 @@
+---
+title: "EverOS memory tracing"
+description: "Send native EverOS memory traces to self-hosted Future AGI through a local OpenTelemetry Collector, with span mapping and error-text filtering."
+---
+
+Send EverOS memory operations and their child spans to self-hosted Future AGI using native OpenTelemetry. A local Collector maps EverOS's Langfuse-style attributes and removes error text before forwarding traces. You do not need an EverOS traceAI package.
+
+## Prerequisites
+
+- Python 3.12 or newer and an EverOS server with its model and storage settings configured.
+- A self-hosted Future AGI deployment, its full OTLP/HTTP traces endpoint, and API keys.
+- [OpenTelemetry Collector Contrib 0.164.0](https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.164.0), installed as `otelcol-contrib` on the same host as EverOS.
+
+This guide uses the EverOS server's `/api/v2` routes, not EverMemOS Cloud.
+
+<Warning>
+  Keep the Collector on the same host as EverOS, listening on loopback. EverOS's
+  `capture_content=false` does not suppress exception messages or stack traces:
+  these reach the local Collector before it removes them. If error text must not
+  leave the EverOS process at all, keep tracing disabled with
+  `EVEROS_OBSERVABILITY__ENABLED=false`.
+</Warning>
+
+## 1. Install EverOS
+
+```bash
+pip install 'everos[otel]==1.5.1'
+everos init
+```
+
+Configure your model and storage settings in `~/.everos/everos.toml`. The `otel` extra enables EverOS's native exporter. The Collector configuration below also accepts the native tracing attributes from EverOS 1.4.2.
+
+## 2. Start the local Collector
+
+Download the maintained [native-attribute Collector configuration](/examples/observe/langfuse-native.yaml). It uses standard OpenTelemetry processors, not a custom Python exporter or monkeypatch.
+
+```bash
+curl -fSLo langfuse-native.yaml \
+  https://docs.futureagi.com/examples/observe/langfuse-native.yaml
+
+export FI_API_KEY="YOUR_FI_API_KEY"
+export FI_SECRET_KEY="YOUR_FI_SECRET_KEY"
+export FI_PROJECT_NAME="everos-memory"
+export FI_TRACES_ENDPOINT="http://127.0.0.1:14338/tracer/v1/traces"
+export FI_CAPTURE_CONTENT=false
+
+otelcol-contrib --config langfuse-native.yaml
+```
+
+Replace `FI_TRACES_ENDPOINT` with the **full** self-hosted Future AGI traces URL reachable from the Collector. Use HTTPS when forwarding across hosts. The example targets a Future AGI collector on the same host; do not point it back at the local Collector's port `4318`.
+
+The configuration listens on `127.0.0.1:4318`, adds `project_name` and `project_type=observe`, and sends your API keys only on the outgoing request. An existing `project_name` resource attribute takes precedence over `FI_PROJECT_NAME`. Logs and metrics are discarded; only traces are forwarded.
+
+## 3. Connect EverOS
+
+In a second terminal, point EverOS at the local Collector:
+
+```bash
+export EVEROS_OBSERVABILITY__ENABLED=true
+export EVEROS_OBSERVABILITY__EXPORTER=otlp_http
+export EVEROS_OBSERVABILITY__ENDPOINT="http://127.0.0.1:4318/v1/traces"
+export EVEROS_OBSERVABILITY__HEADERS='{}'
+export EVEROS_OBSERVABILITY__CAPTURE_CONTENT=false
+export EVEROS_OBSERVABILITY__EMIT_RECALL_SCORES=false
+
+everos server start
+```
+
+Leave EverOS's `langfuse_public_key`, `langfuse_secret_key`, and `langfuse_host` settings unset in both the environment and configuration file. They configure a separate Langfuse destination and authentication; Future AGI does not ingest Langfuse scores.
+
+Use `/v1/traces` for the **local** Collector and `/tracer/v1/traces` for the **Future AGI** destination. EverOS uses its endpoint exactly as given, without adding a path.
+
+Do not add another instrumentor around EverOS's memory operations. The Collector transforms the existing spans and preserves their IDs, timing, and parent-child relationships.
+
+## 4. Add and search a memory
+
+With EverOS running on its default local port, add a short conversation, flush it into memory, and search it:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v2/memory/add \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"lighthouse-session","messages":[{"sender_id":"user-ada","role":"user","timestamp":1790000000000,"content":"I work on Lighthouse."}]}'
+
+curl -X POST http://127.0.0.1:8000/api/v2/memory/flush \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"lighthouse-session"}'
+
+curl -X POST http://127.0.0.1:8000/api/v2/memory/search \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"user-ada","query":"What does Ada work on?","method":"hybrid"}'
+```
+
+These operations use your configured model and embedding services. Allow time for batched exports. On shutdown, stop EverOS first and the local Collector second so both can flush.
+
+## View the traces
+
+Open the `everos-memory` project in **Observe**. Look for `everos.memory.add`, `everos.memory.flush`, and `everos.memory.search`, with the stages EverOS records beneath them.
+
+The Collector maps these attributes before export:
+
+| EverOS attribute | Future AGI attribute |
+| --- | --- |
+| `langfuse.observation.type` | `gen_ai.span.kind`: generation → LLM, span → CHAIN, embedding → EMBEDDING, retriever → RETRIEVER, agent → AGENT, tool → TOOL |
+| `langfuse.session.id` / `langfuse.user.id` | `session.id` / `user.id` on spans that carry them |
+| `langfuse.observation.input` / `.output` | `input.value` / `output.value`, only with content capture enabled at both hops |
+| `langfuse.trace.tags` | `tag.tags` |
+
+EverOS's model names and token counts pass through unchanged. Embedding usage depends on what the embedding provider returns. The Collector does not invent provider names, costs, missing content, or extra spans. Background stages depend on the operation and conversation.
+
+## Privacy and content capture
+
+By default, both EverOS and the Collector disable input/output capture. The Collector also removes ERROR status descriptions, exception messages and stack traces, and the known `error.message`, `error.stack`, and `langfuse.observation.status_message` fields. Error status codes and exception types remain available.
+
+To show the input and output fields EverOS captures, enable **both** settings and restart both processes:
+
+```bash
+# In the Collector terminal, before restarting otelcol-contrib:
+export FI_CAPTURE_CONTENT=true
+
+# In the EverOS terminal, before restarting everos server start:
+export EVEROS_OBSERVABILITY__CAPTURE_CONTENT=true
+```
+
+Enabling content capture does not re-enable error text. EverOS truncates captured values at 4096 characters; the Collector cannot recover omitted or truncated content. It removes the original input/output aliases after mapping, so they do not bypass the Collector's content switch.
+
+Session, user, owner, app, project, memory, request, and run identifiers can still be exported as metadata. This configuration filters known content and error fields, not arbitrary sensitive values in identifiers, span names, custom attributes, or logs outside this trace pipeline. EverOS does not use traceAI's `FI_HIDE_*` settings.
+
+## Troubleshooting
+
+- **Nothing arrives.** Install the `otel` extra, enable EverOS tracing, and start the local Collector before EverOS. Check both processes' errors without enabling payload/debug logging.
+- **404 responses.** Check both endpoint paths: `/v1/traces` locally and `/tracer/v1/traces` on Future AGI.
+- **401 from Future AGI.** Set `FI_API_KEY` and `FI_SECRET_KEY` in the Collector's environment, not EverOS's headers.
+- **Unknown kinds or missing session grouping.** Confirm EverOS points to the local Collector and that `transform/native` is in its traces pipeline. Future AGI ingestion paths differ in native-attribute normalization; bypassing this configuration may leave raw Langfuse-style attributes.
+- **Empty input/output.** Enable both capture switches if your data policy allows it. Only operations where EverOS records content can show it.
+- **Port 4318 is in use.** Set `FI_OTLP_LISTEN=127.0.0.1:4319` for the Collector and change EverOS's endpoint to `http://127.0.0.1:4319/v1/traces`.
+- **The first `add` cannot download its tokenizer.** EverOS may need to download `o200k_base` from `openaipublic.blob.core.windows.net`; prepare its cache before running in a restricted environment.

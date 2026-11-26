@@ -2,8 +2,9 @@
 
 Needs a reachable collector: FI_BASE_URL, FI_API_KEY, FI_SECRET_KEY (skips otherwise). Storage assertions read
 the local stack through `docker exec` (container th8103-e2e-clickhouse-1, override with FI_CH_CONTAINER) and skip
-if it is absent. Covers: the direct export is rejected (no project_name), the Collector's fix is accepted, gzip and
-bad credentials are rejected, and the caller's W3C trace id and parent survive.
+if it is absent. Covers: the direct export is rejected (no project_name), the Collector's fix is accepted, gzip is
+accepted (HTTP 400 before v1.56.0: set FI_EXPECT_GZIP_STATUS=400 for such a release), bad credentials are rejected,
+and the caller's W3C trace id and parent survive.
 """
 import gzip
 import os
@@ -113,11 +114,15 @@ def test_errors_are_stored_as_error():
     assert any(x["name"] == "GET /fi-down" and str(x["status"]).upper() == "ERROR" for x in rows), rows
 
 
-def test_gzip_body_is_rejected():
+def test_gzip_body_is_accepted_from_v1_56():
+    # Self-hosted releases before v1.56.0 answered gzip with HTTP 400; set FI_EXPECT_GZIP_STATUS=400 to check one.
+    expected = int(os.environ.get("FI_EXPECT_GZIP_STATUS", "200"))
+    assert expected in (200, 400)
     body, trace = build("gravitee-4.12.23-content-off.pb")
     r = post(gzip.compress(body), headers={"Content-Encoding": "gzip"})
-    assert r.status_code != 200
-    assert stored(trace, wait=5) == []
+    assert r.status_code == expected, r.text[:200]
+    if expected == 400:
+        assert stored(trace, wait=5) == []
 
 
 @pytest.mark.parametrize("key,secret,extra", [

@@ -9,18 +9,19 @@ LangChain instrumentor. pyagentspec itself has no OpenTelemetry exporter.
 
 | File | What it is |
 | --- | --- |
-| `futureagi_tracing.py` | The recipe: `setup_tracing()` = `register()` + an error-detail filter on the exporter + `LangChainInstrumentor`. Shown in full on the page. |
 | `weather_agent.py` | The Agent Spec definition and the Python implementation of its tool. |
-| `app.py` | Runs the agent: `chat`, `async`, `tool-error`, `model-error`. |
+| `app.py` | Configures `register()` and `LangChainInstrumentor` with `TraceConfig(hide_error_details=True)`, then runs `chat`, `async`, `tool-error` or `model-error`. No copied tracing helper. |
 | `run_e2e.sh` | Tests, then every scenario against a real model and a Future AGI collector, content captured and content hidden. |
 | `scripts/openinference_variant.py` | Comparison only: the same agent with Arize's `openinference-instrumentation-agentspec` (not a dependency of this recipe). |
 | `scripts/record_fixture.py`, `scripts/replay_fixture.py` | Record one run as OTLP/JSON; post a recorded fixture to a Future AGI project. |
 | `fixtures/` | Two recorded runs (real model, content hidden or masked): this recipe, and Arize's instrumentor. |
 | `tests/` | Hermetic tests: a model stand-in (`fake_openai.py`, not a model) and a loopback OTLP recorder. No keys, no network beyond 127.0.0.1. |
 
-Tested 2026-10-16: `pyagentspec` 26.3.1 (`langgraph` 1.2.15, `langchain-core` 1.6.11,
-`langchain-openai` 1.2.2), `traceai-langchain` 0.2.0, `fi-instrumentation-otel` 1.1.0,
-`opentelemetry-sdk` 1.45.1, Python 3.13.15 and 3.10.17. LangGraph adapter only.
+Requires the released `pyagentspec[langgraph]` 26.3.1, `traceai-langchain` 0.2.1 and
+`fi-instrumentation-otel` 1.2.2. LangGraph adapter only. Error messages, error status
+descriptions and stack traces are omitted independently of input/output capture;
+`ERROR` status and exception type remain available. Set both `FI_HIDE_INPUTS=true`
+and `FI_HIDE_OUTPUTS=true` to hide prompts, answers and tool payloads as well.
 
 ## Run the tests
 

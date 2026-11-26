@@ -119,7 +119,7 @@ def setup_tracing(
         exporter = OTLPSpanExporter(
             endpoint=f"{base_url}/tracer/v1/traces",
             headers={"X-Api-Key": os.environ["FI_API_KEY"], "X-Secret-Key": os.environ["FI_SECRET_KEY"]},
-            compression=Compression.NoCompression,  # the Future AGI HTTP receiver rejects gzip bodies
+            compression=Compression.NoCompression,  # optional: Future AGI cloud and self-hosted v1.56.0+ also accept gzip
         )
     provider = create_tracer_provider(
         resource=Resource.create(

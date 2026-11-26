@@ -23,3 +23,11 @@ test("the docs page shows the shipped recipe files verbatim", { skip: !existsSyn
     assert.equal(shown, readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), `${file} differs from the page`);
   }
 });
+
+test("the guide keeps privacy and setup instructions without a verification diary", () => {
+  const mdx = readFileSync(page, "utf8");
+  assert.match(mdx, /futureAGIExportPolicy/);
+  assert.match(mdx, /PRINCIPAL_ID_KEYS/);
+  assert.match(mdx, /Workflow run-data retention/);
+  assert.doesNotMatch(mdx, /How this was checked:|In our test/);
+});

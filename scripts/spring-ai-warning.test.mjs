@@ -12,13 +12,13 @@ const warning = source.match(/<Warning>([\s\S]*?)<\/Warning>/)?.[1] ?? "";
 
 test("warning identifies the unsupported Spring AI 1.1 path and reported linkage error", () => {
   assert.match(warning, /not a supported integration path for Spring AI `1\.1\.x`/);
-  assert.match(warning, /`NoSuchMethodError` involving `Message\.getContent\(\)` has been reported/);
-  assert.match(warning, /does not yet provide a verified replacement artifact coordinate/);
+  assert.match(warning, /`NoSuchMethodError` involving `Message\.getContent\(\)`/);
+  assert.match(warning, /Do not install this wrapper for Spring AI 1\.1 or downgrade to M4/);
 });
 
 test("M4 is a historical wrapper compilation target, not a tested support range", () => {
-  assert.match(warning, /M4-based traceAI wrapper was compiled against Spring AI `1\.0\.0-M4`/);
-  assert.match(warning, /compilation target, not a tested support range/);
+  assert.match(warning, /traceAI wrapper compiled against Spring AI `1\.0\.0-M4`/);
+  assert.match(warning, /compilation target is not a tested support range/);
   assert.ok(!/source currently targets/i.test(source), "Do not describe the current source target");
 });
 
@@ -39,7 +39,9 @@ for (const [name, url] of [
   });
 }
 
-test("warning replaces obsolete installation examples and provider tables", () => {
+test("notice excludes unsupported wrapper examples and preserves privacy guidance", () => {
+  assert.match(source, /Do not enable sensitive prompt or completion logging/);
+  assert.match(source, /may not include the same traceAI attributes, token counts or cost fields/);
   assert.ok(!/^\s*(?:```|~~~|\|)/m.test(source), "Remove code fences and tables from this notice");
   assert.ok(
     !/com\.github\.future-agi\.traceAI|traceai-spring-boot-starter|TracedChatModel|TracedEmbeddingModel/.test(source),
