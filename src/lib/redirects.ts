@@ -2,6 +2,10 @@
 // 275 redirects from futureagi.mintlify.app
 export const redirectMap: Record<string, string> = {
   '/docs/integrations/coding-agents/hook-to-otlp': '/docs/integrations/coding-agents',
+  // Scenario rows live in a dataset; this endpoint is documented under Datasets
+  '/docs/api/scenarios/addemptyrowstodataset': '/docs/api/datasets/add-empty-rows',
+  // Fix My Agent became Epoch; the old guide's readers land on starting one
+  '/docs/simulation/guides/fix-my-agent': '/docs/environments/guides/run-epoch',
   // Prototype was deprecated and removed from the dashboard; its pages now point at Evaluation
   '/docs/prototype': '/docs/evaluation',
   '/docs/prototype/concepts/understanding-prototype': '/docs/evaluation',
@@ -269,7 +273,7 @@ export const redirectMap: Record<string, string> = {
   '/future-agi/products/observability/concept/overview': '/docs/tracing/concepts',
   '/future-agi/products/observability/concept/spans': '/docs/tracing/concepts/spans',
   '/future-agi/products/observability/concept/traceai': '/docs/tracing/concepts/traceai',
-  '/future-agi/products/observability/concept/traces': '/docs/tracing/concepts/traces',
+  '/future-agi/products/observability/concept/traces': '/docs/observe/concepts/traces',
   '/future-agi/products/observability/overview': '/docs/integrations/traceai',
   '/future-agi/products/observe/alerts-and-monitors': '/docs/observe/features/alerts',
   '/future-agi/products/observe/evals': '/docs/observe/features/evals',
@@ -353,7 +357,7 @@ export const redirectMap: Record<string, string> = {
   '/product/simulation/agent-definition': '/docs/simulation/concepts/agent-definitions',
   '/product/simulation/how-to/chat-simulation-using-sdk': '/docs/simulation/guides/run-chat-simulation',
   '/product/simulation/how-to/evaluate-tool-calling': '/docs/simulation/guides/evaluate-tool-calls',
-  '/product/simulation/how-to/fix-my-agent': '/docs/simulation/guides/fix-my-agent',
+  '/product/simulation/how-to/fix-my-agent': '/docs/environments/guides/run-epoch',
   '/product/simulation/how-to/observe-to-simulate': '/docs/simulation/guides/replay-chat',
   '/product/simulation/how-to/prompt-simulation': '/docs/simulation/guides/prompt-simulation',
   '/product/simulation/how-to/voice-observability': '/docs/simulation/guides/replay-voice',
@@ -385,7 +389,7 @@ export const redirectMap: Record<string, string> = {
   '/docs/simulation/features/prompt-simulation': '/docs/simulation/guides/prompt-simulation',
   '/docs/simulation/features/evaluate-tool-calling': '/docs/simulation/guides/evaluate-tool-calls',
   '/docs/simulation/features/view-results': '/docs/simulation/guides/explore-results',
-  '/docs/simulation/features/fix-my-agent': '/docs/simulation/guides/fix-my-agent',
+  '/docs/simulation/features/fix-my-agent': '/docs/environments/guides/run-epoch',
 
   // Product docs revamp: Features-shaped sections replaced by Concepts/Guides/Reference/Troubleshooting.
   '/docs/agent-playground/features/build-workflow': '/docs/agent-playground/guides/build-workflow',
@@ -483,4 +487,42 @@ export const redirectMap: Record<string, string> = {
   '/docs/tracing/auto/togetherai': '/docs/integrations/traceai/togetherai',
   '/docs/tracing/auto/vercel': '/docs/integrations/traceai/vercel',
   '/docs/tracing/auto/vertexai': '/docs/integrations/traceai/vertexai',
+
+  // One Traces page: the tracing concepts copy was folded into the Observe one
+  '/docs/tracing/concepts/traces': '/docs/observe/concepts/traces',
+
+  // Old /product/... and /future-agi/... URLs are forwarded at the CDN by an older
+  // map that lands on these retired /docs paths. Send each one to the page its old
+  // URL maps to above.
+  '/docs/dataset/dynamic-column/by-executing-code': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/by-extracting-entities': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/by-extracting-json': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-api-calls': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-classification': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-conditional-node': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-run-prompt': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-vector-db': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/features/create-static-column': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/evaluation/builtin/content-moderation': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/content-safety-violation': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/factual-accuracy': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/is-compliant': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/is-factually-consistent': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/length-evals': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/recall-score': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/valid-links': '/docs/evaluation/builtin',
+  '/docs/tracing/manual/annotating-using-api': '/docs/sdk/tracing/annotating-using-api',
+  '/docs/tracing/manual/create-tool-spans': '/docs/sdk/tracing/create-tool-spans',
+  '/docs/tracing/manual/get-current-span-context': '/docs/sdk/tracing/get-current-span-context',
+  '/docs/tracing/manual/instrument-with-traceai-helpers': '/docs/sdk/tracing/instrument-with-traceai-helpers',
+  '/docs/tracing/manual/mask-span-attributes': '/docs/sdk/tracing/mask-span-attributes',
+  '/docs/tracing/manual/semantic-conventions': '/docs/sdk/tracing/semantic-conventions',
+  // "intergation" is the misspelling the old URL had
+  '/docs/tracing/manual/langfuse-intergation': '/docs/sdk/tracing/langfuse-integration',
+  '/docs/simulation/set-up/personas': '/docs/simulation/concepts/personas',
+  '/docs/simulation/set-up/run-tests': '/docs/simulation/guides/run-voice-simulation',
+  '/docs/simulation/how-to/chat-simulation-using-sdk': '/docs/simulation/guides/run-chat-simulation',
+  '/docs/simulation/how-to/voice-observability': '/docs/simulation/guides/replay-voice',
+  '/docs/annotations/concepts/queues': '/docs/annotations/reference/queue-settings-and-limits',
+  '/docs/protect/how-to': '/docs/protect/guides/run-protect-from-the-sdk',
 };

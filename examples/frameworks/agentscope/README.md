@@ -22,7 +22,7 @@ Python 3.11, 3.12 or 3.13.
 
 ```bash
 python3.13 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt     # pins agentscope 2.0.10
+pip install -r requirements.txt     # pins agentscope 2.0.11
 ```
 
 ## Run
@@ -33,16 +33,18 @@ Tests only (no network, no keys):
 python -m pytest
 ```
 
-End to end against a Future AGI collector (self-hosted shown) and a model:
+End to end against Future AGI cloud and a model:
 
 ```bash
-FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:4318 \
+FI_API_KEY=... FI_SECRET_KEY=... \
 OPENAI_API_KEY=... OPENAI_BASE_URL=... OPENAI_MODEL=... ./run_e2e.sh
 ```
 
+`FI_BASE_URL` defaults to `https://api.futureagi.com`. For a self-hosted Future AGI, set it to your collector origin, for example `FI_BASE_URL=http://localhost:4318`.
+
 `run_e2e.sh` creates `.venv` if there is none, runs the tests, runs `app.py` four times into project `agentscope-e2e` (or `FI_PROJECT_NAME`), then once more with `FI_CAPTURE_CONTENT=1` into `<project>-content`. Without `OPENAI_API_KEY` it starts the local stand-in from `tests/fake_openai.py`, which is not a real model, so the script runs anywhere.
 
-Other AgentScope versions: `VENV_DIR=/path/to/venv ./run_e2e.sh` with a venv that has the version you want (`pip install agentscope==2.0.9`).
+Other AgentScope 2.x versions: `VENV_DIR=/path/to/venv ./run_e2e.sh` with a venv that has the version you want, for example `pip install agentscope==2.0.10 "pytest>=8"`. The tests pass on 2.0.9, 2.0.10 and 2.0.11.
 
 ## Configure
 
@@ -74,25 +76,24 @@ python -m pytest tests/test_legacy_1x.py     # the 2.x tests skip themselves on 
 
 ## What was tested and what was not covered
 
-Run on 2026-10-15 and 2026-10-16 with `agentscope` 2.0.10 (and 2.0.9, and 1.0.21 for the 1.x leg), `opentelemetry-sdk` 1.45.1, `openai` 3.31.0, Python 3.13.15 and 3.11.12, against a self-hosted Future AGI stack.
+Run on 2026-11-17 with `agentscope` 2.0.11 (and 1.0.21 for the 1.x leg), `opentelemetry-sdk` 1.45.2, `openai` 3.52.0, Python 3.12.13, against Future AGI cloud (`https://api.futureagi.com`), with `gemini-2.5-flash` through Gemini's OpenAI-compatible endpoint as the model. Every trace below was read back from the Future AGI API. The tests also pass on 2.0.9 and 2.0.10 (21 passed, 3 skipped on each). Earlier runs on 2026-10-15 and 2026-10-16 covered 2.0.9, 2.0.10 and 1.0.21 against a self-hosted Future AGI stack.
 
 | Verified | How |
 | --- | --- |
-| Spans land in the project named on the resource, one trace per reply, reply span with model and tool children, model id, provider and tokens | `run_e2e.sh` against a local OpenAI-compatible proxy running a real model; `fi_verify` on the stored spans |
+| Spans land in the project named on the resource, one trace per reply, reply span with model and tool children, model name on the model span | `run_e2e.sh` against Future AGI cloud: projects `agentscope-e2e` and `agentscope-e2e-content` created from the resource, `invoke_agent support-agent` with `chat gemini-2.5-flash` and `execute_tool` children |
 | Streaming and non-streaming model calls, both | `chat` and `nostream` scenarios |
-| A failed model call is `ERROR` on the `chat` and `invoke_agent` spans and the trace is still exported | `model-error` scenario, tests and end to end |
-| A raising tool does not make its span `ERROR` (AgentScope turns it into an error result) | `tool-error` scenario, `test_tool_exception_does_not_fail_the_tool_span` |
-| Content off by default, on with `FI_CAPTURE_CONTENT=1`; no username, host name, path, stack trace or key stored | marker scans, see Privacy |
+| A failed model call is `ERROR` on the `chat` and `invoke_agent` spans and the trace is still exported | `model-error` scenario: both spans stored as `ERROR` with `openai.NotFoundError` in Future AGI cloud; tests |
+| A raising tool does not make its span `ERROR` (AgentScope turns it into an error result) | `tool-error` scenario (span stored as `OK` in Future AGI cloud), `test_tool_exception_does_not_fail_the_tool_span` |
+| Content off by default, on with `FI_CAPTURE_CONTENT=1`; no username, host name, path, stack trace or key stored | the default-run traces in Future AGI cloud hold no prompt or answer text, the `FI_CAPTURE_CONTENT=1` trace holds both; marker scans, see Privacy |
 | Keys never cross: the model key reaches the model only, the Future AGI keys reach the collector only | `tests/test_recipe.py` |
 | A dead collector does not fail the agent; a normal exit flushes; a provider installed after the agent is built still traces; no provider means no spans and no error | `tests/test_recipe.py` |
 | gzip stays off even with `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` set | `tests/test_recipe.py` |
-| Two projects stay apart | `tests/test_recipe.py`, and twelve local projects (28 traces, 102 spans) in which no trace id appeared in two projects |
-| 2.0.9 and 2.0.10 behave the same | the same tests and end-to-end run on both; the `_tracing` module differs only by one added provider name |
-| 1.0.21 works through `tracing_url` plus environment variables | `tests/test_legacy_1x.py` and an end-to-end run |
+| Two projects stay apart | `tests/test_recipe.py`; the default and content runs landed in two separate Future AGI cloud projects |
+| 2.0.9, 2.0.10 and 2.0.11 behave the same, except the tool error result: 2.0.11 writes it as JSON with `"state": "error"`, 2.0.10 and earlier as a repr containing `ToolResultState.ERROR` | the same tests on all three; `test_tool_exception_does_not_fail_the_tool_span` accepts both forms |
+| 1.0.21 works through `tracing_url` plus environment variables | `tests/test_legacy_1x.py`, and an end-to-end run into Future AGI cloud project `agentscope-1x-e2e` (`invoke_agent`, `chat`, `execute_tool` and `format` spans) |
 
 | **Not** verified | Why |
 | --- | --- |
-| The hosted `api.futureagi.com` collector | Only a self-hosted stack was used |
-| Model classes other than `OpenAIChatModel` | Five Gemini attempts (`gemini-3.8-flash`, `gemini-3.7-flash`) were all answered `503 UNAVAILABLE` by the Gemini API, so no Gemini run completed |
+| Model classes other than `OpenAIChatModel` | Gemini was reached through its OpenAI-compatible endpoint with `OpenAIChatModel`, not through AgentScope's own Gemini model class |
 | Human-in-the-loop and external-execution replies, multi-agent pipelines, `create_app` service agents, MCP tools | Not run |
 | Future AGI typing the reply span as an agent, filling Input and Output, mapping `gen_ai.conversation.id` to a session | Not done by this recipe: that is normalization in Future AGI's shared span processor |
