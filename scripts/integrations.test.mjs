@@ -1,4 +1,6 @@
+import './ragflow-page.test.mjs';
 import './auto-page.test.mjs';
+import './autogen-page.test.mjs';
 import './pi-plugin-page.test.mjs';
 import './openclaw-package-page.test.mjs';
 import './goose-page.test.mjs';
@@ -153,8 +155,8 @@ test('LlamaIndex distinguishes deprecated TypeScript from the supported Python g
 
 test('LlamaIndex guide installs the released current-core compatibility fix', () => {
   const page = read('src/pages/docs/integrations/traceai/llamaindex.mdx');
-  assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.10'/);
-  assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.10\/json/);
+  assert.match(page, /pip install 'traceAI-llamaindex==0\.1\.11'/);
+  assert.match(page, /https:\/\/pypi\.org\/pypi\/traceAI-llamaindex\/0\.1\.11\/json/);
 });
 
 test('OpenAI C# guide uses native chat tracing with authenticated traces-only export', () => {
@@ -336,6 +338,23 @@ test('machine-readable overview serializes every catalog entry and setup aid', (
   assert.equal(integrations.find(i => i.id === 'eve').name, 'Eve');
   assert.doesNotMatch(read('src/components/IntegrationDirectory.astro'), /↗/);
 });
+test('Cognee uses the maintained adapter with native tracing and safe lifecycle', () => {
+  const page = read('src/pages/docs/integrations/traceai/cognee.mdx');
+  assert.match(page, /pip install "cognee\[tracing\]==1\.6\.6" "traceai-cognee==0\.1\.1"/);
+  assert.match(page, /from traceai_cognee import configure/);
+  assert.match(page, /COGNEE_TRACING_ENABLED=true/);
+  assert.ok(page.indexOf('handle = configure(') < page.indexOf('import cognee'));
+  assert.match(page, /handle\.force_flush\(\)[\s\S]*finally:[\s\S]*handle\.shutdown\(\)/);
+  assert.match(page, /capture_content=True/);
+  assert.match(page, /free text is not scanned for secrets/);
+  assert.match(page, /Error descriptions and stack traces remain excluded/);
+  assert.match(page, /other exporters/);
+  assert.match(page, /Leave `OTEL_EXPORTER_OTLP_ENDPOINT` unset/);
+  assert.match(page, /log and metric exporters, which are not filtered by this adapter/);
+  assert.match(page, /cognee\.disable_tracing\(\)/);
+  assert.doesNotMatch(page, /CogneeExportFilter|cognee_filter|Live vendor verification|PASS\/FAIL|There is no .*package/);
+});
+
 test('MongoDB Java setup uses matching pinned Maven Central dependencies in both build tools', () => {
   const section = read('src/pages/docs/integrations/traceai/java/vector-databases.mdx')
     .split('## MongoDB Atlas Vector Search\n')[1]?.split('\n## Redis')[0];
