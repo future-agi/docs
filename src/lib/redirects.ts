@@ -273,7 +273,7 @@ export const redirectMap: Record<string, string> = {
   '/future-agi/products/observability/concept/overview': '/docs/tracing/concepts',
   '/future-agi/products/observability/concept/spans': '/docs/tracing/concepts/spans',
   '/future-agi/products/observability/concept/traceai': '/docs/tracing/concepts/traceai',
-  '/future-agi/products/observability/concept/traces': '/docs/tracing/concepts/traces',
+  '/future-agi/products/observability/concept/traces': '/docs/observe/concepts/traces',
   '/future-agi/products/observability/overview': '/docs/integrations/traceai',
   '/future-agi/products/observe/alerts-and-monitors': '/docs/observe/features/alerts',
   '/future-agi/products/observe/evals': '/docs/observe/features/evals',
@@ -487,4 +487,42 @@ export const redirectMap: Record<string, string> = {
   '/docs/tracing/auto/togetherai': '/docs/integrations/traceai/togetherai',
   '/docs/tracing/auto/vercel': '/docs/integrations/traceai/vercel',
   '/docs/tracing/auto/vertexai': '/docs/integrations/traceai/vertexai',
+
+  // One Traces page: the tracing concepts copy was folded into the Observe one
+  '/docs/tracing/concepts/traces': '/docs/observe/concepts/traces',
+
+  // Old /product/... and /future-agi/... URLs are forwarded at the CDN by an older
+  // map that lands on these retired /docs paths. Send each one to the page its old
+  // URL maps to above.
+  '/docs/dataset/dynamic-column/by-executing-code': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/by-extracting-entities': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/by-extracting-json': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-api-calls': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-classification': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-conditional-node': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-run-prompt': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/dynamic-column/using-vector-db': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/dataset/features/create-static-column': '/docs/dataset/reference/dynamic-column-methods',
+  '/docs/evaluation/builtin/content-moderation': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/content-safety-violation': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/factual-accuracy': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/is-compliant': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/is-factually-consistent': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/length-evals': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/recall-score': '/docs/evaluation/builtin',
+  '/docs/evaluation/builtin/valid-links': '/docs/evaluation/builtin',
+  '/docs/tracing/manual/annotating-using-api': '/docs/sdk/tracing/annotating-using-api',
+  '/docs/tracing/manual/create-tool-spans': '/docs/sdk/tracing/create-tool-spans',
+  '/docs/tracing/manual/get-current-span-context': '/docs/sdk/tracing/get-current-span-context',
+  '/docs/tracing/manual/instrument-with-traceai-helpers': '/docs/sdk/tracing/instrument-with-traceai-helpers',
+  '/docs/tracing/manual/mask-span-attributes': '/docs/sdk/tracing/mask-span-attributes',
+  '/docs/tracing/manual/semantic-conventions': '/docs/sdk/tracing/semantic-conventions',
+  // "intergation" is the misspelling the old URL had
+  '/docs/tracing/manual/langfuse-intergation': '/docs/sdk/tracing/langfuse-integration',
+  '/docs/simulation/set-up/personas': '/docs/simulation/concepts/personas',
+  '/docs/simulation/set-up/run-tests': '/docs/simulation/guides/run-voice-simulation',
+  '/docs/simulation/how-to/chat-simulation-using-sdk': '/docs/simulation/guides/run-chat-simulation',
+  '/docs/simulation/how-to/voice-observability': '/docs/simulation/guides/replay-voice',
+  '/docs/annotations/concepts/queues': '/docs/annotations/reference/queue-settings-and-limits',
+  '/docs/protect/how-to': '/docs/protect/guides/run-protect-from-the-sdk',
 };
