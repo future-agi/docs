@@ -917,6 +917,7 @@ test('Temporal TypeScript documents and declares the OpenTelemetry Node.js minim
   for (const name of Object.keys(manifest.dependencies).filter(name => name.startsWith('@opentelemetry/'))) {
     assert.equal(lock.packages['node_modules/' + name].engines.node, '^18.19.0 || >=20.6.0', name);
   }
+});
 
 test('Genkit Go uses native spans with an export-time privacy boundary', () => {
   const guide = read('src/pages/docs/integrations/traceai/genkit-go.mdx');
