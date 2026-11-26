@@ -8,7 +8,7 @@ const reference = read('src/pages/docs/sdk/tracing/environment-variables.mdx');
 
 test('Genkit Go and the shared reference scope privacy to supported coarse switches', () => {
   assert.doesNotMatch(reference, /All languages read from the same set/);
-  assert.match(reference, /Support varies by language and integration/);
+  assert.match(reference, /Support varies by SDK and integration/);
   assert.match(reference, /## Genkit Go privacy/);
   assert.match(guide, /environment-variables#genkit-go-privacy/);
   for (const page of [guide, reference]) {
