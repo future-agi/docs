@@ -937,7 +937,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
-              { title: 'Lock a release', href: '/docs/environments/guides/lock-a-release' },
+              { title: 'Lock a version', href: '/docs/environments/guides/lock-a-version' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
