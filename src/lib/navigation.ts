@@ -940,6 +940,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
+              { title: 'Automate with the SDK and MCP', href: '/docs/environments/guides/automate-with-the-sdk-and-mcp' },
             ]
           },
           {
