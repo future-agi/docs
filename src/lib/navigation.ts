@@ -941,7 +941,6 @@ export const tabNavigation: NavTab[] = [
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
               { title: 'Lock versions', href: '/docs/environments/guides/lock-versions' },
-              { title: 'Read a multi-agent call', href: '/docs/environments/guides/read-a-multi-agent-call' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
