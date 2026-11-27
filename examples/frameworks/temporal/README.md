@@ -21,7 +21,7 @@ This is tracing for your own Temporal application. It is not Future AGI's intern
 
 | | |
 | --- | --- |
-| `temporalio` | 1.34.0 (latest, 2026-09-30), end to end: every scenario on Python 3.13.15, the `matrix` scenario (a run with no workflow cache) on Python 3.10.17; the 47 tests on both. 1.33.0 and 1.32.0 on Python 3.13: the unit and dev-server tests (47 passed), not the Future AGI run. 1.31.0 does not export `ReplaySafeTracerProvider` and is not supported. |
+| `temporalio` | The guide pins 1.35.0 (the newest release `traceAI-temporal` 0.1.1 accepts, `<1.36`): the page and unit tests pass on it (2026-11-27). Earlier: 1.34.0 (then latest, 2026-09-30), end to end: every scenario on Python 3.13.15, the `matrix` scenario (a run with no workflow cache) on Python 3.10.17; the 47 tests on both. 1.33.0 and 1.32.0 on Python 3.13: the unit and dev-server tests (47 passed), not the Future AGI run. 1.31.0 does not export `ReplaySafeTracerProvider` and is not supported. |
 | Temporal server | `temporal server start-dev`: Temporal CLI 1.9.1, server 1.32.0 (macOS arm64, Homebrew) |
 | Python packages | `fi-instrumentation-otel` 1.1.0, `traceai-openai` 0.1.10, `openai` 3.31.0, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1 |
 | Future AGI | self-hosted (local Docker stack), OTLP/HTTP `/tracer/v1/traces` |
