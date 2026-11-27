@@ -1,17 +1,17 @@
 ---
 title: "Environments"
-description: "Change an environment's actors, prove and archive its scenarios, check run readiness and start a seeded run from Python or TypeScript"
+description: "Add an actor, save and prove the change, run a seeded test and read its calls from Python"
 ---
 
-Script what you would otherwise click through on an [environment](/docs/environments/concepts/understanding-environments): change its cast of actors, prove or archive scenarios, check that a pairing of versions is ready, start a run with a fixed seed, and read who did what in a multi-agent trial. Each section below is one task, in the order you'd use them.
+You changed who your agent deals with, and want to know whether it still passes. This page does the whole loop from code: add an actor to an [environment](/docs/environments/concepts/understanding-environments), save and prove the change, run a seeded test, and read what happened in each call. Each section adds one step to the same script.
 
 <Note>
-You need an environment in **Ready** status, and an API key and secret key from your workspace settings. Set `FI_API_KEY`, `FI_SECRET_KEY` and `FI_WORKSPACE_ID` in your shell. Actors, drafts and the scenario lifecycle need environment versioning on your workspace. These methods need a Future AGI SDK release that includes them; the [Simulation reference](/docs/sdk/reference/simulation) lists the methods of the release you have.
+You need an environment in **Ready** status, its ID (the last part of its address in the app), and an API key and secret key from your workspace settings. Set `FI_API_KEY`, `FI_SECRET_KEY` and `FI_WORKSPACE_ID` in your shell. The methods on this page need a Future AGI SDK release that includes them; the [Simulation reference](/docs/sdk/reference/simulation) lists the methods of the release you have installed.
 </Note>
 
 ## Connect the SDK
 
-Install the SDK and create a client. It reads your keys from the environment, and every environment action takes the environment's ID, the last part of its address in the app.
+Install the SDK and create a client. It reads your keys from the shell.
 
 <Tabs>
   <Tab title="Python">
@@ -34,126 +34,171 @@ const envId = "YOUR_ENVIRONMENT_ID";
   </Tab>
 </Tabs>
 
-## Read and change the actors
+The rest of the page is in Python. The TypeScript client has the same methods under `client.simulation`, named in camelCase (`actors.setLimits`, `executions.listCalls`), with the keyword arguments passed as one object: `await client.simulation.environments.run(envId, { trials: 1, seed: "7" })`.
 
-An environment's **actors** are the people and systems your agent deals with in its scenarios, such as `caller`, `coworker` and `manager` in a sales desk. A change to an actor goes into the environment's draft; runs keep using the saved version until you save the draft, so you can try a change without affecting runs in progress.
+## Add an actor to the draft
+
+An **actor** is someone in a scenario besides your agent and the caller, such as a manager who approves refunds. Changes to actors go into the environment's **draft**, its unsaved changes. Runs keep using the saved version until you save the draft, so trying a change never affects a run in progress.
 
 ```python
-cast = client.simulation.environments.actors.list(env_id)
-seen = client.simulation.environments.actors.get(env_id, "coworker")
+actors = client.simulation.environments.actors
 
-change = {"name": "Dispatcher", "side": "world"}
-check = client.simulation.environments.actors.validate(env_id, op="create", changes=change, new_id="dispatcher")
-if not check.problems:
-    client.simulation.environments.actors.create(env_id, changes=change, new_id="dispatcher", expected_revision=cast.revision)
+cast = actors.list(env_id)
+new = {"name": "Dana Brooks", "role": "Store manager", "side": "world"}
+
+check = actors.validate(env_id, op="create", changes=new, new_id="dana_brooks")
+if check.problems:
+    raise SystemExit(check.problems)
+actors.create(env_id, changes=new, new_id="dana_brooks", expected_revision=cast.revision)
 ```
 
-- **validate**: what a create, change or removal would say, writing nothing. It names the field at fault, for example an `id` with a hyphen, since actor IDs take lowercase letters, digits and underscores
-- **create**, **update** and **delete**: change one actor. Pass `expected_revision` from the last list so a draft someone changed since is refused instead of overwritten
-- **set_limits**: replace the actor limits, such as `{"max_active": 3}`; a limit you leave out takes the channel's default
-- **accept_unresolved**: accept the cast as written for one point the builder could not model, named exactly as the list returns it under `unresolved`
+`validate` says what a create, change or removal would do, without writing anything, and it costs nothing. It names the field at fault, such as an ID with a hyphen (actor IDs take lowercase letters, digits and underscores). Pass `expected_revision` from the last `list`, so a draft someone else changed in the meantime is refused instead of overwritten.
 
-In TypeScript the same calls are `actors.list`, `actors.validate`, `actors.create`, `actors.update`, `actors.delete`, `actors.setLimits` and `actors.acceptUnresolved`, with the actor's new ID passed as `id`. Save the draft once the cast is right. Where your environment can prove its scenarios, a changed cast is validated before it is saved, as **Validate** does before **Save** in the app: `drafts.list` says so with `validation_required`, and a plain save is refused with `validation_required`.
+The other actor methods follow the same pattern:
+
+- `actors.get(env_id, "dana_brooks")`: what one actor sees and may do, and what it never sees
+- `actors.update` and `actors.delete`: change or remove one actor. A scenario that includes an actor blocks its removal
+- `actors.set_limits(env_id, limits={"max_active": 3})`: replace the cast's limits. A limit you leave out takes the channel's default
+- `actors.accept_unresolved`: accept the cast as written for one point the builder couldn't turn into an actor, named as `list` returns it under `unresolved`
+
+## Save the draft
+
+Where your environment can prove its scenarios, a changed cast is validated before it is saved, the way **Validate** comes before **Save** in the app. Validation builds the new versions in a **build sandbox**, a temporary copy of the environment, and replays scenarios against your agent there. It makes model calls and takes a few minutes.
+
+`drafts.list` reports where validation stands:
+
+| State | What it means | What to do |
+|---|---|---|
+| `validating` | Still running | Wait and read `drafts.list` again |
+| `ready` | The changed cast passed | Save the candidates |
+| `check_unavailable` | The check couldn't run, for a reason on our side | Save; it goes ahead unchecked, as a run would |
+| `retry`, `outdated`, `superseded` | Nothing proved this draft yet, the draft changed after validating, or the saved versions moved under it | Validate again |
+| `failed` | Your agent failed the check | Fix the change before saving |
+| `unavailable` | This environment can't validate | Save the draft itself |
 
 ```python
 import time
 
 drafts = client.simulation.environments.drafts
 
-def validate():
+def start_validation():
     listed = drafts.list(env_id)
     review = drafts.review(env_id)
-    started = drafts.validate(env_id, expected_revisions={"environment": listed.environment.revision}, expected_review_digest=review.review_digest)
-    return review, started.validation.state
+    drafts.validate(
+        env_id,
+        expected_revisions={"environment": listed.environment.revision},
+        expected_review_digest=review.review_digest,
+    )
+    return review
 
-review, state = validate()
-tries = 1
-while state in ("validating", "retry", "outdated", "superseded"):
-    if state == "validating":  # still running
+review = start_validation()
+for _ in range(30):
+    listed = drafts.list(env_id)
+    state = listed.validation.state if listed.validation else "unavailable"
+    if state == "validating":
         time.sleep(20)
-        listed = drafts.list(env_id)
-        state = listed.validation.state if listed.validation else "unavailable"
-    elif tries < 3:  # nothing proved this draft yet, or it moved: validate again
-        review, state = validate()
-        tries += 1
+    elif state in ("retry", "outdated", "superseded"):
+        review = start_validation()
     else:
         break
 
-listed = drafts.list(env_id)
 if state in ("ready", "check_unavailable"):
     drafts.save(
         env_id,
-        candidates={"environment_version_id": listed.candidates.environment_version_id, "suite_version_id": listed.candidates.suite_version_id},
+        candidates={
+            "environment_version_id": listed.candidates.environment_version_id,
+            "suite_version_id": listed.candidates.suite_version_id,
+        },
         expected_review_digest=review.review_digest,
-        name="Add dispatcher",
-        idempotency_key="add-dispatcher",
+        name="Add Dana Brooks",
+        idempotency_key="add-dana-brooks",
     )
-elif state == "unavailable":  # this environment can't validate: save the draft itself
-    drafts.save(env_id, drafts=[{"piece": "environment", "expected_parent_id": listed.environment.parent_id}], idempotency_key="add-dispatcher")
+elif state == "unavailable":
+    drafts.save(
+        env_id,
+        drafts=[{"piece": "environment", "expected_parent_id": listed.environment.parent_id}],
+        idempotency_key="add-dana-brooks",
+    )
 else:
-    print("Not saved:", state, listed.validation and listed.validation.error)
+    raise SystemExit(f"Not saved: {state}")
 ```
 
-Validation runs in a build sandbox and makes model calls, and takes a few minutes. While it runs, the state is `validating`. `ready` means the changed cast passed; `check_unavailable` means the check could not run for a reason on our side, and the save may go ahead unchecked, as a run may. `retry` means nothing has proved this draft yet (a validation ended before any check ran, or the agent was certified on other versions), `outdated` means the draft changed after you validated it, and `superseded` means the environment's versions moved under it: validate again for each. `failed` means the agent failed the check, so fix the change first. `unavailable` means this environment can't validate, so you save the draft itself.
+`review_digest` ties the save to the changes you reviewed, so a change made after you looked is never saved unseen. The same `idempotency_key` sent twice saves once.
 
-## Check scenarios and change their lifecycle
+## Prove and archive scenarios
 
-Every scenario has a **lifecycle**: `draft`, `validated`, `active`, `archived`, `source_changed` (an environment version changed something it cites) or `kept_as_written`. The scenario list returns each scenario's state and how many are in each.
+A scenario is **proved** when its checks pass the expected handling and fail a deliberately wrong answer, so a pass means your agent did the right thing, as [Work with scenarios](/docs/environments/guides/work-with-scenarios#prove-and-archive-scenarios) describes. After a change, prove only the scenarios it touched; each one replays in a build sandbox.
 
 ```python
-page = client.simulation.jobs.scenarios.list(env_id, lifecycle="archived", group_by="")  # "" lists them flat, not by goal
-started = client.simulation.environments.scenarios.validate(env_id, keys=["apply-permitted-discount-standard"])
-status = client.simulation.environments.scenarios.validation_status(env_id, job_id=started.job_id)
+scenarios = client.simulation.environments.scenarios
+key = "refund-needs-manager-approval"
 
-client.simulation.environments.scenarios.archive(env_id, "apply-permitted-discount-standard", reason="duplicate")
-client.simulation.environments.scenarios.restore(env_id, "apply-permitted-discount-standard")
+started = scenarios.validate(env_id, keys=[key])
+while True:
+    status = scenarios.validation_status(env_id, job_id=started.job_id)
+    if status.state != "validating":
+        break
+    time.sleep(20)
+print(status.proved, "of", status.total, "proved")
 ```
 
-Validation proves scenarios again in a build sandbox and makes model calls, so name the scenarios you changed rather than the whole suite; see the Usage page in the app for what it counts toward. It returns a `job_id` straight away; `validation_status` reports `validating` until it finishes, then how many it proved. Archiving takes a scenario out of future runs and keeps its runs and evidence; restoring brings it back at once when the saved suite still holds it, or as a draft to save. `revisions` lists a scenario's content across saved suite versions, and `records` returns the seeded rows of one table, to pick a real record for a scenario; where the world can't list its rows, it answers with `available` false and no rows.
-
-## Check run readiness before a run
-
-**Run readiness** says whether a pairing of agent, environment and suite versions is ready to run, computed now. Leave a version out to use the environment's default.
+To take a scenario out of future runs without losing its past runs, archive it; `restore` brings it back:
 
 ```python
-report = client.simulation.environments.readiness.get(env_id, keys=["apply-permitted-discount-standard"], trials=1)
+scenarios.archive(env_id, key, reason="duplicate")
+scenarios.restore(env_id, key)
+```
+
+`client.simulation.jobs.scenarios.list(env_id, lifecycle="archived")` lists the scenarios in one state. `scenarios.revisions(env_id, key)` shows how a scenario changed across saved versions, and `scenarios.records(env_id, key, table="orders")` returns the seeded rows of one table of the **World**, the test copy of your agent's data, so you can pick a real record for a scenario.
+
+## Check that a run will start
+
+**Run readiness** says whether a **pairing**, one agent version with one environment and suite version, is ready to run. Leave a version out to use the environment's default:
+
+```python
+report = client.simulation.environments.readiness.get(env_id, keys=[key], trials=1)
 print(report.answer.kind, report.blockers)
-for row in report.rows:
-    print(row)
 ```
 
-The answer is `ready`, `blocked`, `stale`, `unchecked` or `validating`, with `blockers`, how many checks and participants hold the pairing back, and `rows`, one per readiness check (such as **Agent starts**) with its status and why. `readiness.cases` pages through the scenarios in one bucket (`eligible`, `blocked`, `stale` or `untested`), `readiness.recheck` validates the pairing again without a run (a pairing not certified yet runs its check in a build sandbox and makes model calls), and `readiness.history` lists the pairings already certified.
+The answer is `ready`, `blocked`, `stale`, `unchecked` or `validating`. To check a version other than the default, pass it, such as `agent_version_id="..."`. `readiness.cases` lists the scenarios held back by one check, `readiness.history` lists the pairings already certified, and `readiness.recheck` checks the pairing again without a run. A recheck of a pairing that isn't certified yet replays in a build sandbox.
 
-## Start a run with a fixed seed
+## Run with a seed and read the calls
 
-A **seed** draws the same personas and variations again, so two runs with one seed differ only by what you changed. Each run carries an idempotency key, a new one for every call unless you pass your own. Pass the same `idempotency_key` again, for example when you retry after a timeout, and you get the same run back, not a second one.
+A **seed** draws the same personas and variations again, so two runs with one seed differ only by what you changed. A run plays your agent and simulated people, so it may incur usage charges.
 
 ```python
 run = client.simulation.environments.run(
-    env_id, scenario_ids=["lookup-deal-and-post-channel"], trials=1, seed="7",
-    idempotency_key="nightly-run-2026-11-27",
+    env_id, scenario_ids=[key], trials=1, seed="7",
+    idempotency_key="after-adding-dana",
 )
+
+for row in client.simulation.executions.list_calls(run.test_execution_id):
+    print(row["scenario"], row["outcome"])
+    call = client.simulation.calls.get(row["id"])
 ```
 
-A run plays your agent and simulated people, so it may incur usage charges. Read each trial with `calls.get`, which includes what the trial changed in the World, as [Read run results](/docs/environments/guides/read-run-results) describes in the app.
+Each row is one call, one trial of one scenario, with its `outcome`; `row["id"]` is its call ID. A run takes a few minutes to finish, and calls appear as they complete. `calls.get` returns its transcript, tool calls, checks and what it changed in the World, the same as a call's page in [Read run results](/docs/environments/guides/read-run-results). Sending the same `idempotency_key` again, for example after a timeout, returns the same run instead of starting a second one.
 
-## See who did what in a multi-agent trial
+## Read a multi-agent call
 
-When your agent is a multi-agent app, `calls.workers` returns which of its participants (workers) acted in one trial, read from the traces the app sent.
+When your agent is a multi-agent app, a coordinator that hands work to other agents, `calls.workers` returns which participants acted in one call and what each did, read from the traces your app sent:
 
 ```python
-workers = client.simulation.calls.workers(call_id)
+workers = client.simulation.calls.workers(row["id"])
 ```
 
-It returns the workers and what each did. While the traces are still being collected it returns `pending` and `next_read_at`, so read it again after that time; for a trial that handed nothing to another agent it returns `None` in Python and nothing in TypeScript.
+While the traces are still arriving, it returns `pending` and `next_read_at`; read it again after that time. For a call that handed nothing to another agent, it returns `None`.
 
 ## Dive deeper
 
-<CardGroup cols={2}>
-  <Card title="Run a simulation" icon="play" href="/docs/environments/guides/run-a-simulation">
-    Start and follow a run in the app
+<CardGroup cols={3}>
+  <Card title="Simulation reference" icon="code" href="/docs/sdk/reference/simulation">
+    Every method, argument and return type
+  </Card>
+  <Card title="Read run results" icon="chart-mixed" href="/docs/environments/guides/read-run-results">
+    The same calls, read in the app
   </Card>
   <Card title="Work with scenarios" icon="list" href="/docs/environments/guides/work-with-scenarios">
-    Proving, archiving and run readiness in the app
+    Proving, archiving and readiness in the app
   </Card>
 </CardGroup>
