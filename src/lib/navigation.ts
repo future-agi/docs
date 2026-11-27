@@ -1229,6 +1229,7 @@ export const tabNavigation: NavTab[] = [
         icon: 'play',
         items: [
           { title: 'Overview', href: '/docs/sdk/simulate' },
+          { title: 'Environments', href: '/docs/sdk/simulate/environments' },
         ]
       },
       {
