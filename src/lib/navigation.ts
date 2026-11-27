@@ -934,7 +934,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Build an environment', href: '/docs/environments/guides/build-an-environment' },
               { title: 'Review the contract', href: '/docs/environments/guides/review-the-contract' },
               { title: 'Work with scenarios', href: '/docs/environments/guides/work-with-scenarios' },
-              { title: 'Add actors', href: '/docs/environments/guides/add-actors' },
+              { title: 'Add actors and test conditions', href: '/docs/environments/guides/add-actors-and-test-conditions' },
               { title: 'Import evidence', href: '/docs/environments/guides/import-evidence' },
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
