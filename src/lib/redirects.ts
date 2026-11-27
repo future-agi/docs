@@ -503,6 +503,8 @@ export const redirectMap: Record<string, string> = {
   '/docs/simulation/guides/explore-scenarios/scenario-graph': '/docs/environments/guides/work-with-scenarios',
   '/docs/simulation/guides/explore-scenarios/add-rows': '/docs/environments/guides/work-with-scenarios',
   '/docs/simulation/guides/explore-scenarios/add-columns': '/docs/environments/guides/work-with-scenarios',
+  // Linked from inside the product (frontend CreateRunTestPage.jsx), so keep this redirect
+  '/docs/simulation/run-tests': '/docs/environments/guides/run-a-simulation',
   '/docs/simulation/guides/create-simulation': '/docs/environments/guides/run-a-simulation',
   '/docs/simulation/guides/run-voice-simulation': '/docs/environments/guides/run-a-simulation',
   '/docs/simulation/guides/run-chat-simulation': '/docs/environments/guides/run-a-simulation',
