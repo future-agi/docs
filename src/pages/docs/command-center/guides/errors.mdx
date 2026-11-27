@@ -37,12 +37,16 @@ The `type` field groups errors into categories. The `code` field identifies the 
 | 400 | `invalid_json` | Request body is not valid JSON |
 | 400 | `missing_model` | `model` field is missing from the request |
 | 400 | `missing_messages` | `messages` field is missing or empty |
-| 400 | `invalid_request_error` | Other request validation failures |
-| 401 | `unauthorized` | API key is missing or invalid |
+| 400 | other codes | Other request validation failures. Every 400 error has the type `invalid_request_error` |
+| 401 | `invalid_api_key` | API key is missing or invalid |
+| 403 | `permission_denied` | The request is not allowed, for example because the model or provider is outside the key's allowed list, the client IP is not allowed, or the key may not override guardrail policies. The type is `permission_error` |
 | 403 | `content_blocked` | A guardrail whose action is `block` stopped the request. Guardrails set to `warn` or `log` return 200 instead |
 | 404 | `model_not_found` | Model not configured for any provider. Check `model_map` or use `provider/model` format. |
-| 429 | `rate_limit_exceeded` | Per-key or per-org rate limit exceeded |
-| 429 | `budget_exceeded` | Organization budget limit reached |
+| 408 | `request_timeout` | The request's time limit ran out before the provider was called |
+| 429 | `rate_limit_exceeded` | Requests-per-minute limit exceeded |
+| 429 | `token_rate_limit_exceeded` | Tokens-per-minute limit exceeded |
+| 429 | `org_budget_exceeded` | A budget in your org config is used up |
+| 429 | `budget_exceeded` | A budget in the gateway's `config.yaml` is used up |
 
 ### Server errors (5xx)
 
@@ -50,11 +54,11 @@ The `type` field groups errors into categories. The `code` field identifies the 
 |---|---|---|
 | 500 | `internal_error` | Unexpected gateway error |
 | 501 | `not_supported` | Provider doesn't support this endpoint (e.g. embeddings on a chat-only provider) |
-| 502 | `provider_error` | Provider returned an error |
+| 502 | `provider_<status>` | Provider returned an error. The code carries the provider's status, such as `provider_401` or `provider_500`. The type is `upstream_error` |
 | 502 | `provider_404` | Provider returned 404 (usually wrong API key or model access) |
-| 502 | `upstream_error` | Generic upstream provider failure |
-| 503 | `service_unavailable` | Gateway is overloaded or shutting down |
-| 504 | `timeout` | Request timed out waiting for provider response |
+| 503 | `all_providers_unavailable` | No provider for the model could be selected, for example because every one has an open circuit. When providers were tried and failed, you get the last provider's error instead |
+| 503 | `guardrail_unavailable` | A guardrail check could not run (an error or a timeout) and `guardrails.fail_open` is off, so the request was refused. The response carries `x-should-retry: false` |
+| 504 | `gateway_timeout` | Request timed out waiting for provider response |
 
 ---
 
@@ -87,7 +91,7 @@ The `type` field groups errors into categories. The `code` field identifies the 
 ```json
 {
   "error": {
-    "message": "Rate limit exceeded. Please retry after the window resets.",
+    "message": "Rate limit exceeded. Please retry after 42 seconds.",
     "type": "rate_limit_error",
     "param": null,
     "code": "rate_limit_exceeded"
@@ -95,20 +99,22 @@ The `type` field groups errors into categories. The `code` field identifies the 
 }
 ```
 
-Check the `x-ratelimit-remaining-requests` and `x-ratelimit-reset-requests` response headers to know when to retry. See [retry strategies](#retry-strategies) below.
+Wait for the number of seconds in the `Retry-After` header before retrying. On successful responses, `x-ratelimit-remaining-requests` and `x-ratelimit-reset-requests` (seconds until the window resets) show how close you are to the limit. A tokens-per-minute refusal has the code `token_rate_limit_exceeded`. See [retry strategies](#retry-strategies) below.
 
 ### Budget exceeded (429)
 
 ```json
 {
   "error": {
-    "message": "Organization monthly budget of $500.00 exceeded",
-    "type": "budget_error",
+    "message": "org budget exceeded: spent $500.12 of $500.00 monthly limit",
+    "type": "rate_limit_error",
     "param": null,
-    "code": "budget_exceeded"
+    "code": "org_budget_exceeded"
   }
 }
 ```
+
+A budget set in the gateway's `config.yaml` returns the code `budget_exceeded` and a message that starts with `budget exceeded:`.
 
 Budget resets at the start of the next period (daily/weekly/monthly). Increase the budget in [Rate limiting & budgets](/docs/command-center/features/rate-limiting) or wait for the reset.
 
@@ -154,28 +160,22 @@ Configure [failover](/docs/command-center/features/routing#failover) to automati
 
 The standard pattern for handling transient errors (429, 5xx):
 
-<Tabs items={["Agent Command Center SDK", "OpenAI SDK", "Python (manual)"]}>
+<Tabs items={["Python (Agent Command Center SDK)", "Python (OpenAI SDK)", "Python (manual)"]}>
 
 <Tab title="Python (Agent Command Center SDK)">
 
-The Agent Command Center SDK retries automatically when you configure `RetryConfig`:
+The Agent Command Center SDK retries 408, 429, 500, 502, 503 and 504 responses with exponential backoff, and waits for `Retry-After` when the gateway sends it. Set the number of retries with `max_retries` (default 2):
 
 ```python
-from agentcc import AgentCC, GatewayConfig, RetryConfig
+from agentcc import AgentCC
 
 client = AgentCC(
     api_key="sk-agentcc-your-key",
     base_url="https://gateway.futureagi.com",
-    config=GatewayConfig(
-        retry=RetryConfig(
-            max_retries=3,
-            on_status_codes=[429, 500, 502, 503, 504],
-            backoff_factor=0.5,
-        ),
-    ),
+    max_retries=3,
 )
 
-# Retries happen automatically on configured status codes
+# Retries happen automatically on 408, 429, 500, 502, 503 and 504
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello"}],

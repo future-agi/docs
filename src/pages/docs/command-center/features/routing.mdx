@@ -12,7 +12,7 @@ Agent Command Center's routing layer distributes requests across multiple provid
 ## When to use
 
 - **High availability**: Automatic failover to backup providers when primary is down or rate-limited
-- **Cost optimization**: Route to the cheapest provider that supports the requested model
+- **Cost optimization**: Send traffic to the provider you rank first, such as your cheapest one, and use the others only when it fails
 - **Latency reduction**: Route to the fastest provider based on recent response times
 - **Traffic distribution**: Split traffic across providers by weight for capacity management
 
@@ -30,168 +30,144 @@ Agent Command Center's routing layer distributes requests across multiple provid
 
 ### Configuration parameters
 
-These parameters appear in the JSON configuration blocks throughout this page.
+These parameters sit under `routing` in the gateway's `config.yaml` and in the `routing` section of your org config. The **Gateway > Fallbacks** page edits the org config ones. Durations are strings such as `"500ms"`, `"30s"` or `"2m"`.
 
-**Failover:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `enabled` | boolean | Turn failover on or off |
-| `providers` | string[] | Ordered list of providers to try when one fails |
-| `failover_on` | number[] | HTTP status codes that trigger failover (e.g., 429, 500, 502, 503, 504) |
-
-**Retries:**
+**Failover (`routing.failover`):**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `max_retries` | number | 2 | Maximum number of retry attempts before giving up |
-| `initial_backoff_ms` | number | 100 | Wait time (ms) before the first retry |
-| `max_backoff_ms` | number | 10000 | Upper limit on wait time between retries |
-| `backoff_multiplier` | number | 2 | Multiplier applied to backoff after each retry (e.g., 100ms → 200ms → 400ms) |
+| `enabled` | boolean | `false` | Turn failover on or off |
+| `max_attempts` | number | `3` | Providers to call in total, counting the first one |
+| `on_status_codes` | number[] | `[429, 500, 502, 503, 504]` | HTTP status codes that trigger failover |
+| `on_timeout` | boolean | `false` | Also fail over when a provider call times out |
+| `per_attempt_timeout` | duration | none | Time limit for each provider call, so a slow first provider leaves time for the next |
 
-**Circuit breaker:**
+**Retries (`routing.retry`):**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `enabled` | boolean | Turn circuit breaking on or off |
-| `error_threshold_percent` | number | Error rate (%) that trips the circuit open |
-| `min_requests` | number | Minimum request count before the error threshold is evaluated |
-| `open_duration_seconds` | number | How long (seconds) the circuit stays open before testing recovery |
-| `half_open_max_requests` | number | Number of trial requests allowed during the half-open recovery test |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enabled` | boolean | `false` | Turn retries on or off |
+| `max_retries` | number | `2` | Retries on the same provider before failing over |
+| `initial_delay` | duration | `500ms` | Wait before the first retry |
+| `max_delay` | duration | `10s` | Upper limit on the wait between retries |
+| `multiplier` | number | `2` | Multiplier applied to the wait after each retry (500ms, 1s, 2s) |
+| `on_status_codes` | number[] | `[429, 500, 502, 503, 504]` | HTTP status codes that are retried |
+| `on_timeout` | boolean | `false` | Also retry when a provider call times out |
+
+Retries run inside failover: they only happen when failover is also enabled and the model has more than one routing target. With a single provider for the model, `retry.enabled: true` retries nothing. Providers added to your organization in the dashboard are not routing targets; targets come from the providers in the gateway's `config.yaml`.
+
+**Circuit breaker (`routing.circuit_breaker`):**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enabled` | boolean | `false` | Turn circuit breaking on or off |
+| `failure_threshold` | number | `5` | Failures in a row that open the circuit |
+| `success_threshold` | number | `2` | Successes in a row, after the cooldown, that close it again |
+| `cooldown` | duration | `30s` | How long the circuit stays open before requests are let through again |
+| `on_status_codes` | number[] | `[429, 500, 502, 503, 504]` | HTTP status codes that count as failures |
 
 **Timeouts:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `request_timeout_seconds` | number | Maximum total time for the entire request (including retries and failovers) |
-| `provider_timeout_seconds` | number | Maximum time to wait for a single provider response |
+| `routing.model_timeouts` | map of model to duration | Time limit for requests to one model, e.g. `{"o3": "120s"}` |
+| `x-agentcc-timeout` header | duration | Time limit for one request. Takes precedence over `model_timeouts` |
+
+Without either, a request gets the gateway's `server.default_request_timeout` (60s by default). The time limit covers the whole request, including retries and failover.
 
 ---
 
 ## Routing strategies
 
-| Strategy | Config value | How it works |
-|----------|-------------|-------------|
-| Round Robin | `round-robin` | Evenly across providers in rotation (default) |
-| Weighted | `weighted` | Based on assigned weights (e.g., 70% OpenAI, 30% Anthropic) |
-| Least Latency | `least-latency` | Routes to the fastest provider based on recent response times |
-| Cost Optimized | `cost-optimized` | Cheapest provider that supports the requested model |
-| Adaptive | `adaptive` | Dynamically adjusts weights based on real-time performance |
-| Race | `fastest` | Sends to all providers simultaneously, returns the first response. You are billed for every call made, including those whose responses are discarded |
+| Strategy | `config.yaml` value | Org config value | How it works |
+|----------|-------------|-------------|-------------|
+| Round Robin | `round-robin` | `round_robin` | Evenly across providers in rotation (default) |
+| Weighted | `weighted` | `weighted` | Based on each target's `weight` (e.g., 70% OpenAI, 30% Anthropic) |
+| Least Latency | `least-latency` | `least_latency` | Routes to the provider with the lowest recent response times |
+| Cost Optimized | `cost-optimized` | `cost_optimized` | Routes to the target with the lowest `priority` value, rotating between ties. It does not read prices, so give your cheapest provider the lowest `priority` |
+| Adaptive | `adaptive` | none | Dynamically adjusts weights based on real-time performance |
+| Race | `fastest` | none | Sends to several providers at once and returns the first response. You are billed for every call made, including those whose responses are discarded |
+
+A strategy chooses among the providers that serve the requested model, listed per model under `routing.targets` in `config.yaml`.
+
+<Warning>
+The gateway does not apply the org config `routing.strategy` yet. It saves the value and records it on each request, but when several of your organization's providers serve the same model, the gateway always picks the first one by provider name. The strategies take effect through `routing.default_strategy` on a gateway you run yourself.
+</Warning>
 
 ---
 
 ## Configuring a routing strategy
 
-<Tabs items={["Dashboard", "Python (Agent Command Center SDK)", "TypeScript (Agent Command Center SDK)"]}>
+<Tabs items={["Dashboard", "config.yaml (self-hosted gateway)"]}>
   <Tab title="Dashboard">
 
-    1. Go to **Agent Command Center > Routing** in the Future AGI dashboard
-    2. Select a strategy from the dropdown and configure provider weights, failover, retries, etc.
-    3. Click **Save**
+    1. Go to **Gateway > Providers** and open the **Routing** tab
+    2. Choose a **Default Strategy** and click **Save Routing Config**. The org config editor (**Gateway > Settings > Org Config > Edit Config > Routing**) edits the same `routing.strategy` value. See the warning above: the gateway does not apply it yet
 
     **Fallbacks, retries, and circuit breaking:**
     1. Go to **Gateway > Fallbacks**
-    2. Expand the section you want (Provider Failover, Retry, Circuit Breaker, or Model Timeouts)
-    3. Toggle it on, set your values, and click **Save**
+    2. Expand the section you want (Model Fallback Chains, Provider Failover, Retry, Circuit Breaker, or Model Timeouts)
+    3. Toggle it on, set your values, and click **Save & Apply**
 
   </Tab>
-  <Tab title="Python (Agent Command Center SDK)">
-    ```python
-    from agentcc import AgentCC
-
-    client = AgentCC(
-        api_key="sk-agentcc-your-key",
-        base_url="https://gateway.futureagi.com",
-        control_plane_url="https://api.futureagi.com",
-    )
-
-    # Create a weighted routing policy
-    policy = client.routing.create(
-        name="Production routing",
-        strategy="weighted",
-        config={"weights": {"openai": 70, "anthropic": 30}},
-        description="70/30 split between OpenAI and Anthropic",
-    )
-
-    # List all routing policies
-    policies = client.routing.list()
-
-    # Update an existing policy
-    client.routing.update(
-        policy["id"],
-        strategy="least-latency",
-        config={"providers": ["openai", "anthropic", "gemini"], "failover_on": [429, 500, 502, 503, 504]},
-    )
-    ```
-  </Tab>
-  <Tab title="TypeScript (Agent Command Center SDK)">
-    ```typescript
-    import { AgentCC } from "@futureagi/agentcc";
-
-    const client = new AgentCC({
-      apiKey: "sk-agentcc-your-key",
-      baseUrl: "https://gateway.futureagi.com",
-      controlPlaneUrl: "https://api.futureagi.com",
-    });
-
-    const policy = await client.routing.create({
-      name: "Production routing",
-      strategy: "weighted",
-      config: { weights: { openai: 70, anthropic: 30 } },
-      description: "70/30 split between OpenAI and Anthropic",
-    });
-
-    const policies = await client.routing.list();
-
-    await client.routing.update(policy.id, {
-      strategy: "least-latency",
-      config: { providers: ["openai", "anthropic", "gemini"], failoverOn: [429, 500, 502, 503, 504] },
-    });
+  <Tab title="config.yaml (self-hosted gateway)">
+    ```yaml
+    routing:
+      default_strategy: "weighted"
+      targets:
+        gpt-4o:
+          - provider: "openai"
+            weight: 70
+          - provider: "azure-openai"
+            weight: 30
     ```
   </Tab>
 </Tabs>
+
+<Note>
+The Agent Command Center SDK has no routing methods, and routing policies created through the control plane's `routing-policies` API never reach the gateway: the org config they would be merged into fails validation, so the merge is rolled back and the API reports `gateway_synced: false`. Set routing in the dashboard or in `config.yaml`.
+</Note>
 
 ---
 
 ## Failover
 
-Failover triggers on specific HTTP status codes and error conditions: 429 (rate limit), 5xx (server errors), timeouts, and connection errors. The providers array defines the failover order. When the primary provider fails, Agent Command Center automatically routes to the next provider in the list.
+Failover triggers on the status codes in `on_status_codes` (429 and 5xx by default) and, with `on_timeout: true`, on timeouts. When a provider fails, Agent Command Center sends the request to another provider that serves the same model, skipping the ones already tried and any whose circuit is open, until one succeeds or `max_attempts` providers have been called.
 
 ```json
 {
-  "failover": {
-    "enabled": true,
-    "providers": ["openai", "anthropic", "gemini"],
-    "failover_on": [429, 500, 502, 503, 504]
+  "routing": {
+    "failover": {
+      "enabled": true,
+      "max_attempts": 3,
+      "on_status_codes": [429, 500, 502, 503, 504],
+      "on_timeout": true,
+      "per_attempt_timeout": "20s"
+    }
   }
 }
 ```
 
 <Note>
-The providers array defines the failover order. Agent Command Center will attempt each provider in sequence until one succeeds.
+Failover moves between providers of the same model. To fall back to a different model, such as `claude-sonnet-4-6` when `gpt-4o` fails, use [model fallbacks](#model-fallbacks).
 </Note>
 
 ---
 
 ## Retries
 
-Agent Command Center uses exponential backoff for retries. This means it waits progressively longer between each retry attempt. For example, 100ms, then 200ms, then 400ms. This gives struggling providers time to recover instead of flooding them with rapid retry requests.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| max_retries | Maximum number of retry attempts | 2 |
-| initial_backoff_ms | Initial backoff duration in milliseconds | 100 |
-| max_backoff_ms | Maximum backoff duration in milliseconds | 10000 |
-| backoff_multiplier | Multiplier for exponential backoff | 2 |
+Agent Command Center uses exponential backoff for retries. This means it waits progressively longer between each retry attempt: with the defaults, 500ms before the first retry and 1s before the second, never more than `max_delay`. This gives struggling providers time to recover instead of flooding them with rapid retry requests. Retries stay on the same provider; once they run out, failover moves to the next provider.
 
 ```json
 {
-  "retries": {
-    "max_retries": 2,
-    "initial_backoff_ms": 100,
-    "max_backoff_ms": 10000,
-    "backoff_multiplier": 2
+  "routing": {
+    "retry": {
+      "enabled": true,
+      "max_retries": 2,
+      "initial_delay": "500ms",
+      "max_delay": "10s",
+      "multiplier": 2
+    }
   }
 }
 ```
@@ -200,7 +176,7 @@ Agent Command Center uses exponential backoff for retries. This means it waits p
 
 ## Circuit breaking
 
-Circuit breaking stops sending requests to a provider that is failing repeatedly. After a cooldown, Agent Command Center tests the provider with a few trial requests. If those succeed, normal routing resumes. This prevents a single failing provider from degrading your entire application.
+Circuit breaking stops sending requests to a provider that is failing repeatedly. After `failure_threshold` failures in a row the circuit opens. After the `cooldown`, Agent Command Center lets requests through again, and `success_threshold` successes in a row close the circuit. This prevents a single failing provider from degrading your entire application.
 
 The circuit breaker has three states:
 
@@ -208,35 +184,38 @@ The circuit breaker has three states:
 |-------|----------|
 | Closed | Normal operation, requests pass through |
 | Open | Requests rejected immediately, no calls to provider |
-| Half-Open | Limited requests allowed to test if provider recovered |
+| Half-Open | Requests allowed again to test if the provider recovered |
 
-```json
-{
-  "circuit_breaker": {
-    "enabled": true,
-    "error_threshold_percent": 50,
-    "min_requests": 10,
-    "open_duration_seconds": 60,
-    "half_open_max_requests": 3
-  }
-}
+```yaml
+routing:
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    success_threshold: 2
+    cooldown: 30s
 ```
 
 <Tip>
-Circuit breaking works seamlessly with failover. When a circuit opens, Agent Command Center automatically routes to the next available provider.
+Circuit breaking works with failover. When a circuit opens, Agent Command Center automatically routes to the next available provider.
 </Tip>
+
+<Note>
+The gateway applies the circuit breaker from its own `config.yaml`. Circuit breaker values saved in an org config, for example on **Gateway > Fallbacks**, are stored but not used yet.
+</Note>
 
 ---
 
 ## Timeouts
 
-Configure per-request and per-provider timeouts to prevent hanging requests.
+Set a time limit per model with `routing.model_timeouts`, or per request with the `x-agentcc-timeout` header (a duration such as `30s`). The header wins over the per-model value. Use `failover.per_attempt_timeout` to cap each provider call within that time.
 
 ```json
 {
-  "timeouts": {
-    "request_timeout_seconds": 30,
-    "provider_timeout_seconds": 25
+  "routing": {
+    "model_timeouts": {
+      "gpt-4o": "30s",
+      "o3": "120s"
+    }
   }
 }
 ```
@@ -245,42 +224,36 @@ Configure per-request and per-provider timeouts to prevent hanging requests.
 
 ## Example: High-availability setup
 
-This configuration combines weighted routing, failover, retries, and circuit breaking for a production setup:
+This `config.yaml` combines weighted routing, failover, retries, circuit breaking and timeouts for a production setup:
 
-```json
-{
-  "name": "Production HA",
-  "strategy": "weighted",
-  "config": {
-    "weights": {
-      "openai": 60,
-      "anthropic": 30,
-      "gemini": 10
-    },
-    "failover": {
-      "enabled": true,
-      "providers": ["openai", "anthropic", "gemini"],
-      "failover_on": [429, 500, 502, 503, 504]
-    },
-    "retries": {
-      "max_retries": 2,
-      "initial_backoff_ms": 100,
-      "max_backoff_ms": 10000,
-      "backoff_multiplier": 2
-    },
-    "circuit_breaker": {
-      "enabled": true,
-      "error_threshold_percent": 50,
-      "min_requests": 10,
-      "open_duration_seconds": 60,
-      "half_open_max_requests": 3
-    },
-    "timeouts": {
-      "request_timeout_seconds": 30,
-      "provider_timeout_seconds": 25
-    }
-  }
-}
+```yaml
+routing:
+  default_strategy: "weighted"
+  targets:
+    gpt-4o:
+      - provider: "openai"
+        weight: 60
+      - provider: "azure-openai"
+        weight: 40
+  failover:
+    enabled: true
+    max_attempts: 2
+    on_status_codes: [429, 500, 502, 503, 504]
+    on_timeout: true
+    per_attempt_timeout: 25s
+  retry:
+    enabled: true
+    max_retries: 2
+    initial_delay: 500ms
+    max_delay: 10s
+    multiplier: 2
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    success_threshold: 2
+    cooldown: 30s
+  model_timeouts:
+    gpt-4o: 60s
 ```
 
 ---
@@ -349,17 +322,16 @@ You can also combine conditions with `$and`, `$or`, and `$not`:
 
 Migrate from one provider to another without a big-bang switch. Start with 10% traffic to the new provider and increase over time:
 
-```json
-{
-  "name": "Gradual migration to Anthropic",
-  "strategy": "weighted",
-  "config": {
-    "weights": {
-      "openai": 90,
-      "anthropic": 10
-    }
-  }
-}
+```yaml
+routing:
+  default_strategy: "weighted"
+  targets:
+    gpt-4o:
+      - provider: "openai"
+        weight: 90
+      - provider: "anthropic"
+        weight: 10
+        model_override: "claude-sonnet-4-6"   # model sent to this provider
 ```
 
 Increase the Anthropic weight over days or weeks. If issues arise, dial it back immediately.
@@ -394,22 +366,22 @@ routing:
 
 Spread load across providers so a single rate limit doesn't block your application:
 
-```json
-{
-  "name": "Rate limit absorption",
-  "strategy": "round-robin",
-  "config": {
-    "providers": ["openai", "anthropic", "gemini"],
-    "failover": {
-      "enabled": true,
-      "providers": ["openai", "anthropic", "gemini"],
-      "failover_on": [429, 500, 502, 503, 504]
-    }
-  }
-}
+```yaml
+routing:
+  default_strategy: "round-robin"
+  targets:
+    gpt-4o:
+      - provider: "openai"
+      - provider: "anthropic"
+        model_override: "claude-sonnet-4-6"
+      - provider: "gemini"
+        model_override: "gemini-2.0-flash"
+  failover:
+    enabled: true
+    on_status_codes: [429, 500, 502, 503, 504]
 ```
 
-When OpenAI rate-limits you, traffic automatically shifts to Anthropic and Gemini.
+When OpenAI rate-limits you, the request fails over to Anthropic or Gemini.
 
 ---
 
@@ -419,6 +391,8 @@ Configure per-model fallback chains for automatic failover when a specific model
 
 ```yaml
 routing:
+  failover:
+    enabled: true
   model_fallbacks:
     gpt-4o:
       - claude-sonnet-4-6
@@ -428,7 +402,7 @@ routing:
       - gemini-2.0-pro
 ```
 
-When `gpt-4o` fails, Agent Command Center automatically tries `claude-sonnet-4-6`, then `gemini-2.0-pro`.
+When `gpt-4o` fails, Agent Command Center automatically tries `claude-sonnet-4-6`, then `gemini-2.0-pro`. Model fallbacks run only when failover is enabled.
 
 ---
 
