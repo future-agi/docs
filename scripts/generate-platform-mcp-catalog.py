@@ -40,6 +40,19 @@ QUEUE_GATES = {
     "submit_annotation": "Access; queue annotator or manager (including manager-equivalent admins)",
     "complete_annotation_item": "Access; you must already have submitted annotations for this item",
 }
+# Plan-gated in v1.59.1: these views call check_ee_feature, and MCP surfaces the
+# denial as tool error HTTP_402.
+PAID = {
+    # Error Feed is oss_locked: it also needs a license off-cloud.
+    **dict.fromkeys(["list_error_clusters", "get_error_cluster", "get_error_cluster_overview",
+                     "list_error_cluster_traces"],
+                    "a Future AGI Cloud plan or, on a self-hosted deployment, a license that includes Error Feed"),
+    # Optimization is not oss_locked: free on self-hosted, plan-gated on Cloud.
+    **dict.fromkeys(["list_optimization_runs", "get_optimization_run", "create_optimization_run"],
+                    "a Future AGI Cloud plan that includes dataset optimization (self-hosted deployments run it without a license)"),
+}
+# Old run-test flow: still listed and callable in v1.59.1.
+DEPRECATED = {"run_simulation", "list_simulation_tests", "get_simulation_test", "create_simulation_test"}
 # Keep the generated public summaries focused on what a caller needs to do.
 SUMMARIES = {
     "add_dataset_rows": "Append rows. Each row takes a `cells` array of `column_name` and `value` pairs. Create writable columns first. An unknown or duplicate column rejects the batch; a flat column-to-value dictionary is not a row.",
@@ -166,8 +179,17 @@ def tool_lines(tool):
     name = tool["name"]
     request = tool["request"]
     schema = tool["inputSchema"]
-    yield f"<details>\n<summary><code>{name}</code> · {effect(tool)}</summary>\n"
+    labels = [effect(tool)] + (["Paid"] if name in PAID else []) + (["Deprecated"] if name in DEPRECATED else [])
+    yield f"<details>\n<summary><code>{name}</code> · {' · '.join(labels)}</summary>\n"
+    if name in DEPRECATED:
+        yield ("Deprecated: this tool belongs to the old run-test flow. It is still listed and callable. "
+               "For hosted simulation, use [Environments](/docs/environments).\n")
+        yield "</details>\n"
+        return
     yield text(SUMMARIES.get(name, tool["description"])) + "\n"
+    if name in PAID:
+        yield (f"Paid: needs {PAID[name]}. "
+               "Without it, the call returns tool error `HTTP_402`.\n")
     hint = str(tool['annotations']['idempotentHint']).lower()
     yield f"REST: `{request['method']} {request['path']}`. Workspace gate: {gate(tool)}. Idempotent hint: `{hint}`.\n"
     if schema["properties"]:
