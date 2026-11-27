@@ -864,6 +864,14 @@ export const tabNavigation: NavTab[] = [
               { title: 'Environment FAQ & fixes', href: '/docs/environments/troubleshooting' },
             ]
           },
+          {
+            title: 'Simulation (legacy)',
+            items: [
+              { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
+              { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
+              { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
+            ]
+          },
         ]
       },
     ]
