@@ -1,0 +1,239 @@
+---
+title: "Run the repository harness"
+description: "Author cases from your repository with Agent Learning Kit, extend the suite, and check a return policy against a local chat service."
+---
+
+## About
+
+You can author cases from your repository without asking the harness to deploy it. Here you write three cases for Ridgeline Outfitters, add two return-window cases, then check one policy boundary against the real chat service on your machine. The authored suite describes what to test. A separate local text run records what your agent actually said.
+
+## Set up the CLI
+
+Start in the root of a trusted test agent's repository. You need Python 3.10 or later, Bash, cURL and `jq`. For the conversation, Ridgeline uses Docker Compose v2 and a stateless `agent` service in `compose.yaml`. It listens on port 8080, accepts `POST /chat` with a `message` string and returns a `reply` string. It needs no credentials, database or other services and has a successful `GET /health` readiness check. For your own agent, use its service name, endpoints, request and response fields, and policy. Use synthetic orders, not your production returns system. For the [offline case](#run-an-offline-case), you only need Bash and Python.
+
+Run the examples in the same Bash shell. If you are not in the repository, run `export SOURCE_DIR=YOUR_AGENT_REPOSITORY`, replacing the placeholder with its absolute path. Use a clean source tree without credentials or generated artifacts. Keep the artifact directory outside the repository:
+
+```bash
+export SOURCE_DIR="${SOURCE_DIR:-$PWD}"
+export NAME=ridgeline-support
+export WORK="$(mktemp -d "${TMPDIR:-/tmp}/ridgeline-harness.XXXXXX")"
+export OUT="$WORK/suite"
+python3 -m venv "$WORK/venv"
+source "$WORK/venv/bin/activate"
+python -m pip install agent-learning-kit==0.3.7
+agent-learn harness --help
+```
+
+<Warning>
+Repository authoring makes billable model calls. For the default harness backend, configure an [Agent Command Center key](/docs/quickstart/command-center-gateway) that can route to a Gemini model. A platform API key alone does not configure this route. The offline case does not need a model key or Docker.
+</Warning>
+
+Export `AGENTCC_API_KEY` from your secret manager into the current shell. This is a Command Center virtual key, not the upstream provider key. If your key is mounted as a file, replace the path in `export AGENTCC_API_KEY="$(<"/path/to/your/gateway-key")"`. For a self-hosted gateway, run `export AGENTCC_BASE_URL=YOUR_GATEWAY_ORIGIN`, replacing the placeholder with the gateway origin without `/v1`.
+
+Use the exact Gemini model ID enabled on that key. The example uses Gemini through an OpenRouter provider configured in Command Center. Check that the gateway lists your model:
+
+```bash
+: "${AGENTCC_API_KEY:?Load your Agent Command Center key first}"
+export ALK_HARNESS_MODEL=google/gemini-3.7-flash
+gateway=${AGENTCC_BASE_URL:-https://gateway.futureagi.com}
+curl --fail --silent --show-error "${gateway%/}/v1/models" \
+  -H "Authorization: Bearer $AGENTCC_API_KEY" |
+  jq -e --arg model "$ALK_HARNESS_MODEL" 'any(.data[]; .id == $model)' >/dev/null || {
+    printf 'Check the gateway URL, organization provider and permitted model ID.\n' >&2
+    exit 1
+  }
+```
+
+## Author three cases from the repository
+
+Use a fresh output directory. `author` reads the source, saves the [contract](/docs/environments/concepts/contracts), builds a logical world and writes scenarios. It defers runtime provisioning: you don't need a Docker daemon for this step, and it doesn't start your agent or run the conversations. Save the initial index for comparison:
+
+```bash
+agent-learn harness author --path "$SOURCE_DIR" --name "$NAME" --count 3 --out "$OUT"
+cp "$OUT/scenarios.json" "$WORK/before.json"
+```
+
+Review the contract before extending the suite. For Ridgeline, the agent should distinguish unused full-price tents (30 days) from clearance tents (14 days). It explains the policy but cannot issue a refund. Check the rules, conversation interface and saved case names against your source:
+
+```bash
+jq '{hard_constraints, interface: .runtime.interface}' "$OUT/contract.json"
+jq -r '.[].name' "$OUT/scenarios.json"
+```
+
+`manifest.json` describes the logical world. The files under `scenarios/<name>/` hold each scenario and its setup and readiness code. This output is not a sealed Compose environment. In 0.3.7 the ordinary `harness build` provisioner rejects contracts that explicitly select a Compose service. Keep that requirement in the contract; the local conversation below starts the service through Compose itself.
+
+## Extend the suite without starting over
+
+Pass the **same** `--name` and `--out` to `scenarios`. `--count 5` means **five in total**, not five more. Without a count, the target is the current suite size, or ten if no cases exist. Repeat `--guidance` to give the writer separate requirements:
+
+```bash
+agent-learn harness scenarios --name "$NAME" --out "$OUT" --count 5 --once \
+  --guidance 'Keep the three saved cases. Add a shopper asking about an unused full-price tent on day 30.' \
+  --guidance 'Add a shopper asking about an unused clearance tent on day 15. Check the stated windows; do not require a refund.'
+```
+
+Compare `scenario_key` values to identify additions. A retained key identifies the same case, not necessarily unchanged checks. A proof checks the test itself, not your agent. In `proofs.json`, `ready` checks the starting conditions, `solvable` checks the reference solution, `not_vacuous` checks that doing nothing does not pass, and `holds` gives the overall verdict. Check the saved count rather than assuming every candidate made it into the suite:
+
+```bash
+python - "$WORK/before.json" "$OUT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+before, out = map(Path, sys.argv[1:])
+old = {row["scenario_key"] for row in json.loads(before.read_text())}
+suite = json.loads((out / "scenarios.json").read_text())
+proofs_file = out / "proofs.json"
+proofs = json.loads(proofs_file.read_text()) if proofs_file.exists() else {}
+current = {row["scenario_key"] for row in suite}
+print(f"Saved {len(suite)} cases; missing original keys: {sorted(old - current)}")
+for row in suite:
+    key = row["scenario_key"]
+    label = "kept" if key in old else "added"
+    print(f"{label}: {key} | name: {row['name']}")
+    if label == "added":
+        print(json.dumps(proofs.get(key, "No proof recorded"), indent=2))
+PY
+```
+
+## Check a return window against the local agent
+
+Pick a requirement from the suite that you can check from one reply. For example, on day 15 an unused clearance tent is past its 14-day return window. With `agent-learn run` you can send a fixed shopper message to your real service through a Python callback. This is a separate local text manifest: it does **not** run the authored case's setup, simulated shopper, or proof checks. The built-in `harness run --target local` is not a shortcut for repository tests; it reconstructs a prompt and refuses repository-backed agents.
+
+Save the callback beside the manifest, outside the repository. It forwards the shopper's message unchanged to Ridgeline's endpoint and takes the reply from the response, not from the expected policy:
+
+```bash
+cat > "$WORK/ridgeline_http.py" <<'PY'
+import json
+import os
+from urllib.request import Request, urlopen
+
+
+def ask(turn):
+    request = Request(
+        os.environ["RIDGELINE_URL"] + "/chat",
+        data=json.dumps({"message": turn.new_message["content"]}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=15) as response:
+        reply = json.load(response)["reply"]
+    if not isinstance(reply, str) or not reply.strip():
+        raise ValueError("Expected a nonempty reply from /chat")
+    return reply
+PY
+cat > "$WORK/clearance.json" <<'JSON'
+{
+  "version": "agent-learning.run.v1",
+  "name": "clearance-day-15",
+  "scenario": {
+    "name": "clearance-day-15",
+    "dataset": [{
+      "persona": {"name": "Maya", "role": "shopper"},
+      "situation": "I bought an unused clearance tent 15 days ago. How long is the return window?",
+      "outcome": "Find out whether my tent is still within the return window."
+    }]
+  },
+  "agent": {"type": "python", "callable": "ridgeline_http.py:ask"},
+  "simulation": {"engine": "local_text", "min_turns": 1, "max_turns": 1},
+  "evaluation": {"enabled": false}
+}
+JSON
+```
+
+Start a fresh copy of the stateless service and publish its port only on loopback. This example uses `GET /health` for readiness. The cleanup removes the temporary Compose project when the subshell exits, including if a check fails.
+
+```bash
+(
+  set -e
+  project="ridgeline-$(basename "$WORK" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')"
+  compose=(docker compose -p "$project" -f "$SOURCE_DIR/compose.yaml")
+  cid=''
+  cleanup() {
+    if [[ -n "$cid" ]]; then docker rm -f "$cid" >/dev/null; fi
+    "${compose[@]}" down --volumes --rmi local >/dev/null
+  }
+  trap cleanup EXIT
+  "${compose[@]}" build agent
+  cid=$("${compose[@]}" run --rm --no-deps -d -p 127.0.0.1::8080 agent)
+  export RIDGELINE_URL="http://$(docker port "$cid" 8080/tcp)"
+  curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-max-time 30 \
+    "$RIDGELINE_URL/health" -o /dev/null
+  agent-learn run "$WORK/clearance.json" -o "$WORK/clearance-result.json"
+  jq -er 'select(.status == "passed") | .report.results[0].messages[] |
+    select(.role == "assistant") | .content | select(test("\\b14[- ]days?\\b"; "i"))' \
+    "$WORK/clearance-result.json"
+)
+```
+
+The local text runner includes the persona name, situation and outcome in the shopper turn, so keep the expected number out of all three. The last command prints the agent's reply and exits nonzero if the reply does not mention 14 days. This checks the stated window, not whether the agent correctly refused a refund or changed any order. To repeat the same check against a new build, rerun the subshell. The transcript is in `clearance-result.json`, not in the dashboard.
+
+## Run an offline case
+
+`agent-learn run` (without `harness`) takes a manifest instead of a repository. This example supplies both the customer's situation and the scripted reply. It checks that a local text turn completes; it does **not** call your agent, evaluate its answer, or produce a reusable harness world.
+
+```bash
+cat > "$WORK/ridgeline-manifest.json" <<'JSON'
+{
+  "version": "agent-learning.run.v1",
+  "name": "ridgeline-return-policy",
+  "scenario": {
+    "name": "ridgeline-return-policy",
+    "dataset": [{
+      "persona": {"name": "Maya", "role": "shopper"},
+      "situation": "Maya wants to return an unused full-price tent after 12 days.",
+      "outcome": "Explain the 30-day return window."
+    }]
+  },
+  "agent": {"type": "scripted", "content": "You can return your unused full-price tent within 30 days."},
+  "simulation": {"engine": "local_text", "min_turns": 1, "max_turns": 1},
+  "evaluation": {"enabled": false}
+}
+JSON
+agent-learn run "$WORK/ridgeline-manifest.json" -o "$WORK/ridgeline-result.json"
+python -m json.tool "$WORK/ridgeline-result.json"
+```
+
+Look for `"status": "passed"` and read `report.results[0].messages` for the shopper's request and the scripted reply. Since evaluation is disabled, `passed` is not a grade on the return policy.
+
+## Optional: reopen a session in browser chat
+
+The local chat server is part of the [Agent Learning Kit source repository](https://github.com/future-agi/agent-learning-kit), not a script installed by the wheel. You need Git for this step. In your activated environment, install the web server dependencies and start the checkout that matches 0.3.7. Port `0` lets the operating system pick an unused loopback port. Keep the same model credentials for authoring in chat. No frontend build is required.
+
+```bash
+python -m pip install 'agent-learning-kit[harness-ui]==0.3.7'
+git clone https://github.com/future-agi/agent-learning-kit.git "$WORK/kit"
+git -C "$WORK/kit" checkout --detach a699c808921659dcb9518384d218ad26e5058048
+python -m uvicorn server:app --app-dir "$WORK/kit/harness-ui" \
+  --host 127.0.0.1 --port 0 --no-use-colors >"$WORK/harness-ui.log" 2>&1 &
+export RIDGELINE_UI_PID=$!
+for attempt in {1..30}; do
+  grep -q 'Uvicorn running on' "$WORK/harness-ui.log" && break
+  kill -0 "$RIDGELINE_UI_PID" 2>/dev/null || break
+  sleep 1
+done
+grep 'Uvicorn running on' "$WORK/harness-ui.log"
+```
+
+Open the URL printed by the last command, select **+ new**, and give the chat the absolute path to your test repository. Use **Contract**, **Environment**, **Scenarios** and **Runs** to inspect that chat session. The separate `agent-learn run` manifests above are not chat sessions.
+
+{/* MEDIA: Local harness chat with the Ridgeline session selected and a scenario's checks visible in the Scenarios tab. */}
+
+Select the conversation again in the session picker to restore its history and artifacts. They live under `artifacts/sessions/<id>/` in the kit checkout. The picker lists sessions from that location, not arbitrary CLI output directories. Stop the server from the same shell with `kill "$RIDGELINE_UI_PID"`. If no URL was printed, check `$WORK/harness-ui.log` for startup errors.
+
+{/* MEDIA: Session picker showing the saved Ridgeline conversation and the same session open after selection. */}
+
+## Limits and errors
+
+| Symptom | What to check |
+| --- | --- |
+| `author` reports that the destination is not empty | Use a fresh `--out` for initial authoring. To extend a suite, use `scenarios` with the original `--out`. |
+| An extension saves fewer cases than requested | Compare the saved index with the original and inspect the proof for the affected key. A missing proof or a deferred runtime check is not a passing agent result. |
+| `runtime_selection_unsupported` | An ordinary local build cannot enforce the explicit runtime selection in this contract. Author without provisioning and start the test service separately. Do not delete runtime requirements to make a build pass. |
+| The chat service fails the readiness check | Verify the service name, port and health path in the repository. The example expects a successful `GET /health` on port 8080. |
+| The local text run completes but the final `jq` check fails | Read the assistant turn in `clearance-result.json`. A completed request does not prove the service returned the expected policy. |
+
+## Next steps
+
+- [Review the contract](/docs/environments/guides/review-the-contract) to check the tools and rules the harness should test.
+- [Scenarios and trials](/docs/environments/concepts/scenarios-and-trials) explains the difference between a test definition and an executed conversation.
+- [Build an environment](/docs/environments/guides/build-an-environment) shows how repository-backed environments work in the dashboard.
