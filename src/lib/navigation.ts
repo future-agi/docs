@@ -1284,6 +1284,56 @@ export const tabNavigation: NavTab[] = [
     ]
   },
   {
+    tab: 'CLI',
+    icon: 'zap',
+    href: '/docs/cli',
+    groups: [
+      {
+        group: 'CLI',
+        icon: 'zap',
+        items: [
+          { title: 'Overview', href: '/docs/cli' },
+          { title: 'Quickstart', href: '/docs/cli/quickstart' },
+          { title: 'Install and auth', href: '/docs/cli/install-and-auth' },
+          {
+            title: 'Observe and evaluate',
+            items: [
+              { title: 'Tracing', href: '/docs/cli/tracing' },
+              { title: 'Datasets', href: '/docs/cli/datasets' },
+              { title: 'Evals', href: '/docs/cli/evals' },
+              { title: 'Prompts and gateway', href: '/docs/cli/prompts-and-gateway' },
+            ]
+          },
+          {
+            title: 'Simulate',
+            items: [
+              { title: 'Simulate quickstart', href: '/docs/cli/simulate-quickstart' },
+              { title: 'Environments', href: '/docs/cli/environments' },
+              { title: 'Scenarios, suites and personas', href: '/docs/cli/scenarios-suites-and-personas' },
+              { title: 'Runs', href: '/docs/cli/runs' },
+              { title: 'Epoch', href: '/docs/cli/epoch' },
+              { title: 'Actors and evaluations', href: '/docs/cli/actors-and-evaluations' },
+            ]
+          },
+          {
+            title: 'Automate',
+            items: [
+              { title: 'Coding agents', href: '/docs/cli/coding-agents' },
+              { title: 'Skills', href: '/docs/cli/skills' },
+            ]
+          },
+          {
+            title: 'Reference',
+            items: [
+              { title: 'Configuration and output', href: '/docs/cli/configuration-and-output' },
+              { title: 'Call any endpoint', href: '/docs/cli/api' },
+            ]
+          },
+        ]
+      },
+    ]
+  },
+  {
     tab: 'API',
     icon: 'webhook',
     href: '/docs/api',
