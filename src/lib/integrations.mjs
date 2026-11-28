@@ -96,6 +96,7 @@ export const integrations = [
 
   { id: 'cloudwego-eino', name: 'CloudWeGo Eino', href: '/docs/integrations/traceai/go/eino', category: 'frameworks', summary: 'Trace Eino graphs, agents, model calls and tools in Go.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'tavily', name: 'Tavily', href: '/docs/integrations/traceai/tavily', category: 'frameworks', summary: 'Trace Python search, extraction, mapping, crawling and research calls.', method: 'traceAI SDK', logo: 'generic-framework' },
+  { id: 'genkit-go', name: 'Genkit Go', href: '/docs/integrations/traceai/genkit-go', category: 'frameworks', summary: 'Export native Go model, tool, and flow traces.', method: 'OpenTelemetry', logo: 'generic-framework', aliases: ['Firebase Genkit', 'Golang', 'GenAI'] },
   { id: 'parallel', name: 'Parallel', href: '/docs/integrations/traceai/parallel', category: 'frameworks', summary: 'Trace Python Search and Extract calls, result counts and errors.', method: 'traceAI SDK', logo: 'generic-framework' },
   { id: 'langchain', name: 'LangChain', href: '/docs/integrations/traceai/langchain', category: 'frameworks', summary: 'Trace chains, retrievers, tools and model calls.', method: 'traceAI SDK', logo: 'langchain' },
   { id: 'langgraph', name: 'LangGraph', href: '/docs/integrations/traceai/langgraph', category: 'frameworks', summary: 'Follow agent graph execution and tool calls.', method: 'traceAI SDK', logo: 'langgraph' },
