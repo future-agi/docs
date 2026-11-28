@@ -5,10 +5,10 @@ description: "What a self-hosted Future AGI install sends to Future AGI and to o
 
 ## In this page
 
-A self-hosted install makes one kind of call home on its own: deployment telemetry to Future AGI, on by default. An install with an Enterprise licence makes a second: licence activation and a licence heartbeat, which carries the same instance id and usage counts. This page covers what it sends and when, what it never sends, how to turn it off, how to see what your install sent, and every other outbound connection the platform and the browser UI make. It applies to Standalone, Distributed and Helm. The exact payloads are under [Registration](#registration) and [Heartbeat](#heartbeat).
+A self-hosted install makes one kind of call home on its own: deployment telemetry to Future AGI, on by default. An install with an Enterprise licence makes a second: licence activation and a licence heartbeat, which carries the same instance id and usage counts. This page covers what it sends and when, what it never sends, how to turn it off, how to see what your install sent, and every other outbound connection the platform and the browser UI make. It applies to Standalone, Distributed and Helm. The payloads are under [Registration](#registration), [Heartbeat](#heartbeat) and [Lifecycle and sign-in events](#lifecycle-and-sign-in-events).
 
 <TLDR>
-After the first account is created, the install registers once with `api.futureagi.com`, including the email addresses of its owner, admin, staff and superuser accounts, then sends usage counts every 6 hours. It never sends traces, prompts, outputs, datasets or keys. Turn it off with `./bin/install --no-telemetry` or `FUTURE_AGI_TELEMETRY_DISABLED=true`; one minimal registration without email addresses still goes out, so block `api.futureagi.com` to send nothing. The only other connections made by default are litellm's price-list download, the model server's downloads from the Hugging Face Hub, and the assets users' browsers load from public hosts. An Enterprise licence adds its own heartbeat. Every other outside service stays off until you give it a key.
+After the first account is created, the install registers once with `api.futureagi.com`, including the email addresses of its owner, admin, staff and superuser accounts, then sends usage counts every 6 hours and best-effort background event batches for lifecycle and sign-in activity. It never sends traces, prompts, outputs, datasets or keys. Turn it off with `./bin/install --no-telemetry` or `FUTURE_AGI_TELEMETRY_DISABLED=true`; heartbeats and events stop, and one minimal registration without email addresses still goes out, so block `api.futureagi.com` to send nothing. The only other connections made by default are litellm's price-list download, the model server's downloads from the Hugging Face Hub, and the assets users' browsers load from public hosts. An Enterprise licence adds its own heartbeat. Every other outside service stays off until you give it a key.
 </TLDR>
 
 ## At a glance
@@ -43,7 +43,7 @@ Future AGI uses deployment telemetry to count the installs that are running, whi
 
 **Heartbeats**, every `FUTURE_AGI_TELEMETRY_INTERVAL_HOURS` (6 by default), started by a recurring Temporal schedule with up to `FUTURE_AGI_TELEMETRY_JITTER_SECONDS` (30 minutes by default) of random delay. Each heartbeat covers the previous fixed UTC window, for example 06:00 to 12:00, and holds counts only, across the whole install.
 
-Nothing is sent at startup or on login.
+**Lifecycle and sign-in events**, separately from the aggregate heartbeats. Registration queues `deployment_booted` and `telemetry_registered`; account creation can queue `user_created`, and successful password sign-in can queue `user_logged_in`. These events are stored locally and trigger a best-effort background flush. Sending requires enabled self-hosted telemetry and a registration signing secret: it is not a synchronous upload on every login, and it does not wait for the six-hour heartbeat.
 
 ### Registration
 
@@ -142,10 +142,24 @@ unavailable), so a failure is never reported as zero.
 
 {/* generated:end telemetry-heartbeat */}
 
+### Lifecycle and sign-in events
+
+Event batches go to `/telemetry/events/`. The batch contains `schema_version`, `instance_id` and an `events` array of up to 50 events. Unlike aggregate heartbeats, each event describes activity by an actor:
+
+| Event fields | Meaning |
+|---|---|
+| `event_id`, `event_name`, `occurred_at` | A random event UUID, the event name and its UTC timestamp. |
+| `instance_id`, `version`, `deployment_type` | The install and release that produced the event. |
+| `actor_type`, `actor_id`, `source` | The actor category, an install-scoped pseudonymous identifier for identified actors, and a source such as `web` or `system`. The source user or API-key identifier is hashed before enqueueing; it is not an email address or credential. |
+| `organization_id`, `workspace_id` | Organization and workspace identifiers when supplied, otherwise `null`. These are separate from the pseudonymous actor identifier. The password-login event includes the organization identifier. |
+| `operation_id`, `outcome`, `duration_ms`, `properties` | Operation metadata when supplied. Properties are restricted to `method`, `route`, `status_code`, `auth_method`, `feature`, `deployment_type` and `version`. |
+
+`FUTURE_AGI_TELEMETRY_DISABLED=true` stops events from being queued or sent, and the next telemetry run deletes any that are buffered.
+
 ### How it is sent
 
-- Each payload is an HTTPS `POST` of JSON to `FUTURE_AGI_TELEMETRY_URL` (`https://api.futureagi.com` by default) plus `/telemetry/register/` or `/telemetry/heartbeat/`, with a `FUTURE_AGI_TELEMETRY_TIMEOUT_SECONDS` timeout (5 by default), tried up to 3 times. A payload over 512 KiB is not sent.
-- The registration response carries a per-install secret. Heartbeats are signed with it (HMAC-SHA256, in the `X-FAGI-Telemetry-Signature` header), so the receiver can reject forged ones.
+- Each payload is an HTTPS `POST` of JSON to `FUTURE_AGI_TELEMETRY_URL` (`https://api.futureagi.com` by default) plus `/telemetry/register/`, `/telemetry/heartbeat/` or `/telemetry/events/`, with a `FUTURE_AGI_TELEMETRY_TIMEOUT_SECONDS` timeout (5 by default), tried up to 3 times. A payload over 512 KiB is not sent.
+- The registration response carries a per-install secret. Heartbeats and event batches are signed with it (HMAC-SHA256, in the `X-FAGI-Telemetry-Signature` header), so the receiver can reject forged ones.
 - A heartbeat that cannot be delivered is kept as a JSON file in `FUTURE_AGI_TELEMETRY_BUFFER_DIR`, a directory only the app's user can read, and sent on a later run, oldest first. Files older than 30 days are deleted.
 - Telemetry failures are logged as warnings and never stop the app, a sign-up or a login.
 
@@ -166,9 +180,11 @@ Prompts, model outputs, trace or span contents and attributes, dataset rows, eva
 
 - **Helm:** `config.telemetry=false` in your values sets the variable for the backend, the workers and the bootstrap job. `global.airgap=true` turns telemetry off too, along with the licence heartbeat (unless `license.heartbeat` is `true`), the price-list download and model serving's downloads. Offline, the one opt-out registration below then fails the same harmless way and is retried. See [Configure](/docs/self-hosting/helm#configure).
 
-With telemetry off, no email addresses and no heartbeats are sent, and buffered heartbeats are deleted. One opt-out registration is still sent, so Future AGI can count installs that opted out. It contains only `schema_version`, `instance_id`, `version`, `deployment_type`, `timestamp` and `telemetry_disabled: true`, and is sent again only if you turn telemetry back on and off. Until one gets through, it is attempted at every telemetry run.
+With telemetry off, no email addresses, heartbeats or events are sent, and buffered heartbeats and events are deleted. One opt-out registration is still sent, so Future AGI can count installs that opted out. It contains only `schema_version`, `instance_id`, `version`, `deployment_type`, `timestamp` and `telemetry_disabled: true`, and is sent again only if you turn telemetry back on and off. Until one gets through, it is attempted at every telemetry run.
 
 To make no connection to Future AGI at all, also block outbound traffic to `api.futureagi.com` (or the host in your `FUTURE_AGI_TELEMETRY_URL`) at your network. The failed attempts are logged as warnings and change nothing else.
+
+Enterprise licence activation and licence heartbeats are separate from deployment telemetry; see [Other outbound connections](#other-outbound-connections).
 
 ## Settings
 
@@ -178,8 +194,8 @@ Every setting of deployment telemetry, with its default in each setup (S Standal
 
 | Key | Default | Setups | What it does |
 |---|---|---|---|
-| `FUTURE_AGI_TELEMETRY_DISABLED` | `false` | S D H | `true` opts out (`1`, `yes` and `on` also work): no email addresses and no heartbeats are sent, and buffered heartbeats are deleted; one minimal registration remains ([what it contains](#turn-it-off)). `./bin/install --no-telemetry` (`.\bin\install.ps1 -NoTelemetry`) writes it before anything starts. Helm: `config.telemetry=false`. |
-| `FUTURE_AGI_TELEMETRY_URL` | `https://api.futureagi.com` | S D H | Where registrations and heartbeats go. Change it only to test against another receiver. |
+| `FUTURE_AGI_TELEMETRY_DISABLED` | `false` | S D H | `true` opts out (`1`, `yes` and `on` also work): no email addresses, heartbeats or events are sent, and buffered heartbeats and events are deleted; one minimal registration remains ([what it contains](#turn-it-off)). `./bin/install --no-telemetry` (`.\bin\install.ps1 -NoTelemetry`) writes it before anything starts. Helm: `config.telemetry=false`. |
+| `FUTURE_AGI_TELEMETRY_URL` | `https://api.futureagi.com` | S D H | Where registrations, heartbeats and event batches go. Change it only to test against another receiver. |
 | `FUTURE_AGI_TELEMETRY_INTERVAL_HOURS` | `6` | S D H | Heartbeat interval: 1, 2, 3, 4, 6, 8, 12 or 24. Other values fall back to 6. |
 | `FUTURE_AGI_TELEMETRY_JITTER_SECONDS` | `1800` | S D H | Maximum random delay added to each scheduled run, so installs do not all send at once. |
 | `FUTURE_AGI_TELEMETRY_TIMEOUT_SECONDS` | `5` | S D H | Timeout of each request. `./bin/install` runs its `create_user` with `2` unless this is set, so an unreachable telemetry URL delays the first account only briefly. |
