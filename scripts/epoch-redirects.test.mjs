@@ -14,12 +14,10 @@ const sourcesByTarget = {
     '/docs/simulation/features/fix-my-agent',
     '/product/simulation/how-to/fix-my-agent',
     '/cookbook/cookbook18/chat-simulation-with-fix-my-agent',
-    '/docs/simulation/guides/running-optimizations',
     '/docs/cookbook/chat-simulation-fix-agent',
   ],
   '/docs/epoch/review-an-epoch': [
     '/docs/environments/guides/review-an-epoch',
-    '/docs/simulation/guides/optimization-runs',
   ],
 };
 
@@ -37,4 +35,12 @@ for (const [target, sources] of Object.entries(sourcesByTarget)) {
   for (const source of sources) {
     test(`${source} redirects directly to ${target}`, () => assert.equal(redirects.get(source), target));
   }
+}
+
+// Kept as legacy Run Simulation pages (#1150 review): real pages, not redirects.
+for (const page of ['/docs/simulation/guides/running-optimizations', '/docs/simulation/guides/optimization-runs']) {
+  test(`${page} stays a legacy page`, () => {
+    assert.ok(existsSync(`src/pages${page}.mdx`));
+    assert.equal(redirects.has(page), false);
+  });
 }
