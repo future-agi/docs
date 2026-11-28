@@ -1,11 +1,11 @@
 ---
 title: "Chat Completions API"
-description: "POST /v1/chat/completions through Agent Command Center — OpenAI-compatible with routing, caching, guardrails, streaming, function calling, and vision."
+description: "POST /v1/chat/completions through Agent Command Center — OpenAI-compatible with routing, guardrails, streaming, function calling, and vision."
 ---
 
 ## About
 
-`POST /v1/chat/completions` is the main endpoint. It works exactly like the OpenAI API — same request body, same response format. Agent Command Center adds routing, caching, guardrails, and cost tracking transparently, and supports streaming via SSE.
+`POST /v1/chat/completions` is the main endpoint. It works exactly like the OpenAI API — same request body, same response format. Agent Command Center adds routing, guardrails, and cost tracking transparently (and response caching on a self-hosted gateway), and supports streaming via SSE.
 
 ## Basic usage
 
@@ -111,7 +111,7 @@ All standard OpenAI chat completion parameters are supported:
 | `top_p` | number | Nucleus sampling (0-1). |
 | `n` | integer | Number of completions to generate. |
 | `stream` | boolean | Enable SSE streaming. See [Streaming](#streaming). |
-| `stream_options` | object | `{include_usage: true}` to get token counts in the final chunk. |
+| `stream_options` | object | Set `include_usage: true` to get one more chunk, with an empty `choices` array and the billed `usage`, right before `[DONE]`. Without it and without the `x-agentcc-include-metadata` header, `usage` rides on the last chunk that has choices, the one with `finish_reason`. See [Streaming](#streaming). |
 | `stop` | string or array | Stop sequences. |
 | `max_tokens` | integer | Maximum tokens to generate. |
 | `max_completion_tokens` | integer | Max tokens for o1/o3-style models. |
@@ -129,8 +129,19 @@ All standard OpenAI chat completion parameters are supported:
 | `audio` | object | Audio output config: `{voice: "alloy", format: "wav"}`. |
 
 <Tip>
-Agent Command Center passes through unknown fields to the provider. Provider-specific parameters (like Anthropic's `thinking` or any vendor extension) work without Agent Command Center needing to know about them.
+On providers that use the OpenAI format, fields Agent Command Center does not know, such as a vendor extension, are passed through to the provider.
 </Tip>
+
+### Fields a translated request does not carry
+
+A request to Anthropic, AWS Bedrock, or Google Gemini is rebuilt in that provider's own format, and these fields are left out, with no error or header to say so:
+
+| Provider | Fields not sent |
+|---|---|
+| Anthropic, AWS Bedrock | `n`, `seed`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `user`, `service_tier`, a `response_format` of type `json_object` (a `json_schema` format is sent), and a request for extended thinking (`thinking`, `thinking_budget`, or `reasoning_effort`) |
+| Google Gemini | `n`, `seed`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `user`, and `service_tier`. A `json_object` or `json_schema` format, `thinking_budget`, and `reasoning_effort` are sent |
+
+Requests to providers that use the OpenAI format carry these fields as sent.
 
 ---
 
@@ -183,7 +194,13 @@ data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","choices":[{"index":
 data: [DONE]
 ```
 
-The final chunk before `[DONE]` includes `usage` with token counts. Agent Command Center forces `stream_options.include_usage = true` on every streaming request so that cost tracking and credit deduction work correctly.
+Where the stream's usage goes depends on what you ask for:
+
+- **Without `stream_options.include_usage` or the `x-agentcc-include-metadata` header**, no chunk has an empty `choices` array. The usage the request is billed for rides on the last chunk that has choices, the one with `finish_reason`, as above. The gateway holds the finish chunk (with `n` above 1, each choice's) until the provider's stream has ended and the request is metered, then sends it, the usage on the last one. A provider stream that never sends a `finish_reason` gives no usage this way.
+- **With `"stream_options": {"include_usage": true}`**, you get OpenAI's shape: exactly one chunk with an empty `choices` array, right before `[DONE]`, carrying the billed `usage`. No other chunk carries usage.
+- **With the header `x-agentcc-include-metadata: 1`** (or `true`), you get that final chunk too, and it also carries `agentcc_metadata` with the request's `cost` and `latency_ms`.
+
+The gateway asks the provider for usage on every chat stream and meters the stream on it, whatever you ask for. The provider's own usage is never forwarded, so the usage arrives once. The examples below check `choices` before reading `choices[0]`, so they work with either shape.
 
 <Tabs items={["Python (Agent Command Center SDK)", "Python (OpenAI SDK)", "LiteLLM", "cURL"]}>
 
@@ -204,7 +221,7 @@ stream = client.chat.completions.create(
 )
 
 for chunk in stream:
-    if chunk.choices[0].delta.content:
+    if chunk.choices and chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
@@ -227,7 +244,7 @@ stream = client.chat.completions.create(
 )
 
 for chunk in stream:
-    if chunk.choices[0].delta.content:
+    if chunk.choices and chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
@@ -247,7 +264,7 @@ response = litellm.completion(
 )
 
 for chunk in response:
-    if chunk.choices[0].delta.content:
+    if chunk.choices and chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
@@ -273,7 +290,7 @@ curl -X POST https://gateway.futureagi.com/v1/chat/completions \
 ### Streaming behavior
 
 - **Pre-request plugins** (guardrails, rate limiting, etc.) run before the stream starts. If a guardrail blocks the request, you get a 403 JSON error response with `"code": "content_blocked"`, not a stream.
-- **Post-response plugins** (cost, logging, metrics) run after the final chunk, once token usage is known.
+- **Post-response plugins** (cost, logging, metrics) run when the provider's stream ends, once token usage is known, and before the chunk that carries the usage is sent.
 - **Cache**: Streaming requests bypass the cache entirely, both on read and write.
 - **Failover**: Not supported mid-stream. If the provider fails after streaming starts, the error appears as an SSE data event.
 - **Client disconnect**: Post-plugins still run even if you disconnect early, so cost tracking stays accurate.
@@ -498,7 +515,7 @@ curl -X POST https://gateway.futureagi.com/v1/chat/completions \
 
 </Tabs>
 
-Agent Command Center passes tools through to the provider without modification. All providers that support function calling (OpenAI, Anthropic, Gemini, etc.) work with the same tool definitions.
+On providers that use the OpenAI format, Agent Command Center sends your tool definitions as you wrote them. For providers with their own API format (Anthropic, AWS Bedrock, Google Gemini, and Cohere), it rebuilds them in the provider's own format, so all providers that support function calling work with the same tool definitions. A [guardrail](/docs/command-center/features/guardrails) check on the request that masks or redacts also rewrites what it finds in the arguments of the request's tool calls.
 
 ---
 
@@ -618,7 +635,7 @@ response = client.chat.completions.create(
 )
 ```
 
-Agent Command Center forwards `response_format` to the provider as-is. The provider handles constrained decoding. Use `"type": "json_object"` for simpler JSON without a schema.
+On providers that use the OpenAI format, Agent Command Center forwards `response_format` as sent, and the provider handles constrained decoding. Use `"type": "json_object"` for simpler JSON without a schema. Anthropic and AWS Bedrock are sent a `json_schema` format but not a `json_object` one; Gemini is sent both. See [Fields a translated request does not carry](#fields-a-translated-request-does-not-carry).
 
 ---
 
@@ -647,11 +664,11 @@ Agent Command Center adds these headers to every response (streaming and non-str
 | `x-agentcc-latency-ms` | Total latency in milliseconds |
 | `x-agentcc-model-used` | Actual model returned by the provider |
 | `x-agentcc-cost` | Estimated cost in USD |
-| `x-agentcc-cache` | `hit` or `miss` |
+| `x-agentcc-cache` | Cache status (`hit_exact`, `hit_semantic`, or `miss`), on a gateway that runs the response cache. The hosted gateway does not |
 | `x-agentcc-guardrail-triggered` | `true` if a guardrail fired |
 | `x-agentcc-fallback-used` | `true` if a fallback provider or model was used |
 | `x-agentcc-routing-strategy` | Which routing strategy was applied |
-| `x-agentcc-credits-remaining` | Remaining credit balance (managed keys) |
+| `x-agentcc-credits-remaining` | Remaining credit balance (managed keys, which are not enabled on Future AGI's hosted gateway) |
 | `x-ratelimit-limit-requests` | Rate limit ceiling |
 | `x-ratelimit-remaining-requests` | Remaining requests in current window |
 
@@ -686,7 +703,7 @@ Agent Command Center translates the request to each provider's native format. Yo
     Add safety checks to requests and responses
   </Card>
   <Card title="Caching" href="/docs/command-center/features/caching">
-    Cache responses to reduce latency and cost
+    Cache responses on a self-hosted gateway
   </Card>
   <Card title="Endpoints overview" href="/docs/command-center/api/endpoints">
     See all available API endpoints

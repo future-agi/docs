@@ -1,13 +1,21 @@
 ---
 title: "LLM Response Caching in Agent Command Center"
-description: "Cache LLM responses at the gateway with exact match and semantic caching. Cut provider costs and latency for repeated queries across all providers."
+description: "Cache LLM responses at the gateway with exact match and semantic caching. Serve repeated queries without a provider call, across all providers."
 ---
 
 ## About
 
-Agent Command Center caches LLM responses server-side. A cache hit returns an instant response without calling the provider. The `X-AgentCC-Cache` response header shows cache status (`hit` or `miss`), and `X-AgentCC-Cost` returns `0` on exact cache hits since no provider tokens were consumed.
+Agent Command Center caches LLM responses server-side. A cache hit returns the stored response without calling the provider. The `X-AgentCC-Cache` response header shows cache status (`hit_exact`, `hit_semantic`, or `miss`), and `X-AgentCC-Cost` is not sent on exact cache hits, since no provider tokens were consumed.
 
 No client-side cache logic needed. Caching works for all providers through the same configuration.
+
+<Note>
+The response cache is off on Future AGI's hosted gateway (`gateway.futureagi.com`), for every organization: no request is served from cache there, and the dashboard shows the cache settings as not enforced on this gateway. The rest of this page applies to a self-hosted gateway.
+</Note>
+
+A response is cached only when the gateway's config file sets `cache.enabled: true` and the caller's organization has its own cache setting turned on.
+
+On a self-hosted gateway, send requests with an API key that belongs to an organization, and turn that organization's cache on with `"cache": {"enabled": true}` in its config (see [Organizations](/docs/command-center/admin/organizations)). A key with no organization is never served from the cache.
 
 ---
 
@@ -23,19 +31,25 @@ No client-side cache logic needed. Caching works for all providers through the s
 
 | | Exact match | Semantic cache |
 |---|---|---|
-| **How it matches** | Identical request parameters (same messages, model, temperature) | Similar queries via vector embeddings |
-| **Example** | Same prompt, character for character | "What's the weather today?" matches "Tell me today's weather" |
-| **Latency** | Fastest - hash lookup | Slightly higher - embedding computation |
-| **Use case** | Deterministic queries, templates | Paraphrased questions, conversational variations |
-| **Cost on hit** | Zero (skips cost/credits plugins) | Cost plugins still run (embedding lookup has overhead) |
+| **How it matches** | Identical request parameters (same messages, model, temperature) | Cosine similarity between character n-gram vectors of the last user message, for the same model (see [How semantic matching works](#how-semantic-matching-works)) |
+| **Example** | Same prompt, character for character | "What is the capital of France?" matches "What's the capital of France?" (similarity 0.905). "Tell me today's weather" does not match "What's the weather today?" (0.542) |
+| **Lookup** | A hash lookup | The message is vectorized and compared with stored entries |
+| **Use case** | Deterministic queries, templates | Near-identical wording: differences in case, punctuation, or a word or two |
+| **Cost on hit** | Not calculated (the cost plugin is skipped) | The cost plugin still runs |
 
 <Note>
 Streaming requests bypass cache entirely - both on read and write. Cache only applies to non-streaming completions.
 </Note>
 
-<Warning>
-An exact match hit returns the stored response as it was stored, without a provider call. [Guardrails](/docs/command-center/features/guardrails) that check the request (Pre stage) do not run on that request, so a guardrail you enable after an entry is cached does not apply to it until the entry expires. Guardrails that check the response (Post stage) still run on what is served.
-</Warning>
+<Note>
+Guardrails that check the request run before the cache lookup, so a request they refuse gets their error and no cached response. Guardrails that check the response still run on what is served.
+</Note>
+
+### How semantic matching works
+
+The semantic cache does not call an embedding model. For each cacheable request, the gateway takes the text of the last user message, lowercases it, and turns every run of characters that are not letters or digits into one space. It counts the text's character 3-grams and 4-grams into a fixed-length vector (256 dimensions by default) by hashing each n-gram with FNV-1a, then scales the vector to unit length. With the in-memory and Qdrant backends, and with Pinecone on an index that uses the cosine metric, a stored response is served when the cosine similarity between the two vectors is at or above the threshold (`0.85` by default) and the stored entry is for the same model and the same organization. The closest such entry wins.
+
+Only the last user message is compared: the system prompt, earlier messages, and parameters such as `temperature` are not. Because the comparison is on spelling, not meaning, a paraphrase in different words usually misses, and two questions that differ in one important word can score close to the threshold: "What is the capital of France?" and "What is the capital of Spain?" score 0.826.
 
 ---
 
@@ -44,15 +58,20 @@ An exact match hit returns the stored response as it was stored, without a provi
 | Setting | Description | Default |
 |---|---|---|
 | `enabled` | Enable or disable caching | `false` |
-| `strategy` | `"exact"` or `"semantic"` | `"exact"` |
 | `default_ttl` | Time-to-live for cached entries (e.g. `5m`, `1h`) | `5m` |
 | `max_entries` | Maximum number of cached entries (LRU eviction) | `10000` |
+| `semantic.enabled` | Add the semantic cache after the exact-match lookup | `false` |
+| `semantic.threshold` | Cosine similarity, 0 to 1, that a stored entry needs to be served | `0.85` |
+| `semantic.dimensions` | Length of the n-gram vector | `256` |
+| `semantic.backend` | `memory`, `qdrant`, or `pinecone` | `memory` |
+
+The `semantic` settings are read only from the gateway's config file. An organization's config turns its cache on or off and sets its default TTL; it cannot turn on the semantic cache.
 
 <Tabs items={["Dashboard", "Python (Agent Command Center SDK)", "TypeScript (Agent Command Center SDK)"]}>
 
 <Tab title="Dashboard">
 
-Go to **Agent Command Center > Caching** in the Future AGI dashboard to enable caching, choose a strategy, and set TTL.
+In the Future AGI dashboard, go to **Gateway > Providers**, open the **Cache** tab, and click **Configure Cache** to set your organization's two cache settings: **Enabled** and **Default TTL**. On the hosted gateway, the tab shows them read-only and marks them not enforced.
 
 </Tab>
 
@@ -64,9 +83,9 @@ from agentcc import AgentCC, GatewayConfig, CacheConfig
 # Set cache config at the client level
 client = AgentCC(
     api_key="sk-agentcc-your-key",
-    base_url="https://gateway.futureagi.com",
+    base_url="http://localhost:8080",
     config=GatewayConfig(
-        cache=CacheConfig(enabled=True, strategy="exact", ttl=300, namespace="prod"),
+        cache=CacheConfig(ttl=300, namespace="prod"),
     ),
 )
 ```
@@ -76,13 +95,13 @@ client = AgentCC(
 <Tab title="TypeScript (Agent Command Center SDK)">
 
 ```typescript
-import { AgentCC } from '@futureagi/agentcc';
+import { AgentCC } from '@agentcc/client';
 
 const client = new AgentCC({
     apiKey: 'sk-agentcc-your-key',
-    baseUrl: 'https://gateway.futureagi.com',
+    baseUrl: 'http://localhost:8080',
     config: {
-        cache: { enabled: true, strategy: 'exact', ttl: 300, namespace: 'prod' },
+        cache: { ttl: 300, namespace: 'prod' },
     },
 });
 ```
@@ -91,6 +110,8 @@ const client = new AgentCC({
 
 </Tabs>
 
+From the SDK's cache settings, the gateway reads `ttl`, `namespace`, and `force_refresh` for each request. Whether a response is cached is decided by the gateway's and the organization's settings: `enabled` and `strategy` sent with a request are not applied, and the response names them in the `x-agentcc-config-ignored` header.
+
 **Self-hosted config.yaml:**
 
 ```yaml
@@ -98,13 +119,18 @@ cache:
   enabled: true
   default_ttl: 5m
   max_entries: 10000
+  semantic:              # optional
+    enabled: true
+    threshold: 0.85
+    dimensions: 256
+    backend: memory      # or qdrant, pinecone
 ```
 
 ---
 
 ## Cache namespaces
 
-Partition cache into isolated buckets. Each namespace maintains its own entries, so entries from one environment don't leak into another.
+Partition the exact-match cache into isolated buckets. Each namespace keeps its own exact-match entries. Semantic matching is per organization and model.
 
 Use the `x-agentcc-cache-namespace` request header or set it in the SDK config:
 
@@ -119,7 +145,6 @@ response = client.chat.completions.create(
 
 Common namespace patterns:
 - **Environment isolation**: `prod`, `staging`, `dev`
-- **Multi-tenant isolation**: one namespace per customer
 - **A/B testing**: different namespaces per experiment variant
 
 ---
@@ -156,7 +181,7 @@ response = client.chat.completions.create(
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://gateway.futureagi.com/v1",
+    base_url="http://localhost:8080/v1",
     api_key="sk-agentcc-your-key",
 )
 
@@ -172,7 +197,7 @@ response = client.chat.completions.create(
 <Tab title="cURL">
 
 ```bash
-curl -X POST https://gateway.futureagi.com/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer sk-agentcc-your-key" \
   -H "x-agentcc-cache-force-refresh: true" \
   -H "Content-Type: application/json" \
@@ -202,11 +227,13 @@ curl -X POST https://gateway.futureagi.com/v1/chat/completions \
 | Backend | Notes |
 |---|---|
 | In-memory | Development and small-scale deployments |
-| Qdrant | Production-grade self-hosted vector search |
-| Pinecone | Managed vector database |
+| Qdrant | Self-hosted vector search. The gateway creates its collection with the cosine distance if it does not exist |
+| Pinecone | Managed vector database. The gateway does not create the index: create it with the cosine metric and as many dimensions as `semantic.dimensions` |
+
+Each backend stores the gateway's n-gram vectors and finds the closest one. None of them computes embeddings.
 
 <Note>
-Backend configuration is set at the gateway level in `config.yaml`. If you're using the cloud gateway at `gateway.futureagi.com`, the backend is managed for you.
+Backend configuration is set at the gateway level in `config.yaml`. The hosted gateway at `gateway.futureagi.com` does not run the response cache.
 </Note>
 
 ---

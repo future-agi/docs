@@ -5,11 +5,11 @@ description: "How Agent Command Center works — request pipeline, plugin execut
 
 ## About
 
-Every request flows through a pipeline of plugins in a fixed order: authentication, caching, budget checks, guardrails, rate limiting, then the provider call, followed by cost tracking and logging. Cache hits skip the provider entirely. Per-org configuration keeps tenants isolated.
+Every request to the model endpoints (`POST /v1/chat/completions`, `/v1/completions`, `POST /v1/responses`, `/v1/messages`, the Google GenAI `generateContent` and `streamGenerateContent` routes, `/v1/embeddings`, `/v1/rerank`, `/v1/ocr`, the four `/v1/audio/` routes and `/v1/images/generations`) flows through a pipeline of plugins in a fixed order: IP checks, authentication, permission checks, the organization's request quota, guardrails on the request, the cache lookup, budget checks, tool policy, model validation, rate limiting, and the credit and run-budget checks, then the provider call. After the provider responds, the cost step runs first, then guardrails on the response, the cache write, and the spend and rate counters; logging and metrics run last, in parallel. Cache hits skip the provider entirely. Requests to the Assistants, Vector Stores and Files APIs run this pipeline too; [Assistants](/docs/command-center/api/assistants#what-agent-command-center-adds) describes what applies to the Assistants and Vector Stores APIs.
 
 ## The request pipeline
 
-Agent Command Center is a proxy that sits between your application and your LLM providers. Every request passes through a chain of plugins before reaching the provider, and the response passes through another chain on the way back.
+Agent Command Center is a proxy that sits between your application and your LLM providers. Every request to the model endpoints passes through a chain of plugins before reaching the provider, and the response passes through another chain on the way back.
 
 The plugins run in a fixed priority order. Lower numbers run first:
 
@@ -20,12 +20,14 @@ The plugins run in a fixed priority order. Lower numbers run first:
 | 10 | **IP ACL** | Blocks requests from denied IP addresses or CIDR ranges |
 | 20 | **Auth** | Validates the virtual API key, identifies the organization |
 | 30 | **RBAC** | Checks role-based permissions (can this key call this model?) |
-| 35 | **Cache** | Checks for an exact or semantic cache match. On a hit, skips everything below and returns instantly. |
+| 33 | **Quota** | Refuses, with 429, an organization over its monthly gateway request quota or paused at its budget limit |
+| 34 | **Guardrails** | Runs safety checks on the incoming request (PII, injection, blocklist, etc.) |
+| 35 | **Cache** | Checks for an exact or semantic cache match. On a hit, skips the provider call and the plugins below it. |
 | 40 | **Budget** | Checks org/key/user spend against configured limits |
-| 50 | **Guardrails** | Runs safety checks on the incoming request (PII, injection, blocklist, etc.) |
 | 60 | **Tool policy** | Filters or rejects tool/function calls based on allow/deny lists |
 | 70 | **Validation** | Validates the model name against the model database |
 | 80 | **Rate limit** | Enforces RPM/TPM limits per org, key, user, or model |
+| 510-515 | **Credits and run budget** | The credit hold for a managed request, and an agent run's budget and per-call cost cap. Managed models and credits are not enabled on Future AGI's hosted gateway |
 
 ### Provider call
 
@@ -35,28 +37,30 @@ After all pre-request plugins pass, Agent Command Center forwards the request to
 
 Some post-plugins run sequentially because they depend on each other. The rest run in parallel for performance.
 
-**Sequential (order matters):**
+**Sequential (order matters):** cost runs first, because the plugins after it use the cost it calculates. The rest run in priority order.
 
-| Priority | Plugin | What it does |
+| Order | Plugin | What it does |
 |---|---|---|
+| 1 | **Cost** | Calculates the request cost from token usage and model pricing |
+| 34 | **Guardrails** | Runs safety checks on the response |
 | 35 | **Cache** | Writes the fresh response to cache for future requests |
 | 40 | **Budget** | Updates spend counters |
 | 80 | **Rate limit** | Updates rate counters |
-| 500 | **Cost** | Calculates the request cost from token usage and model pricing |
-| 510 | **Credits** | Deducts cost from the key's credit balance (managed keys only) |
+| 510-515 | **Credits and run budget** | Settle a managed request's credit hold (not enabled on the hosted gateway) and an agent run's budget |
+| 905 | **Outcomes** | Classifies the response (ok, empty, or content filter) for the request log |
 
 **Parallel (independent observers, run concurrently):**
 
 | Priority | Plugin | What it does |
 |---|---|---|
 | 900 | **Logging** | Buffers the request trace for the control plane |
-| 900 | **Audit** | Emits structured audit events to configured sinks |
+| 900 | **Audit** | Writes structured audit events to stdout, as JSON lines |
 | 997 | **Alerting** | Checks alert rule conditions (error rate, cost, latency) |
 | 998 | **Prometheus** | Increments counters and histograms |
 | 999 | **OpenTelemetry** | Exports a span to your OTLP endpoint |
 
 <Note>
-Post-plugin failures are non-fatal. If logging or metrics fail, the response has already been sent to your application. Errors are logged as warnings but never block the response.
+Post-plugin failures are non-fatal. A post-plugin error, such as a failed log write, is logged as a warning and never fails the response.
 </Note>
 
 ---
@@ -66,11 +70,12 @@ Post-plugin failures are non-fatal. If logging or metrics fail, the response has
 When the cache plugin finds an exact match at priority 35, it short-circuits the pipeline. The provider is never called, and the cached response is returned immediately.
 
 On an exact cache hit:
-- Budget, guardrails, tool policy, validation, and rate limiting are all skipped
-- Cost and credits are skipped (no tokens were consumed)
+- The request checks after the cache (budget, tool policy, validation, rate limiting, and the credit and run-budget checks) do not run
+- Guardrails on the request have already run, before the cache lookup; guardrails on the response run on the cached answer
+- Cost is not calculated (no provider tokens were used)
 - Logging, audit, metrics, and alerting still run (so cache hits appear in your dashboards)
 
-Semantic cache hits (similar but not identical requests) also short-circuit the provider call. Cost and credits plugins still run on semantic hits, unlike exact hits where they're skipped entirely.
+Semantic cache hits (similar but not identical requests) also short-circuit the provider call. The cost plugin still runs on a semantic hit, unlike an exact hit.
 
 ---
 
@@ -91,19 +96,19 @@ Each virtual key can have its own restrictions:
 
 - **Model restrictions** - limit which models this key can call
 - **Provider restrictions** - limit which providers this key can use
-- **RPM/TPM limits** - per-key rate limits (independent of org limits)
+- **RPM/TPM limits** - per-key rate limits, used in place of the organization's per-key limit (the organization's other limits still apply)
 - **Expiration date** - auto-expires the key
 - **Allowed IPs** - restrict which IPs can use this key
 - **Tool allow/deny lists** - control which function calls are permitted
-- **Guardrail overrides** - change enforcement mode per key
+- **Guardrail overrides** - on a self-hosted gateway, change how the config file's guardrail rules run for this key (an organization's checks are not changed)
 - **BYOK (Bring Your Own Key)** - let the caller supply their own provider key
-- **Credit balance** - managed keys with a USD budget that auto-deducts per request
+- **Credit balance** - managed keys with a prepaid USD balance, from which the gateway deducts the cost it records for each request to the model endpoints. Managed keys and credits are not enabled on Future AGI's hosted gateway
 
 ---
 
 ## Multi-tenancy
 
-Multiple organizations share the same gateway but are completely isolated. Each organization has its own:
+Multiple organizations share the same gateway. Each organization has its own:
 
 - Providers and their encrypted API keys
 - Guardrails and safety policies
@@ -126,15 +131,17 @@ One organization's configuration never affects another's.
 
 ## Configuration hierarchy
 
-When a setting is defined in multiple places, the most specific one wins:
+When a setting is defined in multiple places, the most specific one usually wins:
 
 ```
 Request headers > API key config > Organization config > Global config
 ```
 
-For example, if the org sets cache TTL to 5 minutes but a request sends `x-agentcc-cache-ttl: 60`, that request uses a 60-second TTL. If a key has a guardrail override that sets PII detection to "log only," it overrides the org's "enforce" setting for requests using that key.
+For example, on a self-hosted gateway with the response cache on, if the org sets cache TTL to 5 minutes but a request sends `x-agentcc-cache-ttl: 60`, that request uses a 60-second TTL.
 
 This lets you set sensible defaults at the org level and override them for specific keys or individual requests without changing the org config.
+
+Some settings do not follow that order. The request-log content mode takes the most restrictive value of the org, the key, and the request. Retry headers can only tighten the org's retries. Every rate limit that applies to a request counts it. An organization's guardrail checks are not overridden by a key or a request header, except a check that shares its name with a rule in a self-hosted gateway's `config.yaml`, which runs as that rule. See [Configuration](/docs/command-center/concepts/configuration) for the details.
 
 ---
 
@@ -160,13 +167,13 @@ Configuration changes take effect without restarting the gateway.
 
 **Sessions:** Group related requests using the `x-agentcc-session-id` header. Sessions are for grouping and analytics only. Agent Command Center does not maintain conversation state between requests.
 
-**Custom metadata:** Attach arbitrary key-value pairs using the `x-agentcc-metadata` header. Metadata appears in logs and analytics for cost attribution and tracking by team, feature, user, or any custom dimension.
+**Custom metadata:** Attach key-value pairs using the `x-agentcc-metadata` header. **Gateway > Request Logs** can filter requests by any of them, and **Gateway > Analytics** groups requests by the `application` and `service` keys. See [Request metadata](/docs/command-center/concepts/platform-integration#request-metadata).
 
 ---
 
 ## Streaming
 
-For streaming requests, pre-request plugins run normally before the stream starts. The stream then flows directly to your application chunk by chunk. Post-response plugins run after the final chunk, once the full response (including token usage) is available.
+For streaming requests, pre-request plugins run normally before the stream starts. The stream then flows directly to your application chunk by chunk, except a finish chunk, which waits for the end of the provider's stream when you did not ask for usage, so that it can carry the usage (see [Streaming](/docs/command-center/features/streaming#sse-format)). Post-response plugins run when the provider's stream ends, once the full response (including token usage) is available, and before the usage is sent.
 
 Streaming requests bypass the cache entirely - both on read and write. This is because streaming responses arrive in chunks and caching partial streams creates consistency problems.
 

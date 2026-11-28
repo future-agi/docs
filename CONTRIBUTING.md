@@ -50,7 +50,6 @@ landing-page/
 ├── src/
 │   ├── pages/              # All documentation pages go here
 │   │   ├── index.astro     # Homepage (/)
-│   │   ├── changelog.astro # Changelog page
 │   │   └── docs/           # Documentation pages
 │   │       ├── quickstart.mdx
 │   │       ├── installation.mdx
@@ -493,7 +492,7 @@ npm run preview
 
 ### Task: Update the Changelog
 
-Edit `src/pages/changelog.astro` or create entries following the existing pattern.
+The changelog is the release notes page, `src/pages/docs/release-notes.mdx`. For each platform release, the `changelog-sync` workflow (`.github/workflows/changelog-sync.yml`) opens a pull request that adds the release's entry at the top; edit that entry for a product audience before merging. Follow `.github/release-notes-instructions.md`.
 
 ### Task: Add a Badge to a Nav Item
 

@@ -172,7 +172,7 @@ Links to related features, concept pages, or cookbooks.
 
 - Every claim should be specific. Replace vague statements with concrete ones.
   - Bad: "Prism adds minimal latency"
-  - Good: "Prism adds ~11 microseconds of overhead per request"
+  - Good: a measured figure that says what it measures and where it was measured (the benchmark and the machine), or no speed claim at all. Never write a number nobody measured.
 
 - Do not fabricate technical details. If you don't have confirmed specs for an SDK method, API endpoint, or configuration option, do not write it. Flag it as needing input from the developer instead.
 
