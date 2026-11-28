@@ -1,7 +1,7 @@
 ---
-title: "Production Quality Monitoring"
+title: "Monitor the quality of support-agent replies"
 slug: "production-quality-monitoring"
-description: "Monitoring a live support agent: traces, inline scores, alerts, and guardrails."
+description: "Trace a support request, check its reply against tool context, and use alerts, Error Feed and Protect to investigate different kinds of failure."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -24,30 +24,58 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Take a support agent from zero visibility to a full monitoring stack: trace every call with Observe, score each response with inline evals, alert on latency and error spikes, cluster failures with Error Feed, and block unsafe input and output with Protect.
+Take a support agent from zero visibility to a full monitoring stack. Trace every call with [Observe](/docs/observe), score each response with inline evals, alert on latency and error spikes, cluster failures with Error Feed, and block unsafe input and output with Protect.
 </TLDR>
+
+## The problem
+
+A customer asks where an order is. The agent can return a plausible tracking number without an application error, even when the trace contains no tool execution to support it. A latency chart alone cannot settle whether that answer was grounded.
+
+## What you'll build
+
+A monitored support agent with a trace for the request, scores for the reply and separate checks for operational problems and unsafe content.
+
+<Mermaid chart={`
+flowchart LR
+    accTitle: Monitor the quality of support-agent replies
+    accDescr: Inspect the agent and model spans, then read the response scores against the available tool context.
+    A["Support question"] --> B["Agent and tool context"] --> C["Traced reply"] --> D["Inline scores"] --> E["Investigate a failure"]
+`} />
+
+You'll:
+
+1. Find a support [trace](/docs/observe/concepts/traces) and its [spans](/docs/observe/concepts/spans).
+2. Attach [inline evaluations](/docs/sdk/tracing/in-line-evals) to the reply.
+3. Set up [alerts](/docs/observe/guides/setup-alerts) and inspect missing tool evidence in [Error Feed](/docs/error-feed).
+4. Test input and output checks with [Protect](/docs/protect).
+
+<Prerequisites title="Before you start">
+- A Future AGI account. Sign up at [app.futureagi.com](https://app.futureagi.com).
+- A workspace [API key and secret key](/docs/admin-settings/api-keys) for `FI_API_KEY` and `FI_SECRET_KEY`.
+- An OpenAI API key and Python 3.11+.
+- A test project for the sample queries; the product catalog and order lookup in this example are mocked.
+</Prerequisites>
 
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
 <a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/main/use-cases/production-quality-monitoring.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
 <a href="https://github.com/future-agi/cookbooks/blob/main/use-cases/production-quality-monitoring.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
 </div>
 
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 30 min | Intermediate | `fi-instrumentation-otel` |
-
-<Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- An `OPENAI_API_KEY`
-- Python 3.11+
-</Prerequisites>
-
 ## Install
+
+Install the tracing packages for [traceAI for OpenAI](/docs/integrations/traceai/openai) and the evaluation package that provides `fi.evals`:
 
 ```bash
 pip install fi-instrumentation-otel traceai-openai ai-evaluation openai
 ```
+
+Then set your keys:
+
+| Variable | What to set | Where to find it |
+| --- | --- | --- |
+| `FI_API_KEY` | Workspace API key | **Build > Keys** |
+| `FI_SECRET_KEY` | Matching workspace secret | **Build > Keys**, when creating the key pair |
+| `OPENAI_API_KEY` | Key for model calls | Your OpenAI account |
 
 ```bash
 export FI_API_KEY="your-fi-api-key"
@@ -55,7 +83,7 @@ export FI_SECRET_KEY="your-fi-secret-key"
 export OPENAI_API_KEY="your-openai-key"
 ```
 
-## Tutorial
+## Follow a support request
 
 <Steps>
 <Step title="Define the agent you want to monitor">
@@ -175,7 +203,7 @@ def handle_message(user_id: str, session_id: str, messages: list) -> tuple[str, 
 </Step>
 <Step title="Trace every call">
 
-`register()` creates or reuses a project and wires up an OpenTelemetry trace provider. `OpenAIInstrumentor().instrument()` auto-traces every OpenAI call. `@tracer.agent(...)` wraps `handle_message` so the full request shows up as one parent span with the OpenAI and tool calls nested underneath:
+`register()` creates or reuses a project and wires up an OpenTelemetry trace provider. `OpenAIInstrumentor().instrument()` auto-traces every OpenAI call. `@tracer.agent(...)` wraps `handle_message` so the full request shows up as one parent span with the OpenAI calls nested underneath. The tool functions need instrumentation of their own, which Step 5 adds.
 
 ```python
 import os
@@ -194,7 +222,7 @@ otel_trace.set_tracer_provider(trace_provider)
 tracer = FITracer(trace_provider.get_tracer("my-production-app"))
 ```
 
-Decorate `handle_message` with `@tracer.agent` and wrap the body in `using_user` / `using_session` so each trace is tagged with who called it. That's the only change; the rest of the body is identical to Step 1:
+Decorate `handle_message` with `@tracer.agent` and wrap the body in `using_user` / `using_session` so each trace is tagged with who called it. That's the only change; the rest of the body is identical to Step 1. Apply the wrapper to the full function, retaining both return paths and the tool dispatch. The abbreviated body below omits those lines:
 
 ```python
 @tracer.agent(name="support_assistant")
@@ -228,7 +256,17 @@ trace_provider.force_flush()
 
 **You should see:** the first two queries trigger tool calls and return grounded answers. The third has no matching tool, so the model either answers from training data or admits it doesn't know. The evals in the next step catch that gap.
 
-Open **Tracing** in the dashboard and select `my-production-app`. Each query has a trace with nested spans for the agent call and the OpenAI requests. Click a trace to expand the span tree and inspect inputs, outputs, latency, and tool arguments:
+For the order question, compare the reply with the mocked order lookup.
+
+1. Open **Tracing** in the dashboard.
+2. Select `my-production-app`.
+
+   Each query has a trace with nested spans for the agent call and the OpenAI requests.
+
+3. Click the trace for the order question.
+4. Expand the span tree.
+
+   You should see inputs, outputs, latency, and tool arguments. Compare the final tracking details with the tool result, not just the requested arguments.
 
 <img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-2-trace-detail.png" alt="Trace detail showing the support_assistant span with system prompt, user message, and tool result for one ChatCompletion call" style={{ borderRadius: '5px' }} />
 
@@ -239,7 +277,7 @@ See [Manual Tracing](/docs/cookbook/quickstart/manual-tracing) for custom span d
 </Step>
 <Step title="Score every response with inline evals">
 
-Traces show what happened, not whether it was good. Attach `fi.evals` to score each response as it flows through:
+Traces show what happened, not whether it was good. Attach `fi.evals` to score each response as it flows through. Keep the model and tool execution from the preceding function in place of the abbreviated body, and score the reply inside its traced function so the score belongs to that request:
 
 ```python
 from fi.evals import Evaluator
@@ -313,7 +351,7 @@ for i, query in enumerate(eval_queries):
 trace_provider.force_flush()
 ```
 
-**You should see** (illustrative, your scores will vary): each response returned inline, with `completeness_check`, `context_adherence_check`, and `context_relevance_check` scores attached to the trace behind it. In **Tracing**, the eval columns appear in the main trace table next to every row, so you can sort or filter for low-scoring responses directly.
+**You should see** (illustrative, your scores will vary): each response returned inline, with `completeness_check`, `context_adherence_check`, and `context_relevance_check` scores attached to the trace behind it. The function skips the two context checks when no tool returned context. In **Tracing**, the eval columns appear in the main trace table next to every row, so you can sort or filter for low-scoring responses directly.
 
 <img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-3-trace-table-with-evals.png" alt="Trace table showing inline eval columns next to each trace row" style={{ borderRadius: '5px' }} />
 
@@ -332,9 +370,17 @@ Click a trace and switch to the **Evals** tab in the span detail panel to see th
 See [Inline Evals in Tracing](/docs/cookbook/quickstart/inline-evals-tracing) for the full inline eval workflow and dashboard filtering.
 
 </Step>
-<Step title="Alert on quality drops">
+<Step title="Configure operational alerts">
 
-Scores are only useful if someone acts on them. Go to **Tracing** → select `my-production-app` → the **Charts** tab shows baseline latency, tokens, traffic, cost, and eval score charts. Switch to the **Alerts** tab → **Create Alerts** and set up three:
+Scores are only useful if someone acts on them.
+
+1. Go to **Tracing** and select `my-production-app`.
+2. Open the **Charts** tab to see baseline latency, tokens, traffic, cost, and eval score charts.
+3. Switch to the **Alerts** tab.
+4. Click **Create Alerts**.
+5. Set up the three alerts below, one at a time.
+
+These are thresholds for this example, not measurements from the order request or recommended defaults for every project.
 
 **Slow responses**
 - Type: **LLM response time**
@@ -351,13 +397,13 @@ Scores are only useful if someone acts on them. Go to **Tracing** → select `my
 - Warning: above **5,000,000** tokens, Critical: above **8,000,000** tokens
 - Interval: **Daily**, notify by email
 
-<video autoPlay muted loop playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
+<video controls muted playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
   <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-4-create-alerts.mp4" type="video/mp4" />
 </video>
 
 *Creating the latency alert from the Alerts tab*
 
-**You should see:** each alert listed under the Alerts tab with its warning and critical thresholds, and a notification the next time a threshold is crossed.
+**You should see:** each alert listed under the Alerts tab with its warning and critical thresholds, and a notification the next time a threshold is crossed. A single poor answer need not trigger any of these operational monitors.
 
 <Tip>
 Start with a few high-signal alerts rather than alerting on everything. Latency, error rates, and token spend cover the most common production failure modes. Add eval score alerts once you have baseline data.
@@ -368,9 +414,22 @@ See [Monitoring & Alerts](/docs/cookbook/quickstart/monitoring-alerts) for the f
 </Step>
 <Step title="Cluster failures with Error Feed">
 
-An alert says something broke, not what to fix. Error Feed analyzes each trace across four quality dimensions and surfaces named errors with root causes.
+An alert says something broke, not what to fix. Error Feed analyzes each trace across four quality dimensions and surfaces named errors with root causes. It scans only sampled traces, and each scan uses [credits](/docs/billing), so start in a low-volume test project.
 
-Go to **Tracing** → select `my-production-app` → **Configure** (gear icon) → set Error Feed sampling to **100%** for initial analysis, then drop to **20-30%** once you have a baseline. Error Feed needs at least 20-30 traces to identify patterns. Once it has enough data, open the **Feed** tab.
+1. Go to **Tracing** and select `my-production-app`.
+2. Click the settings gear icon to open **Configure Project**.
+3. Set the sampling rate to **100%** for initial analysis.
+
+   Drop to **20-30%** once you have a baseline. [Turn on Error Feed](/docs/error-feed/guides/turn-on-error-feed) covers the tradeoff between coverage and cost.
+
+4. Click **Update**.
+5. Send a new order question and let its trace finish.
+
+   A new rate only reaches traces that arrive after you save it.
+
+6. Open **Error Feed** and look for a finding from that project.
+
+   A blank feed does not prove that the reply was correct: the request may not have been sampled or the scan may not have found an issue.
 
 **You should see** (illustrative, one sample run): the order-tracking trace scored across four dimensions:
 
@@ -381,6 +440,8 @@ Go to **Tracing** → select `my-production-app` → **Configure** (gear icon) �
 | **Optimal Plan Execution** | 2.0 | The model picked the right tool and parameters. The orchestration layer failed to execute the call |
 | **Privacy & Safety** | 5.0 | No PII leaked, no unsafe content |
 
+For the order reply, the important evidence is whether the requested `get_order_status` call has a matching execution span and whether its result supports the tracking claim.
+
 <img src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-5-error-feed-result.png" alt="Error Feed analysis showing scores and errors for the order tracking trace" style={{ borderRadius: '5px' }} />
 
 *Error Feed's per-trace breakdown for the order-tracking query, illustrative from one sample run*
@@ -389,7 +450,9 @@ The overall score was 1.5/5 with a HIGH priority flag, and two named errors: **H
 
 This is the kind of failure that passes a spot check: the conversation reads naturally and the answer sounds right. Only tracing every span and scoring factual grounding catches that the response was built on air.
 
-Fix it by instrumenting the two tool functions with `@tracer.tool` so a real span fires for each call, then re-running the same queries:
+A missing tool span means you cannot verify execution from the trace alone. It does not prove that the function never ran, so check the tool dispatch and the data it returned.
+
+Fix it by instrumenting the two tool functions with `@tracer.tool` so a real span fires for each call, then re-running the same queries. Make sure `TOOL_MAP` points to the decorated functions before you repeat the queries: the dictionary stores function references, not names to resolve later.
 
 ```python
 @tracer.tool(name="search_products")
@@ -415,18 +478,20 @@ def get_order_status(order_id: str) -> dict:
 
 After applying the fix, re-running the same queries and flushing stopped surfacing "Hallucinated Content" and "Task Orchestration Failure": the order status responses trace back to real tool execution spans, and Factual Grounding and Instruction Adherence recover.
 
-<video autoPlay muted loop playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
+Inspect the new trace for the execution span, tool result and final reply. An instrumented mock is still a mock: the span shows that it ran, not that a shipment exists.
+
+<video controls muted playsInline style={{width: "100%", borderRadius: "0.75rem", border: "1px solid var(--color-border-default)"}}>
   <source src="https://fi-cookbook-assets.s3.ap-south-1.amazonaws.com/use-cases/production-quality-monitoring/step-5-error-feed-feed.mp4" type="video/mp4" />
 </video>
 
 *The feed after the fix: the two errors no longer appear on re-run*
 
-See [Error Feed](/docs/error-feed) for per-trace quality scoring, error category drilldowns, and the fix-and-verify workflow.
+See [Investigate an issue](/docs/error-feed/guides/investigate-an-issue) to follow a finding back to its traces.
 
 </Step>
 <Step title="Gate unsafe input and output with Protect">
 
-Evals catch bad answers after the fact. Protect catches dangerous ones in real time, before they reach the user:
+Evals catch bad answers after the fact. Protect catches dangerous ones in real time, before they reach the user. Check the incoming text before calling the agent, then check the outgoing answer before returning it. A failed check takes the fallback branch:
 
 ```python
 from fi.evals import Protect
@@ -500,6 +565,8 @@ trace_provider.force_flush()
 
 **You should see:** the first query passes both checks and returns the normal product search result. The second is caught by `prompt_injection` on the input side and returns the safe fallback. The third is caught by `data_privacy_compliance` on the output side because it contains a Social Security Number. In both blocked cases the caller gets a helpful redirect instead of an error.
 
+The output privacy rule checks the reply, not the question. Read the check status to tell which branch returned the fallback.
+
 <Warning>
 Always check `result["status"]` to determine pass or fail. The `"messages"` key holds either the original text (if passed) or the fallback `action` text (if failed).
 </Warning>
@@ -518,14 +585,12 @@ See [Protect Guardrails](/docs/cookbook/quickstart/protect-guardrails) for all f
 | OpenAI calls show up as plain spans with no token or cost data | `OpenAIInstrumentor().instrument()` called after the `OpenAI()` client was already imported and used elsewhere | Instrument before the first `client.chat.completions.create()` call, ideally right after `register()` |
 | `evaluator.evaluate()` raises an unknown-model error | `model_name` isn't a valid Turing model name | Use `turing_small`, `turing_flash`, or `turing_large` |
 | Eval scores never show up on the trace | `trace_eval=True` omitted, or the eval ran outside the traced `@tracer.agent` function | Pass `trace_eval=True` on every `evaluate()` call made inside a traced function |
-| Error Feed's **Feed** tab stays empty | Fewer than 20-30 sampled traces, or sampling was left at a low percentage | Set sampling to 100% until you have a baseline, and confirm the project has 20+ traces |
-| `protector.protect()` always returns `"status": "passed"` even for the injection test query | `protect_rules` list is empty or the `metric` name is misspelled | Check the exact metric strings (`prompt_injection`, `toxicity`, `data_privacy_compliance`, `bias_detection`) against [Protect Guardrails](/docs/cookbook/quickstart/protect-guardrails) |
+| Error Feed stays empty | Sampling was left at 0% or a low percentage, or no new completed trace has a finding | Set sampling to 100% until you have a baseline, then finish a new test request; see [No issues in the feed](/docs/error-feed/troubleshooting/no-issues-in-the-feed) |
+| `protector.protect()` always returns `"status": "passed"` even for the injection test query | `protect_rules` list is empty or the `metric` name is misspelled | Check the exact metric strings (`prompt_injection`, `toxicity`, `data_privacy_compliance`, `bias_detection`) against the guardrail definitions above |
 | `handle_message_guarded()` returns the fallback for every query, including safe ones | The `action` fallback text is being returned regardless of `status`, usually a copy-paste bug that skips the `if ... == "failed"` check | Return `input_check["messages"]` only inside the `failed` branch, and fall through to the agent call otherwise |
-
-Next: run the same agent through simulated conversations before it ever reaches production, in [End-to-End Agent Testing](/docs/cookbook/use-cases/end-to-end-agent-testing).
 
 ## Next
 
 - [Explore dashboard](/docs/observe/guides/explore-dashboard): Find your request and inspect what each span recorded.
-- [What is a trace?](/docs/observe/concepts/traces): See how the operations for one request fit together.
+- [End-to-end agent testing](/docs/cookbook/use-cases/end-to-end-agent-testing): test the same support behavior before release.
 - [No traces appear](/docs/observe/troubleshooting/no-traces-appearing): Check the exporter and workspace if nothing arrives.

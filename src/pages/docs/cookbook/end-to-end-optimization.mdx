@@ -1,7 +1,7 @@
 ---
-title: "End-to-End Prompt Optimization"
+title: "Measure the score change from a prompt rewrite"
 slug: "end-to-end-optimization"
-description: "Take a vague baseline prompt, configure a full agent-opt pipeline, and run RandomSearchOptimizer to rank prompt variants by score."
+description: "Map each article and generated summary to the evaluator, measure the baseline, and read the signed score change for the best prompt variation."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -19,25 +19,61 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Wire up every piece of an `agent-opt` optimization run: a dataset, a generator bound to a baseline prompt, an evaluator, a data mapper, and `RandomSearchOptimizer`. Score the vague baseline first, then run the optimizer and compare.
+Build a Python optimization run that grades summaries against their source articles and prints the score difference between the best rewrite and the original prompt.
 </TLDR>
 
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 20 min | Intermediate | `agent-opt` |
+## The problem
 
-<Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings/api-keys))
-- An OpenAI API key (the generator's `gpt-4o-mini` and the optimizer's `gpt-4o` teacher model both call OpenAI through LiteLLM)
-- Python 3.11
+The instruction `Summarize this: {article}` specifies neither a length nor which facts to keep. You can't judge a replacement from its wording alone. Even a high summary score tells you little if the original instruction scored just as well, or if the judge never received the article.
+
+## What you'll build
+
+A run that pairs each summary with its source, scores the baseline and five rewrites, and prints the best candidate's signed score change.
+
+<Mermaid chart={`flowchart LR
+  accTitle: Measure a change in summary quality
+  accDescr: A prompt produces a summary for each article. The mapper pairs article and summary for the judge. The same process scores the original and five candidates so their scores can be subtracted.
+  A["Article"] --> G["Generate summary"] --> M["Map article and summary"]
+  A --> M
+  M --> E["Score with the same judge"] --> D["Best candidate minus baseline"]`} />
+
+You'll:
+
+1. Map the source article and generated summary to the judge's expected inputs.
+2. Average the original prompt's scores before changing the wording.
+3. Rank the variations and use the delta to decide whether to keep a rewrite.
+
+<Prerequisites title="Before you start">
+- Python 3.11. This intermediate example takes about 20 minutes and uses `agent-opt`.
+- A [Future AGI account](https://app.futureagi.com) and a matching [workspace API key and secret key](/docs/admin-settings/api-keys).
+- An OpenAI key for the `gpt-4o-mini` generator and `gpt-4o` teacher, both called through LiteLLM.
 </Prerequisites>
 
-## Install
+## Prepare the environment
+
+<Steps>
+<Step title="Install the package">
+
+Install `agent-opt`, the package that provides `fi.opt`.
 
 ```bash
 pip install agent-opt
 ```
+
+</Step>
+<Step title="Set the keys">
+
+Set the keys in the same shell where you'll run Python.
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
+
+| Variable | What it supplies | Where it comes from |
+| --- | --- | --- |
+| `FI_API_KEY` | Workspace API key for scoring | [app.futureagi.com/dashboard/keys](https://app.futureagi.com/dashboard/keys) |
+| `FI_SECRET_KEY` | Secret matching that key | The same page, when you create the key pair |
+| `OPENAI_API_KEY` | Model-provider access for the generator and teacher | Your OpenAI account |
+
+</div>
 
 ```bash
 export FI_API_KEY="your-api-key"
@@ -45,16 +81,21 @@ export FI_SECRET_KEY="your-secret-key"
 export OPENAI_API_KEY="your-openai-api-key"
 ```
 
+</Step>
+</Steps>
+
 <Note>
-`RandomSearchOptimizer` bills your OpenAI key beyond the generator's own calls: each `optimize()` run adds `num_variations=5` `gpt-4o` teacher calls plus a `gpt-4o-mini` generation per dataset row per variation, on top of the Future AGI evaluator calls.
+`RandomSearchOptimizer` bills your OpenAI key beyond the generator's own calls. Each `optimize()` run adds `num_variations=5` `gpt-4o` teacher calls plus a `gpt-4o-mini` generation per dataset row per variation, on top of the Future AGI evaluator calls.
 </Note>
 
-## Tutorial
+## Establish the baseline
+
+Place the Python blocks in order in the same file.
 
 <Steps>
-<Step title="Prepare the dataset and baseline prompt">
+<Step title="Define the comparison inputs">
 
-The dataset is the set of inputs the optimizer scores every prompt variant against. The baseline prompt is deliberately vague, so there's a real gap for optimization to close.
+The dataset is the set of inputs the optimizer scores every prompt variant against. Keep these two articles and the starting instruction fixed while measuring the baseline.
 
 ```python
 dataset = [
@@ -71,9 +112,9 @@ baseline_prompt = "Summarize this: {article}"
 ```
 
 </Step>
-<Step title="Wire the generator, evaluator, and data mapper">
+<Step title="Connect the generator to the judge">
 
-The generator binds the baseline prompt to a model configuration; the optimizer calls it to produce output for every candidate prompt it tries. The evaluator scores each candidate's output, it's the objective function the optimizer optimizes against. The data mapper connects dataset fields to what the evaluator expects.
+The generator binds the baseline prompt to a model configuration, and the optimizer calls it to produce output for every candidate prompt it tries. The evaluator scores each candidate's output: it is the objective the optimizer works against. The [Summary Quality eval](/docs/evaluation/builtin/summary-quality) reads the article and the generated summary, not the prompt instructions. The data mapper connects dataset fields to what the evaluator expects.
 
 ```python
 from fi.opt.generators import LiteLLMGenerator
@@ -98,13 +139,12 @@ data_mapper = BasicDataMapper(
 )
 ```
 
-`generated_output` is a sentinel value `BasicDataMapper` recognises and replaces with each variant's output. Keep it exactly as shown.
+`BasicDataMapper` reads `article` from the row. `generated_output` is a sentinel value it recognises and replaces with each variant's output, so keep it exactly as shown. For a different task, swap `summary_quality` for a matching [built-in eval](/docs/evaluation/builtin).
 
-<Note>
-`summary_quality` is one of Future AGI's [built-in evals](/docs/evaluation/builtin). Swap it for any other built-in template that matches your task.
-</Note>
+</Step>
+<Step title="Score the original instruction">
 
-Score the vague baseline now, before touching the optimizer, so you have a real number to compare against later:
+Score the baseline now, before touching the optimizer, so you have a real number to compare against later.
 
 ```python
 baseline_outputs = [generator.generate(row) for row in dataset]
@@ -118,20 +158,17 @@ baseline_score = sum(r.score for r in results) / len(results)
 print(f"Baseline score: {baseline_score:.3f}")
 ```
 
-**You should see** a `Baseline score` between 0 and 1. It's the vague prompt's true score, expect it to be middling, illustrating exactly the gap `optimize()` is meant to close.
+When the file runs, you should see `Baseline score` between 0 and 1. This is the mean on these two articles, not a prediction of how much a rewrite will help.
 
 </Step>
-<Step title="Select the optimizer">
+</Steps>
 
-`RandomSearchOptimizer` generates prompt variations with a teacher model and scores each with the evaluator. Future AGI ships 5 other strategies behind the same `optimize()` call:
+## Compare five candidates
 
-- [Bayesian Search](/docs/optimization/reference/optimizers/bayesian-search) for few-shot example selection
-- [ProTeGi](/docs/optimization/reference/optimizers/protegi) for targeted edits
-- [Meta-Prompt](/docs/optimization/reference/optimizers/meta-prompt) for higher-level rewrites
-- [GEPA](/docs/optimization/reference/optimizers/gepa) for evolutionary search
-- [PromptWizard](/docs/optimization/reference/optimizers/promptwizard) for multi-stage refinement
+<Steps>
+<Step title="Configure the search">
 
-Swapping the optimizer class doesn't change the rest of the workflow, the dataset, evaluator, and data mapper stay the same.
+Configure [Random Search](/docs/optimization/reference/optimizers/random-search) with a teacher model and five variations. It generates prompt variations with the teacher and scores each with the evaluator.
 
 ```python
 from fi.opt.optimizers import RandomSearchOptimizer
@@ -143,10 +180,12 @@ optimizer = RandomSearchOptimizer(
 )
 ```
 
-**You should see** an `optimizer` instance bound to `generator`, ready to call `optimize()`; nothing runs until the next step.
+Creating the optimizer doesn't run the search.
 
 </Step>
-<Step title="Run the optimization and inspect the results">
+<Step title="Add the search and the report">
+
+Add the search and reporting block to the file. `optimize()` handles evaluation, the search loop and ranking.
 
 ```python
 result = optimizer.optimize(
@@ -164,16 +203,31 @@ for i, iteration in enumerate(result.history):
     print(f"Round {i + 1}: score={iteration.average_score:.3f}")
 ```
 
-**You should see** the final score beat the baseline score from step 2, a positive delta, the text of the highest-scoring prompt variant, and one score per round as Random Search works through the 5 variations it generated.
+</Step>
+<Step title="Run the file">
 
-<Check>
-`optimize()` handled evaluation, the search loop, and ranking. What's left is a scored, winning prompt that measurably beats the vague baseline.
-</Check>
+Run the assembled file with Python 3.11.
+
+You should see the baseline score, the final score, the signed delta, the text of the highest-scoring prompt variant, and one score per round as Random Search works through the 5 variations it generated.
 
 </Step>
 </Steps>
 
+## Decide what the delta supports
+
+The delta is `result.final_score - baseline_score`. A positive value means the best candidate outscored the original on these rows. Zero is a tie, and a negative value means the original did better. The highest-scoring *candidate* isn't necessarily an improvement.
+
+Future AGI ships 5 other strategies behind the same `optimize()` call. Swapping the optimizer class doesn't change the rest of the workflow: the dataset, evaluator and data mapper stay the same.
+
+- [Bayesian Search](/docs/optimization/reference/optimizers/bayesian-search) for few-shot example selection
+- [ProTeGi](/docs/optimization/reference/optimizers/protegi) for targeted edits
+- [Meta-Prompt](/docs/optimization/reference/optimizers/meta-prompt) for higher-level rewrites
+- [GEPA](/docs/optimization/reference/optimizers/gepa) for evolutionary search
+- [PromptWizard](/docs/optimization/reference/optimizers/promptwizard) for multi-stage refinement
+
 ## Troubleshooting
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -184,10 +238,11 @@ for i, iteration in enumerate(result.history):
 | `result.final_score` barely moves after optimization | `num_variations` too low, or `eval_template` doesn't match what the dataset actually tests | Raise `num_variations`, and match `eval_template` to the task |
 | `optimizer.optimize()` takes several minutes | Expected for `RandomSearchOptimizer` with `num_variations=5`: each variation calls the `gpt-4o` teacher model plus the evaluator | Lower `num_variations` for a faster first run, or wait it out |
 
-Once you have a winning prompt, save it as a versioned template you can serve without a redeploy. See [Prompt Versioning](/docs/cookbook/quickstart/prompt-versioning).
+</div>
 
 ## Next
 
-- [Run an optimization](/docs/optimization/guides/run-an-optimization): Compare candidate prompts on a fixed dataset.
-- [Choosing an optimizer](/docs/optimization/concepts/choosing-an-optimizer): Match the search method to the comparison you need.
-- [Read optimization results](/docs/optimization/guides/read-optimization-results): Check whether the best candidate improved on the baseline.
+- [Prompt versioning](/docs/cookbook/quickstart/prompt-versioning): save an improvement as a versioned template you can serve without redeploying.
+- [Run an optimization](/docs/optimization/guides/run-an-optimization): set up a fixed-dataset comparison in the platform.
+- [Choose an optimizer](/docs/optimization/concepts/choosing-an-optimizer): compare search methods before running a larger experiment.
+- [Read optimization results](/docs/optimization/guides/read-optimization-results): interpret the winning prompt alongside the history.
