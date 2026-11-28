@@ -1,0 +1,134 @@
+---
+title: "Report Vitest Evals scores and traces"
+description: "Send numeric judge scores and harness traces from Vitest Evals to an Observe project. Run a deterministic policy check and inspect its score on the span."
+---
+
+## About
+
+Use `@traceai/vitest-evals` to see what your eval harness ran and how its judges scored the result. The reporter sends spans to **Observe** at the end of the Vitest run. Scores are span attributes, not dataset rows or experiment results.
+
+## Install the Vitest 4 reporter
+
+The reporter requires Node.js 20.19.0 or newer and supports Vitest 4.x starting at 4.1.0, paired with `vitest-evals` 0.17.x. Use Node.js 22.18.0 for the example to satisfy the build dependencies as well. If you want worker and test execution spans from Vitest 5 rather than harness spans and judge scores, use [native Vitest tracing](/docs/integrations/frameworks/vitest) instead.
+
+<Steps>
+<Step title="Install the dependencies">
+
+In an empty directory, initialize a package and install these versions:
+
+```bash
+npm init -y
+npx --yes npm@11 install --save-exact --save-dev @traceai/vitest-evals@0.1.1 vitest-evals@0.17.0 vitest@4.1.12
+```
+
+</Step>
+<Step title="Choose the Observe project">
+
+Set your [Future AGI API keys](/docs/admin-settings/api-keys) in the shell or CI job that runs Vitest. For this example, use a project named `ridgeline-policy-evals`:
+
+```bash
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export FI_PROJECT_NAME="ridgeline-policy-evals"
+export VITEST_COLLECTOR_URL="https://api.futureagi.com/tracer/v1/traces"
+```
+
+</Step>
+<Step title="Configure the reporter">
+
+Create `vitest.config.mjs` in the same directory. If you already have a config, add the reporter there instead. Keep the `default` terminal reporter and add one `VitestEvalsReporter` to send the traces. The URL above is the Future AGI Cloud endpoint. If you use your own OTLP/HTTP collector, set it to the full trace endpoint, for example `http://localhost:4318/tracer/v1/traces` for a local collector. Use only a trusted endpoint: the reporter sends both API keys there.
+
+```js title="vitest.config.mjs"
+import { defineConfig } from 'vitest/config';
+import { VitestEvalsReporter } from '@traceai/vitest-evals';
+
+export default defineConfig({
+  test: {
+    reporters: [
+      'default',
+      new VitestEvalsReporter({ endpoint: process.env.VITEST_COLLECTOR_URL }),
+    ],
+  },
+});
+```
+
+`VITEST_COLLECTOR_URL` is read by this config. Without an `endpoint` value, the reporter sends to `https://api.futureagi.com/tracer/v1/traces`. To set the project in code, pass `projectName` in the same options object. It takes precedence over `FI_PROJECT_NAME`; if you set neither, open `vitest-evals` in Observe.
+
+</Step>
+</Steps>
+
+## Score a return-policy answer
+
+Ridgeline Outfitters wants its support agent to give the correct return window for an unused tent. Create `returns.test.mjs` next to the config. Its harness looks up the policy locally instead of calling a model. The judge returns `1` for the expected answer and `0` otherwise. No model key is needed.
+
+```js title="returns.test.mjs"
+import { expect } from 'vitest';
+import { createHarness, createJudge, describeEval } from 'vitest-evals';
+
+const returnWindows = { tent: 30, stove: 14 };
+
+const harness = createHarness({
+  name: 'return-policy-lookup',
+  run: async ({ input }) => {
+    const output = `${returnWindows[input.item]} days`;
+    return { output, events: [{ type: 'message', role: 'assistant', content: output }] };
+  },
+});
+
+const returnWindow = createJudge('return_window', async ({ input, output }) => ({
+  score: Number(output === input.expected),
+}));
+
+describeEval('Ridgeline returns', { harness, judges: [returnWindow] }, (it) => {
+  it('answers the tent return question', async ({ run }) => {
+    const result = await run({ item: 'tent', expected: '30 days' });
+    expect(result.output).toBe('30 days');
+  });
+});
+```
+
+```bash
+npx vitest run returns.test.mjs
+```
+
+Open **Observe**, select `ridgeline-policy-evals`, and open the trace for `return-policy-lookup`. Select the harness span and open **Preview**. Under **Attributes**, `eval.score.return_window` and `eval.score.average` should both be `1`. If your harness returns multiple traces, they stay separate; look for the judge scores on the first span of the first nonempty trace, not on every child span.
+
+![In ridgeline-policy-evals, the return-policy-lookup span’s Preview tab shows eval.score.return_window and eval.score.average both equal to 1.](/images/docs/integrations/vitest-evals/harness-return-window-score.png)
+
+## Compare a score without a harness trace
+
+If you already have a graded answer but no operation trace, you can supply eval metadata on the test. Create `saved-answer.test.mjs` next to the config. It grades a saved reply without calling `run()`:
+
+```js title="saved-answer.test.mjs"
+import { expect, test } from 'vitest';
+
+test('saved tent return answer', ({ task }) => {
+  const savedAnswer = '30 days';
+  const score = Number(savedAnswer === '30 days');
+  task.meta.eval = { scores: [{ name: 'return_window', score }] };
+  expect(score).toBe(1);
+});
+```
+
+```bash
+npx vitest run saved-answer.test.mjs
+```
+
+In the same project, open `saved tent return answer`. Instead of a harness trace with operation timing, you get one span named after the test, with `vitest.evals.kind` set to `run` and `eval.score.return_window` set to `1`. There is no `eval.score.average` here because the fixture did not supply an average. A plain test without eval or harness metadata sends nothing.
+
+![The trace tree contains one saved tent return answer span. Its only attributes are vitest.evals.kind set to run and eval.score.return_window set to 1.](/images/docs/integrations/vitest-evals/saved-answer-run-score.png)
+
+## Limits and troubleshooting
+
+| If you see | What to check |
+| --- | --- |
+| `evalTest.override is not a function` | Vitest 4.0.0 cannot run this `describeEval` fixture. Use the pinned versions above. `vitest-evals` 0.18 requires Vitest 5 and is not supported by this reporter. |
+| No score attribute | Only finite numbers are exported. `null`, numeric strings, `NaN` and infinities are not scores. Names such as `return_window` become attribute keys; a name with spaces uses its zero-based position instead, for example `eval.score.0`. Skipped and pending tests are not exported. |
+| No prompt, reply, or error message | The reporter sends metadata only: operation names, timing, parent relationships, status, selected model and token fields, and scores. It omits raw prompts, outputs, tool arguments, arbitrary metadata, and error details. Use non-sensitive test, operation, and judge names: they can appear in span names or score attribute keys. |
+| Duplicate traces | Check the effective reporter list, including shared config. Keep only one exporter for the same harness traces; the terminal reporter can stay. |
+| Export error at run end | The reporter sends one batch after the tests finish. Check the trace endpoint and both keys in the test process. If export succeeds but the project looks empty, check whether `projectName` overrides `FI_PROJECT_NAME`. |
+
+## Next steps
+
+- [Explore the Observe dashboard](/docs/observe/quickstart) to inspect other runs of the same policy check.
+- [Trace Vitest tests](/docs/integrations/frameworks/vitest) if you need native Vitest 5 execution tracing instead of eval scores.

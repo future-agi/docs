@@ -1,0 +1,151 @@
+---
+title: "Trace OpenRouter SDK calls"
+description: "Trace chat, embeddings and Responses from the official OpenRouter Python and TypeScript SDKs. Inspect model usage and see what happens when a stream stops early."
+---
+
+## About
+
+If your app uses `openrouter` in Python or `@openrouter/sdk` in TypeScript, you can see its model calls in Future AGI Observe. This example traces a streaming reply from Ridgeline Outfitters' support agent so you can compare a finished reply with one the customer stops reading.
+
+If you use the **OpenAI client** pointed at `https://openrouter.ai/api/v1`, use the [OpenAI instrumentor](/docs/integrations/traceai/openai) instead. [OpenRouter Agent](/docs/integrations/frameworks/openrouter-agent) traces the agent loop and its tools. [OpenRouter Broadcast](/docs/integrations/gateways/openrouter-broadcast) forwards traces from OpenRouter itself. Choose one source for each model call so you don't count it twice.
+
+## 1. Install the adapter
+
+Choose Python 3.10 to 3.13 or Node.js 20.19 or later. Run the commands for your language in an empty directory.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install traceAI-openrouter==0.1.0 openrouter==1.3.202 fi-instrumentation-otel==1.5.1
+```
+
+```bash
+npm init -y
+npm install @traceai/openrouter@0.1.1 @openrouter/sdk@1.5.127 @traceai/fi-core@1.4.1
+npm install --save-dev tsx
+```
+
+</CodeGroup>
+
+Set `FI_API_KEY` and `FI_SECRET_KEY` from your [Future AGI keys](/docs/admin-settings/api-keys) in the environment where you run the example. Set `OPENROUTER_API_KEY` there too: it authorizes the model request, not the trace export. The example calls `openai/gpt-4o-mini` on your OpenRouter account. If you self-host Future AGI, set `FI_BASE_URL` to your platform API origin and `FI_TRACES_URL` to your trace collector origin. For the hosted collector, use `export FI_TRACES_URL=https://api.futureagi.com`; replace that origin if you self-host.
+
+## 2. Stream a reply
+
+Save the example as `support.py` or `support.mts`. In Python, instrument once before calling the SDK. In TypeScript, pass the tracing HTTP client to the `OpenRouter` instance that makes the request. Neither needs a second HTTPX or fetch instrumentor.
+
+The Python adapter captures plain-text messages and replies by default. For customer traffic, set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` before starting Python if you don't want that text on spans. TypeScript never records either text value, even when the app displays the reply.
+
+<CodeGroup titles={["Python", "TypeScript"]}>
+
+```python
+import os
+import sys
+
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from openrouter import OpenRouter
+from traceai_openrouter import OpenRouterInstrumentor
+
+provider = register(project_name="ridgeline-openrouter", project_type=ProjectType.OBSERVE, verbose=False)
+OpenRouterInstrumentor().instrument(tracer_provider=provider)
+question = "Our store accepts unworn boots within 30 days. Can I return unworn boots on day 12? Reply in one sentence."
+try:
+    with OpenRouter(api_key=os.environ["OPENROUTER_API_KEY"]) as client:
+        with client.chat.send(
+            model="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": question}],
+            stream=True,
+            stream_options={"include_usage": True},
+        ) as stream:
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    print(chunk.choices[0].delta.content, end="", flush=True)
+                    if "--stop-early" in sys.argv:
+                        break
+    print()
+finally:
+    provider.force_flush()
+    provider.shutdown()
+```
+
+```typescript
+import { OpenRouter } from "@openrouter/sdk";
+import { ProjectType, register } from "@traceai/fi-core";
+import { createOpenRouterTracingClient } from "@traceai/openrouter";
+
+const provider = register({ projectName: "ridgeline-openrouter", projectType: ProjectType.OBSERVE, verbose: false });
+const client = new OpenRouter({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  httpClient: createOpenRouterTracingClient({ tracer: provider.getTracer("@traceai/openrouter") }),
+});
+const question = "Our store accepts unworn boots within 30 days. Can I return unworn boots on day 12? Reply in one sentence.";
+try {
+  const stream = await client.chat.send({ chatRequest: {
+    model: "openai/gpt-4o-mini",
+    messages: [{ role: "user", content: question }],
+    stream: true,
+    streamOptions: { includeUsage: true },
+  } });
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta.content;
+    if (text) {
+      process.stdout.write(text);
+      if (process.argv.includes("--stop-early")) break;
+    }
+  }
+  console.log();
+} finally {
+  await provider.forceFlush();
+  await provider.shutdown();
+}
+```
+
+</CodeGroup>
+
+Run `python support.py` or `npx tsx support.mts`. You should see a reply confirming the boots are still within the return window. To compare, run `python support.py --stop-early` or `npx tsx support.mts --stop-early`. This makes a new request but stops after the first piece of text, like a customer closing the chat.
+
+## 3. Compare the spans in Observe
+
+In the sidebar, open **Tracing** under **Observe**, select `ridgeline-openrouter`, then open the latest traces. Look for `openrouter.chat` in Python or `chat openrouter` in TypeScript. In both cases `gen_ai.provider.name` is `openrouter`, not `openai`: the `openai/` prefix in the requested model identifies the model, not the service your SDK called.
+
+<div style={{ overflowX: "auto" }} role="region" aria-label="Compare finished and stopped streams" tabindex="0">
+
+| What to inspect | Finished stream | Stopped before the final event |
+| --- | --- | --- |
+| Token usage | `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` when OpenRouter returns them | If you stop before the usage event, the token attributes are absent. A zero in the token summary doesn't mean the request used no tokens. |
+| Python answer | `output.value` contains the assembled reply if output capture is enabled | Look for `openrouter.stream.incomplete: true`, even if the span status is `OK`. Closing the stream normally is not an exception, and the adapter omits the partial reply. |
+| TypeScript status | `OK` if the adapter saw `[DONE]` or `response.completed` and could inspect the whole stream | A normal early cancellation leaves status unset if the transport hasn't seen the final event. Cancellation with an `Error` is `ERROR`. Neither run includes the prompt or reply. |
+
+</div>
+
+<img src="/images/docs/integrations/traceai/openrouter/compare-openrouter-streams.gif" alt="In ridgeline-openrouter, the finished openrouter.chat span shows the boots return reply, 34 input tokens, and 23 output tokens. The stopped span has no reply, and its JSON shows openrouter.stream.incomplete set to true." style={{ borderRadius: '5px' }} />
+
+## Other inference calls
+
+<div style={{ overflowX: "auto" }} role="region" aria-label="Supported SDK operations" tabindex="0">
+
+| Operation | Python SDK | TypeScript SDK |
+| --- | --- | --- |
+| Chat | `chat.send`, `chat.send_async` | `chat.send` |
+| Embeddings | `embeddings.generate`, `embeddings.generate_async` | `embeddings.generate` |
+| Responses | `responses.send`, `responses.send_async`; also the deprecated `beta.responses` namespace | `responses.send`, `beta.responses.send` |
+| Rerank | Not instrumented | `rerank.rerank` |
+| `callModel` | Not instrumented | On SDK versions that expose it, such as `1.5.34`, each underlying request gets one `callModel openrouter` span, not an extra Responses span. The `1.5.127` client used above has no `callModel` method. For agent runs, use [OpenRouter Agent](/docs/integrations/frameworks/openrouter-agent). |
+
+</div>
+
+Python async calls use the same instrumentor. For a streaming `send_async` call, await the call, iterate with `async for`, and use `async with` on the returned stream or `await stream.close()` if you stop early. Flushing a tracer is not a substitute for closing a stream.
+
+## Capture limits and errors
+
+- **Python content:** The adapter records up to 32,768 characters per input or output value. For chat input it keeps only plain role/text messages; for Responses input it keeps a plain string. It skips multimodal or structured input, embedding input and vectors. To disable content in code, pass `config=TraceConfig(hide_inputs=True, hide_outputs=True)` to `instrument()` using `TraceConfig` from `fi_instrumentation`. Model and usage metadata can still be recorded.
+- **TypeScript metadata:** A validated non-streaming JSON response gets `OK`. Responses too large for the adapter's 64 KiB JSON inspection limit can reach the SDK normally without usage metadata or a confirmed success status. Oversized stream frames can also leave success unconfirmed.
+- **Failed calls:** A request exception sets the span to `ERROR`. Python records the exception type, not its message or stack. TypeScript records the HTTP status code on non-success HTTP responses, not the raw provider error. Check the error returned to your app when diagnosing a failure.
+- **Missing or duplicate spans:** Finish or close the stream before flushing. For TypeScript, verify the request went through the configured client. If one request appears twice, check whether Broadcast or a second OpenAI or HTTP instrumentor is tracing the same traffic.
+
+## Next steps
+
+- [Explore the Observe dashboard](/docs/observe/guides/explore-dashboard) to find and filter your model calls.
+- [Mask span attributes](/docs/sdk/tracing/mask-span-attributes) before enabling Python content capture on real support tickets.

@@ -9,7 +9,7 @@
 #                                      any OpenAI-compatible endpoint the LibreChat container can reach
 #                                      (for example http://host.docker.internal:<port>/v1)
 # Optional:
-#   FI_TRACES_URL     default http://host.docker.internal:4318/v1/traces (self-hosted collector)
+#   FI_TRACES_URL     default http://host.docker.internal:4318/tracer/v1/traces (self-hosted collector)
 #   FI_PROJECT_NAME   default librechat-e2e; the content-on leg uses <name>-content
 #   LIBRECHAT_VERSION default v0.8.8      OTELCOL_VERSION default 0.162.0     MONGO_TAG default 8.0.20
 #   RUN_DIR           where rendered env files and evidence go (default: a new temp dir)
@@ -24,7 +24,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FI_API_KEY:?set FI_API_KEY}" "${FI_SECRET_KEY:?set FI_SECRET_KEY}"
 : "${TEST_LLM_BASE_URL:?set TEST_LLM_BASE_URL}" "${TEST_LLM_API_KEY:?set TEST_LLM_API_KEY}" "${TEST_LLM_MODEL:?set TEST_LLM_MODEL}"
-export FI_TRACES_URL="${FI_TRACES_URL:-http://host.docker.internal:4318/v1/traces}"
+export FI_TRACES_URL="${FI_TRACES_URL:-http://host.docker.internal:4318/tracer/v1/traces}"
 PROJECT="${FI_PROJECT_NAME:-librechat-e2e}"
 export RUN_DIR="${RUN_DIR:-$(mktemp -d)}"
 export LIBRECHAT_VERSION="${LIBRECHAT_VERSION:-v0.8.8}" OTELCOL_VERSION="${OTELCOL_VERSION:-0.162.0}"

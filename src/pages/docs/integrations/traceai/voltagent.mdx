@@ -1,36 +1,40 @@
 ---
 title: "Trace VoltAgent with Future AGI"
-description: "Send VoltAgent's native agent, model, tool and memory spans to Future AGI with the maintained @traceai/voltagent processor."
+description: "Trace a VoltAgent tool call in Future AGI, hide its arguments and result, and check which names, IDs and token counts remain on the exported spans."
 ---
 
-Send [VoltAgent](https://github.com/VoltAgent/voltagent)'s native OpenTelemetry spans to Future AGI with `FIVoltAgentSpanProcessor` from `@traceai/voltagent`. The processor maps VoltAgent attributes to Future AGI fields without patching your agents or changing the spans sent to VoltOps and other processors.
+## About
 
-## Prerequisites
+You can trace which tools a [VoltAgent](https://github.com/VoltAgent/voltagent) agent used without sending their arguments or results to Future AGI. `FIVoltAgentSpanProcessor` exports a mapped copy of VoltAgent's native spans. Its privacy settings affect that copy, not VoltOps or other exporters receiving the originals.
 
-- Node.js 22 or later. This guide uses VoltAgent 2.11.0; the integration's peer dependency is `@voltagent/core@^2.11.0`.
-- Future AGI API and secret keys, and your own OpenAI API key for the example.
+## 1. Install the processor
 
-## Install
+Use Node.js 22 or later in an npm project. Pin `@traceai/voltagent` to `0.1.1`: `0.1.0` does not hide all tool and request fields when input or output hiding is on.
 
 ```bash
-npm install @traceai/voltagent@0.1.0 @traceai/fi-core@1.1.1 @voltagent/core@2.11.0
-npm install ai@6.0.309 @ai-sdk/openai@3.0.130 zod@4.6.7
+npm install --save-exact @traceai/voltagent@0.1.1 @traceai/fi-core@1.4.1 @voltagent/core@2.11.0 \
+  ai@6.0.309 @ai-sdk/openai@3.0.130 zod@4.6.7
 ```
 
-## Configure credentials
+## 2. Set credentials and hide payloads
+
+Set your [Future AGI key pair](/docs/admin-settings/api-keys) and OpenAI API key in the shell that runs the agent. If you self-host, set `FI_TRACES_URL` to your HTTP collector origin. The processor captures content by default. Set both flags **before starting the process** to hide what goes into a tool and what comes back.
 
 ```bash
-export FI_API_KEY="YOUR_FUTURE_AGI_API_KEY"
-export FI_SECRET_KEY="YOUR_FUTURE_AGI_SECRET_KEY"
-export FI_PROJECT_NAME="my-voltagent-app"
+export FI_API_KEY="YOUR_API_KEY"
+export FI_SECRET_KEY="YOUR_SECRET_KEY"
 export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
+export FI_TRACES_URL="https://api.futureagi.com"
+export FI_PROJECT_NAME="ridgeline-support"
+export FI_HIDE_INPUTS=true
+export FI_HIDE_OUTPUTS=true
 ```
 
-Content is captured by default. Set the [privacy flags](#privacy) before creating the processor if you do not want to export prompts, answers or tool payloads.
+## 3. Run an order lookup
 
-## Add tracing and run an agent
+Save this as `voltagent.mjs`. The Ridgeline Outfitters support agent uses a synthetic order number to look up a pickup code. The model call is real, but the lookup needs no order-management account.
 
-Save this as `voltagent.mjs`. The weather tool returns sample data so the example needs no weather-service account.
+<CodeGroup titles={["JavaScript"]}>
 
 ```javascript
 import { ProjectType, register } from "@traceai/fi-core";
@@ -50,26 +54,28 @@ const observability = new VoltAgentObservability({
   spanProcessors: [new FIVoltAgentSpanProcessor({ tracerProvider })],
 });
 
-const weather = createTool({
-  name: "get_weather",
-  description: "Get sample weather for a city",
-  parameters: z.object({ city: z.string() }),
-  execute: async ({ city }) => ({ city, tempC: 21, conditions: "sunny" }),
+const lookupPickup = createTool({
+  name: "lookup_pickup",
+  description: "Look up a Ridgeline Outfitters pickup code by order number.",
+  parameters: z.object({ orderNumber: z.string() }),
+  execute: async ({ orderNumber }) =>
+    orderNumber === "RIDGE-DEMO-1042" ? { pickupCode: "DEMO-PINE-42" } : { found: false },
 });
 
 const agent = new Agent({
-  name: "weather-agent",
-  instructions: "Answer weather questions using the sample data from get_weather.",
-  model: openai.chat("gpt-4.1-nano"),
-  tools: [weather],
+  name: "pickup-support",
+  instructions: "Use lookup_pickup to find the pickup code. Tell the customer the code the tool returns.",
+  model: openai.chat(process.env.SUPPORT_MODEL ?? "gpt-4.1-nano"),
+  tools: [lookupPickup],
 });
 
-const app = new VoltAgent({ agents: { weatherAgent: agent }, observability });
+const app = new VoltAgent({ agents: { pickupSupport: agent }, observability });
 
 try {
-  const result = await agent.generateText("What is the weather in Lisbon?", {
-    userId: "user-123",
-    conversationId: "conversation-456",
+  const result = await agent.generateText("What is the pickup code for order RIDGE-DEMO-1042?", {
+    userId: "demo-shopper",
+    conversationId: "demo-pickup",
+    maxSteps: 2,
   });
   console.log(result.text);
 } finally {
@@ -82,17 +88,25 @@ try {
 }
 ```
 
+</CodeGroup>
+
 ```bash
 node voltagent.mjs
 ```
 
 Keep `setGlobalTracerProvider: false`: if the Future AGI provider is global instead, VoltAgent spans bypass the mapping and privacy rules in `spanProcessors`. Add this processor alongside any existing processors, not in place of them. VoltAgent's scope filter applies to every processor; its VoltOps sampling setting does not sample the Future AGI copy.
 
-VoltAgent emits its own model spans, so you do not need [Vercel AI SDK instrumentation](/docs/integrations/traceai/vercel) for these calls. Use that integration for AI SDK calls made outside VoltAgent.
+VoltAgent emits its own model spans, so you do not need a separate Vercel AI SDK processor for these calls.
 
-## View the trace
+## 4. Verify the masked trace
 
-Open **Observe** in Future AGI and select **my-voltagent-app**. Open the `weather-agent` trace to inspect the model call, `get_weather` tool call and memory operations. The example associates the trace with `conversation-456` and `user-123`.
+1. Check the agent's terminal answer for `DEMO-PINE-42`. Hiding content on export does not change the result your application receives.
+2. Under **Observe**, open **Tracing** and select `ridgeline-support`. On the **Trace** tab, open the latest `pickup-support` trace and select `tool.execution:lookup_pickup`. If there is no tool span, the run cannot verify tool masking.
+3. On the tool span’s **Preview** tab, find the **Attributes** table. Look for `gen_ai.tool.name` (`lookup_pickup`) and `gen_ai.tool.call.id`. Neither the order number `RIDGE-DEMO-1042` nor the pickup code `DEMO-PINE-42` should appear in the tool, model or agent attributes. The trace still identifies session `demo-pickup` and user `demo-shopper`; the model span still reports token usage.
+
+![The pickup-support trace with tool.execution:lookup_pickup selected. Its Attributes table shows gen_ai.tool.name as lookup_pickup and a call ID, but no order number or pickup code.](/images/docs/integrations/traceai/voltagent/masked-pickup-tool-attributes.png)
+
+## How native spans map to Future AGI
 
 | VoltAgent operation | Future AGI span kind |
 |---|---|
@@ -105,20 +119,21 @@ Open **Observe** in Future AGI and select **my-voltagent-app**. Open the `weathe
 
 Model spans carry model, provider and token attributes when available. Tool spans include the tool name and, unless hidden, arguments and results. Failed model and tool calls retain `ERROR` status. Sub-agents appear inside their supervisor's trace under `delegate_task`.
 
-**Tokens are counted once, on model spans.** When an operation has exactly one successful `generateText` or `streamText` model span, the processor reconciles it with the agent's total usage across model steps. The agent total stays under `voltagent.usage.*` rather than being counted again. Open the trace to inspect each model call's tokens and cost; the trace list's root-based Tokens column can be empty.
+**Tokens are counted once, on model spans.** When an operation has exactly one successful `generateText` or `streamText` model span, the processor reconciles it with the agent's total usage across model steps. The agent total stays under `voltagent.usage.*` rather than being counted again. The trace list includes tokens from child model spans even when the root has no token count. Open the model span to inspect its usage.
 
 ## Privacy
 
-Prompts, instructions, message history, tool arguments and results, memory payloads, answers and error text are exported by default. To hide content in the Future AGI copy, set these before initializing the processor:
+The input and output flags act independently. For a tool that reads an order number and returns a pickup code, turning on just one flag leaves the other side eligible for export.
 
-```bash
-export FI_HIDE_INPUTS=true
-export FI_HIDE_OUTPUTS=true
-```
+| Setting | What it hides in the Future AGI copy |
+|---|---|
+| `FI_HIDE_INPUTS=true` | Prompts, instructions, input messages and tool arguments (`gen_ai.tool.call.arguments`). Also hides tool descriptions, parameters, JSON schemas and definitions, request parameters (`gen_ai.request.parameters`) and the agent description. |
+| `FI_HIDE_OUTPUTS=true` | Answers and tool results, including `gen_ai.tool.call.result`. |
+| Either flag | State that mixes input and output, such as workflow snapshots, and free-text errors. Span hierarchy, tool names, call IDs, counts and error types remain. |
 
-Alternatively, pass `traceConfig: { hideInputs: true, hideOutputs: true }` to `FIVoltAgentSpanProcessor`. Explicit options override environment variables; only the environment value `true` enables a flag. The finer `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_INPUT_TEXT` and `FI_HIDE_OUTPUT_TEXT` flags hide message lists or their text.
+To configure one processor in code, pass `traceConfig: { hideInputs: true, hideOutputs: true }` alongside `tracerProvider` in its constructor. Each explicit option overrides its environment variable. The environment value `true` is case-insensitive; other values leave the flag off. The narrower `FI_HIDE_INPUT_MESSAGES`, `FI_HIDE_OUTPUT_MESSAGES`, `FI_HIDE_INPUT_TEXT` and `FI_HIDE_OUTPUT_TEXT` flags target message lists or their text, not tool schemas and results.
 
-Either input or output hiding also removes mixed-content state and free-text error details. Span structure, model, tokens, session, user and error type remain. Use non-sensitive identifiers for `userId` and `conversationId`.
+Use non-sensitive identifiers for `userId` and `conversationId`: the processor keeps both.
 
 - Credential-like **attribute keys** such as `api_key`, `secret`, `password`, `authorization`, `cookie` and `headers` are dropped. This is not a general secret scanner: JSON-valued attributes such as `llm.provider_options` can retain nested credentials. Do not put secrets in provider options, prompts or tool results.
 - Stack traces are removed and local file paths are rewritten. Error text also has emails and the local user and host names removed, but emails in captured prompts or tool results remain unless you hide that content.
@@ -155,3 +170,8 @@ For a long-running application, perform full shutdown only when stopping the app
 - **Duplicate spans:** register the processor only once and avoid sending the same VoltAgent spans through a second exporter to Future AGI.
 - **Content missing:** check `FI_HIDE_*` variables and explicit `traceConfig` options.
 - **Provider empty:** an OpenAI-compatible provider with a custom ID or a dynamic model may have no recognized provider mapping. Model and token fields can still be recorded.
+
+## Next steps
+
+- [Inspect sessions](/docs/observe/features/session) to follow several requests from the same conversation.
+- [Trace Vercel AI SDK calls](/docs/integrations/traceai/vercel) if your app also makes model calls outside VoltAgent.

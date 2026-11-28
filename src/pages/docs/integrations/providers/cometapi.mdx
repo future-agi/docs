@@ -1,31 +1,60 @@
 ---
 title: "Trace CometAPI chat completions"
-description: "Trace CometAPI chat completions made with the OpenAI Python client in Future AGI using traceAI-openai."
+description: "Trace a return-policy question through CometAPI with the OpenAI Python client, then check the provider label, response model and reported usage in Observe."
 ---
 
-Trace your CometAPI chat completions in Future AGI using the OpenAI Python client and [traceAI-openai](/docs/integrations/traceai/openai). This guide covers `/v1/chat/completions`; Responses, image, video and audio routes are outside its scope. There is no `traceai-cometapi` package.
+## About
 
-## Install
+Trace a question from Ridgeline Outfitters' returns assistant to CometAPI with the OpenAI Python client. The span identifies the service your client called, not the author of the model.
 
-Use Python 3.10 to 3.13 for [traceAI-openai 0.1.10](https://pypi.org/project/traceAI-openai/0.1.10/). Install the versions used by the [companion example](https://github.com/future-agi/docs/tree/main/examples/providers/cometapi):
+## Configure the endpoint
 
-```bash
-pip install traceAI-openai==0.1.10 fi-instrumentation-otel==1.1.0 openai==3.31.0
-```
+Use a key for CometAPI and select a chat model from its [model list](https://apidoc.cometapi.com/overview/models). A Responses model that requires `/v1/responses` will not work with this chat call. The SDK posts to `https://api.cometapi.com/v1/chat/completions`. There is no `traceai-cometapi` package. This guide does not cover image, video or audio requests.
 
-## Trace a chat completion
-
-Set your CometAPI key for the model client and your Future AGI keys for tracing. For self-hosted Future AGI, also set `FI_BASE_URL` to your collector URL.
+Use Python 3.10 to 3.13. Set the provider credential and model ID for inference, and a separate Future AGI key pair for trace export. If you self-host Future AGI, set `FI_BASE_URL` to the platform API origin and replace the hosted `FI_TRACES_URL` below with your collector origin, even if both origins are the same.
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install 'traceAI-openai==0.1.16' 'fi-instrumentation-otel==1.5.1' 'openai==3.57.0'
 export COMETAPI_KEY="YOUR_COMETAPI_KEY"
-export FI_API_KEY="YOUR_API_KEY"
-export FI_SECRET_KEY="YOUR_SECRET_KEY"
+export COMETAPI_MODEL="gpt-4o-mini"
+export FI_API_KEY="YOUR_FUTURE_AGI_API_KEY"
+export FI_SECRET_KEY="YOUR_FUTURE_AGI_SECRET_KEY"
+export FI_TRACES_URL="https://api.futureagi.com"  # use your collector origin if self-hosted
 ```
 
-Register and instrument before creating the client. Replace `your-model-id` with a chat model from CometAPI's [Models page](https://apidoc.cometapi.com/overview/models).
+## Check the trace destination without calling a model
+
+Save this as `comet_tracing.py`. Run `python comet_tracing.py` to send a single span to `ridgeline-returns`. You can open the printed trace ID in Observe before spending anything on inference. This checks the Future AGI destination, **not** your CometAPI key.
 
 ```python
+from fi_instrumentation import register
+from fi_instrumentation.fi_types import ProjectType
+from traceai_openai import OpenAIInstrumentor
+
+
+def configure_tracing():
+    provider = register(project_type=ProjectType.OBSERVE, project_name="ridgeline-returns", verbose=False)
+    OpenAIInstrumentor().instrument(tracer_provider=provider)
+    return provider
+
+
+if __name__ == "__main__":
+    provider = configure_tracing()
+    try:
+        with provider.get_tracer("cometapi").start_as_current_span("Check CometAPI trace export") as span:
+            print(f"{span.get_span_context().trace_id:032x}")
+    finally:
+        provider.shutdown()
+```
+
+## Send the return question
+
+Save this standalone example as `returns.py` and run `python returns.py` with an active CometAPI key:
+
+```python
+import json
 import os
 
 from fi_instrumentation import register
@@ -33,49 +62,35 @@ from fi_instrumentation.fi_types import ProjectType
 from openai import OpenAI
 from traceai_openai import OpenAIInstrumentor
 
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="my-chatbot",
-)
-OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
-
-client = OpenAI(
-    api_key=os.environ["COMETAPI_KEY"],
-    base_url="https://api.cometapi.com/v1",
-)
-
+provider = register(project_type=ProjectType.OBSERVE, project_name="ridgeline-returns", verbose=False)
+OpenAIInstrumentor().instrument(tracer_provider=provider)
 try:
-    response = client.chat.completions.create(
-        model="your-model-id",
-        messages=[{"role": "user", "content": "What is the capital of France?"}],
-    )
-    print(response.choices[0].message.content)
+    with OpenAI(base_url="https://api.cometapi.com/v1", api_key=os.environ["COMETAPI_KEY"]) as client:
+        result = client.chat.completions.create(
+            model=os.environ["COMETAPI_MODEL"],
+            messages=[{"role": "user", "content": "We accept unused packs within 30 days. Can I return an unused pack on day 12?"}],
+        )
+        print(json.dumps({
+            "answer": result.choices[0].message.content,
+            "model": result.model,
+            "input_tokens": result.usage.prompt_tokens if result.usage else None,
+            "output_tokens": result.usage.completion_tokens if result.usage else None,
+        }))
 finally:
-    trace_provider.force_flush()
-    trace_provider.shutdown()
+    provider.force_flush()
+    provider.shutdown()
 ```
 
-Save the script and run it. Open **Observe** and select `my-chatbot` to find the LLM span. The span's provider label is `openai`, not CometAPI. For streaming usage, pass `stream_options={"include_usage": True}`. Tool execution needs its own span if you want to trace it.
+Under **Observe**, open **Tracing** and select `ridgeline-returns`. Open the trace, select `ChatCompletion` and switch **Preview** to **JSON**. Look for `gen_ai.provider.name=cometapi`. Compare the printed answer with the span output, `model` with `gen_ai.request.model`, and the reported counts with `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`. The requested model ID in `gen_ai.request.parameters` can differ from the model the service returned.
 
-## Privacy
+## Limits and troubleshooting
 
-By default, traceAI-openai captures prompts, completions, tool arguments and results, and request parameters. To hide these in Future AGI, set the following before starting your process:
+- A page or redirect instead of an API response usually means the base path is wrong. Use the SDK base ending in `/v1`, not the full `/chat/completions` URL.
+- A stream or failed chat records the requested model. If the `gen_ai.usage.*` attributes are absent, the endpoint did not report a count, even if the token chips show `0`. See the [shared streaming example](/docs/integrations/traceai/openai#send-a-request).
+- An unknown proxy hostname keeps `openai`. If you get an answer but no span, check the Future AGI credentials, collector destination and shutdown, not the provider key.
+- Use data approved for tracing. Request, response and error content can reach Future AGI. Set `FI_HIDE_INPUTS=true`, `FI_HIDE_OUTPUTS=true` and `FI_HIDE_LLM_INVOCATION_PARAMETERS=true` before starting the process to hide those fields. Input hiding masks standard tool definitions. To suppress span error messages and stack traces independently, set `FI_HIDE_ERROR_DETAILS=true`; this is already the default when input or output hiding is on. Custom attributes and application logs need their own review.
 
-```bash
-export FI_HIDE_INPUTS=true
-export FI_HIDE_OUTPUTS=true
-export FI_HIDE_LLM_INVOCATION_PARAMETERS=true
-```
+## Next steps
 
-With the pinned versions, these settings do not hide tool definitions, session IDs or error messages. Error status and exception events can include the provider's error body, request ID and local stack paths; do not rely on these switches to hide sensitive error text. CometAPI still receives the content sent to its API.
-
-## Troubleshooting
-
-- **401 from CometAPI:** check `COMETAPI_KEY`.
-- **404, redirect or HTML response:** use `https://api.cometapi.com/v1` as the base URL; the chat request goes to `https://api.cometapi.com/v1/chat/completions`.
-- **Model call fails:** check the model's API requirements. Some models require `/v1/responses`, which this guide does not cover.
-- **No traces:** check the Future AGI keys, `FI_BASE_URL` if self-hosted, and that instrumentation runs before client creation. See [No traces appearing](/docs/observe/troubleshooting/no-traces-appearing).
-- **Streaming span has no token counts:** pass `stream_options={"include_usage": True}`.
-- **Python 3.14 installation fails:** traceAI-openai 0.1.10 requires Python 3.10 to 3.13.
-
-On traceAI-openai 0.1.10, the model is absent from streaming and failed-call spans, and the CometAPI host is not recorded on the span.
+- [Trace compatible endpoints and interpret the span](/docs/integrations/traceai/openai).
+- [Mask span attributes](/docs/sdk/tracing/mask-span-attributes) before tracing customer data.

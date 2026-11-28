@@ -1,60 +1,86 @@
-"""The Python snippet on the docs page, run as written, and what the page promises.
-
-The test reads the page, takes the code block that builds the client, swaps only the
-CometAPI base URL for the local stand-in, and runs it in a separate process like a
-customer would. A second run keeps the URL as written and sends it through the refusing
-CONNECT probe to show which host the snippet dials."""
+"""Run both standalone scripts from the CometAPI page against loopback services."""
+import base64
+from importlib.metadata import version
+import json
 import re
 import subprocess
 import sys
 
-from conftest import COMET_KEY, COMET_URL, FI_API_KEY, FI_SECRET_KEY, ROOT, clean_env, llm_spans
+from conftest import COMET_KEY, COMET_URL, FI_API_KEY, FI_SECRET_KEY, ROOT, clean_env, comet_requests, llm_spans
 
 PAGE = ROOT.parents[2] / "src" / "pages" / "docs" / "integrations" / "providers" / "cometapi.mdx"
+PAGE_MODEL = "gpt-4o-mini"
+QUESTION = "We accept unused packs within 30 days. Can I return an unused pack on day 12?"
 
 
-def snippet():
-    text = PAGE.read_text()
-    blocks = re.findall(r"```python\n(.*?)```", text, re.S)
-    chosen = [b for b in blocks if COMET_URL in b and "chat.completions.create" in b]
-    assert len(chosen) == 1, "the page must have exactly one runnable Python recipe"
-    return chosen[0]
+def snippets():
+    connection, returns = re.findall(r"```python\n(.*?)```", PAGE.read_text(), re.S)
+    assert returns.count(f'base_url="{COMET_URL}"') == 1 and "chat.completions.create" in returns
+    return connection, returns
 
 
-def run(code, env_extra, tmp_path):
+def run(script, code, collector, **env_extra):
     env = clean_env()
-    env.update({"COMETAPI_KEY": COMET_KEY, "FI_API_KEY": FI_API_KEY, "FI_SECRET_KEY": FI_SECRET_KEY,
-                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "3", "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "127.0.0.1,localhost"})
+    env.update(FI_API_KEY=FI_API_KEY, FI_SECRET_KEY=FI_SECRET_KEY, FI_BASE_URL=collector.url,
+               FI_TRACES_URL=collector.url, OTEL_EXPORTER_OTLP_TRACES_TIMEOUT="3", NO_PROXY="127.0.0.1,localhost")
     env.update(env_extra)
-    script = tmp_path / "page_snippet.py"
-    script.write_text(code + "\ntrace_provider.force_flush()\ntrace_provider.shutdown()\n")
-    return subprocess.run([sys.executable, "-I", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+    script.write_text(code)
+    return subprocess.run([sys.executable, "-I", str(script)], cwd=script.parent, env=env, capture_output=True, text=True, timeout=120)
+
+
+def test_connection_prints_the_exported_trace_id_without_inference(collector, probe, tmp_path):
+    connection, _ = snippets()
+    result = run(tmp_path / "comet_tracing.py", connection, collector, HTTPS_PROXY=probe.url)
+    assert result.returncode == 0, result.stderr[-1500:]
+    (span,) = collector.spans()
+    assert span["name"] == "Check CometAPI trace export"
+    assert span["_resource"]["project_name"] == "ridgeline-returns"
+    assert span["_resource"]["project_type"] == "observe"
+    assert base64.b64decode(span["trace_id"]).hex() in result.stdout.splitlines()
+    assert not probe.seen
 
 
 def test_the_page_snippet_runs_and_is_traced_on_the_named_project(stub, collector, tmp_path):
-    code = snippet().replace(COMET_URL, stub.url)
-    result = run(code, {"FI_BASE_URL": collector.url}, tmp_path)
+    _, returns = snippets()
+    code = returns.replace(COMET_URL, stub.url)
+    stub.stub.response_model = "resolved-test-model"
+    result = run(tmp_path / "returns.py", code, collector, COMETAPI_KEY=COMET_KEY, COMETAPI_MODEL=PAGE_MODEL)
     assert result.returncode == 0, result.stderr[-1500:]
-    assert "echo: What is the capital of France?" in result.stdout
+    (request,) = comet_requests(stub)
+    assert request["body"]["model"] == PAGE_MODEL
+    answer = f"echo: {QUESTION}"
+    printed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert printed == {"answer": answer, "model": stub.stub.response_model,
+                       "input_tokens": len(QUESTION.split()), "output_tokens": len(answer.split())}
     (span,) = llm_spans(collector)
     attrs = span["_attrs"]
-    assert attrs["gen_ai.request.model"] == "your-model-id"
+    assert json.loads(attrs["gen_ai.request.parameters"])["model"] == PAGE_MODEL
+    assert attrs["gen_ai.request.model"] == printed["model"]
+    assert attrs["gen_ai.output.messages.0.message.content"] == printed["answer"]
+    assert int(attrs["gen_ai.usage.input_tokens"]) == printed["input_tokens"]
+    assert int(attrs["gen_ai.usage.output_tokens"]) == printed["output_tokens"]
     assert attrs["gen_ai.provider.name"] == "openai"
-    assert collector.spans()[0]["_resource"]["project_name"] == "my-chatbot"
-    assert collector.spans()[0]["_resource"]["project_type"] == "observe"
+    assert span["_resource"]["project_name"] == "ridgeline-returns"
+    assert span["_resource"]["project_type"] == "observe"
 
 
 def test_the_page_snippet_as_written_dials_api_cometapi_com(collector, probe, tmp_path):
-    result = run(snippet(), {"FI_BASE_URL": collector.url, "HTTPS_PROXY": probe.url}, tmp_path)
+    _, returns = snippets()
+    result = run(tmp_path / "returns.py", returns, collector, COMETAPI_KEY=COMET_KEY,
+                 COMETAPI_MODEL=PAGE_MODEL, HTTPS_PROXY=probe.url)
     assert result.returncode != 0  # the probe refuses the tunnel, the snippet's request fails
     assert {p["target"] for p in probe.seen} == {"api.cometapi.com:443"}
     (span,) = llm_spans(collector)
     assert span["status"]["code"] == "STATUS_CODE_ERROR"
+    # The standalone example also runs this test against its legacy adapter.
+    assert span["_attrs"]["gen_ai.provider.name"] == ("openai" if version("traceAI-openai") == "0.1.10" else "cometapi")
 
 
 def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
     text = PAGE.read_text()
-    assert text.count("https://api.cometapi.com/v1") >= 3
+    _, returns = snippets()
+    assert f'base_url="{COMET_URL}"' in returns
+    assert f'export COMETAPI_MODEL="{PAGE_MODEL}"' in text
     assert "https://api.cometapi.com/v1/chat/completions" in text
     # The documented recipe is chat-only and does not promise a dedicated package.
     for route in ("Responses", "image", "video", "audio"):
@@ -66,16 +92,16 @@ def test_the_page_names_the_one_url_and_lists_what_it_does_not_cover():
 def test_the_page_follows_the_docs_style_and_carries_no_secret():
     text = PAGE.read_text()
     assert chr(0x2014) not in text, "the docs style guide forbids em dashes"
-    assert text.split("---", 2)[2].lstrip().startswith("Trace your CometAPI")
-    assert "traceAI-openai==0.1.10 fi-instrumentation-otel==1.1.0 openai==3.31.0" in text
-    code = snippet()
-    assert "finally:" in code and "trace_provider.force_flush()" in code and "trace_provider.shutdown()" in code
+    assert text.split("---", 2)[2].lstrip().startswith("## About")
+    assert "'traceAI-openai==0.1.16' 'fi-instrumentation-otel==1.5.1' 'openai==3.57.0'" in text
+    _, code = snippets()
+    assert "finally:" in code and "provider.force_flush()" in code and "provider.shutdown()" in code
     assert 'COMETAPI_KEY="YOUR_COMETAPI_KEY"' in text  # placeholders only, no key in the page
     for name in ("FI_HIDE_INPUTS", "FI_HIDE_OUTPUTS", "FI_HIDE_LLM_INVOCATION_PARAMETERS"):
         assert name in text
     assert "Live vendor verification" not in text and "stand-in" not in text
     assert "error messages" in text and "tool definitions" in text
-    assert "Open **Observe**" in text and "traceAI-openai 0.1.10" in text
+    assert "Under **Observe**, open **Tracing**" in text and "gen_ai.provider.name=cometapi" in text
 
 
 def test_no_key_in_the_diff_and_no_other_cometapi_endpoint_client():

@@ -1,233 +1,225 @@
 ---
-title: "Local Lambda tracing lifecycle example"
-description: "Test Python and Go handler tracing locally: provider reuse, explicit flushes, error paths and bounded waits. A local example, not an AWS deployment guide."
+title: "Trace AWS Lambda invocations"
+description: "Trace Python, TypeScript, and Go Lambda handlers in Future AGI. Follow a request into a child span, identify cold starts, and inspect failures."
 ---
 
-[AWS Lambda freezes its execution environment after an invocation completes](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html), so a timer-based batch exporter cannot make progress between invocations. This local Python and Go example shows how to reuse a tracer provider, trace each invocation and attempt a bounded flush before returning, including on errors.
+## About
 
-```text
-cold start:   import / init          provider built once (project_name, both key headers)
-invocation 1  lambda.handler  (chain)      new trace, or the caller's trace when API Gateway sent a traceparent
-              └─ lookup_order (tool)       your own spans
-              flush  ->  Future AGI          before the handler returns
-invocation 2  lambda.handler  (chain)      warm start: the same provider, a new trace
-              └─ lookup_order (tool)
-              flush  ->  Future AGI
-```
+Wrap your Lambda handler to see one invocation span and the work it called. For example, when Ridgeline Outfitters answers a stock question, you can see whether the function started cold, whether the stock lookup ran, and whether the handler returned or failed. The wrapper attempts to send completed spans before Lambda freezes the execution environment.
 
-There is no Future AGI Lambda layer and no published package for this recipe. You copy two small files (`tracing.py` and a handler, or `tracing.go` and a handler) and call your own model or tool code inside the handler, with whichever [traceAI instrumentor](/docs/integrations) you already use.
+## 1. Install the wrapper for your runtime
 
-<Warning>
-This is a local lifecycle example, not an AWS deployment guide. Flush before returning to reduce span loss. The budget limits how long the handler waits; it does not guarantee delivery before Lambda freezes the environment or reaches a platform timeout.
-</Warning>
+Install the dependencies in your function project and include them in your deployment package. The Python SDK supports Python 3.10 through 3.15. Choose a Python runtime available for your function. For TypeScript, use a promise handler on Node.js 22, 24, or 26. For Go, start in a new module directory and build with Go 1.26 or later. If `go` is not already on your `PATH`, replace `/path/to/go` with your Go installation directory.
 
-The complete Python and Go examples are in [examples/runtimes/aws-lambda](https://github.com/future-agi/docs/tree/main/examples/runtimes/aws-lambda).
-
-For model-client tracing, see the [Bedrock integration](/docs/integrations/traceai/bedrock). This example manages the handler lifecycle; instrument model calls separately inside the handler.
-
-## Run the local example
-
-<Steps>
-
-<Step title="Install">
-
-Python:
+<CodeGroup titles={["Python", "TypeScript", "Go"]}>
 
 ```bash
-pip install "opentelemetry-sdk==1.45.1" "opentelemetry-exporter-otlp-proto-http==1.45.1"
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install fi-instrumentation-otel==1.5.1
 ```
-
-Go (OpenTelemetry Go v1.47 requires Go 1.26):
 
 ```bash
-go get go.opentelemetry.io/otel@v1.47.0 go.opentelemetry.io/otel/sdk@v1.47.0 \
-  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.47.0 \
-  github.com/aws/aws-lambda-go@v1.55.1
+npm init -y
+npm install @traceai/fi-core@1.4.1
+npm install --save-dev typescript@5.9.3 @types/node@22
 ```
-</Step>
 
-<Step title="Set the local runner environment">
+```bash
+export PATH="$PATH:/path/to/go/bin"
+go mod init example.com/ridgeline-stock
+go get github.com/future-agi/traceAI/go/lambda@v0.1.1
+```
 
-| Variable | Value |
-| --- | --- |
-| `FI_API_KEY`, `FI_SECRET_KEY` | Your Future AGI keys. **Both** are required. Keep them in Secrets Manager or an encrypted environment variable, not in the source. |
-| `FI_BASE_URL` | Optional. Default `https://api.futureagi.com`. Self-hosted: your own URL. Traces go to `{FI_BASE_URL}/tracer/v1/traces`. |
-| `FI_PROJECT_NAME` | The Observe project. Default: the function name. |
+</CodeGroup>
 
-If either key is missing the recipe does not crash and does not export: it logs one line (without echoing the environment) and the invocation returns your result. That is deliberate. Tracing must never fail the function.
-</Step>
+Set `FI_API_KEY` and `FI_SECRET_KEY` in the function environment using your [Future AGI credentials](/docs/admin-settings/api-keys). Set the project and collector in that environment as well. Replace the hosted `FI_TRACES_URL` below with your collector origin if you self-host. The examples send both keys to the trace endpoint at `/tracer/v1/traces`; keep them out of event payloads and source control.
 
-<Step title="Build the provider once, flush before every return">
+```bash
+export FI_PROJECT_NAME="ridgeline-stock"
+export FI_TRACES_URL="https://api.futureagi.com"
+```
 
-Python (`tracing.py`, condensed; the file in the example also has the cold-start flag, the traceparent extraction and the flush budget):
+## 2. Wrap the handler once
+
+Save the file for your runtime. Build the provider and wrap the handler **outside** the invocation so warm calls can reuse the provider. If you already have an OpenTelemetry provider with a batch processor and exporter, pass it to the wrapper instead of creating another. Remove any hand-written invocation span and flush, or overlapping Lambda auto-instrumentation, including an auto-instrumenting layer. Keep model and tool instrumentors that trace work *inside* the handler.
+
+<CodeGroup titles={["Python: stock.py", "TypeScript: index.ts", "Go: main.go"]}>
 
 ```python
-# file: tracing.py
-import os, threading, logging
-from opentelemetry.exporter.otlp.proto.http import Compression
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+import os
 
-FLUSH_BUDGET_S, FLUSH_RESERVE_S = 2.0, 0.25   # example wait budget and safety reserve
-log = logging.getLogger("lambda_tracing")
+from fi_instrumentation import register
+from fi_instrumentation.aws_lambda import LambdaTracer
+from fi_instrumentation.fi_types import ProjectType
 
-def build_provider():
-    fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
-    project = os.environ.get("FI_PROJECT_NAME") or fn or "aws-lambda"
-    attrs = {"project_name": project, "project_type": "observe", "service.name": project}
-    if fn:
-        attrs["faas.name"] = fn            # only when the runtime provides it
-    provider = TracerProvider(resource=Resource.create(attrs))
-    key, secret = os.environ.get("FI_API_KEY"), os.environ.get("FI_SECRET_KEY")
-    if key and secret:
-        base = os.environ.get("FI_BASE_URL", "https://api.futureagi.com").rstrip("/")
-        exporter = OTLPSpanExporter(
-            endpoint=f"{base}/tracer/v1/traces",
-            headers={"X-Api-Key": key, "X-Secret-Key": secret},
-            timeout=int(FLUSH_BUDGET_S),
-            compression=Compression.NoCompression,        # Compatible with older self-hosted receivers
-        )
-        # a long timer: the explicit flush below is what exports, never the timer
-        provider.add_span_processor(BatchSpanProcessor(exporter, schedule_delay_millis=60_000))
-    else:
-        log.warning("FI_API_KEY / FI_SECRET_KEY not set: tracing is off, spans are not exported")
-    return provider
+provider = register(project_name=os.environ["FI_PROJECT_NAME"],
+                    project_type=ProjectType.OBSERVE, batch=True,
+                    timeout=2, verbose=False)
+tracer = provider.get_tracer("ridgeline.stock")
+lifecycle = LambdaTracer(provider)
+stock = {"TRAIL-40": 6}
 
-def flush(provider, context):
-    """Never raises, never waits longer than Lambda has left."""
-    try:
-        budget = min(FLUSH_BUDGET_S, context.get_remaining_time_in_millis() / 1000 - FLUSH_RESERVE_S)
-        if budget <= 0:
-            log.warning("flush skipped: not enough time left, spans of this invocation are lost")
-            return
-        # BatchSpanProcessor.force_flush can hold for the exporter timeout, so stop waiting at the budget
-        t = threading.Thread(target=provider.force_flush, args=(int(budget * 1000),), daemon=True)
-        t.start(); t.join(budget)
-    except Exception as exc:
-        log.warning("flush failed (%s), spans of this invocation are lost", type(exc).__name__)
+@lifecycle.wrap
+def handler(event, context):
+    sku = (event.get("queryStringParameters") or {}).get("sku")
+    with tracer.start_as_current_span("lookup_stock", attributes={"fi.span.kind": "TOOL"}) as lookup:
+        trace_id = f"{lookup.get_span_context().trace_id:032x}"
+        quantity = stock.get(sku)
+    if quantity is None:
+        raise LookupError("Stock snapshot unavailable")
+    return {"statusCode": 200, "headers": {"x-trace-id": trace_id}, "body": f"{quantity} packs available"}
 ```
 
-```python
-# file: handler.py
-from opentelemetry.trace import SpanKind, Status, StatusCode
-import tracing
+```typescript
+import { ProjectType, register, traceLambdaHandler } from "@traceai/fi-core";
 
-PROVIDER = tracing.build_provider()          # once per execution environment, outside the handler
-TRACER = PROVIDER.get_tracer("lambda-handler")
+const provider = register({
+  projectName: process.env.FI_PROJECT_NAME, projectType: ProjectType.OBSERVE, batch: true, verbose: false, setGlobalTracerProvider: true,
+});
+const tracer = provider.getTracer("ridgeline.stock");
+const stock = new Map([["TRAIL-40", 6]]);
+type StockEvent = { queryStringParameters?: { sku?: string } | null };
 
-def lambda_handler(event, context):
-    try:
-        with TRACER.start_as_current_span(
-            "lambda.handler", kind=SpanKind.SERVER, attributes={"fi.span.kind": "CHAIN"},
-            record_exception=False, set_status_on_exception=False,
-        ) as span:
-            try:
-                return do_work(event)              # your code, your instrumentors
-            except Exception as exc:
-                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
-                raise
-    finally:
-        tracing.flush(PROVIDER, context)           # the root span has ended; flush on success and on error
+export const handler = traceLambdaHandler(async (event: StockEvent) => {
+  const lookup = tracer.startSpan("lookup_stock", { attributes: { "fi.span.kind": "TOOL" } });
+  let quantity: number | undefined;
+  try {
+    quantity = stock.get(event.queryStringParameters?.sku ?? "");
+  } finally {
+    lookup.end();
+  }
+  if (quantity === undefined) throw new Error("Stock snapshot unavailable");
+  return { statusCode: 200, headers: { "x-trace-id": lookup.spanContext().traceId }, body: `${quantity} packs available` };
+}, { provider });
 ```
-
-Go (`tracing/tracing.go` and `handler/handler.go` in the example; this is a condensed version):
 
 ```go
-var provider *sdktrace.TracerProvider // built once in main(), outside the handler
+package main
 
-func Init() *sdktrace.TracerProvider {
-	fn := os.Getenv("AWS_LAMBDA_FUNCTION_NAME")
-	project := cmp.Or(os.Getenv("FI_PROJECT_NAME"), fn, "aws-lambda")
-	attrs := []attribute.KeyValue{
-		attribute.String("project_name", project), attribute.String("project_type", "observe"),
-		attribute.String("service.name", project),
-	}
-	if fn != "" {
-		attrs = append(attrs, attribute.String("faas.name", fn))
-	}
-	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(resource.NewSchemaless(attrs...))}
-	if key, secret := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY"); key != "" && secret != "" {
-		base := cmp.Or(strings.TrimRight(os.Getenv("FI_BASE_URL"), "/"), "https://api.futureagi.com")
-		exp, err := otlptracehttp.New(context.Background(),
-			otlptracehttp.WithEndpointURL(base+"/tracer/v1/traces"),
-			otlptracehttp.WithHeaders(map[string]string{"X-Api-Key": key, "X-Secret-Key": secret}),
-			otlptracehttp.WithCompression(otlptracehttp.NoCompression), // Compatible with older self-hosted receivers
-			otlptracehttp.WithTimeout(2*time.Second))
-		if err == nil {
-			opts = append(opts, sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(time.Minute)))
-		}
-	} else {
-		log.Print("FI_API_KEY / FI_SECRET_KEY not set: tracing is off, spans are not exported")
-	}
-	provider = sdktrace.NewTracerProvider(opts...)
-	return provider
+import (
+    "cmp"
+    "context"
+    "errors"
+    "fmt"
+    "os"
+    "strings"
+
+    "github.com/aws/aws-lambda-go/lambda"
+    traceailambda "github.com/future-agi/traceAI/go/lambda"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+    "go.opentelemetry.io/otel/sdk/resource"
+    sdktrace "go.opentelemetry.io/otel/sdk/trace"
+    "go.opentelemetry.io/otel/trace"
+)
+
+type stockEvent struct {
+    Query map[string]string `json:"queryStringParameters"`
 }
 
-func Flush(ctx context.Context) {
-	budget := 2 * time.Second
-	if dl, ok := ctx.Deadline(); ok { // Lambda sets the invocation deadline on ctx
-		budget = min(budget, time.Until(dl)-250*time.Millisecond)
-	}
-	if budget <= 0 {
-		log.Print("flush skipped: not enough time left, spans of this invocation are lost")
-		return
-	}
-	// a cancelled invocation context still gets its flush attempt, with the budget
-	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
-	defer cancel()
-	if err := provider.ForceFlush(fctx); err != nil {
-		log.Printf("flush did not complete (%T), spans of this invocation may be lost", err)
-	}
+func wrapped() lambda.Handler {
+    base := cmp.Or(os.Getenv("FI_TRACES_URL"), os.Getenv("FI_BASE_URL"), "https://api.futureagi.com")
+    project := os.Getenv("FI_PROJECT_NAME")
+    opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(resource.NewSchemaless(
+        attribute.String("project_name", project), attribute.String("project_type", "observe"),
+        attribute.String("service.name", project)))}
+    key, secret := os.Getenv("FI_API_KEY"), os.Getenv("FI_SECRET_KEY")
+    if project != "" && key != "" && secret != "" {
+        exporter, err := otlptracehttp.New(context.Background(),
+            otlptracehttp.WithEndpointURL(strings.TrimRight(base, "/") + "/tracer/v1/traces"),
+            otlptracehttp.WithHeaders(map[string]string{"X-Api-Key": key, "X-Secret-Key": secret}),
+            otlptracehttp.WithTimeout(traceailambda.FlushTimeout),
+        )
+        if err == nil { opts = append(opts, sdktrace.WithBatcher(exporter)) }
+    }
+    provider := sdktrace.NewTracerProvider(opts...)
+    tracer := provider.Tracer("ridgeline.stock")
+    stock := map[string]int{"TRAIL-40": 6}
+    handle := func(ctx context.Context, event stockEvent) (map[string]any, error) {
+        _, lookup := tracer.Start(ctx, "lookup_stock", trace.WithAttributes(attribute.String("fi.span.kind", "TOOL")))
+        quantity, ok := stock[event.Query["sku"]]
+        lookup.End()
+        if !ok { return nil, errors.New("stock snapshot unavailable") }
+        return map[string]any{"statusCode": 200, "headers": map[string]string{"x-trace-id": lookup.SpanContext().TraceID().String()}, "body": fmt.Sprintf("%d packs available", quantity)}, nil
+    }
+    return traceailambda.WrapHandler(lambda.NewHandler(handle), provider)
 }
 
-func Handle(ctx context.Context, event json.RawMessage) (map[string]any, error) {
-	defer Flush(ctx)          // runs after invoke has returned, so the root span has ended
-	return invoke(ctx, event) // starts "lambda.handler" with tracer.Start, ends it with defer span.End()
+func main() {
+    handler := wrapped()
+    if len(os.Args) == 3 && os.Args[1] == "--event" { // Invoke locally with a saved event.
+        payload, err := os.ReadFile(os.Args[2])
+        if err != nil { panic(err) }
+        response, err := handler.Invoke(context.Background(), payload)
+        if err != nil { panic(err) }
+        fmt.Println(string(response))
+        return
+    }
+    lambda.StartHandler(handler)
 }
 ```
 
-The compiled `cmd/function` entry point uses `lambda.Start(handler.Handle)`. The snippets explain the lifecycle; use the complete files linked above for the local example.
-</Step>
+</CodeGroup>
 
-</Steps>
+For Python, set the handler to `stock.handler`. For TypeScript, compile with `npx tsc index.ts --target ES2022 --module node16 --skipLibCheck` and use `index.handler`. If you supply your own Node.js provider, install an async context manager so child spans attach across `await`; `register()` does this when registering the global provider. For Go, pass the same provider and invocation context to any model instrumentor. Run `go mod tidy`, then build `bootstrap` for your function architecture, for example `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bootstrap .` for arm64 on `provided.al2023`.
 
-| Piece | Value |
-| --- | --- |
-| Endpoint | `{FI_BASE_URL}/tracer/v1/traces`, OTLP over HTTP (protobuf), not gRPC |
-| Headers | `X-Api-Key` **and** `X-Secret-Key` on the exporter. One header is a failed setup. |
-| Resource | `project_name` and `project_type=observe` on the **resource**, set at init. A span attribute with that key is not a substitute. |
-| Processor | Batch processor with a long timer, plus an explicit `force_flush` / `ForceFlush` before every return. A synchronous (simple) processor would export inside every span end with no flush budget, so a slow collector would delay your handler. The simple-processor variant is outside this example’s scope. |
-| Flush budget | 2 seconds, and always less than the time Lambda has left (minus a 250 ms reserve). The 2 seconds is an example budget, not an AWS latency measurement or delivery guarantee. If less than the reserve is left the flush is skipped and a log line says so. |
+## 3. Invoke the function and inspect the trace
 
-## What is captured
+Save this HTTP API v2 event as `event.json`. You can send it to your deployed function or invoke the wrapped handler locally. The synthetic SKU is present in the stock snapshot, so the handler returns status `200` and the body `6 packs available`.
 
-| Source | Spans |
-| --- | --- |
-| Your handler | `lambda.handler` (kind `chain`, server span): `faas.coldstart`, `faas.trigger` (`http` or `other`), `faas.invocation_id` (the Lambda request id), `error.type` on failure |
-| Your code | Whatever you create inside the handler, for example `lookup_order` (kind `tool`) in the example, or the spans of a traceAI instrumentor |
-| Resource | `project_name`, `project_type`, `service.name`, and `faas.name` when `AWS_LAMBDA_FUNCTION_NAME` exists (never invented). No host name, no process or user information. |
+```json
+{
+  "version": "2.0",
+  "requestContext": { "http": { "method": "GET" } },
+  "queryStringParameters": { "sku": "TRAIL-40" }
+}
+```
 
-**Trace context in.** The W3C `traceparent` header is read from **API Gateway HTTP API (payload format 2.0) and Lambda function URL** events only (header names are lower-cased in those events). A valid header makes `lambda.handler` a child of the caller's span. These are not read, and an invocation from them starts a new trace: SQS, SNS, EventBridge, ALB, API Gateway REST API (payload 1.0) and X-Ray-only headers. A malformed `traceparent` is ignored. Direct invocations (SDK, console) start a new trace.
+To try the event locally without deploying to AWS, use the command for your runtime. Each successful response includes an `x-trace-id` header you can use to find that invocation.
 
-**Trace context out.** Pass `traceparent` to your own downstream services if you want the trace to continue. Do not forward `X-Api-Key` or `X-Secret-Key` to anything.
+<CodeGroup titles={["Python", "TypeScript (after compiling)", "Go (after go mod tidy)"]}>
 
-## Privacy
+```bash
+python -c 'import json, stock; print(json.dumps(stock.handler(json.load(open("event.json")), None)))'
+```
 
-In the complete example, content is **off by default**. Its default export contains no event body, no result, no tool arguments or results, and no error text: a failed span carries only the error type (`ValueError`, `*errors.errorString`), and no exception event or stack trace is recorded, because a stack trace carries file paths. Headers are never exported.
+```bash
+node -e 'require("./index.js").handler(require("./event.json"), { getRemainingTimeInMillis: () => 30000 }).then(r => console.log(JSON.stringify(r)))'
+```
 
-To opt in, set `LAMBDA_TRACE_CAPTURE_CONTENT=true` in the local runner environment. The root span then carries the event (`input.value`) and the result (`output.value`), the `lookup_order` span its arguments and result, and a failed span the error message. Even then there are still no stack traces. The event can contain personal data: turn it on for debugging, not as a default.
+```bash
+go run . --event event.json
+```
 
-If you use a traceAI instrumentor inside the handler, its own content switches apply (`FI_HIDE_INPUTS`, `FI_HIDE_OUTPUTS` and the related `FI_HIDE_*` variables); this page does not change them.
+</CodeGroup>
 
-## Troubleshooting
+1. Under **Observe**, select **Tracing**, open `ridgeline-stock`, then select the trace. Look for `lookup_stock` directly beneath `lambda.handler` (Python and Go) or `aws.lambda.invoke` (TypeScript). Without an incoming parent, the invocation starts its own trace.
+2. Send the event again. Each attempt has its own invocation span. Look for the Lambda request ID in `faas.invocation_id`. `faas.coldstart` is `true` on the first call to a wrapper and `false` if Lambda reuses that execution environment. Two consecutive calls need not reach the same environment.
+3. Change the SKU to `TRAIL-99`. The handler error still reaches the runtime. The lookup completed, but the **invocation** span has `ERROR` status and `error.type`. Retry the failed event. The retry gets a new invocation span; `faas.coldstart` tells you whether the wrapper has run before, not whether this event is a retry.
+4. To follow an upstream HTTP request, pass its W3C `traceparent` in `headers` on the event. The invocation becomes a child of that span in the same trace. The wrapper does not forward your Future AGI credentials to downstream services.
 
-- **No traces for the project.** A missing `project_name` resource attribute drops the batch. Set it on the resource at init; a span attribute is not a substitute.
-- **Still nothing.** Both `X-Api-Key` and `X-Secret-Key` are needed. Check the function log for the one line "FI_API_KEY / FI_SECRET_KEY not set". Check that the function can reach the endpoint (for example, a function in a VPC with no route to the internet).
-- **The last invocation's spans are missing.** The flush did not run, ran after the handler returned, or was cut. Flush before every return including the error path (`finally` / `defer`), and keep it shorter than the time left. A hard timeout kill cannot be flushed: the flush-before-return rule is the mitigation, not a guarantee.
-- **Spans appear late or never after a quiet period.** You are relying on the batch timer. Lambda freezes the process before it fires.
-- **Two providers / duplicate spans.** The provider must be built outside the handler. Building it per invocation leaks processors.
-- **The invocation failed because export failed.** That is a bug in the snippet: exporter errors must never fail the invocation. The spans of that attempt are lost; the handler still returns the application result.
-- **A downstream call carries `X-Api-Key`.** Remove it. Downstream gets `traceparent` only.
-- **Go build fails with "requires go >= 1.26".** OpenTelemetry Go v1.47 needs Go 1.26. Use a newer toolchain (the `provided.al2023` runtime runs any compiled binary), or pin an older OpenTelemetry Go release.
+![The trace tree shows lookup_stock as a child of lambda.handler. The selected handler has status ERROR, error.type LookupError, and faas.coldstart false.](/images/docs/integrations/runtimes/aws-lambda/failed-stock-invocation.png)
+
+## Runtime differences and limits
+
+| Behavior | Python | TypeScript | Go |
+| --- | --- | --- | --- |
+| Handler completion | Synchronous handlers only. Exceptions are re-raised. | The default observes the returned value or promise. A rejected promise or thrown error remains a failure. | The adapter wraps `lambda.NewHandler(handle)` and preserves returned errors and panics. Pass `ctx` into child calls. |
+| Remote parent | API Gateway v1/v2, function URL, or ALB. Supports `multiValueHeaders`. | API Gateway v1/v2, function URL, or ALB. Conflicting parent headers are ignored. | API Gateway HTTP API v2 or function URL only. |
+| HTTP proxy response | Integer `statusCode` from 100 to 599 becomes `http.response.status_code`. A 5xx sets `ERROR` with the code as `error.type`; a 4xx alone does not. | Same as Python for recognized HTTP proxy events. | Returning a 5xx response with a nil Go error does **not** by itself mark the invocation as failed. |
+
+Direct invocations and queue batches start independent traces. The wrappers read the HTTP trace parent, not baggage, X-Ray headers, event bodies, or arbitrary request headers. Invocation spans do not include the function result, exception message, or stack trace. Your own spans and model instrumentors have separate content settings. The old copied helper's `LAMBDA_TRACE_CAPTURE_CONTENT` switch does not apply.
+
+**Node.js callbacks and streaming.** On Node.js 22, choose `completion: "callback"` for a callback handler, even if its TypeScript signature looks like an async handler. Set `context.callbackWaitsForEmptyEventLoop = false` *before* entering the wrapped handler and keep it false through completion. If the flag is true or unset on entry, the original handler runs without invocation tracing or a flush. Finish required work before calling back. Use promise handlers on Node.js 24 and later. Node.js response-streaming handlers pass through without invocation tracing.
+
+**Go function URLs.** Return JSON as a value that does not implement `io.Reader`. For a raw reader response, its JSON encoding must fail or produce an empty object. The wrapper preserves Content-Type for these supported responses, but reads the whole reader before delivery; it does not stream incrementally. Send `{}` rather than an empty payload to a handler with no event fields. Use one invocation at a time per execution environment (`AWS_LAMBDA_MAX_CONCURRENCY` unset or `1`) with `aws-lambda-go` v1.55.1.
+
+**Timeouts and late spans.** By default, after ending the invocation span, each wrapper waits up to 2,000 ms for the batch to flush, leaving 250 ms of the invocation's remaining time for the runtime. For example, with 400 ms remaining, the maximum wait is 150 ms. An exhausted budget skips the flush; a hard timeout can lose spans. A flush failure does not replace the handler's result or error. This budget limits the wait for export, not time spent in application code or a synchronous span processor.
+
+Python exposes `flush_timeout_millis` and `reserve_millis`; TypeScript exposes `maxFlushWaitMillis` and `remainingTimeReserveMillis`. A timed-out wait does not cancel an exporter: Python skips a new flush while the previous one is running, and TypeScript shares a pending flush for the provider. A custom Go provider must honor the flush context deadline. Use a batch processor with a finite exporter timeout and do not shut down the provider after each invocation.
+
+## Next steps
+
+- [Trace Amazon Bedrock calls](/docs/integrations/traceai/bedrock) inside your handler.
+- [Read a trace](/docs/observe/concepts/traces) to follow parent and child spans across services.

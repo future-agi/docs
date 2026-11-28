@@ -1,14 +1,260 @@
 ---
-title: "Choose a tracing path for Spring AI"
-description: "Choose native Spring AI observability for Spring AI 1.1 and understand the traceAI wrapper compatibility constraint."
+title: "Trace Spring AI with Spring Boot"
+description: "Export Spring AI chat, embedding, and tool spans through Spring Boot's OpenTelemetry pipeline, including tool failures the model recovers from."
 ---
 
-## Spring AI compatibility
+## About
 
-<Warning>
-The traceAI wrapper compiled against Spring AI `1.0.0-M4` is not a supported integration path for Spring AI `1.1.x`; it can fail with a `NoSuchMethodError` involving `Message.getContent()`. The M4 compilation target is not a tested support range. Do not install this wrapper for Spring AI 1.1 or downgrade to M4 as a workaround.
-</Warning>
+When a support agent says it can't confirm stock, you can use its trace to distinguish a failed inventory lookup from a failed model call. The traceAI adapter adds details to Spring AI's native Micrometer observations; Spring Boot sends the spans to Future AGI through OpenTelemetry.
 
-For Spring AI 1.1, use the [Spring AI 1.1 observability guide](https://docs.spring.io/spring-ai/reference/1.1/observability/index.html). For Spring Boot 3.5, use the matching [Spring Boot tracing guide](https://docs.spring.io/spring-boot/3.5/reference/actuator/tracing.html) to configure OpenTelemetry and an OTLP exporter.
+## 1. Add the adapter to your Spring AI app
 
-Native observations may not include the same traceAI attributes, token counts or cost fields across providers. Do not enable sensitive prompt or completion logging to work around wrapper compatibility.
+Keep your model starter. Add the following dependencies to your Maven build and let Spring Boot manage Micrometer and OpenTelemetry versions.
+
+<div class="sdk-ref-table">
+
+| Dependency | Purpose |
+| --- | --- |
+| `com.futureagi:traceai-spring-ai:1.0.2` | Adds the observation filter, tracing handler, and tool exception processor. |
+| `org.springframework.boot:spring-boot-starter-actuator` | Connects the application's observation registry to Boot's tracing configuration. |
+| `io.micrometer:micrometer-tracing-bridge-otel` | Bridges Micrometer tracing to OpenTelemetry. |
+| `io.opentelemetry:opentelemetry-exporter-otlp` | Sends spans over OTLP/HTTP. |
+
+</div>
+
+The examples below use Spring AI `1.1.8` with Boot `3.5.15`, or Spring AI `2.0.2` with Boot `4.1.2`. On Boot 4.1, also add `spring-boot-micrometer-tracing-opentelemetry` from `org.springframework.boot` for tracing auto-configuration.
+
+To follow the Ridgeline Outfitters example from scratch, use a Java 17 or 21 JDK, Maven, Python 3, and the [sample POM](/examples/spring-ai/pom.xml) (Boot 3.5.15 and Spring AI 1.1.8). The [model fixture](/examples/spring-ai/stock_fixture.py) runs on loopback and supplies fixed chat and embedding responses. You don't need a model-provider account.
+
+```bash
+mkdir -p ridgeline-stock/src/main/java/example/ridgeline ridgeline-stock/src/main/resources
+cd ridgeline-stock
+export STOCK_PROJECT="$PWD"
+curl -fsSLO https://raw.githubusercontent.com/future-agi/docs/938e6e06bb4167f7333d352e9d5e144a797bc2e2/public/examples/spring-ai/pom.xml
+curl -fsSLO https://raw.githubusercontent.com/future-agi/docs/938e6e06bb4167f7333d352e9d5e144a797bc2e2/public/examples/spring-ai/stock_fixture.py
+```
+
+The sample POM uses Boot 3.5. To run the Boot 4.1 variant, make a second POM in `ridgeline-stock` that selects the matching versions and adds Boot 4.1's tracing auto-configuration:
+
+```bash
+cd "$STOCK_PROJECT"
+sed -e 's/<version>3.5.15<\//<version>4.1.2<\//' \
+    -e 's/<version>1.1.8<\//<version>2.0.2<\//' \
+    -e 's|<artifactId>spring-boot-starter-actuator</artifactId>|&</dependency><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>|' \
+    pom.xml > pom-boot41.xml
+```
+
+## 2. Configure Boot's trace exporter
+
+Set `FI_API_KEY` and `FI_SECRET_KEY` to your [Future AGI credentials](/docs/admin-settings/api-keys) through your secret manager. Choose a project name and enable error privacy before starting the app:
+
+```bash
+export FI_PROJECT_NAME=ridgeline-stock
+export FI_HIDE_ERROR_DETAILS=true
+```
+
+Save the block for **your Boot version** in `src/main/resources/application-boot35.properties` or `src/main/resources/application-boot41.properties`, respectively. The launch commands below select the corresponding Spring profile. Use the full traces URL, not just the server origin. Both the `fi-project-name` header and the `project_name` resource attribute identify the same project. Sampling at `1.0` keeps every example request; choose a suitable rate for production.
+
+<Tabs>
+  <Tab title="Spring Boot 3.5">
+
+```properties
+management.tracing.sampling.probability=1.0
+management.otlp.tracing.endpoint=${FI_OTLP_ENDPOINT:https://api.futureagi.com/tracer/v1/traces}
+management.otlp.tracing.headers.X-Api-Key=${FI_API_KEY}
+management.otlp.tracing.headers.X-Secret-Key=${FI_SECRET_KEY}
+management.otlp.tracing.headers.fi-project-name=${FI_PROJECT_NAME}
+management.opentelemetry.resource-attributes.project_name=${FI_PROJECT_NAME}
+```
+
+  </Tab>
+  <Tab title="Spring Boot 4.1">
+
+```properties
+management.tracing.sampling.probability=1.0
+management.opentelemetry.tracing.export.otlp.endpoint=${FI_OTLP_ENDPOINT:https://api.futureagi.com/tracer/v1/traces}
+management.opentelemetry.tracing.export.otlp.headers.X-Api-Key=${FI_API_KEY}
+management.opentelemetry.tracing.export.otlp.headers.X-Secret-Key=${FI_SECRET_KEY}
+management.opentelemetry.tracing.export.otlp.headers.fi-project-name=${FI_PROJECT_NAME}
+management.opentelemetry.resource-attributes.project_name=${FI_PROJECT_NAME}
+```
+
+  </Tab>
+</Tabs>
+
+If you self-host, set `FI_OTLP_ENDPOINT` to the full OTLP/HTTP traces URL for your collector. Keep the Future AGI keys on the exporter, not on your model client.
+
+## 3. Register the filter and tracing handler
+
+Place this class in a package scanned by your application. For the example, save `TracingConfiguration.java` in `src/main/java/example/ridgeline`. The filter adds attributes to an existing observation. The handler **replaces** Boot's generic `DefaultTracingObservationHandler`: it records the outcome and applies error privacy before an exception is exported. The filter alone runs too late to do that.
+
+```java
+package example.ridgeline;
+
+import ai.traceai.spring.SpringAIObservationFilter;
+import ai.traceai.spring.SpringAIToolExecutionExceptionProcessor;
+import ai.traceai.spring.SpringAITracingObservationHandler;
+import io.micrometer.observation.ObservationFilter;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.handler.DefaultTracingObservationHandler;
+import io.micrometer.tracing.otel.bridge.OtelTracer;
+import org.springframework.ai.model.tool.DefaultToolCallingManager;
+import org.springframework.ai.tool.execution.ToolExecutionExceptionProcessor;
+import org.springframework.ai.tool.observation.ToolCallingObservationConvention;
+import org.springframework.ai.tool.resolution.ToolCallbackResolver;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration(proxyBeanMethods = false)
+public class TracingConfiguration {
+    @Bean
+    ObservationFilter springAIObservationFilter() {
+        return new SpringAIObservationFilter();
+    }
+
+    @Bean
+    DefaultTracingObservationHandler defaultTracingObservationHandler(OtelTracer tracer) {
+        return new SpringAITracingObservationHandler(tracer);
+    }
+
+    @Bean
+    DefaultToolCallingManager toolCallingManager(ObservationRegistry registry,
+            ToolCallbackResolver resolver, ToolExecutionExceptionProcessor existingProcessor,
+            ObjectProvider<ToolCallingObservationConvention> convention) {
+        var manager = DefaultToolCallingManager.builder()
+                .observationRegistry(registry)
+                .toolCallbackResolver(resolver)
+                .toolExecutionExceptionProcessor(
+                        new SpringAIToolExecutionExceptionProcessor(registry, existingProcessor))
+                .build();
+        convention.ifAvailable(manager::setObservationConvention);
+        return manager;
+    }
+}
+```
+
+The manager bean is for tools: Spring AI can catch a tool exception, turn it into a tool result, and continue the conversation. The decorator marks the current tool observation as failed **before** handing the exception to your existing recovery or rethrow policy. It neither replaces that policy bean nor guesses whether a tool failed from its result text.
+
+<Note>
+If you already build a tool manager, change **only its processor argument** and use the manager's own registry. The example replaces Boot's manager auto-configuration. On Spring AI 2.x, carry over any configured tool-call limits, confirmation policies, and resolution-fallback settings; this bean does not bind them for you. If your app has no tools, omit the `toolCallingManager` bean.
+</Note>
+
+## 4. Run a stock check with a handled tool failure
+
+For the example only, save the following shared settings in `src/main/resources/application.properties`. These settings point the model client at the local fixture, not at a live provider. In your own app, keep your provider configuration instead.
+
+```properties
+spring.main.web-application-type=none
+spring.ai.openai.base-url=${MODEL_BASE_URL:http://127.0.0.1:18798}
+spring.ai.openai.api-key=local-fixture
+spring.ai.openai.chat.options.model=ridgeline-chat
+spring.ai.openai.embedding.options.model=ridgeline-embedding
+spring.ai.tools.throw-exception-on-error=false
+```
+
+Spring AI 1.1.8 uses the default fixture URL above. The 2.0.2 launch command sets `MODEL_BASE_URL` to include `/v1` because that client appends `/embeddings` or `/chat/completions` directly.
+
+Save `StockCheck.java` in the same package. The agent embeds the customer's question, then asks the model to check stock. The fixture requests `checkStock` once. The tool throws, and the model receives the handled tool result on its second call. A parent observation groups these operations into one trace.
+
+```java
+package example.ridgeline;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.tool.function.FunctionToolCallback;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+@SpringBootApplication
+public class StockCheck {
+    public record StockItem(String sku) {}
+
+    public static void main(String[] args) {
+        SpringApplication.run(StockCheck.class, args).close();
+    }
+
+    @Bean
+    ApplicationRunner check(EmbeddingModel embeddings, ChatModel chat,
+            ToolCallingManager tools, ObservationRegistry registry) {
+        return args -> Observation.createNotStarted("ridgeline.stock-check", registry).observe(() -> {
+            String question = "Does Ridgeline have a replacement tent fly in stock?";
+            embeddings.embed(question);
+            var stock = FunctionToolCallback.builder("checkStock", (StockItem item) -> {
+                throw new IllegalStateException("Inventory service unavailable");
+            }).description("Check inventory for a Ridgeline SKU").inputType(StockItem.class).build();
+            var options = OpenAiChatOptions.builder().toolCallbacks(stock).build();
+            var prompt = new Prompt(question, options);
+            var response = chat.call(prompt);
+            // Spring AI 1.1 runs the tool internally; 2.x returns the pending request.
+            if (response.hasToolCalls()) {
+                var result = tools.executeToolCalls(prompt, response);
+                response = chat.call(new Prompt(result.conversationHistory()));
+            }
+            System.out.println(response.getResult().getOutput().getText());
+        });
+    }
+}
+```
+
+Save this as `run-stock.sh` alongside `pom.xml`. It starts the fixture for one Maven run and stops it on exit. `clean` recompiles the project, so switching between the Boot 3.5 and Boot 4.1 POMs never reuses classes built against the other Spring AI version. Port 18798 must be available.
+
+```bash
+set -eu
+python3 -I stock_fixture.py &
+fixture_pid=$!
+trap 'kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" 2>/dev/null || true' EXIT
+mvn "$@" clean spring-boot:run
+```
+
+Run `cd "$STOCK_PROJECT" && SPRING_PROFILES_ACTIVE=boot35 bash run-stock.sh` for the sample POM, or `cd "$STOCK_PROJECT" && SPRING_PROFILES_ACTIVE=boot41 MODEL_BASE_URL=http://127.0.0.1:18798/v1 bash run-stock.sh -f pom-boot41.xml` for Boot 4.1. Expect `I can't confirm stock right now.` In Future AGI, select **Tracing** under **Observe**, choose `ridgeline-stock`, and open the `ridgeline.stock-check` trace. Look for these four AI spans, not four total spans:
+
+<div class="sdk-ref-table">
+
+| `fi.span.kind` | Count | What to check |
+| --- | --- | --- |
+| `EMBEDDING` | 1 | One call for the customer's question. The vector is not recorded. |
+| `LLM` | 2 | One successful request for a tool call, then one successful request for the final answer. The second request is not a duplicate. |
+| `TOOL` | 1 | `gen_ai.tool.name=checkStock`, status `ERROR`, and `error.type=java.lang.IllegalStateException`, even though the agent answered. |
+
+</div>
+
+![The ridgeline.stock-check trace shows one embedding and two chat calls. The selected checkStock tool span has status ERROR and error.type java.lang.IllegalStateException, with no exception message.](/images/docs/integrations/traceai/spring-boot/stock-check-tool-error.png)
+
+## Content and limits
+
+`new SpringAIObservationFilter()` is metadata-only. If you need content, change the constructor in the filter bean. Its two arguments are independent:
+
+<div class="sdk-ref-table">
+
+| Constructor arguments | What the filter adds |
+| --- | --- |
+| `(true, false)` | `input.value` for prompts, embedding text, or tool arguments; `gen_ai.input.messages` for structured chat input. |
+| `(false, true)` | `output.value` for completed model output or tool results; `gen_ai.output.messages` for structured chat output. |
+| `(true, true)` | Both sets, including tool-call IDs, names, and arguments in chat messages and the IDs that link tool results to calls. |
+
+</div>
+
+Each content attribute is limited to 32,000 characters. The structured fields remain valid JSON: strings can be shortened and trailing messages or tool calls omitted. The filter does not copy arbitrary message metadata, binary media, or embedding vectors. Usage comes from Spring AI and the provider; the adapter does not estimate missing tokens or cost.
+
+With `FI_HIDE_ERROR_DETAILS=true`, the handler keeps `ERROR` and the exception type but omits the exception message and stack trace on native Spring AI spans. This does **not** sanitize application logs, independent HTTP-client spans, or the tool-result message the model receives. That message can reappear as captured tool output or as input to the next model call. Leave content capture and separate prompt/completion logging off if that text must stay private.
+
+## Troubleshooting
+
+- **Two spans for one model request:** Remove `traceai-spring-boot-starter`, `TraceAI.init(...)`, and any extra generic tracing handler when migrating to this path. Keep the legacy `TracedChatModel` and `TracedEmbeddingModel` wrappers only for models **without** native tracing. An HTTP client span alongside an `LLM` span is expected.
+- **No AI spans from a manually constructed model:** Pass the application's `ObservationRegistry` to the model. A separate registry does not see the beans above.
+- **A cancelled chat stream has status `UNSET`:** If the model, `ChatClient`, or advisor stops without a completed response or a reported error, the handler does not mark it `OK` or invent a failure. A reported provider error still produces `ERROR`.
+- **`NoSuchMethodError` involving `Message.getContent()`:** The old `1.0.0` artifact targeted Spring AI `1.0.0-M4`. Use the maintained adapter above, not that wrapper or a downgrade to M4.
+
+## Next steps
+
+- [Spring AI 1.1 observability](https://docs.spring.io/spring-ai/reference/1.1/observability/index.html): see which operations your model provider observes.
+- [Spring Boot 3.5 tracing](https://docs.spring.io/spring-boot/3.5/reference/actuator/tracing.html): configure sampling and trace propagation across services.
+- [OpenTelemetry GenAI compatibility](/docs/integrations/traceai/otel-genai-conformance): interpret the model and tool attributes in a trace.

@@ -1,7 +1,7 @@
 ---
-title: "Distributed Tracing: Propagate Traces Across Services with OpenTelemetry"
+title: "Distributed tracing across Node.js and Java"
 slug: "distributed-tracing"
-description: "Propagate OpenTelemetry trace context across two services with W3C TraceContext headers, so a gateway call and its downstream LLM call land in one trace."
+description: "Pass a W3C trace parent from a Node.js gateway to a Java servlet and verify that the downstream model call follows the gateway's sampling decision."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -18,824 +18,304 @@ canonical: "https://docs.futureagi.com/docs/cookbook/quickstart/distributed-trac
 page-type: "cookbook"
 ---
 
-<TLDR>
-Run a gateway service and a backend service that calls Gemini, propagate the W3C `traceparent` header between them, and see both services' spans land in one trace on your Future AGI dashboard instead of two disconnected ones.
-</TLDR>
+## About
 
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 20 min | Intermediate | `fi-instrumentation-otel` |
+Ridgeline Outfitters’ Node.js support gateway asks a Java returns service whether a customer can return an unused tent. To see the answer as part of the gateway request, you need to carry the gateway's trace ID **and** its span ID across the network. The Node adapter writes them to the W3C `traceparent` header. The Java agent uses that parent for the servlet's model call. Neither adapter adds a span just for the HTTP hop.
 
-<Prerequisites>
-- Future AGI account: [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- Google Gemini API key (`GOOGLE_API_KEY`) for the backend's LLM call
-- Python 3.11 (Node 20+, JDK 17+, or .NET 8+ if you follow the TypeScript, Java, or C# tab)
-</Prerequisites>
+## 1. Start the Java returns service
 
-## Install
+You need a JDK (17 or later), Node.js 20.6 or later, npm, cURL and a pair of [Future AGI API keys](/docs/admin-settings/api-keys). Set `FI_API_KEY` and `FI_SECRET_KEY` in your shell. Use the same `FI_PROJECT_NAME` so you can see both services in one project. The `traceparent` header, not the project name, connects the spans.
 
-<Tabs>
-  <Tab title="Python">
+Set the collector URL for this example. If you host Future AGI yourself, replace the URL with your trace collector (for example, `http://localhost:4318`).
 
 ```bash
-pip install fi-instrumentation-otel traceAI-google-genai flask requests python-dotenv google-genai
+export COLLECTOR_URL=https://api.futureagi.com
+```
+
+For an existing Jakarta or Javax servlet that makes an instrumented AI call on the request thread, add `-javaagent:/path/to/traceai-javaagent-1.4.0.jar` to your Java command **before** `-jar` or the main class. You don't need to add a servlet filter or call `extract()` yourself.
+
+For a standalone example, save this as `ReturnsServlet.java` in an empty directory. The servlet listens on loopback. Its `/return-policy` handler uses the JDK HTTP client to call a local chat-completions fixture, so you don't need a model account.
+
+```java
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import org.apache.catalina.Context;
+import org.apache.catalina.startup.Tomcat;
+
+// A loopback-only servlet and a fixed chat-completions response for the cookbook.
+public class ReturnsServlet {
+    public static void main(String[] args) throws Exception {
+        var tomcat = new Tomcat();
+        tomcat.setBaseDir(Files.createTempDirectory("ridgeline-tomcat").toString());
+        tomcat.setPort(5101);
+        tomcat.getConnector().setProperty("address", "127.0.0.1");
+        Context app = tomcat.addContext("", Files.createTempDirectory("ridgeline-web").toString());
+        var client = HttpClient.newHttpClient();
+
+        Tomcat.addServlet(app, "policy", new HttpServlet() {
+            @Override protected void doGet(HttpServletRequest req, HttpServletResponse res) throws IOException {
+                var query = HttpRequest.newBuilder(URI.create("http://127.0.0.1:5101/v1/chat/completions"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("""
+                        {"model":"returns-fixture","messages":[{"role":"user","content":"Can I return an unused tent?"}]}
+                        """)).build();
+                try {
+                    var reply = client.send(query, HttpResponse.BodyHandlers.ofString());
+                    res.setStatus(reply.statusCode());
+                    res.setContentType("text/plain");
+                    res.getWriter().println("Servlet received: " + req.getHeader("traceparent"));
+                    res.getWriter().println(reply.body());
+                } catch (InterruptedException err) {
+                    Thread.currentThread().interrupt();
+                    res.sendError(503);
+                }
+            }
+        });
+        app.addServletMappingDecoded("/return-policy", "policy");
+
+        Tomcat.addServlet(app, "model", new HttpServlet() {
+            @Override protected void doPost(HttpServletRequest req, HttpServletResponse res) throws IOException {
+                req.getInputStream().readAllBytes();
+                res.setContentType("application/json");
+                res.getWriter().print("""
+                    {"id":"ridgeline-demo","object":"chat.completion","model":"returns-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"Yes, within 30 days."},"finish_reason":"stop"}]}
+                    """);
+            }
+        });
+        app.addServletMappingDecoded("/v1/chat/completions", "model");
+        tomcat.start();
+        tomcat.getServer().await();
+    }
+}
+```
+
+Download the dependencies and start the servlet in the background:
+
+```bash
+export FI_PROJECT_NAME=ridgeline-returns
+base=https://repo.maven.apache.org/maven2
+curl -fsSLO "$base/com/futureagi/traceai-javaagent/1.4.0/traceai-javaagent-1.4.0.jar"
+mkdir -p lib
+curl -fsSL "$base/org/apache/tomcat/embed/tomcat-embed-core/10.1.42/tomcat-embed-core-10.1.42.jar" -o lib/tomcat.jar
+curl -fsSL "$base/jakarta/annotation/jakarta.annotation-api/2.1.1/jakarta.annotation-api-2.1.1.jar" -o lib/annotation.jar
+FI_BASE_URL="$COLLECTOR_URL" java -javaagent:traceai-javaagent-1.4.0.jar -cp 'lib/*' ReturnsServlet.java >servlet.log 2>&1 &
+export SERVLET_PID=$!
+curl -sS --retry-connrefused --retry 30 --retry-delay 1 -o /dev/null http://127.0.0.1:5101/
+```
+
+## 2. Enable propagation in the Node gateway
+
+In the same directory and shell, create an npm project. Opt in to the experimental native HTTP/HTTPS adapter and allow the servlet host. In an application, replace `127.0.0.1` with the hostname of your downstream service, not a URL or `host:port`.
+
+```bash
+npm init -y
+npm install @traceai/auto@0.4.0 @opentelemetry/api@1.9.0 @opentelemetry/sdk-trace-node@2.0.1
+export FI_PROJECT_NAME=ridgeline-returns
+export TRACEAI_PROPAGATE_OUTGOING_ADAPTERS=true
+export TRACEAI_PROPAGATE_HOSTS='+127.0.0.1'
+```
+
+Save this as `gateway.cjs`. Registering the Node tracer provider gives the application a context manager. Initialize the adapter **before** starting the gateway span, so it can observe the start and find the active parent when `http.get()` sends the headers. If your app already registers a provider, keep it and its shutdown lifecycle rather than creating another provider for the adapter.
+
+```js
+const { randomBytes } = require('node:crypto');
+const { context, ROOT_CONTEXT, trace, TraceFlags } = require('@opentelemetry/api');
+const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
+const { init, shutdown } = require('@traceai/auto');
+
+const provider = new NodeTracerProvider();
+provider.register();
+init({ forwardApplicationSpans: true });
+const http = require('node:http');
+
+function askReturns() {
+  const { traceId, spanId } = trace.getSpan(context.active()).spanContext();
+  console.log(`Gateway trace: ${traceId}, parent: ${spanId}`);
+  return new Promise((resolve, reject) => {
+    http.get('http://127.0.0.1:5101/return-policy', res => {
+      res.setEncoding('utf8');
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('error', reject);
+      res.on('end', () => res.statusCode === 200 ? resolve(body) : reject(Error(`HTTP ${res.statusCode}`)));
+    }).on('error', reject);
+  });
+}
+
+async function main() {
+  try {
+    if (process.argv[2] === 'unsampled') {
+      // Stand in for a valid parent received from an upstream service.
+      const upstream = trace.setSpanContext(ROOT_CONTEXT, {
+        traceId: randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex'),
+        isRemote: true, traceFlags: TraceFlags.NONE,
+      });
+      console.log(await context.with(upstream, askReturns));
+      console.log(`Trace: ${trace.getSpanContext(upstream).traceId}`);
+    } else {
+      await trace.getTracer('support-gateway').startActiveSpan('Check return policy', async span => {
+        try {
+          console.log(await askReturns());
+          console.log(`Trace: ${span.spanContext().traceId}`);
+        } finally { span.end(); }
+      });
+    }
+  } finally {
+    await shutdown();
+    await provider.shutdown();
+  }
+}
+main().catch(err => { console.error(err.message); process.exitCode = 1; });
+```
+
+`forwardApplicationSpans: true` exports the gateway's application span to Future AGI so you can see the parent alongside the Java child. Leave it off if application spans should stay with your existing exporter. Forwarding and HTTP header propagation are separate settings.
+
+## 3. Compare a sampled and an unsampled request
+
+With the servlet still running, run each command from the example directory. The third command bypasses the gateway so you can see what happens without an incoming parent.
+
+<CodeGroup titles={["Sampled", "Unsampled", "No parent"]}>
+
+```bash
+FI_BASE_URL="$COLLECTOR_URL" node gateway.cjs
 ```
 
 ```bash
-export FI_API_KEY="your-fi-api-key"
-export FI_SECRET_KEY="your-fi-secret-key"
-export GOOGLE_API_KEY="your-google-api-key"
-```
-
-  </Tab>
-  <Tab title="TypeScript">
-
-```bash
-npm install @traceai/fi-core @traceai/google-genai @google/generative-ai @opentelemetry/api @opentelemetry/core @opentelemetry/instrumentation express
+FI_BASE_URL="$COLLECTOR_URL" node gateway.cjs unsampled
 ```
 
 ```bash
-export FI_API_KEY="your-fi-api-key"
-export FI_SECRET_KEY="your-fi-secret-key"
-export GOOGLE_API_KEY="your-google-api-key"
+curl -fsS http://127.0.0.1:5101/return-policy
 ```
 
-  </Tab>
-  <Tab title="Java">
+</CodeGroup>
 
-```xml
-<dependency>
-    <groupId>ai.traceai</groupId>
-    <artifactId>traceai-java-core</artifactId>
-    <version>1.0.0</version>
-</dependency>
-```
+All three requests should return the fixture's answer, `Yes, within 30 days.` Compare the IDs printed by the gateway with `Servlet received: 00-<trace ID>-<parent span ID>-<flags>` in each gateway response. Both IDs should match for that request. The direct cURL request prints `Servlet received: null`. In the [dashboard](https://app.futureagi.com), open **Tracing**, select `ridgeline-returns` and inspect the sampled trace. The sampling flag changes what gets recorded, not whether the servlet runs.
+
+| Request | Header at the servlet | What to look for in `ridgeline-returns` |
+| --- | --- | --- |
+| Sampled | Ends in `-01` | Open the trace for `Check return policy`. The `chat returns-fixture` span has the gateway span as its direct parent. There is no intervening HTTP CLIENT or servlet SERVER span. |
+| Unsampled upstream parent | Ends in `-00` | With the default parent-based Java sampler, the AI call exports no span. There should be no separate root trace for that call. |
+| No valid `traceparent` | Missing or invalid | With no active application span, Java makes a local root sampling decision. The call does not join the gateway trace. |
+
+![An abbreviated trace ID appears above the tree. Directly under “Check return policy,” the selected “chat returns-fixture” span shows “Can I return an unused tent?” and the reply “Yes, within 30 days.”](/images/docs/cookbook/distributed-tracing/sampled-returns-trace.png)
+
+To isolate the Java side from the Node adapter, send a valid sampled parent directly with cURL and OpenSSL. Here `traceparent` marks this particular request as sampled. The `tracestate` entry describes the upstream sampling probability, not a second decision about this request. Java inherits the valid `fi=r:0.5` entry and records `fi.sampling.ratio` as `0.5` on the AI span. When the Java sampler *adds or updates* its own `fi` entry, it places it first; adding it to a full 32-member list removes the rightmost member. The command below supplies a parent ID but does not export a span for that parent.
 
 ```bash
-export FI_API_KEY="your-fi-api-key"
-export FI_SECRET_KEY="your-fi-secret-key"
-export GOOGLE_API_KEY="your-google-api-key"
+curl -fsS http://127.0.0.1:5101/return-policy \
+  -H "traceparent: 00-$(openssl rand -hex 16)-$(openssl rand -hex 8)-01" \
+  -H 'tracestate: fi=r:0.5'
 ```
 
-  </Tab>
-  <Tab title="C#">
+Stop the example servlet when you finish: `kill "$SERVLET_PID"`.
+
+## Choose which destinations receive context
+
+| Node environment variable | `init()` option | Behavior |
+| --- | --- | --- |
+| `TRACEAI_PROPAGATE_OUTGOING_ADAPTERS` | `propagateOutgoingAdapters` | Off by default. Use the exact string `true` in the environment, or boolean `true` in code. Setting a policy alone doesn't enable it. |
+| `TRACEAI_PROPAGATE_OUTGOING` | `propagateOutgoing` | `default` allows eligible native HTTP(S) destinations. `none` adds nothing. `all` has the same exclusions as `default`. |
+| `TRACEAI_PROPAGATE_HOSTS` | `propagateHosts` | No explicit host rules by default. Use a comma-separated list in the environment or an array of strings in code. |
+
+For example, `+*.ridgeline.internal,-payments.ridgeline.internal` allows subdomains but not the bare domain or the payments service. Any positive rule excludes unlisted hosts; denies win. A positive rule cannot override known provider-host and provider-port exclusions, such as Ollama's port `11434`. Allow only the services you control: an unrecognized model proxy is not automatically excluded.
+
+On eligible requests, the adapter can add `traceparent`, `tracestate` and existing W3C baggage after privacy filtering. The host policy applies only to headers the adapter adds, not to headers your application sets itself. The adapter never creates a root or overwrites application headers. If it observes a redirect to another origin, it stops adding headers to that chain, even if a later redirect returns to the original host.
+
+## Alternative: inject and extract the parent yourself
+
+On other transports the same rule applies: inject while the sender's span is active, then extract **before** the receiver starts its span. For example, if the returns service reads jobs from a queue instead of HTTP, put the headers in the job envelope and extract from that envelope in the worker. Don't rely on process-local context surviving the handoff.
+
+| If you use… | On the caller | On the receiver |
+| --- | --- | --- |
+| Node `fetch` with OpenTelemetry | With a registered W3C propagator, call `propagation.inject(context.active(), headers)` and pass those headers on that request. | Use `propagation.extract()` on the incoming headers and run the work inside `context.with()` using the extracted context. |
+| Java without a servlet | Use the application's `TextMapPropagator.inject()` when building the outgoing request. | Call `TextMapPropagator.extract()` with a case-insensitive header getter. Make the returned context current in a try-with-resources scope around the AI call. |
+| ASP.NET Core and `HttpClient` | Use OpenTelemetry `AddHttpClientInstrumentation()` rather than adding a second `traceparent`. | `AddAspNetCoreInstrumentation()` makes the incoming request activity available as `Activity.Current`. Start the backend work inside it. |
+
+<Accordion title="Run both services in Python without the Node or Java agents">
+
+This version uses a Python HTTP server and a local policy lookup instead of a model. In a Python environment with `FI_API_KEY` and `FI_SECRET_KEY` set, install the tracing SDK:
 
 ```bash
-dotnet add package OpenTelemetry OpenTelemetry.Exporter.OpenTelemetryProtocol OpenTelemetry.Instrumentation.AspNetCore OpenTelemetry.Instrumentation.Http DotNetEnv
+python3 -m venv .returns-venv
+. .returns-venv/bin/activate
+python -m pip install fi-instrumentation-otel==1.5.0
 ```
 
-```bash
-export FI_API_KEY="your-fi-api-key"
-export FI_SECRET_KEY="your-fi-secret-key"
-export GOOGLE_API_KEY="your-google-api-key"
-```
+Save the following as `returns.py`. Use the same collector URL and credentials as above. The server handles one request and exits.
 
-  </Tab>
-</Tabs>
-
-## Tutorial
-
-<Steps>
-
-<Step title="Set the same propagator on both services">
-
-Both the gateway and the backend need to agree on how a trace ID gets encoded into an HTTP header. Set the W3C TraceContext propagator globally on each process before you create any spans.
-
-<Tabs>
-  <Tab title="Python">
 ```python
-from opentelemetry.propagate import set_global_textmap
-from opentelemetry.propagators.composite import CompositePropagator
-from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from opentelemetry.baggage.propagation import W3CBaggagePropagator
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.request import Request, urlopen
 
-set_global_textmap(CompositePropagator([
-    TraceContextTextMapPropagator(),  # W3C traceparent header
-    W3CBaggagePropagator(),           # W3C baggage header
-]))
-```
-  </Tab>
-  <Tab title="TypeScript">
-```typescript
-import { propagation } from "@opentelemetry/api";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
-
-propagation.setGlobalPropagator(new W3CTraceContextPropagator());
-```
-  </Tab>
-  <Tab title="Java">
-The Java SDK registers the W3C TraceContext propagator by default, so there's no separate call to make here: `TraceAI.initFromEnvironment()` in Step 2 sets it globally when it initializes the SDK.
-  </Tab>
-  <Tab title="C#">
-```csharp
-Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator(
-    new TextMapPropagator[] {
-        new TraceContextPropagator(),
-        new BaggagePropagator()
-    }));
-```
-  </Tab>
-</Tabs>
-
-You should see no output yet, this only configures how context gets encoded. Run it on both services, not just one.
-
-</Step>
-
-<Step title="Register both services under the same project">
-
-Call `register()` on the gateway and the backend with an identical `project_name`. That shared name is how Future AGI groups spans from two separate processes into one trace view.
-
-<Tabs>
-  <Tab title="Python">
-```python
 from fi_instrumentation import register
 from fi_instrumentation.fi_types import ProjectType
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-provider = register(
-    project_name="distributed_tracing_demo",
-    project_type=ProjectType.OBSERVE,
-    set_global_tracer_provider=True,
-)
-```
-  </Tab>
-  <Tab title="TypeScript">
-```typescript
-import { register, ProjectType } from "@traceai/fi-core";
+provider = register(project_name=os.environ.get("FI_PROJECT_NAME", "ridgeline-returns"),
+                    project_type=ProjectType.OBSERVE, verbose=False)
+tracer = provider.get_tracer("ridgeline-returns")
+w3c = TraceContextTextMapPropagator()
 
-const tracerProvider = register({
-  projectName: "distributed_tracing_demo",
-  projectType: ProjectType.OBSERVE,
-  setGlobalTracerProvider: true,
-});
-```
-  </Tab>
-  <Tab title="Java">
-```java
-import ai.traceai.TraceAI;
-import ai.traceai.FITracer;
 
-TraceAI.initFromEnvironment();
-FITracer tracer = TraceAI.getTracer();
-```
-  </Tab>
-  <Tab title="C#">
-```csharp
-builder.Services.AddOpenTelemetry()
-    .WithTracing(tracerBuilder =>
-    {
-        tracerBuilder
-            .SetResourceBuilder(ResourceBuilder.CreateDefault()
-                .AddService(serviceName: serviceName, serviceVersion: "1.0.0"))
-            .AddSource(serviceName)
-            .AddOtlpExporter(opts =>
-            {
-                opts.Endpoint = new Uri("https://api.futureagi.com/tracer/v1/traces");
-                opts.Protocol = OtlpExportProtocol.HttpProtobuf;
-                opts.Headers = $"X-Api-Key={fiApiKey},X-Secret-Key={fiSecretKey}";
-            });
-    });
-```
-  </Tab>
-</Tabs>
+class Returns(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parent = w3c.extract({k.lower(): v for k, v in self.headers.items()})
+        with tracer.start_as_current_span("Look up tent policy", context=parent):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Yes, within 30 days.")
 
-Both processes now export to the same Future AGI project. Nothing lands until you create a span.
 
-</Step>
-
-<Step title="Auto-instrument the backend's Gemini call">
-
-On the backend only, instrument the Gemini client so every call becomes a span with the model name, token counts, and input/output attached automatically.
-
-<Tabs>
-  <Tab title="Python">
-```python
-from traceai_google_genai import GoogleGenAIInstrumentor
-from google import genai
-import os
-
-GoogleGenAIInstrumentor().instrument(tracer_provider=provider)
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-```
-  </Tab>
-  <Tab title="TypeScript">
-```typescript
-import { GoogleGenAIInstrumentation } from "@traceai/google-genai";
-import { registerInstrumentations } from "@opentelemetry/instrumentation";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-registerInstrumentations({
-  tracerProvider,
-  instrumentations: [new GoogleGenAIInstrumentation()],
-});
-
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
-```
-  </Tab>
-  <Tab title="Java">
-No auto-instrumentor is wired up in this recipe. The Java backend calls Gemini over plain HTTP and wraps that call in a manual `Backend.GeminiCall` span in Step 5 instead.
-  </Tab>
-  <Tab title="C#">
-No auto-instrumentor is wired up in this recipe. The C# backend calls Gemini over plain HTTP and wraps that call in a manual `Backend.GeminiCall` activity in Step 5 instead.
-  </Tab>
-</Tabs>
-
-`@traceai/google-genai` patches the `@google/generative-ai` package's `GoogleGenerativeAI` class, not `@google/genai`. Import from `@google/generative-ai` or the call runs without a span. You should see the `google-genai` instrumentor register at startup, alongside the other OpenTelemetry setup logged by `register()`.
-
-</Step>
-
-<Step title="Inject the trace context on the gateway's outgoing call">
-
-Before wiring this up, see what happens without it: run the two services as shown in Step 6 but with the `inject(headers)` line below removed (and the backend's `extract()` in Step 5 removed too), then `curl http://localhost:5100/ask`. On the Future AGI dashboard you'll see two separate root traces (one for `Gateway.ProcessRequest`, one for `Backend.GeminiCall`) because no `traceparent` header ever reaches the backend.
-
-Fix it by writing the current span's context into the outgoing request headers before the gateway calls the backend. `question` comes from the incoming request to the gateway's own `/ask` route.
-
-<Tabs>
-  <Tab title="Python">
-```python
-from opentelemetry import trace
-from opentelemetry.propagate import inject
-from flask import request
-import requests as http_requests
-
-tracer = trace.get_tracer(__name__)
-
-question = request.args.get("question", "What is distributed tracing?")
-with tracer.start_as_current_span("Gateway.CallBackend", kind=trace.SpanKind.CLIENT):
-    headers = {}
-    inject(headers)  # writes: traceparent: 00-<traceId>-<spanId>-01
-    response = http_requests.post(
-        "http://localhost:5101/generate",
-        json={"question": question},
-        headers=headers,
-    )
-```
-  </Tab>
-  <Tab title="TypeScript">
-```typescript
-const headers: Record<string, string> = { "Content-Type": "application/json" };
-propagation.inject(context.active(), headers, {
-  set: (carrier, key, value) => { carrier[key] = String(value); },
-});
-const response = await fetch("http://localhost:5101/generate", {
-  method: "POST",
-  headers,
-  body: JSON.stringify({ question }),
-});
-```
-  </Tab>
-  <Tab title="Java">
-```java
-Map<String, String> headers = new HashMap<>();
-GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
-    .inject(Context.current(), headers, Map::put);
-// add headers to the outgoing HttpRequest
-```
-  </Tab>
-  <Tab title="C#">
-```csharp
-// AddHttpClientInstrumentation() injects traceparent automatically.
-// Just make the call:
-var response = await client.SendAsync(backendRequest);
-```
-  </Tab>
-</Tabs>
-
-`inject()` only sees a context if it's called inside the active span's block. Call it before the span exits, not after. You should see a `traceparent` value of the form `00-<32 hex>-<16 hex>-01` in the `headers` dict right after the `inject()` call.
-
-</Step>
-
-<Step title="Extract the trace context on the backend's incoming call">
-
-The backend reads the `traceparent` header back into a context, then makes that context active so any span it creates is a child of the gateway's span. `question` comes from the JSON body the gateway just posted.
-
-<Tabs>
-  <Tab title="Python">
-```python
-from opentelemetry import context
-from opentelemetry.propagate import extract
-from flask import request
-
-question = request.json["question"]
-ctx = extract(request.headers)
-token = context.attach(ctx)
 try:
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=question)
-finally:
-    context.detach(token)  # Flask reuses threads, always detach
-```
-  </Tab>
-  <Tab title="TypeScript">
-```typescript
-const extractedCtx = propagation.extract(context.active(), req.headers, {
-  get: (carrier, key) => {
-    const val = carrier[key.toLowerCase()];
-    return Array.isArray(val) ? val[0] : val;
-  },
-});
-
-await context.with(extractedCtx, async () => {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-  const result = await model.generateContent(question);
-  res.json({ answer: result.response.text() || "No response" });
-});
-```
-  </Tab>
-  <Tab title="Java">
-```java
-Context extractedCtx = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
-    .extract(Context.current(), incomingHeaders, Map::get);
-
-try (Scope scope = extractedCtx.makeCurrent()) {
-    Span span = tracer.startSpan("Backend.GeminiCall", FISpanKind.LLM);
-    try (Scope spanScope = span.makeCurrent()) {
-        tracer.setInputValue(span, question);
-        String answer = callGemini(question);
-        tracer.setOutputValue(span, answer);
-    } finally {
-        span.end();
-    }
-}
-```
-  </Tab>
-  <Tab title="C#">
-```csharp
-// AddAspNetCoreInstrumentation() extracts traceparent automatically.
-// Activity.Current already carries the gateway's TraceId here.
-using var activity = activitySource.StartActivity("Backend.GeminiCall", ActivityKind.Client);
-```
-  </Tab>
-</Tabs>
-
-You should see the backend's span carry the same trace ID the gateway printed, not a new one.
-
-</Step>
-
-<Step title="Start both services">
-
-The pieces from Steps 1-5 assemble into two small services: a backend on port 5101 that exposes `/generate`, and a gateway on port 5100 that exposes `/ask` and calls the backend. Save each file below, then start the backend first so the gateway doesn't fail on connection errors.
-
-<Tabs>
-  <Tab title="Python">
-```python
-# backend.py
-import os
-from flask import Flask, request, jsonify
-from opentelemetry import context
-from opentelemetry.propagate import set_global_textmap, extract
-from opentelemetry.propagators.composite import CompositePropagator
-from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from opentelemetry.baggage.propagation import W3CBaggagePropagator
-from fi_instrumentation import register
-from fi_instrumentation.fi_types import ProjectType
-from traceai_google_genai import GoogleGenAIInstrumentor
-from google import genai
-
-set_global_textmap(CompositePropagator([
-    TraceContextTextMapPropagator(),
-    W3CBaggagePropagator(),
-]))
-
-provider = register(
-    project_name="distributed_tracing_demo",
-    project_type=ProjectType.OBSERVE,
-    set_global_tracer_provider=True,
-)
-
-GoogleGenAIInstrumentor().instrument(tracer_provider=provider)
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-
-app = Flask(__name__)
-
-@app.route("/generate", methods=["POST"])
-def generate():
-    question = request.json["question"]
-    ctx = extract(request.headers)
-    token = context.attach(ctx)
-    try:
-        response = client.models.generate_content(model="gemini-2.0-flash", contents=question)
-    finally:
-        context.detach(token)  # Flask reuses threads, always detach
-    return jsonify({"answer": response.text})
-
-if __name__ == "__main__":
-    app.run(port=5101)
-```
-
-```python
-# gateway.py
-from flask import Flask, request, jsonify
-from opentelemetry import trace
-from opentelemetry.propagate import set_global_textmap, inject
-from opentelemetry.propagators.composite import CompositePropagator
-from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from opentelemetry.baggage.propagation import W3CBaggagePropagator
-from fi_instrumentation import register
-from fi_instrumentation.fi_types import ProjectType
-import requests as http_requests
-
-set_global_textmap(CompositePropagator([
-    TraceContextTextMapPropagator(),
-    W3CBaggagePropagator(),
-]))
-
-provider = register(
-    project_name="distributed_tracing_demo",
-    project_type=ProjectType.OBSERVE,
-    set_global_tracer_provider=True,
-)
-tracer = trace.get_tracer(__name__)
-
-app = Flask(__name__)
-
-@app.route("/ask")
-def ask():
-    question = request.args.get("question", "What is distributed tracing?")
-    with tracer.start_as_current_span("Gateway.ProcessRequest") as root_span:
-        trace_id = format(root_span.get_span_context().trace_id, "032x")
-        with tracer.start_as_current_span("Gateway.CallBackend", kind=trace.SpanKind.CLIENT):
+    if sys.argv[1:] == ["serve"]:
+        with HTTPServer(("127.0.0.1", 5102), Returns) as server:
+            print("Ready", flush=True)
+            server.handle_request()
+    elif sys.argv[1:] == ["ask"]:
+        with tracer.start_as_current_span("Check tent return") as span:
             headers = {}
-            inject(headers)  # writes: traceparent: 00-<traceId>-<spanId>-01
-            response = http_requests.post(
-                "http://localhost:5101/generate",
-                json={"question": question},
-                headers=headers,
-            )
-    return jsonify({"answer": response.json()["answer"], "traceId": trace_id})
-
-if __name__ == "__main__":
-    app.run(port=5100)
+            w3c.inject(headers)
+            req = Request("http://127.0.0.1:5102/return-policy", headers=headers)
+            with urlopen(req, timeout=10) as res:
+                print(res.read().decode(), f"Trace: {span.get_span_context().trace_id:032x}")
+    else:
+        raise SystemExit("Use: python returns.py serve | ask")
+finally:
+    provider.shutdown()
 ```
+
+Start the server, wait for it to bind, then send the request:
 
 ```bash
-# Terminal 1
-python backend.py
-# Terminal 2
-python gateway.py
-```
-  </Tab>
-  <Tab title="TypeScript">
-```typescript
-// backend.ts
-import express from "express";
-import { context, propagation } from "@opentelemetry/api";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { register, ProjectType } from "@traceai/fi-core";
-import { GoogleGenAIInstrumentation } from "@traceai/google-genai";
-import { registerInstrumentations } from "@opentelemetry/instrumentation";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-propagation.setGlobalPropagator(new W3CTraceContextPropagator());
-
-const tracerProvider = register({
-  projectName: "distributed_tracing_demo",
-  projectType: ProjectType.OBSERVE,
-  setGlobalTracerProvider: true,
-});
-
-registerInstrumentations({
-  tracerProvider,
-  instrumentations: [new GoogleGenAIInstrumentation()],
-});
-
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
-
-const app = express();
-app.use(express.json());
-
-app.post("/generate", async (req, res) => {
-  const { question } = req.body;
-  const extractedCtx = propagation.extract(context.active(), req.headers, {
-    get: (carrier, key) => {
-      const val = carrier[key.toLowerCase()];
-      return Array.isArray(val) ? val[0] : val;
-    },
-  });
-
-  await context.with(extractedCtx, async () => {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-    const result = await model.generateContent(question);
-    res.json({ answer: result.response.text() || "No response" });
-  });
-});
-
-app.listen(5101, () => console.log("backend ready at :5101"));
+FI_TRACES_URL="$COLLECTOR_URL" python returns.py serve >returns.log 2>&1 &
+server_pid=$!
+while ! grep -qx Ready returns.log; do kill -0 "$server_pid" || exit 1; sleep 0.2; done
+FI_TRACES_URL="$COLLECTOR_URL" python returns.py ask
+wait "$server_pid"
 ```
 
-```typescript
-// gateway.ts
-import express from "express";
-import { context, propagation, trace, SpanKind } from "@opentelemetry/api";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { register, ProjectType } from "@traceai/fi-core";
+Open the printed trace. `Look up tent policy` should be a child of `Check tent return`.
 
-propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+</Accordion>
 
-const tracerProvider = register({
-  projectName: "distributed_tracing_demo",
-  projectType: ProjectType.OBSERVE,
-  setGlobalTracerProvider: true,
-});
-const tracer = trace.getTracer("gateway");
+## If the spans don't join
 
-const app = express();
+- **The servlet receives no header.** Check that you use `node:http` or `node:https`, the flag is on, the host is allowed, and the request runs in an active context. No headers are added for an unobserved local span, an observed active CLIENT span or a request that already has `traceparent` (even an invalid one). Check `outgoing-http` in `report()` from `@traceai/auto`: `disabled` means the opt-in is off or the policy disables additions, `pending` means the adapter is waiting for its first header write, and `instrumented` means it has added headers on at least one request.
+- **Your gateway uses `fetch` or Undici.** The adapter doesn't inject into global `fetch`, `undici.fetch` or `undici.request`. Capturing a model call made with `fetch` doesn't imply that a call to your own backend carries context. Use native HTTP(S) for this recipe or [inject and extract W3C headers explicitly](/docs/sdk/tracing/advanced-tracing-examples).
+- **Java starts a new trace despite a valid header.** Use the Java agent on `javax.servlet.http.HttpServlet` or `jakarta.servlet.http.HttpServlet`, including servlet-based Spring MVC. It scopes the parent to `service()` on the request thread and restores the previous context on return or exception. Filters before the servlet, work you hand to another thread, reactive servers and gRPC are outside this hook. An application span already active at the AI call takes precedence.
+- **You already instrument incoming Java requests.** Set `FI_DISABLED_INSTRUMENTATIONS=servlet` on the Java process to opt out of servlet extraction. Beside the OpenTelemetry Java agent, the traceAI servlet hook is off automatically. Check which agent supplies and exports your parent before looking for a missing SERVER span.
 
-app.get("/ask", async (req, res) => {
-  const question = (req.query.question as string) || "What is distributed tracing?";
+## Next steps
 
-  await tracer.startActiveSpan("Gateway.ProcessRequest", async (rootSpan) => {
-    const traceId = rootSpan.spanContext().traceId;
-
-    const answer = await tracer.startActiveSpan(
-      "Gateway.CallBackend",
-      { kind: SpanKind.CLIENT },
-      async (callSpan) => {
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        propagation.inject(context.active(), headers, {
-          set: (carrier, key, value) => { carrier[key] = String(value); },
-        });
-        const response = await fetch("http://localhost:5101/generate", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ question }),
-        });
-        const body = await response.json();
-        callSpan.end();
-        return body.answer;
-      },
-    );
-
-    rootSpan.end();
-    res.json({ answer, traceId });
-  });
-});
-
-app.listen(5100, () => console.log("gateway ready at :5100"));
-```
-
-```bash
-# Terminal 1
-npx tsx backend.ts
-# Terminal 2
-npx tsx gateway.ts
-```
-  </Tab>
-  <Tab title="Java">
-```java
-// Backend.java
-import ai.traceai.TraceAI;
-import ai.traceai.FITracer;
-import ai.traceai.FISpanKind;
-import io.opentelemetry.api.GlobalOpenTelemetry;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
-import com.sun.net.httpserver.HttpServer;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.Map;
-
-public class Backend {
-    public static void main(String[] args) throws Exception {
-        TraceAI.initFromEnvironment();
-        FITracer tracer = TraceAI.getTracer();
-
-        HttpServer server = HttpServer.create(new InetSocketAddress(5101), 0);
-        server.createContext("/generate", exchange -> {
-            Map<String, String> incomingHeaders = new HashMap<>();
-            exchange.getRequestHeaders().forEach((k, v) -> incomingHeaders.put(k, v.get(0)));
-            String question = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-
-            Context extractedCtx = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
-                .extract(Context.current(), incomingHeaders, Map::get);
-
-            String answer;
-            try (Scope scope = extractedCtx.makeCurrent()) {
-                Span span = tracer.startSpan("Backend.GeminiCall", FISpanKind.LLM);
-                try (Scope spanScope = span.makeCurrent()) {
-                    tracer.setInputValue(span, question);
-                    answer = callGemini(question);
-                    tracer.setOutputValue(span, answer);
-                } finally {
-                    span.end();
-                }
-            }
-
-            byte[] body = answer.getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(200, body.length);
-            exchange.getResponseBody().write(body);
-            exchange.getResponseBody().close();
-        });
-        server.start();
-        System.out.println("backend ready at :5101");
-    }
-
-    private static String callGemini(String question) throws Exception {
-        String key = System.getenv("GOOGLE_API_KEY");
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + key))
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(
-                "{\"contents\":[{\"parts\":[{\"text\":\"" + question.replace("\"", "'") + "\"}]}]}"))
-            .build();
-        HttpResponse<String> response = HttpClient.newHttpClient()
-            .send(request, HttpResponse.BodyHandlers.ofString());
-        return response.body();
-    }
-}
-```
-
-```java
-// Gateway.java
-import ai.traceai.TraceAI;
-import ai.traceai.FITracer;
-import io.opentelemetry.api.GlobalOpenTelemetry;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.SpanKind;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
-import com.sun.net.httpserver.HttpServer;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.Map;
-
-public class Gateway {
-    public static void main(String[] args) throws Exception {
-        TraceAI.initFromEnvironment();
-        FITracer tracer = TraceAI.getTracer();
-
-        HttpServer server = HttpServer.create(new InetSocketAddress(5100), 0);
-        server.createContext("/ask", exchange -> {
-            String question = "What is distributed tracing?";
-            Span rootSpan = tracer.startSpan("Gateway.ProcessRequest");
-            String traceId;
-            String answer;
-            try (Scope rootScope = rootSpan.makeCurrent()) {
-                traceId = rootSpan.getSpanContext().getTraceId();
-                Span callSpan = tracer.startSpan("Gateway.CallBackend", SpanKind.CLIENT);
-                try (Scope callScope = callSpan.makeCurrent()) {
-                    Map<String, String> headers = new HashMap<>();
-                    GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
-                        .inject(Context.current(), headers, Map::put);
-
-                    HttpRequest.Builder builder = HttpRequest.newBuilder()
-                        .uri(URI.create("http://localhost:5101/generate"))
-                        .POST(HttpRequest.BodyPublishers.ofString(question, StandardCharsets.UTF_8));
-                    headers.forEach(builder::header);
-
-                    HttpResponse<String> response = HttpClient.newHttpClient()
-                        .send(builder.build(), HttpResponse.BodyHandlers.ofString());
-                    answer = response.body();
-                } finally {
-                    callSpan.end();
-                }
-            } finally {
-                rootSpan.end();
-            }
-            byte[] body = ("{\"answer\": \"" + answer.replace("\"", "'") + "\", \"traceId\": \"" + traceId + "\"}")
-                .getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(200, body.length);
-            exchange.getResponseBody().write(body);
-            exchange.getResponseBody().close();
-        });
-        server.start();
-        System.out.println("gateway ready at :5100");
-    }
-}
-```
-
-```bash
-# Terminal 1
-java -jar backend.jar
-# Terminal 2
-java -jar gateway.jar
-```
-  </Tab>
-  <Tab title="C#">
-```csharp
-// Backend.cs
-var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddOpenTelemetry().WithTracing(t => t
-    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("backend"))
-    .AddAspNetCoreInstrumentation()
-    .AddHttpClientInstrumentation()
-    .AddOtlpExporter(opts =>
-    {
-        opts.Endpoint = new Uri("https://api.futureagi.com/tracer/v1/traces");
-        opts.Protocol = OtlpExportProtocol.HttpProtobuf;
-        opts.Headers = $"X-Api-Key={Environment.GetEnvironmentVariable("FI_API_KEY")}," +
-                       $"X-Secret-Key={Environment.GetEnvironmentVariable("FI_SECRET_KEY")}";
-    }));
-
-var app = builder.Build();
-var activitySource = new ActivitySource("backend");
-var httpClient = new HttpClient();
-
-app.MapPost("/generate", async (HttpContext ctx) =>
-{
-    using var reader = new StreamReader(ctx.Request.Body);
-    var question = await reader.ReadToEndAsync();
-
-    // AddAspNetCoreInstrumentation() extracts traceparent automatically;
-    // Activity.Current already carries the gateway's TraceId here.
-    using var activity = activitySource.StartActivity("Backend.GeminiCall", ActivityKind.Client);
-
-    var key = Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
-    var payload = $"{{\"contents\":[{{\"parts\":[{{\"text\":\"{question.Replace("\"", "'")}\"}}]}}]}}";
-    var response = await httpClient.PostAsync(
-        $"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}",
-        new StringContent(payload, Encoding.UTF8, "application/json"));
-    return await response.Content.ReadAsStringAsync();
-});
-
-app.Run("http://localhost:5101");
-```
-
-```csharp
-// Gateway.cs
-var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddOpenTelemetry().WithTracing(t => t
-    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("gateway"))
-    .AddAspNetCoreInstrumentation()
-    .AddHttpClientInstrumentation()
-    .AddSource("gateway")
-    .AddOtlpExporter(opts =>
-    {
-        opts.Endpoint = new Uri("https://api.futureagi.com/tracer/v1/traces");
-        opts.Protocol = OtlpExportProtocol.HttpProtobuf;
-        opts.Headers = $"X-Api-Key={Environment.GetEnvironmentVariable("FI_API_KEY")}," +
-                       $"X-Secret-Key={Environment.GetEnvironmentVariable("FI_SECRET_KEY")}";
-    }));
-
-var app = builder.Build();
-var activitySource = new ActivitySource("gateway");
-var httpClient = new HttpClient();
-
-app.MapGet("/ask", async (HttpContext ctx) =>
-{
-    var question = "What is distributed tracing?";
-    using var rootActivity = activitySource.StartActivity("Gateway.ProcessRequest");
-    var traceId = rootActivity?.TraceId.ToString() ?? "";
-
-    using var backendRequest = new HttpRequestMessage(HttpMethod.Post, "http://localhost:5101/generate")
-    {
-        Content = new StringContent(question, Encoding.UTF8, "text/plain"),
-    };
-    // AddHttpClientInstrumentation() injects traceparent automatically. Just make the call:
-    var response = await httpClient.SendAsync(backendRequest);
-    var answer = await response.Content.ReadAsStringAsync();
-
-    return new { answer, traceId };
-});
-
-app.Run("http://localhost:5100");
-```
-
-```bash
-# Terminal 1
-dotnet run -- backend
-# Terminal 2
-dotnet run -- gateway
-```
-  </Tab>
-</Tabs>
-
-You should see each process print its own "ready at" line on ports 5100 and 5101.
-
-</Step>
-
-<Step title="Call the gateway and check the trace">
-
-```bash
-curl http://localhost:5100/ask
-```
-
-You should see a JSON response with a `traceId`. Open the [Future AGI dashboard](https://app.futureagi.com), find the `distributed_tracing_demo` project, and open that trace ID. `Gateway.ProcessRequest`, `Gateway.CallBackend`, and the backend's Gemini span all appear nested under one trace instead of as two separate traces.
-
-</Step>
-
-</Steps>
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| Two separate traces instead of one | Gateway and backend registered under different `project_name` values | Use the exact same `project_name` string in both `register()` calls |
-| `traceparent` header missing on the outgoing request | `inject()` called after the span's `with`/`try` block exited | Call `inject()` while the span is still the active span |
-| Backend spans show up as new root traces, not children | Extracted context never made active | Wrap the backend's work in `context.attach(ctx)` (Python) or `context.with(extractedCtx, ...)` (TypeScript) before creating spans |
-| TypeScript backend has no LLM span at all | Backend imports `@google/genai` and calls `GoogleGenAI`, which `@traceai/google-genai` doesn't patch | Import `GoogleGenerativeAI` from `@google/generative-ai` instead |
-| Java build fails to resolve `traceai-java-core` | pom.xml uses groupId `com.github.future-agi.traceAI` | Use groupId `ai.traceai`, version `1.0.0` |
-| Gateway throws a connection error on startup | Gateway started before the backend was listening | Always start the backend first, then the gateway |
-| Later requests on the same thread inherit the wrong parent span (Python) | `context.detach(token)` skipped or not in a `finally` block | Flask reuses worker threads: always detach in `finally` |
-
-Continue with [Manual Tracing](/docs/cookbook/quickstart/manual-tracing) to add custom spans inside either service without relying on auto-instrumentation.
+- [Manual tracing](/docs/cookbook/quickstart/manual-tracing): add a named span to a Python application.
+- [Advanced tracing examples](/docs/sdk/tracing/advanced-tracing-examples): propagate context manually in Python or TypeScript and carry it across async boundaries.

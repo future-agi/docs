@@ -30,7 +30,7 @@ The test custom endpoint explicitly sets `addParams.streamUsage: true`. LibreCha
 
 ```bash
 export FI_API_KEY=... FI_SECRET_KEY=...
-export FI_TRACES_URL=http://host.docker.internal:4318/v1/traces    # your Future AGI collector
+export FI_TRACES_URL=http://host.docker.internal:4318/tracer/v1/traces    # your Future AGI collector
 export TEST_LLM_BASE_URL=https://api.openai.com/v1 TEST_LLM_API_KEY=... TEST_LLM_MODEL=gpt-4o-mini
 ./run_e2e.sh
 ```
