@@ -1,0 +1,159 @@
+---
+title: "Benchmark an agent"
+description: "Choose how to run benchmark tasks, score a timed dialogue, and distinguish a failed task from a missing submission"
+---
+
+Use a benchmark to check an agent against tasks with known success criteria. Choose the control mode by what you have available.
+
+- Use `artifact_in` when you already have an answer. ALK scores a timed dialogue or a coding submission against the checks for its task
+- Use `push` when ALK should give tasks to an agent and score what it does
+- Use `pull` when your agent chooses an action after each observation from an environment
+
+<Note>
+Use the Python environment and local settings from the [ALK quickstart](/docs/sdk/agent-learning-kit). All three examples run locally with synthetic inputs. They make no model or phone calls. A push benchmark that uses a provider-backed agent can send task data to that provider and incur charges.
+</Note>
+
+## Score a timed refund conversation
+
+Suppose a caller asks about refunds. The agent should state the 30-day window and begin its reply within 1,200 milliseconds. Save this as `refund_bench.py`.
+
+```python
+import json
+from pathlib import Path
+
+from fi.alk import bench
+
+suite = {
+    "kind": "agent-learning.bench-suite.v1",
+    "name": "refund-calls",
+    "version": "1",
+    "control": "voice",
+    "tasks": [{
+        "id": "refund-call",
+        "budgets": {"max_latency_ms": 1200},
+        "required_content": ["refund", "30"],
+    }],
+}
+dialogue = [
+    {"speaker": "caller", "start_ms": 0, "end_ms": 1500,
+     "text": "Can I get a refund?"},
+    {"speaker": "agent", "start_ms": 1700, "end_ms": 3500,
+     "text": "You can request a refund within 30 days."},
+    {"speaker": "caller", "start_ms": 3100, "end_ms": 3300,
+     "text": "Wait.", "interrupt": True},
+    {"speaker": "agent", "start_ms": 3650, "end_ms": 4200,
+     "text": "Go ahead."},
+]
+submission = {"refund-call": dialogue}
+result = bench.run_bench(suite, control_mode="artifact_in", submission=submission)
+Path("refund-result.json").write_text(json.dumps(result, indent=2))
+row = result["per_task"][0]
+print(row["task_id"], row["verdict"], row["result"]["components"])
+```
+
+Run `python refund_bench.py`. The agent begins its first reply 200 milliseconds after the caller stops. When the caller interrupts, the agent stops speaking 400 milliseconds later.
+
+```text
+refund-call pass {'latency': 1.0, 'turn_taking': 1.0, 'barge_in': 1.0, 'content': 1.0}
+```
+
+The input to `bench.run_bench` is a mapping from task ID to a list of timed turns. If you have an [external voice simulation report](/docs/sdk/agent-learning-kit/simulate-an-external-voice-agent), supply the dialogue separately using measured start and end times for each speaker. The report itself lacks the required submission shape.
+
+## Distinguish a failed reply from a missing dialogue
+
+In `refund_bench.py`, change the first agent reply to `You can request a refund.` and rerun it. The dialogue still meets the timing budget, but only one of the two required terms appears. The verdict changes to `fail` and `components.content` falls to `0.5`. Restore the 30-day window and rerun to recover the pass.
+
+Now change the key in `submission` to `refund-typo` and rerun. ALK looks for `refund-call` and records `void` because it has no dialogue for that task. Open `refund-result.json` and check `aggregate.scored` and `aggregate.void` alongside `aggregate.pass_rate`. With this missing task those values are `0`, `1`, and `0.0`. A failed task counts toward the pass rate. A void task contributes no score. Restore the matching key and rerun.
+
+## Give tasks to a scripted agent
+
+To test an agent that can answer now, use `push`. Save this dataset as `refund-tasks.json`. The task states the expected outcome, a required phrase, and the objective ALK scores.
+
+```json
+{
+  "name": "refund-questions",
+  "tasks": [{
+    "id": "refund-window",
+    "title": "Give the refund window",
+    "world": {"kind": "conversation"},
+    "scenario": {
+      "kind": "task",
+      "dataset": [{
+        "persona": {"name": "Dana"},
+        "situation": "Dana asks how long the refund window is.",
+        "outcome": "You can request a refund within 30 days."
+      }]
+    },
+    "objective": {
+      "evals": [{"eval": "task_success", "anchor": true}],
+      "guards": {"sentinel_rows": [{"id": "refund-window"}], "min_guard_count": 1}
+    },
+    "verification": {"checks": [{"type": "contains", "value": "30 days"}]}
+  }]
+}
+```
+
+```bash
+agent-learn bench refund-tasks.json --mode push \
+  --agent '{"type":"scripted","content":"You can request a refund within 30 days."}' \
+  --output refund-push.json
+```
+
+In `refund-push.json`, check `per_task[0].verdict` for `pass`. The agent always returns the supplied text. Use its result as a check of your dataset before connecting your own agent.
+
+## Let a policy choose each action
+
+For a step-by-step environment, use `pull`. Save this suite as `reach-target.json`. Each step moves the agent along a line. The task asks it to reach position 3 in at most four steps.
+
+```json
+{
+  "kind": "agent-learning.bench-suite.v1",
+  "name": "navigation",
+  "version": "1",
+  "control": "pull",
+  "tasks": [{
+    "id": "reach-three",
+    "env": {"kind": "reach_target", "spec": {"start": 0, "target": 3, "max_steps": 4}}
+  }]
+}
+```
+
+```bash
+agent-learn bench reach-target.json --mode pull --agent '{"type":"reference"}' \
+  --output navigation-result.json
+```
+
+The built-in reference policy reaches the target. In `navigation-result.json`, `per_task[0].result.pass_fail.goal_reached` is `true`. To test your own policy, save this as `run_policy.py` beside **reach-target.json**:
+
+```python
+from fi.alk import bench
+
+def move_toward_target(observation):
+    if observation["pos"] < observation["target"]:
+        return "right"
+    if observation["pos"] > observation["target"]:
+        return "left"
+    return "stay"
+
+result = bench.run_bench(
+    "reach-target.json", agent=move_toward_target,
+    control_mode="pull", emit_telemetry=False,
+)
+print(result["per_task"][0]["result"]["pass_fail"]["goal_reached"])
+```
+
+Run `python run_policy.py`. It prints `True`. Replace `move_toward_target` with your policy while keeping the observation-to-action contract.
+
+## Dive deeper
+
+<CardGroup cols={3}>
+  <Card title="Simulate an agent" icon="play" href="/docs/sdk/agent-learning-kit/simulate-an-agent">
+    Inspect a conversation before turning it into a benchmark task
+  </Card>
+  <Card title="Run evaluation suites" icon="list-check" href="/docs/sdk/agent-learning-kit/run-evaluation-suites">
+    Apply assertions to replies and saved results
+  </Card>
+  <Card title="Python libraries" icon="code" href="/docs/sdk/agent-learning-kit/python-libraries">
+    Find the benchmark and task dataset functions
+  </Card>
+</CardGroup>
