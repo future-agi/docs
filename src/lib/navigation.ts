@@ -410,6 +410,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add ground truth', href: '/docs/evaluation/guides/ground-truth' },
               { title: 'Collect feedback', href: '/docs/evaluation/guides/collect-feedback' },
               { title: 'Use custom models', href: '/docs/evaluation/guides/custom-models' },
+              { title: 'Use decision models', href: '/docs/evaluation/guides/decision-models' },
               { title: 'Evaluate in CI/CD', href: '/docs/evaluation/guides/cicd' },
               { title: 'Advanced usage', href: '/docs/evaluation/guides/advanced-usage' },
             ]
@@ -936,6 +937,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
+              { title: 'Lock versions', href: '/docs/environments/guides/lock-versions' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
