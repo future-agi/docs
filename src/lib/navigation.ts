@@ -855,6 +855,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Add evaluations', href: '/docs/environments/guides/add-evaluations' },
               { title: 'Run a simulation', href: '/docs/environments/guides/run-a-simulation' },
               { title: 'Read run results', href: '/docs/environments/guides/read-run-results' },
+              { title: 'Lock versions', href: '/docs/environments/guides/lock-versions' },
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
             ]
           },
@@ -868,6 +869,14 @@ export const tabNavigation: NavTab[] = [
             title: 'Troubleshooting',
             items: [
               { title: 'Environment FAQ & fixes', href: '/docs/environments/troubleshooting' },
+            ]
+          },
+          {
+            title: 'Simulation (legacy)',
+            items: [
+              { title: 'Simulate a prompt', href: '/docs/simulation/guides/prompt-simulation' },
+              { title: 'Running optimizations', href: '/docs/simulation/guides/running-optimizations' },
+              { title: 'Optimization runs', href: '/docs/simulation/guides/optimization-runs' },
             ]
           },
         ]
