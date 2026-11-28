@@ -1,7 +1,7 @@
 ---
-title: "Instrument and Verify: Add Tracing to an Existing App and Prove It Worked"
+title: "Add tracing to an app and verify the result"
 slug: "instrument-and-verify"
-description: "Add tracing to an app that has none, then prove it worked with ten machine-checked gates that either pass or name exactly what is missing."
+description: "Instrument one real request and verify delivery, span parentage, session and user IDs, and cost inputs against ten checks, not just a populated trace list."
 date: "2026-08-26"
 author: "futureagi-engineering"
 products:
@@ -21,27 +21,59 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Adding tracing is the easy half. Knowing it worked is the half that gets skipped, because a trace that arrives looking fine can still be missing cost, sessions, users, or half its spans. This guide instruments an app that has none, then runs `fi_verify.py`, which checks ten gates against the spans your app really produced and exits 0 or names the gate that failed.
+**What you'll build:** A tracing setup and a ten-gate check that tells you whether one real request reached the collector with the data you need.
 </TLDR>
+
+## The problem
+
+Adding tracing is the easy half. Knowing it worked is the half that gets skipped, because a trace that arrives looking fine can still be missing cost, sessions, users, or half its spans.
+
+A [trace](/docs/observe/concepts/traces) can arrive even when its model calls have no cost or its [spans](/docs/observe/concepts/spans) have lost their parent. Without a [session](/docs/observe/concepts/sessions) ID or [user](/docs/observe/concepts/users) ID, you can't group turns into a conversation or read spend per customer. Seeing a request in the dashboard doesn't tell you which of those checks passed.
+
+## What you'll build
+
+Instrument an app that has no tracing, then run `fi_verify.py`. It checks ten gates against the spans your app really produced, and exits `0` or names the gate that failed.
+
+<Mermaid chart={`
+flowchart TD
+    accTitle: Follow one request to its verification evidence
+    accDescr: One request produces a trace tree. Delivery receipts verify the collector took the batch, and locally captured spans verify its structure and attributes. The checker uses both to report the ten gates.
+    R["Run one request"] --> T["Trace its model and tool calls"]
+    T --> D["Collector delivery receipt"]
+    T --> S["Local span capture"]
+    D --> C["Ten-gate check"]
+    S --> C
+`} />
+
+You'll:
+
+1. Verify the route and workspace credentials before relying on the exporter.
+2. Keep the root, model calls and tool calls in one tree with a shared session and user.
+3. Check that the model and token or cost attributes needed for pricing are present.
+4. Compare the checker's report with the trace tree for a real airline support request.
+
+<Prerequisites title="Before you start">
+- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
+- A workspace [API key and secret key](/docs/admin-settings/api-keys) for `FI_API_KEY` and `FI_SECRET_KEY`
+- An app that makes at least one real LLM call, with an entry point you can run once
+- Python 3.11+ to run `fi_verify.py`. The listings below are Python, but the app you are tracing can be in any language: see [If your app is not Python](#if-your-app-is-not-python)
+</Prerequisites>
 
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
 <a href="https://colab.research.google.com/github/future-agi/cookbooks/blob/main/quickstart/instrument-and-verify.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" style={{height: "28px"}} /></a>
 <a href="https://github.com/future-agi/cookbooks/blob/main/quickstart/instrument-and-verify.ipynb" target="_blank" style={{display: "inline-flex"}}><img src="https://img.shields.io/badge/View_on_GitHub-181717?logo=github&logoColor=white" alt="GitHub" style={{height: "28px"}} /></a>
 </div>
 
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
+
 | Time | Difficulty | Package |
 |------|-----------|---------|
 | 20 min | Intermediate | `fi-instrumentation-otel` |
 
-<Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- An app that makes at least one real LLM call, with an entry point you can run once
-- Python 3.11+ to run `fi_verify.py`. The listings below are Python, but the app you are tracing can be in any language: see [If your app is not Python](#if-your-app-is-not-python)
-</Prerequisites>
+</div>
 
 <Note>
-Handing this to a coding agent? Point it at this page and say: *follow this end to end to GREEN LIGHT, and tell me the one thing you need from me.* Step 1 downloads the checker, and Step 5 decides the result, so the agent never has to claim success on your behalf.
+Handing this to a coding agent? Point it at this page and say: *follow this end to end to GREEN LIGHT, and tell me the one thing you need from me.* Step 5 decides the result, so the agent never has to claim success on your behalf.
 </Note>
 
 ## Install
@@ -60,9 +92,9 @@ your-repo/
 └── .gitignore                 # + .fi_verify/
 ```
 
-If your repository ships as a package, put `observability/futureagi/` under your own package root instead of the top level.
+Put `setup.py`, `futureagi_spans.py` and `futureagi_rollup.py` beside `fi_verify.py`. If your repository ships as a package, put `observability/futureagi/` under your own package root instead of the top level.
 
-Every step below offers two tracks, the Future AGI SDK and plain OpenTelemetry. **Pick one and stay on it from here to the end.** The two tracks write files of the same name that are not interchangeable, so every listing names its own track on the first line.
+Every step below offers two tracks, the [Future AGI SDK](/docs/sdk) and plain OpenTelemetry. **Pick one and stay on it from here to the end.** The two tracks write files of the same name that are not interchangeable, so every listing names its own track on the first line.
 
 <Tabs>
 <Tab title="Future AGI SDK">
@@ -85,7 +117,7 @@ pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
 </Tab>
 </Tabs>
 
-Then the checker. One file, no dependency beyond the OpenTelemetry SDK, and Step 1 runs it.
+Download the checker into `observability/futureagi/fi_verify.py`. It is one file with no dependency beyond the OpenTelemetry SDK, and Step 1 runs it. Before running it, compare the checksum printed by `shasum` with the one in the listing.
 
 ```bash
 mkdir -p observability/futureagi
@@ -94,6 +126,18 @@ shasum -a 256 observability/futureagi/fi_verify.py
 # 75ce8d9cb5bafa1cbeea42affe8b464433ab97e438a53410f27678855d484de7
 ```
 
+Set the credentials in the shell where you will run the app:
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
+
+| Variable | What to set | Where to find it |
+|---|---|---|
+| `FI_API_KEY` | Workspace API key | **Build > Keys** |
+| `FI_SECRET_KEY` | Matching secret key | Shown when you create the key pair |
+| `FI_PROJECT_NAME` | The name this app appears under | You choose it |
+
+</div>
+
 ```bash
 export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
@@ -101,12 +145,12 @@ export FI_PROJECT_NAME="my-app"
 ```
 
 <Note>
-Self-hosted? Both listings below hardcode `https://api.futureagi.com`. Point the SDK at your own deployment with `FI_BASE_URL` (its API) and `FI_TRACES_URL` (its trace collector, when it has its own URL; needs `fi-instrumentation-otel` 1.5.0 or later), the plain OpenTelemetry exporter with its own `endpoint=`, and the checker with `FI_ENDPOINT`, which is the full path including `/tracer/v1/traces`.
+[Self-hosted](/docs/self-hosting)? Both listings below hardcode `https://api.futureagi.com`. Point the SDK at your own deployment with `FI_BASE_URL` (its API) and `FI_TRACES_URL` (its trace collector, when it has its own URL; needs `fi-instrumentation-otel` 1.5.0 or later), the plain OpenTelemetry exporter with its own `endpoint=`, and the checker with `FI_ENDPOINT`, which is the full path including `/tracer/v1/traces`.
 </Note>
 
 ## What a verified integration means
 
-These failures all produce a trace list that looks populated, and reading the dashboard cannot tell them apart from a correct integration:
+Reading the dashboard cannot tell these failures apart from a correct integration:
 
 - Cost and tokens are missing everywhere, because the LLM spans carry neither a model nor a token count and nothing can price them
 - One request appears as three traces, and each piece looks valid on its own
@@ -115,6 +159,8 @@ These failures all produce a trace list that looks populated, and reading the da
 - Nothing arrives at all, and the client stays healthy because the collector refused the batch quietly
 
 So the result is decided by a checker rather than by looking. Ten gates, each tied to the step that closes it:
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Gate | Holds when | Step |
 |---|---|---|
@@ -128,6 +174,8 @@ So the result is decided by a checker rather than by looking. Ten gates, each ti
 | G8 | the model name is on every LLM span | 4 |
 | G9 | every LLM span is priceable, or carries a cost you sent | 4 |
 | G10 | no credential in any span attribute | 4 |
+
+</div>
 
 Nine gates read a local capture of your spans. G1 reads two receipts written during the run, because a capture says nothing about whether anything arrived.
 
@@ -315,6 +363,8 @@ Three mistakes leave both fields empty. A new id on every span is worse than no 
 
 A field is empty in the product because the attribute behind it was never sent. Cost is the one exception, and where that line falls is worth knowing exactly. Five of the ten gates depend on this step.
 
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
+
 | Field that stays empty | Attribute that fills it | Written by |
 |---|---|---|
 | the span typed in the tree | `gen_ai.span.kind` | you, every span |
@@ -323,6 +373,8 @@ A field is empty in the product because the attribute behind it was never sent. 
 | cost on an LLM span | priced from those two and the model | us, unless you send `gen_ai.cost.total` |
 | model and provider filters | `gen_ai.request.model`, `gen_ai.provider.name` | instrumentor, except on a stream |
 | session grouping, user analytics | `session.id`, `user.id` | you, at the edge |
+
+</div>
 
 The instrumentor writes every LLM key for the calls it wraps. The root and a local `TOOL` or `RETRIEVER` span fall outside it. A hand-rolled client has no instrumentor at all, so its LLM span is written the same way, by hand, with the model, the messages and the counts taken off the response object. The kind is the bare name in capitals: `CHAIN` for the root, `LLM` for one model call, then ten more listed in the [instrumentor reference](/docs/integrations/traceai).
 
@@ -473,7 +525,12 @@ A reasoning model bills for tokens in neither bucket, so carry the total the pro
 
 <Step title="Run the ten gates">
 
-Three commands. It exits `0`, or it names the gate that failed and why. Run it again after every change.
+1. Enable capture for the run with `FI_VERIFY=1`.
+2. Run the checker in `preflight` mode.
+3. Run one request through your app's entry point in place of `your_app` below.
+4. Run the checker in `check` mode.
+
+   You should see one result per gate: `check` exits `0` when all ten pass, or names the failed gate and its cause. Re-run after each fix.
 
 ```bash
 printf '\n.fi_verify/\n' >> .gitignore     # echo would join the last line
@@ -484,7 +541,7 @@ python -m your_app                                      # one real request, your
 python observability/futureagi/fi_verify.py check       # ten gates: receipts, then spans
 ```
 
-A passing run:
+A passing `my-app` run (the airline example below has its own report):
 
 ```
   PASS  G1   preflight ok, delivery ok
@@ -502,9 +559,9 @@ A passing run:
   GREEN LIGHT achieved
 ```
 
-Each `FAIL` row names one gate and one cause. If the same gate fails twice for the same reason, the problem is outside your codebase.
+Each `FAIL` row names one gate and one cause. If the same gate fails twice for the same reason, the problem is outside your codebase. [Troubleshooting](#troubleshooting) lists causes and fixes by symptom.
 
-`ai-evaluation is not installed, please install it to trace protect` on stderr is expected and affects no gate. It is the optional Protect package, which tracing does not need.
+A warning on stderr that ends with `is not installed, please install it to trace protect` is expected and affects no gate. It refers to the optional Protect package, which tracing does not need.
 
 </Step>
 
@@ -512,7 +569,7 @@ Each `FAIL` row names one gate and one cause. If the same gate fails twice for t
 
 A correct trace is what lets you answer quality questions. An eval can only grade what it is bound to, and you bind every variable yourself. One with nothing bound reports nothing, which looks the same as one that found no problems.
 
-Evals are configured in the console, never in application code. Binding is manual per eval task: a scope, a template, then each variable pointed at an attribute path in your own data.
+For this walkthrough, configure evals in the console. Binding is manual per eval task: a scope, a template, then each variable pointed at an attribute path in your own data.
 
 - Anything reading the request binds at **Traces** scope against the root, where `input.value` is the real question. On an instrumented LLM span it holds only the first message, and the full turn is under `gen_ai.input.messages.*`.
 - Output-only evals bind at **Spans** scope to `output.value`, which G5 already proved is there.
@@ -523,7 +580,7 @@ Read your own attributes out of `.fi_verify/spans.jsonl` first, so every variabl
 
 </Steps>
 
-## The same six steps on a real repository
+## Trace the airline support agent
 
 Everything above was run against [`openai/openai-agents-python`](https://github.com/openai/openai-agents-python), on its `examples/customer_service` airline support agent. Nothing in that repository was written for this guide, which is the point: it is a normal app with normal problems.
 
@@ -625,6 +682,15 @@ python observability/futureagi/fi_verify.py check
   GREEN LIGHT achieved
 ```
 
+**Check the tree against the report.** G3 found 13 spans under one root with no orphans, G4 counted three model calls, and G6 and G7 found the session and user.
+
+In the trace below, the instrumentor typed the agents and the model calls, and the handoff. `faq_lookup_tool` is a local function the instrumentor cannot see, so its `TOOL` span is the three lines from Step 4. The attributes panel is the same list Step 4 sends, read back off a real span.
+
+<img src="/images/docs/cookbook-instrument-and-verify/trace-tree.png" alt="The trace tree for one support turn, from the support.turn root through the triage agent, the handoff, the FAQ agent, the tool span and three LLM spans, with the attributes panel showing session.id, user.id and cost" style={{ borderRadius: '5px' }} />
+*One `support.turn` trace: the `CHAIN` root, the triage agent, the handoff, the FAQ agent, the local `faq_lookup_tool` span and the three LLM spans, with the attributes panel open on a real span*
+
+**If the root is missing its session or user:** check where the scope opens in your entry point. A scope opened *inside* the root reaches its children but not the root. Move it outside the root, run one fresh request, then check G6 and G7 against the new capture.
+
 Run it a second time with the same `FI_SESSION_ID` and a second message, and the two turns join one session.
 
 ### What that produced
@@ -633,11 +699,6 @@ The trace list reads the root and nothing else, which is why Step 4 puts the tot
 
 <img src="/images/docs/cookbook-instrument-and-verify/trace-list.png" alt="The Future AGI trace list showing two support.turn traces with input, output, latency, tokens, total cost and model" style={{ borderRadius: '5px' }} />
 *Two `support.turn` traces, the Cost column reading the total this run rolled onto each root because our table does not price this model*
-
-Inside a trace, the instrumentor typed the agents and the model calls, and the handoff. `faq_lookup_tool` is a local function the instrumentor cannot see, so its `TOOL` span is the three lines from Step 4. The attributes panel is the same list Step 4 sends, read back off a real span.
-
-<img src="/images/docs/cookbook-instrument-and-verify/trace-tree.png" alt="The trace tree for one support turn, from the support.turn root through the triage agent, the handoff, the FAQ agent, the tool span and three LLM spans, with the attributes panel showing session.id, user.id and cost" style={{ borderRadius: '5px' }} />
-*One `support.turn` trace: the `CHAIN` root, the triage agent, the handoff, the FAQ agent, the local `faq_lookup_tool` span and the three LLM spans, with the attributes panel open on a real span*
 
 Because `session.id` was set once at the edge, every turn in the conversation groups under one session without any turn knowing about the other.
 
@@ -652,13 +713,17 @@ The model on these captures reads `llama-3.3-70b-versatile` because the run poin
 
 Each of these binds only to an attribute the run above already carries, read out of `.fi_verify/spans.jsonl`.
 
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
+
 | Eval | Scope | Bound to |
 |---|---|---|
-| Task Completion | Traces | `input.value` and `output.value` on the root |
-| Evaluate Function Calling | Spans | the tool call arguments on the first LLM span |
-| Detect Hallucination | Traces | `input.value` and `output.value`, catching an answer the tool never returned |
-| Instruction Adherence | Traces | `input.value` and `output.value` against the agent's own instructions |
-| PII Detection | Spans | `output.value`, which G5 already proved is on every LLM span |
+| [Task Completion](/docs/evaluation/builtin/task-completion) | Traces | `input.value` and `output.value` on the root |
+| [Evaluate Function Calling](/docs/evaluation/builtin/llm-function-calling) | Spans | the tool call arguments on the first LLM span |
+| [Detect Hallucination](/docs/evaluation/builtin/detect-hallucination) | Traces | `input.value` and `output.value`, catching an answer the tool never returned |
+| [Instruction Adherence](/docs/evaluation/builtin/instruction-adherence) | Traces | `input.value` and `output.value` against the agent's own instructions |
+| [PII Detection](/docs/evaluation/builtin/pii) | Spans | `output.value`, which G5 already proved is on every LLM span |
+
+</div>
 
 On an instrumented LLM span, `input.value` holds only the first message and the full turn sits under `gen_ai.input.messages.*`. Bind anything that reads the request at Traces scope against the root, where `input.value` is the customer's actual question.
 
@@ -673,11 +738,13 @@ The listings translate line for line, and everything reaches the same endpoint o
 - The Step 4 attribute keys, byte for byte
 - The roll-up, only if you need the trace list's Cost column or your own rates
 
-Spring Boot also needs `management.tracing.sampling.probability=1.0`. First-party SDKs and the full framework list are in the [instrumentor reference](/docs/integrations/traceai).
+Spring Boot also needs `management.tracing.sampling.probability=1.0`. See the instrumentor reference linked in Step 4 for first-party SDKs and the full framework list.
 
 **The checker still runs.** `preflight` and `check` are plain Python with no dependency at all, so they work next to an app in any language. Only `fi_verify.attach()` is Python-bound, because it installs a processor inside your process. Without it, write the capture yourself: one JSON object per line in `.fi_verify/spans.jsonl`, each with `name`, `trace_id`, `span_id`, `parent_id` (null on the root), `attrs`, and `resource`. That is roughly ten lines in any OpenTelemetry span exporter, and `check` reads it the same way either way.
 
 ## Troubleshooting
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -689,12 +756,13 @@ Spring Boot also needs `management.tracing.sampling.probability=1.0`. First-part
 | G9 names a span with no model, no tokens and no cost | A hand-rolled client with no instrumentor, or a stream without usage | Pass `stream_options={"include_usage": True}`, or write the counts off the response object yourself |
 | Every gate passes and the trace list's Cost column is still empty | The trace list reads the root, which carries no model and no tokens, so nothing prices it | Expected. Roll the total onto the root only if that column is the one you need, and read the Step 4 warning first |
 | Spans stop arriving as soon as the roll-up is added, on the Future AGI SDK track | `register()` leaves `_default_processor` set, and the first `add_span_processor` discards the exporter it installed | Clear `P._default_processor` before `add_span_processor`, as `futureagi_rollup.py` does |
-| `ai-evaluation is not installed, please install it to trace protect` on stderr | The optional Protect package is absent | Expected, and it affects no gate. Tracing does not need it |
+| A warning on stderr ends with `is not installed, please install it to trace protect` | The optional Protect package is absent | Expected, and it affects no gate. Tracing does not need it |
 
-Keep that one trace across a service boundary with [Distributed Tracing](/docs/cookbook/quickstart/distributed-tracing).
+</div>
 
 ## Next
 
 - [Explore dashboard](/docs/observe/guides/explore-dashboard): Find your request and inspect what each span recorded.
-- [What is a trace?](/docs/observe/concepts/traces): See how the operations for one request fit together.
+- [Session-based observability](/docs/cookbook/quickstart/session-observability): Follow multiple turns from the same conversation.
+- [Distributed Tracing](/docs/cookbook/quickstart/distributed-tracing): Keep that one trace across a service boundary.
 - [No traces appear](/docs/observe/troubleshooting/no-traces-appearing): Check the exporter and workspace if nothing arrives.

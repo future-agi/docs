@@ -1,7 +1,7 @@
 ---
 title: "LangChain & LangGraph Observability"
 slug: "langchain-langgraph"
-description: "Instrument a LangGraph agent that calls Google Search with traceAI, then score each span for completeness, groundedness, tool calling and hallucination."
+description: "Trace a LangGraph agent answering a current-information question. Compare search tool calls and span scores before and after changing the tool description."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -21,26 +21,62 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Build a LangGraph agent that answers questions directly or falls back to a Google Search tool, instrument it with [traceAI](/docs/observe/concepts/traceai), and attach eval tags that score every agent span for completeness, groundedness, tool calling, and hallucination. Run three queries and read the scores in the dashboard.
+**What you'll build:** A [LangGraph agent](/docs/integrations/traceai/langgraph) that answers directly or falls back to a Google Search tool, instrumented with [traceAI](/docs/integrations/traceai) so each span is scored for completeness, groundedness, tool calling and hallucination. The trace shows whether the agent searched for current information or answered from memory.
 </TLDR>
 
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 20 min | Intermediate | `fi-instrumentation-otel` + `traceai-langchain` |
+## The problem
 
-<Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- An `OPENAI_API_KEY`
-- A `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` (see [Google Programmable Search setup](https://python.langchain.com/docs/integrations/tools/google_search/))
-- Python 3.11
+A plausible answer about today's card fees doesn't tell you whether the agent looked them up. Binding a Google Search tool gives the model the option to search, not an obligation. If its description doesn't say when to use it, the [trace](/docs/observe/concepts/traces) may contain an answer but no search result to support it.
+
+## What you'll build
+
+A LangGraph agent with a Google Search tool and [span](/docs/observe/concepts/spans) evaluations, so you can compare two runs of the same question against the evidence each retrieved.
+
+<Mermaid chart={`
+flowchart LR
+    accTitle: Search or answer directly
+    accDescr: The agent receives a current-information question. It may call Google Search and use the result or answer directly. The trace records the path taken so you can compare the spans and scores.
+    Q["Current question"] --> A["Agent"]
+    A -->|Calls tool| S["Google Search"]
+    S --> A
+    A --> R["Final reply"]
+    R --> T["Inspect trace and scores"]
+`} />
+
+You'll:
+
+1. Trace a model call before adding the graph.
+2. Attach checks for [completeness](/docs/evaluation/builtin/completeness), [groundedness](/docs/evaluation/builtin/groundedness), [tool calling](/docs/evaluation/builtin/llm-function-calling) and [hallucination](/docs/evaluation/builtin/detect-hallucination).
+3. Run three current-information queries through the agent.
+4. Compare the same card-fee query under two tool descriptions.
+
+<Prerequisites title="Before you start">
+- A [Future AGI account](https://app.futureagi.com) and [workspace credentials](/docs/admin-settings/api-keys): `FI_API_KEY` and `FI_SECRET_KEY`.
+- `OPENAI_API_KEY` for the model; `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` for [Google Programmable Search](https://python.langchain.com/docs/integrations/tools/google_search/).
+- Python 3.11. This intermediate walkthrough takes about 20 minutes and uses `fi-instrumentation-otel` and `traceai-langchain`.
 </Prerequisites>
 
-## Install
+## Prepare the Python session
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
+
+| Variable | What to set | Where to find it |
+| --- | --- | --- |
+| `FI_API_KEY` and `FI_SECRET_KEY` | A matching credential pair | Workspace API key settings |
+| `FI_BASE_URL` | API origin | The hosted address is in the example below. |
+| `OPENAI_API_KEY` | Model provider key | Your OpenAI account |
+| `GOOGLE_API_KEY` | Key with Custom Search API access | Google Cloud project for the search engine |
+| `GOOGLE_CSE_ID` | Search engine identifier | Your Google Programmable Search configuration |
+
+</div>
+
+1. Install the agent, search and instrumentation packages.
 
 ```bash
 pip install fi-instrumentation-otel traceai-langchain openai langgraph langchain langchain-openai langchain-core langchain-community langchain-google-community google-api-python-client
 ```
+
+2. Set the credentials and API base URL.
 
 ```bash
 export FI_API_KEY="your-api-key"
@@ -51,10 +87,7 @@ export GOOGLE_API_KEY="your-google-api-key"
 export GOOGLE_CSE_ID="your-google-cse-id"
 ```
 
-## Tutorial
-
-<Steps>
-<Step title="Import the agent and instrumentation packages">
+3. Import the packages in the Python session you'll use for the rest of the walkthrough.
 
 ```python
 import os
@@ -80,12 +113,13 @@ from fi_instrumentation.fi_types import (
 from traceai_langchain import LangChainInstrumentor
 ```
 
-You should see no import errors. If `traceai_langchain` fails to import, the package isn't installed: run `pip install traceai-langchain`.
+   You should see no import errors. The `traceai-langchain` distribution is imported as `traceai_langchain`.
 
-</Step>
-<Step title="Define the eval tags">
+## Trace one call before building the graph
 
-Each `EvalTag` scores one span kind against one metric. This agent has an `AGENT` span (the reasoning step) and a `TOOL` span (the Google Search call), so tag both.
+1. Define the [eval tags](/docs/sdk/tracing/eval-tags) for the agent and tool spans.
+
+   Each `EvalTag` scores one span kind against one metric. This agent has an `AGENT` span (the reasoning step) and a `TOOL` span (the Google Search call), so tag both.
 
 ```python
 eval_tags = [
@@ -130,12 +164,9 @@ eval_tags = [
 ]
 ```
 
-`mapping` points each eval's required inputs at span attributes; `raw.input` and `raw.output` are the span's recorded input and output. Browse the full list of [built-in evals](/docs/evaluation/builtin) for other metrics you can substitute in.
+   `mapping` points each eval's required inputs at span attributes; `raw.input` and `raw.output` are the span's recorded input and output. `EvalTag` validates its eval name, model, config and mapping keys in `__post_init__`, so a typo in any of them raises a `ValueError` here, not later when the trace is scored.
 
-You should see this list build with no exception. `EvalTag` validates its eval name, model, config, and mapping keys in `__post_init__`, so a typo in any of them raises a `ValueError` here, not later when the trace is scored.
-
-</Step>
-<Step title="Register the trace provider and instrument LangChain">
+2. Initialize instrumentation with the tagged provider.
 
 ```python
 # register() must run first: instrument() needs the tracer_provider it returns
@@ -149,22 +180,24 @@ trace_provider = register(
 LangChainInstrumentor().instrument(tracer_provider=trace_provider)
 ```
 
-`register()` wires the eval tags into an OpenTelemetry trace provider. `LangChainInstrumentor().instrument()` patches LangChain and LangGraph so every node call emits a span through that provider. You should see no output here: instrumentation is silent until something runs.
+   `register()` wires the eval tags into an OpenTelemetry trace provider. `LangChainInstrumentor().instrument()` patches LangChain and LangGraph so every node call emits a span through that provider. You should see no output here: instrumentation is silent until something runs.
 
-</Step>
-<Step title="Confirm a trace arrives before building the agent">
+3. Send a single test model call.
 
-Prove the pipeline end to end before adding any graph or tool complexity.
+   This proves the pipeline end to end before you add any graph or tool complexity.
 
 ```python
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 llm.invoke("Reply with the single word: ready")
 ```
 
-Open [app.futureagi.com](https://app.futureagi.com), go to the `LangGraph-Google-Search-App` project, and confirm one trace has arrived. If it has, the keys, `register()`, and `instrument()` are all wired correctly, and the rest of this tutorial only adds the graph and tools around this same call.
+4. Open `LangGraph-Google-Search-App` in the dashboard.
 
-</Step>
-<Step title="Build the search tool and the LLM">
+   Check that one trace arrived before adding the search tool. If it has, the keys, `register()` and `instrument()` are all wired correctly, and the rest of this tutorial only adds the graph and tools around this same call. The example registers an experiment project named `LangGraph-Google-Search-App`, version `v1`.
+
+## Give the agent a search path
+
+1. Bind the Google Search tool to the model.
 
 ```python
 search = GoogleSearchAPIWrapper()
@@ -177,10 +210,9 @@ google_tool = Tool(
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools([google_tool])
 ```
 
-`bind_tools` gives the model the option to call `google_search`, not the obligation. The router in the next step reads that decision off the model's response. `GoogleSearchAPIWrapper()` reads `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` from the environment and raises immediately if either is missing, so a bad key surfaces here rather than mid-graph.
+   `bind_tools` gives the model the option to call `google_search`, not the obligation. The router in the next step reads that decision off the model's response. `GoogleSearchAPIWrapper()` reads `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` from the environment and raises immediately if either is missing, so a bad key surfaces here rather than mid-graph.
 
-</Step>
-<Step title="Define the graph nodes and router">
+2. Define the graph state, nodes and router.
 
 ```python
 class AgentState(MessagesState):
@@ -215,10 +247,9 @@ def router(state: AgentState) -> str:
     return "final"
 ```
 
-The **agent node** decides whether to answer or call the tool. The **tool node** runs the Google Search and appends the result. `router` reads `tool_calls` off the model's last message to pick the next node. You should see all three functions and `AgentState` define with no output; nothing runs until the graph is compiled and invoked.
+   The agent node decides whether to answer or call the tool. The tool node runs the search and appends a `ToolMessage` so the agent can use the result. The router reads `tool_calls` on the latest model message to pick the next node. Nothing runs until the graph is compiled and invoked.
 
-</Step>
-<Step title="Assemble and run the graph">
+3. Run the graph with the three example queries.
 
 ```python
 graph = StateGraph(AgentState)
@@ -246,12 +277,17 @@ for i, query in enumerate(example_queries):
     output["messages"][-1].pretty_print()
 ```
 
-You should see three answers printed, each preceded by its query. Every node call in each run generated a span under the `LangGraph-Google-Search-App` project.
+   You should see three answers printed, each preceded by its query. Every node call in each run generated a span under the `LangGraph-Google-Search-App` project. Each independent conversation uses a different `thread_id` so the checkpointer doesn't reuse its predecessor's messages.
 
-</Step>
-<Step title="Reproduce a real failure, then fix it">
+4. Open the project and read one trace per query.
 
-The tool's description is what makes the model decide to search. Bind a deliberately vague one and rerun a query that a live search should answer:
+   Each of the three queries is a separate trace: an **agent** span shows the model's reasoning, a **tool** span shows the `google_search` call and its result, and a second **agent** span shows the model turning that result into an answer. Check the eval scores attached to each span: Completeness and Groundedness on the agent spans, Tool_Calling on the tool span, Hallucination on the last agent span.
+
+## Compare two descriptions on the same query
+
+The tool's description is what makes the model decide to search. Bind a deliberately vague one and rerun a query that a live search should answer.
+
+1. Run the card-fee query with the vague description on a fresh thread.
 
 ```python
 weak_tool = Tool(
@@ -269,9 +305,11 @@ output = app.invoke({"messages": [HumanMessage(content=failure_query)]}, config)
 output["messages"][-1].pretty_print()
 ```
 
-With the vague description, the model tends to answer from training data instead of calling the tool. Open this trace: there is a single **agent** span and no **tool** span, and Completeness and Groundedness on that span score low, because the answer isn't grounded in anything the trace actually retrieved.
+2. Open that trace in the project.
 
-Rebind the original, specific tool description and rerun the same query on a new thread:
+   With the vague description, the model tends to answer from training data instead of calling the tool. If the trace has a single agent span and no tool span, the agent didn't retrieve a search result. Expect Completeness and Groundedness on that span to score low, because the answer isn't grounded in anything the trace retrieved.
+
+3. Run the same query on another fresh thread using the original, more specific description.
 
 ```python
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools([google_tool])
@@ -281,19 +319,19 @@ output = app.invoke({"messages": [HumanMessage(content=failure_query)]}, config)
 output["messages"][-1].pretty_print()
 ```
 
-This time the trace shows **agent → tool → agent**: Tool_Calling on the tool span passes, and Completeness and Groundedness on the final agent span score noticeably higher than the first run, because the answer is now grounded in the search result. The tool's description, not just its presence, decides whether the model uses it.
+4. Inspect the new trace's span tree.
 
-</Step>
-<Step title="Read the traces and eval scores">
+   When the model searches, look for **agent → tool → agent**. Open the tool span to see the query and search result the final answer could draw on.
 
-Open [app.futureagi.com](https://app.futureagi.com) and go to the `LangGraph-Google-Search-App` project. Each of the three queries from Step 6 is a separate trace: an **agent** span shows the model's reasoning, a **tool** span shows the `google_search` call and its result, and a second **agent** span shows the model turning that result into an answer.
+5. Compare the scores on the two traces.
 
-Open a trace and check the eval scores attached to each span: Completeness and Groundedness on the agent spans, Tool_Calling on the tool span, Hallucination on the last agent span.
+   Check Tool_Calling on the tool span, and Completeness, Groundedness and Hallucination on the agent spans. When the second run searched, expect Tool_Calling to pass and Completeness and Groundedness on the final agent span to score higher than in the first run, because the answer is now grounded in the search result. Neither a tool call nor a higher score is guaranteed by a new description. If both traces took the same path, report that rather than assuming the change helped.
 
-</Step>
-</Steps>
+The tool's description, not just its presence, shapes whether the model uses it.
 
 ## Troubleshooting
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -302,13 +340,15 @@ Open a trace and check the eval scores attached to each span: Completeness and G
 | No spans appear in the dashboard | `register()` was called after `LangChainInstrumentor().instrument()`, or `FI_API_KEY`/`FI_SECRET_KEY` are unset | Call `register()` first and pass its `trace_provider` into `instrument()`; verify both keys are exported |
 | `google_tool.invoke()` raises a 403 | `GOOGLE_API_KEY` isn't enabled for the Custom Search API, or `GOOGLE_CSE_ID` is wrong | Enable the Custom Search API on the Google Cloud project tied to the key, and confirm the CSE ID matches the search engine you created |
 | Eval scores show as `null` on a span | The `mapping` keys don't match the span's actual attribute names for that span kind | Confirm `raw.input`/`raw.output` exist on the span kind you tagged |
-| Agent always answers without calling the tool | The tool's description doesn't signal when to use it, or the query is something the model already knows from training | Tighten the tool description (see Step 7), or ask about current pricing, live status, or a policy that changes often |
+| Agent always answers without calling the tool | The tool's description doesn't signal when to use it, or the query is something the model already knows from training | Tighten the tool description (see the tool-description comparison above), or ask about current pricing, live status, or a policy that changes often |
 | Same `thread_id` across runs returns stale conversation state | `MemorySaver` checkpoints by `thread_id`; reusing one carries over prior messages | Use a unique `thread_id` per independent conversation, as the example loop does with `multi-tool-agent-{i}` |
 
-Continue to [Observing a LangGraph agent and obtaining insights](/docs/cookbook/observe-langgraph-agent-and-obtain-insights) to group these traces by session and user and set up an Eval Task that scores them automatically.
+</div>
 
 ## Next
 
+- [Observe a LangGraph agent](/docs/cookbook/observe-langgraph-agent-and-obtain-insights): group traces by session and user, then set up an eval task on incoming traffic.
+- [Built-in evals](/docs/evaluation/builtin): find other metrics to attach to your spans.
 - [Check booking claims with Write with AI](/docs/cookbook/quickstart/conversation-eval): See a whole conversation pass or fail a booking rule.
 - [Send your first trace](/docs/get-started/send-your-first-trace): Connect a running application and inspect a real request.
 - [Eval types](/docs/evaluation/concepts/eval-types): Choose how to evaluate the result.

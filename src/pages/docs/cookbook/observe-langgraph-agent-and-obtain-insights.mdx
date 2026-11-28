@@ -1,7 +1,7 @@
 ---
-title: "Observing a LangGraph agent and obtaining insights"
+title: "Find the refund policy a LangGraph agent ignored"
 slug: "observe-langgraph-agent-and-obtain-insights"
-description: "Instrument a LangGraph support agent, group its traces by session and user, score each turn with an Eval Task, and find which layer fails and for whom."
+description: "Trace a LangGraph support agent, compare its answer with the retrieved refund policy, and use per-turn evals to distinguish retrieval and prompt failures."
 date: "2026-07-06"
 author: "futureagi-engineering"
 products:
@@ -22,14 +22,16 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Build a multi-turn LangGraph support agent and instrument it with [traceAI](/docs/observe/concepts/traceai). Every conversation lands in [Observe](/docs/observe), grouped by [session](/docs/observe/concepts/sessions) and [user](/docs/observe/concepts/users). Then read three things back: the traces of what the agent did, an [Eval Task](/docs/observe/guides/setup-evals) that scores every turn, and filters that turn those scores into insight about which layer failed, on which turns, for which customer.
+Trace a [LangGraph support agent](/docs/integrations/traceai/langgraph) and use the retrieved policy, the final answer and their scores to decide which layer to fix.
 </TLDR>
 
-| Time | Difficulty |
-|------|------------|
-| 25-35 min | Intermediate |
+## The problem
 
-The loop you'll run:
+A customer asks whether a final-sale order can be refunded. The agent retrieves a policy that says no, but its system prompt tells it to offer a goodwill refund. An overall score cannot tell you whether to fix the search tool or the instruction.
+
+## What you'll build
+
+A [traceAI](/docs/observe/concepts/traceai) project in [Observe](/docs/observe) that ties each support answer to the policy it retrieved.
 
 <Mermaid chart={`%%{init: {'themeVariables': {'fontSize': '20px'}}}%%
 flowchart TD
@@ -40,18 +42,29 @@ flowchart TD
   C --> D["Turn scores into insight"]
   D --> E["Alert &amp; save a view"]`} />
 
-<Prerequisites>
-- FutureAGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+You'll:
+
+1. Group five support turns by [session](/docs/observe/concepts/sessions) and [user](/docs/observe/concepts/users).
+2. Inspect the policy and reply on the final-sale turn.
+3. Run an [eval task](/docs/observe/guides/setup-evals) to distinguish retrieval quality, grounding and completeness.
+4. Save a view or alert for low-adherence answers.
+
+<Prerequisites title="Before you start">
+- Future AGI account: [app.futureagi.com](https://app.futureagi.com)
+- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings/api-keys))
 - An `OPENAI_API_KEY`
 - Python 3.11
 </Prerequisites>
 
-## Install
+## Install the dependencies
+
+1. Install these packages in your Python 3.11 environment.
 
 ```bash
 pip install fi-instrumentation-otel==1.0.0 traceAI-langchain==0.1.12 langgraph==1.0.1 langchain-openai==0.3.35 langchain-core==0.3.86
 ```
+
+2. Set the keys in the same shell.
 
 ```bash
 export FI_API_KEY="your-api-key"
@@ -59,13 +72,9 @@ export FI_SECRET_KEY="your-secret-key"
 export OPENAI_API_KEY="your-openai-api-key"
 ```
 
-## Tutorial
+## Confirm tracing works
 
-<Steps>
-
-<Step title="Confirm tracing works">
-
-Prove your keys and ingestion work before writing any agent code. Register against an **Observe** project, emit one span, and flush.
+Run the preflight in the Python process you will use for the rest of the recipe. It registers `support-agent`, sends a [span](/docs/observe/concepts/spans) and flushes it.
 
 ```python
 from fi_instrumentation import register, FITracer
@@ -87,11 +96,9 @@ trace_provider.force_flush()
 print("sent preflight span")
 ```
 
-**You should see** a `preflight` trace in **Observe → Traces → `support-agent`** within a few seconds. If it never lands, fix that here first (see [Troubleshooting](#troubleshooting)).
+**You should see** a `preflight` trace in **Observe > Traces** under `support-agent` within a few seconds. If it never lands, fix that here first (see [Troubleshooting](#troubleshooting)).
 
-</Step>
-
-<Step title="Build the support agent">
+## Build the support agent
 
 The agent answers from a small inline knowledge base, so the recipe runs with no external data. The `search_help_center` tool stashes what it retrieved so you can score grounding later.
 
@@ -142,9 +149,7 @@ agent = create_react_agent(llm, tools=[search_help_center, lookup_order], prompt
 That prompt is flawed on purpose, in a way production prompts really do break. Someone pasted a policy change into the system prompt and it now contradicts the help-center article the agent retrieves. On the final-sale turn the model follows the instruction and promises a refund the retrieved policy forbids, so retrieval looks healthy while the answer is ungrounded. Finding that split is what this cookbook is about.
 </Note>
 
-</Step>
-
-<Step title="Group each turn by session and user">
+## Group each turn by session and user
 
 Turn on auto-instrumentation, then run the conversations. The same `LangChainInstrumentor` captures LangGraph. Wrap each turn in `using_session` (the conversation) and `using_user` (the customer), then set two groups of attributes on the turn span: the standard ones that populate the dashboard's own columns, and the `raw.*` ones an Eval Task will map to later.
 
@@ -200,17 +205,23 @@ for sid, uid, questions in CONVERSATIONS:
 trace_provider.force_flush()  # flush before the script exits
 ```
 
-**You should see** two sessions in **Observe → Traces → `support-agent`**: `chat_1001` with three traces for `cust_42`, and `chat_1002` with two for `cust_77`.
+**You should see** two sessions in **Observe > Traces** under `support-agent`: `chat_1001` with three traces for `cust_42`, and `chat_1002` with two for `cust_77`.
 
 <Warning>
 No trace? It is almost always order or flush. `register()` and `.instrument()` must run **before** the agent call, and `force_flush()` before the process exits.
 </Warning>
 
-</Step>
+## Read the traces
 
-<Step title="Read the traces">
+1. Open `support-agent` in the [trace explorer](/docs/observe/guides/explore-dashboard).
 
-Before any eval runs, the traces already answer questions you'd otherwise guess at. Open the `support-agent` project: every row is one turn, with its status and latency. The trace table's Model, Cost, and Tokens columns read the root span only, and `support_turn` never sets those attributes, so they stay blank on these rows; the LLM calls that do carry model and cost show up once you open the span tree. Click the final-sale turn to see the ReAct loop as a span tree: the LLM call that decides to search, the `search_help_center` call with the exact policy it returned, and the LLM call that writes the answer.
+   Each turn has a status and latency. Model, Cost and Tokens read the root span; those columns are blank because `support_turn` doesn't set them.
+
+2. Open the final-sale turn.
+3. Inspect the `search_help_center` span to read the retrieved refund policy.
+4. Compare it with the reply from the final model call.
+
+   The span tree shows the model call that chose to search, the tool result, and the model call that wrote the answer; model and cost belong to the child model calls.
 
 Three things are readable before any score exists:
 
@@ -218,49 +229,56 @@ Three things are readable before any score exists:
 - **Latency**: the retriever and tool spans are milliseconds; the LLM spans are the wait
 - **Grounding**: the tool span carries the policy text, so you can eyeball whether the answer used it
 
-On the final-sale turn, the retrieved policy says final-sale items are not refundable and the answer promises a refund anyway, following the prompt's goodwill line over the policy it had just fetched. An eval can now confirm at scale what this one trace suggests.
+On the final-sale turn, the retrieved policy says final-sale items are not refundable and the answer promises a refund anyway, following the prompt's goodwill line over the policy it had just fetched. Execution status alone does not catch this mistake.
 
-</Step>
+![Saved support-agent view showing the final-sale question, the beginning of a refund promise and OK status on that row.](/images/docs/observe/views-saved-tab.png)
 
-<Step title="Score it with an Eval Task">
+*The final-sale `support_turn` took 2.6 seconds and finished with status `OK`. That is evidence the request completed, not that the refund promise followed policy.*
+
+## Score it with an Eval Task
 
 Configure evals **in the platform** as an Eval Task, not from the SDK, so they run on your traces and the whole team sees the same scores. The turn span already carries `raw.input`, `raw.output`, and `raw.context` to map to.
 
-Create an **Eval Task** on the `support-agent` project and pick three evals, each chosen so a low score points at one component:
+1. Create an **Eval Task** on the `support-agent` project.
+2. Add the three evals below.
+3. Map each eval's inputs to the attributes on `support_turn`.
 
-- **Context Relevance**: did retrieval fetch the right policy? · `input` → `raw.input`, `context` → `raw.context`
-- **Context Adherence**: did the answer stay grounded in it? · `output` → `raw.output`, `context` → `raw.context`
-- **Completeness**: did the answer fully address the question? · `input` → `raw.input`, `output` → `raw.output`
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
-Run it as **Historical** over the five turns.
+| Eval | Question | Mapping |
+|---|---|---|
+| [Context Relevance](/docs/evaluation/builtin/context-relevance) | Did retrieval return the right policy? | `input` to `raw.input`, `context` to `raw.context` |
+| [Context Adherence](/docs/evaluation/builtin/context-adherence) | Did the reply follow that policy? | `output` to `raw.output`, `context` to `raw.context` |
+| [Completeness](/docs/evaluation/builtin/completeness) | Did the answer address the whole question? | `input` to `raw.input`, `output` to `raw.output` |
 
-<Note>
-The click-by-click (creating the task, Historical vs Continuous, sampling, and mapping inputs to span attributes) lives in the [Setup evals](/docs/observe/guides/setup-evals) guide.
-</Note>
+</div>
 
-**You should see** three scores per trace (illustrative shape, your numbers will differ):
+4. Run the task as **Historical** over the five turns.
 
-| Turn | Context Relevance | Context Adherence | Completeness |
-|---|---|---|---|
-| "How long do refunds take?" | 0.91 | 0.88 | 0.86 |
-| "Final sale, still refundable?" | 0.87 | **0.41** | 0.55 |
-| "Look up order A-3391" | 0.93 | 0.90 | 0.84 |
-| "What shipping options do you have?" | 0.90 | 0.85 | 0.83 |
-| "Can you change my password for me?" | 0.88 | 0.82 | 0.80 |
+   You should see three scores per trace. Compare the final-sale turn with the ordinary refund, order lookup, shipping and password questions; use your run's scores, not a fixed expected value.
 
-</Step>
+The click-by-click (creating the task, Historical vs Continuous, sampling, and mapping inputs to span attributes) lives in the Setup evals guide linked above.
 
-<Step title="Turn the scores into insight">
+## Find the turn that ignored the policy
 
-Filter the trace explorer to the low-scoring slice:
+1. Filter the trace explorer to the low-scoring slice with this query:
 
 ```text
 scores.context_adherence < 0.8 AND fi.span.kind = LLM
 ```
 
-The final-sale turn surfaces, and its two scores split the layers: retrieval is fine (Context Relevance 0.87), grounding is not (Context Adherence 0.41). To replay the whole conversation around it, scope with `user.id = 'cust_42'` and open the session.
+   The final-sale turn should surface.
 
-Each eval's failure indicts one layer:
+2. Read its Context Relevance and Context Adherence scores alongside the retrieved policy and the actual reply.
+
+   If relevance is healthy and adherence is low, retrieval is fine and grounding is not.
+
+3. Filter by `user.id = 'cust_42'` to see the customer's other turns.
+4. Open `chat_1001` to replay the whole conversation around it.
+
+Each eval's failure points to one layer:
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Eval signal | Insight | Where a fix lives |
 |---|---|---|
@@ -268,17 +286,17 @@ Each eval's failure indicts one layer:
 | Relevance ok, **Adherence low** | model ignores good context | the prompt |
 | Completeness low | partial answer | prompt, or retrieve more |
 
-**What you now know**, from one run:
+</div>
+
+When the scores split that way, one run tells you three things:
 
 - **The prompt is the broken layer, not retrieval**: the right policy was retrieved and ignored
-- **It fails on policy exceptions, not routine turns**: the plain refund question scored fine; the final-sale one didn't
-- **It's one turn, not an outage**: every other turn for `cust_42` is healthy
+- **It fails on policy exceptions, not routine turns**: compare the plain refund question with the final-sale one
+- **It's one turn, not an outage**: check that every other turn for `cust_42` is healthy
 
 That's a ticket your team can act on, not "the bot sometimes gives wrong answers".
 
-</Step>
-
-<Step title="Hold the insight: alert and save a view">
+## Monitor new turns
 
 Scores drift as prompts, models, and traffic change. Turn this check into standing monitors so the next regression pages you, not a customer:
 
@@ -286,11 +304,9 @@ Scores drift as prompts, models, and traffic change. Turn this check into standi
 - **Saved view**: save the `scores.context_adherence < 0.8` filter as an "Ungrounded answers" [view](/docs/observe/guides/explore-dashboard/views), so tomorrow's check is one click
 - **Regression set**: the low-scoring turns are your best future test cases; harvest them so any fix has to clear them
 
-</Step>
-
-</Steps>
-
 ## Troubleshooting
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -303,9 +319,10 @@ Scores drift as prompts, models, and traffic change. Turn this check into standi
 | Alert never fires | Wrong metric or project type | Evaluation-metric alert on `context_adherence`; monitors work only on `observe` projects |
 | Context Relevance is the low score, not Adherence | The weak spot is retrieval, not the prompt | Same method, different layer: chunking, `k`, and filters |
 
-## Where to go next
+</div>
 
-You know which layer is broken and why: the prompt ignores good context on policy-exception turns. To act on that and fix the prompt systematically, continue with [Improve a prompt automatically](/docs/cookbook/quickstart/prompt-optimization).
+## Next
 
-- [Explore dashboard](/docs/observe/guides/explore-dashboard): Find your request and inspect what each span recorded.
+- [Improve a prompt automatically](/docs/cookbook/quickstart/prompt-optimization): test a prompt change against turns where the model ignored the policy.
+- [Group conversations by customer](/docs/observe/features/session): inspect the history around an exception.
 - [What is a trace?](/docs/observe/concepts/traces): See how the operations for one request fit together.

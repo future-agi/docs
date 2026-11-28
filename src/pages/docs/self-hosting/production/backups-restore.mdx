@@ -1,15 +1,27 @@
 ---
-title: "Backups & restore"
-description: "Back up and restore a self-hosted Future AGI instance: Postgres, ClickHouse, object storage and the secrets in .env, for Standalone and Distributed."
+title: "Back up and restore a Compose instance"
+description: "Back up Postgres, ClickHouse, object storage and the secrets in .env on a Standalone or Distributed install, then restore them and check the data."
+page-type: "feature-guide"
 ---
 
-A self-hosted instance keeps its state in three stores and one file: Postgres for application data, ClickHouse for the observability records (spans and traces), object storage for uploads, exports and media, and `.env` for the secrets. Back up all four. Redis holds caches, locks and live updates, so there is nothing in it to back up.
+On a [Standalone or Distributed install](/docs/self-hosting#choose-a-setup), restoring Postgres alone won't bring back your [spans](/docs/observe/concepts/spans), [traces](/docs/observe/concepts/traces), or uploads. A self-hosted instance keeps its state in three stores and one file: Postgres for application data, ClickHouse for the observability records (spans and traces), object storage for uploads, exports and media, and [`.env`](/docs/self-hosting/configuration/environment) for the secrets. Back up all four. Redis holds caches, locks and live updates, so there is nothing in it to back up.
+
+<Prerequisites title="Before you start">
+- Shell access to the Docker host, and the Compose project name. It is `futureagi` unless `COMPOSE_PROJECT_NAME` in `.env` says otherwise.
+- If you opted in to automatic updates, complete the [safe handoff to manual operations](/docs/self-hosting/automatic-updates#safe-handoff-to-manual-operations) before you stop or remove containers.
+</Prerequisites>
 
 Where object storage lives depends on the setup. In Standalone it runs inside the `app` container and keeps its files in the `app-data` volume; in Distributed it is the `minio` container. On Kubernetes, see [Back up and restore](/docs/self-hosting/helm#back-up-and-restore) for the Helm chart.
 
 If you've already moved to [managed data stores](/docs/self-hosting/production/checklist#move-to-managed-data-stores), your provider's backup tooling replaces the steps below for those stores.
 
 With the production overlay, add its `--env-file` and `-f` flags to every `docker compose` command on this page, as in [Start Distributed with the production overlay](/docs/self-hosting/production/checklist#start-distributed-with-the-production-overlay). A plain `docker compose stop` there stops only the services of the Standalone file.
+
+## The backup set
+
+A backup set is the Postgres dump, the ClickHouse backup, the object storage archive or mirror, and the secrets file. Take all four and keep them together.
+
+The backup commands below date their files and paths with `$(date +%F)`. The restore examples use `2026-04-22` only as an example: substitute your own backup date and paths throughout.
 
 ## The named volumes
 
@@ -42,7 +54,7 @@ The Compose project name is `futureagi` unless `COMPOSE_PROJECT_NAME` in `.env` 
 </Tabs>
 
 <Note>
-The collector's dead-letter file is not a cache. It holds spans that failed to reach ClickHouse, usually while ClickHouse was briefly down, kept so they can be replayed once it is back. Deleting it drops that telemetry for good, so don't prune it with the rebuildable volumes.
+The collector's dead-letter file is not a cache. It holds spans that failed to reach ClickHouse, usually while ClickHouse was briefly down, kept so they can be replayed once it is back. Deleting it drops that telemetry for good, so don't prune it with the rebuildable volumes. Use [collector health monitoring](/docs/self-hosting/production/monitoring#collector-health) to watch for failed inserts.
 </Note>
 
 An upgraded install made before Standalone became the default may also still have `futureagi_rabbitmq-data` and, if it once ran the Kafka catalog sequencer, `futureagi_property-catalog-sequencer-data`. Nothing mounts them any more: see [Upgrading older installs](/docs/self-hosting/production/upgrades-rollback#upgrading-older-installs) for when to delete them.
@@ -95,7 +107,7 @@ The volume name starts with your Compose project name, `futureagi` unless `COMPO
 </Tab>
 <Tab title="Distributed">
 
-Mirror the MinIO buckets to any S3 endpoint with the MinIO client. MinIO's API listens on `127.0.0.1:9005` on the Docker host; the user is `MINIO_ROOT_USER` (`futureagi` by default) and the password `MINIO_ROOT_PASSWORD` from `.env`:
+Mirror the MinIO buckets to any S3 endpoint with the MinIO client. MinIO's API listens on `127.0.0.1:9005` on the Docker host; the user is `MINIO_ROOT_USER` (`futureagi` by default) and the password is `MINIO_ROOT_PASSWORD` from `.env`. The names in angle brackets below are placeholders for your own credentials:
 
 ```bash
 mc alias set local http://localhost:9005 futureagi <MINIO_ROOT_PASSWORD>
@@ -114,6 +126,12 @@ Back up `.env` (with the production overlay, `deploy/.env.production` and the ro
 ## Restore
 
 Restore Postgres, then ClickHouse from a backup taken at or after the same point, then object storage, with nothing else running. Restore the secrets file first if you lost it: the data needs the credentials it was created with.
+
+The volume names in the commands start with your Compose project name. On Distributed, the MinIO mirror does not cover the collector, Kafka or PeerDB catalog volumes in [the named volumes](#the-named-volumes) table, so keep those volumes in place.
+
+<Warning>
+These steps replace data. `pg_restore --clean` drops existing objects, removing the ClickHouse volume deletes its contents, and the Standalone archive restore deletes existing files in the destination volume. Run them only when you have the backup set you are restoring from.
+</Warning>
 
 <Steps>
   <Step title="Stop everything except the data stores">
@@ -162,15 +180,27 @@ Restore Postgres, then ClickHouse from a backup taken at or after the same point
     ```
   </Step>
   <Step title="Start the stack">
+    With the production overlay, run step 5 of the first-install initialization in [`deploy/README.md`](https://github.com/future-agi/future-agi/blob/main/deploy/README.md#performing-that-initialization-first-install) **before** starting the stack. It re-creates the observed-attribute catalog's two ClickHouse users: the overlay's startup jobs only check them, whereas Standalone and Distributed without the overlay re-create them on each start.
+
     ```bash
     docker compose up -d
     ```
 
-    On Distributed, then check the PeerDB mirrors as [PeerDB replication](/docs/self-hosting/production/monitoring#peerdb-replication) describes. With the production overlay, the start-up jobs only check, so before this command run step 5 of the first-install initialization in [`deploy/README.md`](https://github.com/future-agi/future-agi/blob/main/deploy/README.md#performing-that-initialization-first-install) again: it re-creates the observed-attribute catalog's two ClickHouse users, which Standalone and Distributed without the overlay re-create on every start.
+    On Distributed, check the [PeerDB mirrors](/docs/self-hosting/production/monitoring#peerdb-replication) after startup.
   </Step>
 </Steps>
 
-## Dive deeper
+## Check the restored data
+
+Healthy containers don't show that the data came back. Check one thing from each store:
+
+1. Sign in. Application data comes from Postgres.
+2. Open a trace that existed when you took the backup. Its spans come from ClickHouse.
+3. Download a file that was uploaded before you took the backup. It comes from object storage.
+
+If a trace is missing, check the ClickHouse backup you restored. If a file is missing, check the archive or MinIO mirror you restored from.
+
+## Next
 
 <CardGroup cols={3}>
   <Card title="Monitoring" icon="gauge" href="/docs/self-hosting/production/monitoring">
@@ -179,7 +209,7 @@ Restore Postgres, then ClickHouse from a backup taken at or after the same point
   <Card title="Upgrades & rollback" icon="arrows-rotate" href="/docs/self-hosting/production/upgrades-rollback">
     Take a backup before every upgrade, and restore it to roll back across a migration
   </Card>
-  <Card title="Helm (Kubernetes)" icon="server" href="/docs/self-hosting/helm#back-up-and-restore">
-    Back up and restore an install made with the Helm chart
+  <Card title="Production checklist" icon="server" href="/docs/self-hosting/production/checklist">
+    Move to managed data stores, where your provider's backup tooling takes over
   </Card>
 </CardGroup>

@@ -1,9 +1,10 @@
 ---
-title: "System configuration"
-description: "Route more LLM providers through the gateway, reach local model servers, and tune PeerDB replication and the Temporal workers of a self-hosted install."
+title: "Configure self-hosted providers, replication, and workers"
+description: "Route more LLM providers through a self-hosted gateway, check which provider served a call, and tune PeerDB replication and Temporal workers."
+page-type: "feature-guide"
 ---
 
-## In this page
+Route more LLM providers through the gateway of a self-hosted install, check which provider served a call, and tune PeerDB replication and the Temporal workers. Use the section for your setup: a setting from another setup may not apply to yours.
 
 Three parts of the stack take more than a key or two in `.env`: the LLM gateway, which routes the platform's model calls; PeerDB, which copies Postgres changes into ClickHouse on Distributed; and the Temporal workers that run background jobs. Where each one runs, and what you can change, depends on the setup. The keys named here are set as described in [Environment variables](/docs/self-hosting/configuration/environment).
 
@@ -11,15 +12,24 @@ Three parts of the stack take more than a key or two in `.env`: the LLM gateway,
 A provider key in `.env` and `docker compose up -d` is enough to start. Copy the gateway's example config only to route more providers through it. A model server that a workspace adds in the UI on a private address needs `AGENTCC_ALLOW_PRIVATE_PROVIDER_URLS=true`. PeerDB runs on Distributed only and sets itself up on first boot. Standalone runs one Temporal worker inside the API; Distributed adds a worker per queue with the `workers` profile.
 </TLDR>
 
+<Prerequisites title="Before you start">
+- Know whether you run Standalone, Distributed, or Helm. The two Compose setups read `.env`; Helm uses chart values.
+- For the provider check, a provider account, a model it serves, and a gateway key that can use that provider.
+</Prerequisites>
+
 ## LLM gateway
 
 The gateway is a Go proxy that routes the model calls the platform makes. It also serves an OpenAI-compatible endpoint that your own apps can call, on `http://localhost:8090` (`AGENTCC_GATEWAY_PORT`) in both Compose setups.
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Setup | Where the gateway runs |
 |---|---|
 | Standalone | A process inside the `app` container |
 | Distributed | The `agentcc-gateway` container |
 | Helm | The `<fullname>-agentcc-gateway` Deployment: `futureagi-agentcc-gateway` for a release named `futureagi` |
+
+</div>
 
 Set a provider key in `.env` (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` or the AWS pair) and run `docker compose up -d`. One provider is enough to start, and workspaces can also add their own keys in the UI.
 
@@ -33,7 +43,7 @@ cp agentcc-gateway/config.example.yaml agentcc-gateway/config.yaml
 </Step>
 
 <Step title="Enable providers">
-Uncomment the providers you want (Anthropic, Gemini, Bedrock, Vertex and others) in `agentcc-gateway/config.yaml`. Every provider entry needs a `base_url` and an `api_format`, or the gateway refuses to start. Reference keys as `${VAR}` so the real key never has to live in the file. See the [provider examples](/docs/self-hosting/configuration/system#provider-examples).
+Uncomment the providers you want (Anthropic, Gemini, Bedrock, Vertex and others) in `agentcc-gateway/config.yaml`. Every provider entry needs a `base_url` and an `api_format`, or the gateway refuses to start. Reference keys as `${VAR}` so the real key never has to live in the file. See the [provider examples](#provider-examples).
 </Step>
 
 <Step title="Point the stack at your copy">
@@ -61,6 +71,16 @@ curl -sf http://localhost:8090/healthz
 `docker compose up -d` recreates `app` in Standalone. In Distributed it recreates `agentcc-gateway` and every other service that reads `.env`, the backend and workers included. Later edits to `config.yaml` alone need a restart: `docker compose restart app` (Distributed: `docker compose restart agentcc-gateway`).
 </Step>
 </Steps>
+
+**Verify the route, not just the process.** A successful `/healthz` check means the gateway is up. To check the configuration that will serve your traffic:
+
+1. Send one [chat request](/docs/command-center/api/chat) to the local gateway for a model you configured.
+
+   Use a gateway key that can use that provider: an internal key for the providers in `config.yaml`, or an organization key for that organization's providers. The provider's own secret stays in the gateway's configuration, not in the request.
+
+2. Inspect the [response headers](/docs/command-center/api/headers).
+
+   You should see the serving provider in `x-agentcc-provider` and the actual model in `x-agentcc-model-used`. If you get `model_not_found` instead of an answer, check the requested ID against the provider's `models` list.
 
 <Warning>
 Treat `config.yaml` as a secret even when it only holds `${VAR}` references, and never commit it. Keep it out of git by excluding it in your checkout: `echo "agentcc-gateway/config.yaml" >> .git/info/exclude`. On Distributed the gateway runs as uid 65532, so the file must be readable by that user (mode `0644`).
@@ -166,6 +186,16 @@ Compose reads the override only when `COMPOSE_FILE` in `.env` lists it: `COMPOSE
 
 PeerDB's init job stores `CH_PASSWORD` in its `ch_dest` peer when it creates it. A later change to `CH_PASSWORD` stops the sync until that peer carries the new password: see [Secrets the installer generates](/docs/self-hosting/configuration/environment#secrets-the-installer-generates).
 
+### Verify the mirrors on Distributed
+
+1. Inspect the two setup jobs with `docker compose ps -a`.
+
+   You should see `peerdb-init` and `clickhouse-cdc-bootstrap` exit with code 0.
+
+2. With the PeerDB UI enabled, inspect the state of the mirrors.
+
+   Look for `running`. If a mirror has stopped or lag is growing, follow [analytics replication troubleshooting](/docs/self-hosting/troubleshooting#analytics-data-is-stale) before changing worker settings.
+
 ## Temporal workers
 
 Temporal runs the platform's background work: evaluations, optimizations, scheduled jobs and, on Standalone and Helm, the Postgres to ClickHouse sync.
@@ -174,10 +204,14 @@ Temporal runs the platform's background work: evaluations, optimizations, schedu
 
 Standalone runs a Temporal dev server on SQLite inside the `app` container, without its web UI, and the worker runs inside the API process. It polls every queue except the simulation runner's, with these slots per queue:
 
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
+
 | Key | Default | What it sets |
 |---|---|---|
 | `FI_APP_TEMPORAL_MAX_CONCURRENT_ACTIVITIES` | `8` | Activity slots. Each running activity can hold a Postgres connection, so raise it only on a larger host. |
 | `FI_APP_TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS` | `8` | Workflow-task slots |
+
+</div>
 
 Standalone ignores `TEMPORAL_MAX_CONCURRENT_ACTIVITIES` and `TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS`. Its Temporal server keeps 32 schedules busy, six of which fire every 10 seconds, and the API shares its process with the worker, so a host short of CPU slows both. For more concurrent users or a steady eval load, use Distributed: see [Choose a setup](/docs/self-hosting#choose-a-setup).
 
@@ -188,12 +222,14 @@ Two workers always run:
 - `worker` polls every queue except the exact-aggregation queue and those in `TEMPORAL_EXCLUDED_QUEUES` (default `simulation_runner`), while `TEMPORAL_ALL_QUEUES=true`, the default. Its slots are `TEMPORAL_MAX_CONCURRENT_ACTIVITIES` and `TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS`, 50 each.
 - `worker-exact-aggregation` serves the exact-analytics queue with a single slot.
 
-The `workers` (or `all`) [profile](/docs/self-hosting/configuration/profiles) adds one worker per queue. Set `TEMPORAL_ALL_QUEUES=false` with it, so that `worker` polls only the `default` queue instead of every queue alongside them. Never set it without `workers` or `all`: the other queues would then have no worker. Add both lines to `.env`, then run `docker compose up -d`:
+The `workers` (or `all`) profile adds one worker per queue. Set `TEMPORAL_ALL_QUEUES=false` with it, so that `worker` polls only the `default` queue instead of every queue alongside them. Never set it without `workers` or `all`: the other queues would then have no worker. Add both lines to `.env`, then run `docker compose up -d`:
 
 ```bash
 COMPOSE_PROFILES=workers
 TEMPORAL_ALL_QUEUES=false
 ```
+
+<div class="sdk-ref-table max-sm:[&_td]:px-1.5! max-sm:[&_th]:px-1.5!">
 
 | Service | Queue | Slot keys (activities, workflow tasks) | Defaults |
 |---|---|---|---|
@@ -205,22 +241,30 @@ TEMPORAL_ALL_QUEUES=false
 | `worker-agent-compass` | `agent_compass` | `TEMPORAL_COMPASS_MAX_ACTIVITIES`, `TEMPORAL_COMPASS_MAX_WORKFLOWS` | 50, 50 |
 | `worker-simulation-runner` | `simulation_runner` | `ALK_RUNNER_MAX_CONCURRENCY`, `TEMPORAL_SIMRUNNER_MAX_WORKFLOWS` | 4, 8 |
 
+</div>
+
 `worker-simulation-runner` runs its own image, `futureagi/future-agi-simulation-runner`, for hosted voice simulations, and `workers` and `all` always start it. That image is `linux/amd64` only: on an arm64 host, such as Apple Silicon or AWS Graviton, Docker runs it under emulation, which on Linux needs `qemu-user-static`. See [Per-queue workers](/docs/self-hosting/configuration/profiles#per-queue-workers).
 
 The `observability` or `all` profile adds the Temporal UI on [http://localhost:8085](http://localhost:8085) (`TEMPORAL_UI_PORT`) and the `temporal-admin-tools` container. The Temporal UI has no sign-in: see the warning under [PeerDB replication](/docs/self-hosting/configuration/system#peerdb-replication).
 
 ### Helm
 
-`worker.allQueues` is the all-queues worker, with `maxConcurrentActivities` and `maxConcurrentWorkflowTasks` of 50 each. Each `worker.queues` entry gives a busy queue its own Deployment, which the all-queues worker then stops polling. See [Configure](/docs/self-hosting/helm#configure).
+`worker.allQueues` is the all-queues worker, with `maxConcurrentActivities` and `maxConcurrentWorkflowTasks` of 50 each. Each `worker.queues` entry gives a busy queue its own Deployment, which the all-queues worker then stops polling. The Helm guide's Configure section, linked under LLM gateway above, lists the chart values.
 
-## Dive deeper
+### Check the workers you changed
+
+- **Standalone:** check the `app` log for startup problems. There is no separate worker container; changing the Distributed slot keys will not affect this worker.
+- **Distributed:** use `docker compose ps` to find the workers for the selected profile, then inspect their logs. A worker's container health alone does not prove it is processing jobs; see [container monitoring](/docs/self-hosting/production/monitoring#container-health).
+- **Helm:** compare the worker Deployments with `worker.allQueues` and your `worker.queues` entries. Each queue you split out should have its own Deployment.
+
+## Next
 
 <CardGroup cols={3}>
-  <Card title="Environment variables" icon="list-check" href="/docs/self-hosting/configuration/environment">
-    Provider keys, secrets and the other keys you set in `.env`
+  <Card title="Gateway error codes" icon="list-check" href="/docs/command-center/guides/errors">
+    Identify whether the model, key, or provider refused a request
   </Card>
-  <Card title="Profiles" icon="layer-group" href="/docs/self-hosting/configuration/profiles">
-    The optional services each setup can add, including the per-queue workers
+  <Card title="Deployment monitoring" icon="layer-group" href="/docs/self-hosting/production/monitoring">
+    Check gateway health and replication after applying settings
   </Card>
   <Card title="First-run setup" icon="rocket" href="/docs/self-hosting/configuration/launch-mode">
     The checks a fresh install runs before it lets you in
