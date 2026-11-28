@@ -125,7 +125,7 @@ test('AG2 guide uses released native-middleware setup without a public test diar
   assert.equal(entry?.category, 'frameworks');
   assert.equal(entry?.method, 'OTel + traceAI');
   for (const setting of [
-    '"traceAI-ag2==0.1.0"', '"ag2[openai]==1.1.2"', '"fi-instrumentation-otel==1.2.3"',
+    '"traceAI-ag2==0.1.0"', '"ag2[gemini]==1.3.4"', '"fi-instrumentation-otel==1.5.1"',
     'from traceai_ag2 import setup', 'setup(agent, tracer_provider=trace_provider)',
     'project_type=ProjectType.OBSERVE', 'with using_session("weather-example"):',
     'python ag2_example.py',

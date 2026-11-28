@@ -1,30 +1,33 @@
 ---
 title: "Trace Google GenAI with Future AGI"
-description: "Integrate Google GenAI with Future AGI observability. Set up traceAI-google-genai to capture model calls and monitor performance automatically."
+description: "Trace Gemini API calls made with the Google GenAI SDK in Future AGI. Set up traceAI-google-genai to capture model calls, streaming, async requests and token usage."
 ---
 
-Trace Google GenAI model calls in Future AGI.
+Trace Gemini API calls made with the Google Gen AI SDK (`google-genai`) in Future AGI. This guide uses a Gemini API key. For Gemini on Vertex AI with Google Cloud credentials, follow the [Vertex AI guide](/docs/integrations/traceai/vertexai), which uses the same instrumentor.
 
 ## 1. Install
 
-Use Python 3.10–3.13 and install the instrumentation and Google Gen AI SDK.
+Use Python 3.11–3.13. This guide uses `google-genai` 3.6.1, which requires Python 3.11 or newer. The [Gemini Live integration](/docs/integrations/traceai/google_genai_live) requires `google-genai` below 3.0, so install it in a separate environment.
 
 ```bash
-pip install traceAI-google-genai google-genai
+pip install "traceAI-google-genai==0.1.5" "google-genai==3.6.1" "fi-instrumentation-otel==1.5.1"
 ```
 
 ---
 
 ## 2. Configure credentials and content capture
 
-Set credentials in the shell that runs your application:
+Get your Future AGI keys from [API keys](/docs/admin-settings/api-keys) and a [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key). Set them in the shell that runs your application:
 
 ```bash
 export FI_API_KEY="your-futureagi-api-key"
 export FI_SECRET_KEY="your-futureagi-secret-key"
+export GEMINI_API_KEY="your-gemini-api-key"
 ```
 
-The instrumentor captures request and response data by default, including message content and available model configuration. Before initializing tracing, set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` to redact input/output values and messages. Model configuration and tool-schema attributes need separate review; these switches are not a blanket filter for custom attributes. See [mask span attributes](/docs/sdk/tracing/mask-span-attributes) for the field-specific controls.
+`genai.Client()` reads the key from the environment. If `GOOGLE_API_KEY` is also set, the SDK uses `GOOGLE_API_KEY` instead, so set only one.
+
+The instrumentor captures prompts, responses and request settings by default. To redact them, set `FI_HIDE_INPUTS=true` and `FI_HIDE_OUTPUTS=true` **before initializing tracing**. `FI_HIDE_INPUTS` also redacts the request settings (`gen_ai.request.parameters`, including any system instruction), and either switch removes error messages. Model name, token counts and error types stay visible. These switches cover known content fields, not arbitrary custom attributes; see [mask span attributes](/docs/sdk/tracing/mask-span-attributes) for field-specific controls.
 
 ---
 
@@ -43,6 +46,7 @@ trace_provider = register(
 ```
 
 ---
+
 ## 4. Instrument Google GenAI
 
 ```python
@@ -52,28 +56,97 @@ GoogleGenAIInstrumentor().instrument(tracer_provider=trace_provider)
 ```
 
 ---
-## 5. Run a Google GenAI request
-This example uses Vertex AI. [Set up Application Default Credentials](https://cloud.google.com/vertex-ai/generative-ai/docs/start/gcp-auth) for a Google Cloud project with billing and the Vertex AI API enabled, then replace `your_project_name` with that project's ID.
+
+## 5. Run a Gemini request
 
 ```python
 from google import genai
 from google.genai import types
 
-client = genai.Client(vertexai=True, project="your_project_name", location="global")
+client = genai.Client()
 
-content = types.Content(
-    role="user",
-    parts=[
-        types.Part.from_text(text="Hello how are you?"),
-    ],
-)
 response = client.models.generate_content(
-    model="gemini-3.8-flash", contents=content
+    model="gemini-3.8-flash",
+    contents="Suggest a name for a hiking club in one line.",
+    config=types.GenerateContentConfig(
+        system_instruction="Answer in one short sentence.",
+        temperature=0.2,
+    ),
 )
 
-print(response)
+print(response.text)
 trace_provider.force_flush()
 trace_provider.shutdown()
 ```
 
-Flush before a short script exits so queued spans can be sent. Open **Observe** in Future AGI, select the `google_genai` project and inspect the model-call span.
+Flush before a short script exits so queued spans can be sent. Open **Observe** in Future AGI, select the `google_genai` project and open the `GenerateContent` span.
+
+---
+
+## Streaming and async requests
+
+The instrumentor also traces `generate_content_stream` and the async client under `client.aio`. To try them, replace the request in step 5 with:
+
+```python
+import asyncio
+
+from google import genai
+
+client = genai.Client()
+
+stream = client.models.generate_content_stream(
+    model="gemini-3.8-flash",
+    contents="Count from 1 to 3.",
+)
+print("".join(chunk.text or "" for chunk in stream))
+
+
+async def main():
+    response = await client.aio.models.generate_content(
+        model="gemini-3.8-flash",
+        contents="Suggest a name for a book club in one line.",
+    )
+    print(response.text)
+
+
+asyncio.run(main())
+trace_provider.force_flush()
+trace_provider.shutdown()
+```
+
+The stream span ends when you finish reading the stream or close it (`close()`, or `aclose()` for an async stream), and records the reply accumulated from the chunks.
+
+---
+
+## What is captured
+
+Each call becomes one LLM span.
+
+| Call | Span name |
+| --- | --- |
+| `client.models.generate_content` | `GenerateContent` |
+| `client.models.generate_content_stream` | `GenerateContentStream` |
+| `client.aio.models.generate_content` | `AsyncGenerateContent` |
+| `client.aio.models.generate_content_stream` | `AsyncGenerateContentStream` |
+
+Only these four methods are traced. Calls made through the Interactions API (`client.interactions` and `client.aio.interactions`) do not create spans.
+
+| Attribute | Details |
+| --- | --- |
+| `gen_ai.provider.name`, `gen_ai.request.model` | `google` and the model version reported in the response (not set when the request fails) |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` | Token usage reported by the API. On non-streaming calls, output tokens include thinking tokens |
+| `gen_ai.usage.output_tokens.reasoning` | Thinking tokens on non-streaming calls, when the model reports them |
+| `gen_ai.input.messages`, `gen_ai.output.messages` | System instruction, prompt and reply, with roles |
+| `gen_ai.request.parameters` | Request settings such as `system_instruction` and `temperature` |
+| `input.value`, `output.value` | The serialized request and response |
+
+A failed request, such as an unknown model name, produces an `ERROR` span with `error.type` (for example `NOT_FOUND`) and an exception event, and the SDK error is still raised to your code.
+
+---
+
+## Troubleshooting
+
+- **No traces:** check `FI_API_KEY` and `FI_SECRET_KEY`, call `instrument()` before making requests, and flush the provider before a short script exits.
+- **Gemini authentication errors:** check `GEMINI_API_KEY`. If `GOOGLE_API_KEY` is also set, the SDK uses that key instead.
+- **Missing stream span:** read the stream to the end or close it (`close()`, or `aclose()` for an async stream); until then the span is still open.
+- **Content shows `__REDACTED__`:** `FI_HIDE_INPUTS` or `FI_HIDE_OUTPUTS` was set when `instrument()` ran.
