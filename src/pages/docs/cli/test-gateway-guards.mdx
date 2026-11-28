@@ -1,0 +1,172 @@
+---
+title: "Test a gateway rule and find its request log"
+description: "Send a test prompt through your gateway with fagi, assert the expected guardrail outcome in CI, and match the result to its request log."
+---
+
+## About
+
+Use `fagi gateway try` to check whether your gateway lets a prompt through, warns, or blocks it. Use `fagi gateway tail` to find the request the gateway logged. For example, Ridgeline Outfitters wants ordinary tent repair questions to pass, but its support agent must not send a customer's email address to the model.
+
+## Test a repair question
+
+<Steps>
+<Step title="Choose your test gateway">
+
+Choose a model listed by a [provider configured for your organization](/docs/command-center/features/providers). The playground creates a temporary gateway key for each call; `fagi gateway try` does not take a gateway key you created yourself. A `permission_denied` response is not a guardrail verdict.
+
+In a test configuration, [turn on PII Detection](/docs/protect/guides/turn-on-a-guardrail) for incoming requests, keep the default threshold of `0.8`, set the action to **Block**, and select **Save & Activate**. If you customized the PII settings, include `email` in the entity types and keep `max_entities` at its default of `1`: one email then scores `1.0` and triggers the rule. Choose a configuration where no other rule flags the repair question. If you self-host, the gateway must also start with [`guardrails.enabled` set to `true`](/docs/command-center/features/guardrails#setting-up-guardrails) in `config.yaml`. If you change that startup setting, restart the gateway. Saving the organization rule alone does not turn on enforcement.
+
+You need Bash, `jq` and Node.js (22.15 or later in the 22.x series, or 23.11 or later). On a self-hosted install, set `FI_BASE_URL` to your platform API URL before logging in. Install the CLI:
+
+```bash
+npm install -g @future-agi/cli@0.2.2
+```
+
+Run `fagi auth login` to enter your platform API key and secret key, or set `FI_API_KEY` and `FI_SECRET_KEY` as CI secrets. List the gateways you can access, then set the gateway ID and model for the rest of this shell session. Replace the example values with yours:
+
+```bash
+fagi api gateway list
+export GATEWAY_ID=default
+export GATEWAY_MODEL=gpt-4o-mini
+```
+
+Use the exact model ID from your provider configuration, including any provider prefix. If you omit `--gateway` from `try`, the CLI selects the only gateway in the list. A list with zero or multiple gateways exits `2` rather than guessing. If you omit `--model`, the playground tries to select a configured model.
+
+</Step>
+<Step title="Preview the request without sending it">
+
+```bash
+fagi gateway try 'Does Ridgeline Outfitters repair torn tent seams?' \
+  --gateway "$GATEWAY_ID" --model "$GATEWAY_MODEL" \
+  --system 'You answer gear repair questions for Ridgeline Outfitters.' \
+  --expect passed --dry-run --json
+```
+
+Look for `dry_run: true`, the gateway ID and the request fields `prompt`, `model` and `system_prompt`. A dry run checks the input without reading credentials or calling the gateway. It does not evaluate the rule.
+
+</Step>
+<Step title="Record the start of the log window">
+
+```bash
+export SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+```
+
+Keep using this shell. The watch will include requests started at or after this UTC second.
+
+</Step>
+<Step title="Send the prompt and match the request IDs">
+
+<Warning>
+Without `--dry-run`, `try` attempts a real completion and can incur a model charge. The CLI does not retry it. If it times out, check the log before sending it again.
+</Warning>
+
+```bash
+(
+  rc=0
+  fagi gateway try 'Does Ridgeline Outfitters repair torn tent seams?' \
+    --gateway "$GATEWAY_ID" --model "$GATEWAY_MODEL" \
+    --system 'You answer gear repair questions for Ridgeline Outfitters.' \
+    --expect passed --json > repair-result.json || rc=$?
+  if [[ -s repair-result.json ]]; then
+    jq '{outcome, expect_matched, status: .result.status_code, error: .result.body.error.code}' repair-result.json
+  fi
+  exit "$rc"
+)
+```
+
+For a successful, unflagged answer, the CLI reports `outcome: "passed"` and `expect_matched: true`. Start the watch from the timestamp you saved:
+
+```bash
+fagi gateway tail --since "$SINCE" --model "$GATEWAY_MODEL" \
+  --until-first --timeout 60s -o jsonl
+```
+
+`--until-first` stops at the first matching row, which may belong to another caller. The `tail_finished` line summarizes the watch. To find **your** request, save this as `lookup-request.sh`. It reads the request ID from a saved response and retries the log lookup if the row hasn't arrived. It never resends the prompt.
+
+```bash
+set -eo pipefail
+id=$(jq -er '.result.guardrail_headers | to_entries[] | select((.key | ascii_downcase) == "x-agentcc-request-id") | .value | strings | select(length > 0)' "$1")
+for attempt in {1..15}; do
+  row=$(fagi api gateway request-logs list --request-id "$id" --json |
+    jq -c --arg id "$id" 'first(.results[] | select(.request_id == $id) | {request_id, status_code, provider, latency_ms, rule: .metadata.guardrail_name, action: .metadata.guardrail_action})')
+  if [[ -n "$row" ]]; then
+    printf '%s\n' "$row"
+    exit 0
+  fi
+  if (( attempt < 15 )); then sleep 2; fi
+done
+printf 'No log row yet for request %s\n' "$id" >&2
+exit 1
+```
+
+Run `bash lookup-request.sh repair-result.json`. Compare its `request_id` with `request.request_id` on the `request_observed` line. If they differ, only the lookup describes your repair request.
+
+</Step>
+</Steps>
+
+## Check a rule with a saved prompt
+
+Save a synthetic contact detail as a repeatable test for the email rule. Pass either prompt text or `--prompt-file`, not both. The file must be nonblank UTF-8 text, at most 1 MiB. Use `--prompt-file -` to read from standard input instead. This example uses `jq` to check the saved report without sending the prompt twice.
+
+```bash
+(
+  set -e
+  printf '%s\n' 'Please send the tent repair estimate to camper@example.com.' > ridgeline-email.txt
+  fagi gateway try --prompt-file ridgeline-email.txt \
+    --gateway "$GATEWAY_ID" --model "$GATEWAY_MODEL" --expect blocked --json > ridgeline-result.json || {
+      rc=$?
+      jq '{outcome, expect_matched, status: .result.status_code}' ridgeline-result.json >&2 || true
+      exit "$rc"
+    }
+  jq -e '.result.body.error | .type == "guardrail_error" and .code == "content_blocked"' ridgeline-result.json
+)
+```
+
+A content block prints `true` and the check exits `0`. That proves a rule blocked the email, not which rule. To assert that **PII Detection** blocked this specific request, check its log row too. `rule` and `action` below come from the row's `metadata.guardrail_name` and `metadata.guardrail_action`.
+
+```bash
+(
+  set -o pipefail
+  bash lookup-request.sh ridgeline-result.json |
+    jq -e '.action == "blocked" and (.rule == "pii-detector" or .rule == "pii-detection")'
+)
+```
+
+The playground also labels HTTP `403` or legacy `446` as `blocked` based on status alone. A permission refusal can therefore satisfy `--expect blocked`, but the `guardrail_error` check on the saved report prints `false` and exits nonzero. If `result.body.error.type` is `permission_error` in the saved report, check gateway access before changing the rule.
+
+| `outcome` | What it tells you |
+| --- | --- |
+| `passed` | The completion returned a 2xx status without a block or warning. |
+| `warned` | A check warned or logged the hit, but the completion went through. Use `--expect warned` for a rule configured this way. |
+| `blocked` | The playground marked the completion as blocked. Inspect the returned error to confirm the reason. |
+| `failed` | The completion returned a non-2xx status that the playground did not mark as blocked, for example a provider rate limit. `failed` is a result, not an allowed `--expect` value. |
+
+To see what a failed assertion looks like, optionally send the email fixture **again**, this time with `--expect passed`. The check below succeeds only if the CLI exits `5` and the new report shows the mismatch. It leaves the original report intact.
+
+```bash
+(
+  rc=0
+  fagi gateway try --prompt-file ridgeline-email.txt \
+    --gateway "$GATEWAY_ID" --model "$GATEWAY_MODEL" --expect passed --json > mismatch-result.json || rc=$?
+  [[ "$rc" == 5 ]] && jq -e '.outcome == "blocked" and .expect_matched == false' mismatch-result.json
+)
+```
+
+## Exit codes and watch limits
+
+For a CI rule check, always set `--expect`. Without it, even `blocked` or `failed` exits `0` if the playground returned a valid report. Exit `5` means the CLI **received a verdict** and it differed from the assertion; the report is on stdout. An access denial from the platform API exits `3`; a network error, API rate limit or server outage exits `6`. Neither is a verdict on your prompt.
+
+Use `--since 2m` for the last two minutes, or an RFC 3339 timestamp to start at a particular instant. Narrow the watch with `--model`, `--provider`, `--status-code`, `--errors`, `--guardrail-triggered` or `--fallback-used`. For example, this checks once for recent errors from any request using the selected model, not just your repair prompt:
+
+```bash
+fagi gateway tail --since 2m --model "$GATEWAY_MODEL" --errors --max-polls 1
+```
+
+By default, the tail waits 2 seconds between polls and stops after 30 polls or 90 seconds. It can stop earlier at 1,000 events or 1 MiB of event JSON. With `--until-first`, exit `0` means a matching row appeared; exit `6` with `gateway_request_not_observed` means none appeared within the budget. Check the filters and time window before extending `--max-polls` or `--timeout`.
+
+**The tail is not an audit export.** Each poll reads at most 100 rows, skips IDs already shown, and advances by request start time. `window_truncated` means more rows matched than fit on the page. Even without that event, a request logged late can fall behind the window. A missing row does not prove the gateway never received the request.
+
+## Next steps
+
+- [Test a guardrail in the dashboard](/docs/protect/guides/test-a-guardrail) to inspect the response body and headers interactively.
+- [Review guardrail activity](/docs/protect/guides/review-guardrail-activity) to see which rules trigger across requests.

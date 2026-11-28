@@ -1,0 +1,121 @@
+---
+title: "Test a judge and gate a suite in CI"
+description: "Preview a judge rubric and two labeled support replies with fagi, then run the judge and report a policy mismatch to CI."
+---
+
+## About
+
+Ridgeline Outfitters promises a 30-day return window. Can your judge distinguish a reply that quotes the policy from one that promises 90 days? Use `fagi eval test` to preview one request and `fagi eval suite` to preview the labeled cases. You supply the replies; neither command runs the support agent for you.
+
+**Version note:** On platform v1.59.1, CLI 0.2.2's live `eval test` and `eval suite` commands can reject a completed evaluation: the platform returns `result.metadata` as a string where those commands expect an object. Don't retry a paid call just because the CLI reports `eval_test_invalid_response`. On this version, use the CLI's lower-level `fagi api evaluations test` command for live verdicts. The example below makes two live calls in total and uses pytest for the CI gate and JUnit report.
+
+## Preview one judgment
+
+Install the CLI with `npm install -g @future-agi/cli@0.2.2`. On Linux and macOS the npm wrapper requires Node.js `^22.15.0` or `>=23.11.0`. Start with a dry run. You don't need Python, platform credentials or a provider key for the preview.
+
+```bash
+export MODEL=gpt-4.1-mini
+RUBRIC='Pass only if the reply gives the exact return window in days. Policy: {{days}} days. Reply: {{reply}}'
+
+fagi eval test --criteria "$RUBRIC" \
+  --var-json days=30 --var 'reply=You can return the jacket within 30 days.' \
+  --model "$MODEL" --output-type pass-fail --dry-run --json
+```
+
+Look for `dry_run: true` and inspect `request.config.mapping`: `days` should be the number `30`, and `reply` should be the sentence you supplied. `--var` takes a literal string; `--var-json` takes one JSON value. If you omit `--var-json days=30`, the CLI reports that `{{days}}` has no matching variable and exits `2` without calling the judge.
+
+## Label two cases and check the call count
+
+Save the rubric as a JSON request so you can reuse it for the suite. Keep `"output": "Pass/Fail"` in the template: `--output-type` sets `output_type` but does not overwrite the separate `output` field.
+
+```bash
+cat > return-policy.json <<'JSON'
+{
+  "template_type": "Llm",
+  "name": "ridgeline-return-window",
+  "criteria": "Pass only if the reply gives the exact return window in days. Policy: {{days}} days. Reply: {{reply}}",
+  "config": {"mapping": {"days": 30}},
+  "output": "Pass/Fail",
+  "reason_column": true
+}
+JSON
+```
+
+This gate requires both replies to follow the policy, so you expect `"Passed"` for each. The pack reply deliberately promises the wrong window. In the same shell, run:
+
+```bash
+cat > returns.jsonl <<'JSONL'
+{"id":"jacket-return","reply":"You can return the jacket within 30 days.","expected":"Passed"}
+{"id":"pack-return","reply":"You can return the pack within 90 days.","expected":"Passed"}
+JSONL
+
+fagi eval suite --template return-policy.json --cases returns.jsonl \
+  --id-column id --expect-column expected --min-match-rate 1 --max-cases 2 \
+  --model "$MODEL" --output-type pass-fail --dry-run --json > plan.json
+```
+
+Open `plan.json`. Check that `planned_calls` is `2` and that each `request.config.mapping` contains the template's `days` and that row's `reply`. `id` names the case in reports and `expected` stays local for comparison. Other row keys become judge inputs and override template mappings of the same name. A dry run validates the plan, not your credentials or the replies. The CLI can redact sensitive values in previews; only use the preview as input for these non-sensitive examples.
+
+## Run the judge and gate CI
+
+Set `FI_BASE_URL` first if you use a self-hosted API. Run `fagi auth login` or provide `FI_API_KEY` and `FI_SECRET_KEY` in CI. These authenticate the CLI, not the judge. For `gpt-4.1-mini`, your organization also needs an [OpenAI provider key](/docs/admin-settings/ai-providers).
+
+Install pytest in an isolated Python 3 environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install pytest==8.4.2
+```
+
+Save this as `test_returns.py` next to `plan.json`. Each test sends one planned request, reads the raw verdict and records the log ID in JUnit. It compares the verdict, not the CLI exit code: the API call can succeed even if the reply fails the policy.
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+cases = json.loads(Path("plan.json").read_text())["cases"]
+if not cases or not all(case["scored"] for case in cases):
+    raise ValueError("The gate requires a nonempty plan with an expectation for every case")
+
+
+@pytest.mark.parametrize("case", cases, ids=[case["case_id"] for case in cases])
+def test_return_window(case, record_property):
+    call = subprocess.run(
+        ["fagi", "api", "evaluations", "test", "--data-file", "-",
+         "--timeout", "2m", "--json"],
+        input=json.dumps(case["request"]), text=True, stdout=subprocess.PIPE, check=True,
+    )
+    response = json.loads(call.stdout)
+    assert response["status"] is True
+    result = response["result"]
+    record_property("log_id", result["log_id"])
+    assert result["output"] == case["expected"], result.get("reason")
+```
+
+In CI, run `python -m pytest -q test_returns.py -o junit_family=xunit1 --junitxml=reports/returns.xml` and collect `reports/returns.xml` even on failure. Locally, to reproduce the deliberate mismatch and inspect its report:
+
+```bash
+rc=0
+python -m pytest -q test_returns.py -o junit_family=xunit1 --junitxml=reports/returns.xml || rc=$?
+printf 'pytest exit code: %s\n' "$rc"
+test "$rc" -eq 1
+```
+
+For the expected verdicts, `jacket-return` passes and `pack-return` fails: the judge returned `"Failed"`, not `"Passed"`. In the JUnit report, find the case named `test_return_window[pack-return]` and read its failure message. A CLI or API error is not a policy mismatch; look for the assertion comparing the two verdicts. In CI, use pytest's actual exit status, **not** the local check for exit `1`.
+
+If you're testing the agent, fix the 90-day promise. If you're testing the *judge's ability to spot a bad reply*, label the pack case `"Failed"` instead, then regenerate `plan.json` before running the tests again.
+
+## Limits and errors
+
+- **Call budget:** `fagi eval suite` rejects a file over `--max-cases` before any judge call. The default is `20`; the allowed range is `1` to `500`. Budget one paid call per case when you execute the plan. A timeout doesn't cancel server work or refund a completed call.
+- **Match rate:** The native suite compares the JSON verdict with each expectation. Its match rate is matches divided by cases with expectations. When the live suite can read the verdicts, it exits `5` if that rate falls below `--min-match-rate`; a response error is not exit `5`. The pytest example implements the threshold of `1` for these two labeled strings, not an arbitrary CLI threshold.
+- **Missing provider key:** If the live call reports `API key not configured for openai`, configure the provider or change `MODEL` to an available judge and regenerate the plan. The offline preview won't detect a missing provider key.
+
+## Next steps
+
+- [Eval templates and variables](/docs/evaluation/concepts/eval-templates): refine what the judge should check.
+- [Output types and scoring](/docs/evaluation/reference/output-types): choose a verdict format before labeling more cases.
