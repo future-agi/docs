@@ -1,35 +1,37 @@
 ---
 title: "Trace Vercel AI SDK calls in Next.js"
-description: "Configure the traceAI span processor and OTLP/HTTP export for model calls in a Node.js Next.js API route."
+description: "Configure the traceAI span processor, AI SDK 7 telemetry and OTLP/HTTP export for model calls in a Node.js Next.js API route."
 ---
 
 Send model-call spans from a Node.js Next.js API route to an Observe project in Future AGI.
 
 ## 1. Install
 
-Use this setup in an existing Next.js application with the Node.js runtime, not Edge. It uses AI SDK 6.0.0 and `@traceai/vercel` 0.1.0. The traceAI processor extends the OpenTelemetry 1.x span processor, so keep the SDK packages on the versions below rather than mixing them with OpenTelemetry 2.x.
+Use this setup in an existing Next.js application with the Node.js runtime, not Edge, on Node.js 22 or newer. It uses AI SDK 7.0.181, its `@ai-sdk/otel` telemetry integration and `@traceai/vercel` 0.1.6, with Google's Gemini models through `@ai-sdk/google`. The traceAI processor extends the OpenTelemetry 1.x span processor, so keep the SDK packages on the versions below rather than mixing them with OpenTelemetry 2.x.
+
+This setup was verified on a long-running Node.js server, not on Vercel serverless functions or the Edge runtime.
 
 <CodeGroup titles={["npm", "yarn", "pnpm"]}>
 
 ```bash npm
-npm install @traceai/vercel@0.1.0 @vercel/otel@1.13.0 \
-  @opentelemetry/api@1.9.0 @opentelemetry/sdk-trace-base@1.30.1 \
+npm install @traceai/vercel@0.1.6 @opentelemetry/api@1.9.1 \
+  @opentelemetry/sdk-trace-node@1.30.1 @opentelemetry/resources@1.30.1 \
   @opentelemetry/exporter-trace-otlp-http@0.57.2 \
-  ai@6.0.0 @ai-sdk/openai@3.0.0 zod@3.25.76
+  ai@7.0.181 @ai-sdk/otel@1.0.181 @ai-sdk/google@4.0.126 zod@3.25.76
 ```
 
 ```bash yarn
-yarn add @traceai/vercel@0.1.0 @vercel/otel@1.13.0 \
-  @opentelemetry/api@1.9.0 @opentelemetry/sdk-trace-base@1.30.1 \
+yarn add @traceai/vercel@0.1.6 @opentelemetry/api@1.9.1 \
+  @opentelemetry/sdk-trace-node@1.30.1 @opentelemetry/resources@1.30.1 \
   @opentelemetry/exporter-trace-otlp-http@0.57.2 \
-  ai@6.0.0 @ai-sdk/openai@3.0.0 zod@3.25.76
+  ai@7.0.181 @ai-sdk/otel@1.0.181 @ai-sdk/google@4.0.126 zod@3.25.76
 ```
 
 ```bash pnpm
-pnpm add @traceai/vercel@0.1.0 @vercel/otel@1.13.0 \
-  @opentelemetry/api@1.9.0 @opentelemetry/sdk-trace-base@1.30.1 \
+pnpm add @traceai/vercel@0.1.6 @opentelemetry/api@1.9.1 \
+  @opentelemetry/sdk-trace-node@1.30.1 @opentelemetry/resources@1.30.1 \
   @opentelemetry/exporter-trace-otlp-http@0.57.2 \
-  ai@6.0.0 @ai-sdk/openai@3.0.0 zod@3.25.76
+  ai@7.0.181 @ai-sdk/otel@1.0.181 @ai-sdk/google@4.0.126 zod@3.25.76
 ```
 
 </CodeGroup>
@@ -43,22 +45,27 @@ Set these in the environment of your Next.js server. For local development, use 
 ```bash
 FI_API_KEY=YOUR_FI_API_KEY
 FI_SECRET_KEY=YOUR_FI_SECRET_KEY
-OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+GOOGLE_GENERATIVE_AI_API_KEY=YOUR_GEMINI_API_KEY
 # Self-hosted: set your collector origin, without /tracer/v1/traces.
 # FI_BASE_URL=https://your-futureagi-instance.example
 ```
 
+`@ai-sdk/google` reads `GOOGLE_GENERATIVE_AI_API_KEY`. Get a key from the [Gemini API key page](https://ai.google.dev/gemini-api/docs/api-key).
+
 ## 3. Register tracing at server startup
 
-Create `instrumentation.ts` in the project root, or in `src/` if your application uses that directory. [Next.js calls `register()` once per server instance](https://nextjs.org/docs/app/guides/instrumentation); do not import or call it from `_app.tsx` or an API handler. If you already configure OpenTelemetry, add the Future AGI processor to that setup instead of registering another provider.
+Create `instrumentation.ts` in the project root, or in `src/` if your application uses that directory. [Next.js calls `register()` once per server instance](https://nextjs.org/docs/app/guides/instrumentation); do not import or call it from `_app.tsx` or an API handler. If you already configure OpenTelemetry with a `NodeTracerProvider`, add the Future AGI processor to that setup instead of registering another provider. If that setup is `@vercel/otel`'s `registerOTel()`, see the warning below.
 
 ```typescript title="instrumentation.ts"
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
-  const { registerOTel } = await import("@vercel/otel");
-  const { FISimpleSpanProcessor, isFISpan } = await import("@traceai/vercel");
+  const { NodeTracerProvider } = await import("@opentelemetry/sdk-trace-node");
+  const { Resource } = await import("@opentelemetry/resources");
   const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
+  const { FISimpleSpanProcessor, isFISpan } = await import("@traceai/vercel");
+  const { registerTelemetry } = await import("ai");
+  const { OpenTelemetry } = await import("@ai-sdk/otel");
 
   const apiKey = process.env.FI_API_KEY;
   const secretKey = process.env.FI_SECRET_KEY;
@@ -67,47 +74,52 @@ export async function register() {
   }
   const baseUrl = (process.env.FI_BASE_URL || "https://api.futureagi.com").replace(/\/+$/, "");
 
-  registerOTel({
-    serviceName: "vercel-project",
-    attributes: {
+  const provider = new NodeTracerProvider({
+    resource: new Resource({
+      "service.name": "vercel-project",
       project_name: "vercel-project",
       project_type: "observe",
-    },
-    spanProcessors: [
-      new FISimpleSpanProcessor({
-        exporter: new OTLPTraceExporter({
-          url: `${baseUrl}/tracer/v1/traces`,
-          headers: { "X-Api-Key": apiKey, "X-Secret-Key": secretKey },
-        }),
-        spanFilter: isFISpan,
-      }),
-    ],
+    }),
   });
+  provider.addSpanProcessor(
+    new FISimpleSpanProcessor({
+      exporter: new OTLPTraceExporter({
+        url: `${baseUrl}/tracer/v1/traces`,
+        headers: { "X-Api-Key": apiKey, "X-Secret-Key": secretKey },
+      }),
+      spanFilter: isFISpan,
+    }),
+  );
+  provider.register();
+
+  registerTelemetry(new OpenTelemetry());
 }
 ```
 
-The HTTP exporter sends traces with both Future AGI auth headers. `project_name` and `project_type` are resource attributes, not camel-case settings. `isFISpan` limits export to spans recognized by the traceAI processor rather than unrelated Next.js spans.
+The HTTP exporter sends traces with both Future AGI auth headers. `project_name` and `project_type` are resource attributes, not camel-case settings. `isFISpan` limits export to spans recognized by the traceAI processor rather than unrelated Next.js spans. `registerTelemetry(new OpenTelemetry())` turns on AI SDK 7's OpenTelemetry spans for every call; register it once.
+
+<Warning>
+Do not use `@vercel/otel`'s `registerOTel()` for this setup with AI SDK 7. It adds an `operation.name` attribute to any span that lacks one, and `@traceai/vercel` 0.1.6 reads AI SDK 7's `gen_ai.operation.name` only when `operation.name` is absent. AI SDK 7 spans are then not classified, so `isFISpan` exports none of them.
+</Warning>
 
 ## 4. Add a model call
 
-In AI SDK 6.0.0, enable telemetry on the call with `experimental_telemetry`. The [versioned telemetry settings](https://github.com/vercel/ai/blob/ai%406.0.0/packages/ai/src/telemetry/telemetry-settings.ts) record inputs and outputs by default; this example disables both.
+With the integration registered, AI SDK 7 records telemetry for each call. Inputs and outputs are recorded by default; this example disables both with the call's `telemetry` option.
 
 <Warning>
-Input/output switches are not complete redaction. Errors, custom telemetry metadata and request headers can still contain sensitive data. Do not put secrets or private request data in telemetry metadata, and review exported data before using private workloads.
+Input/output switches are not complete redaction. Errors, the `functionId`, tool names and span names can still contain sensitive data (on AI SDK 6, custom telemetry metadata too). Do not put secrets or private request data in those fields, and review exported data before using private workloads.
 </Warning>
 
 ```typescript title="pages/api/story.ts"
 import type { NextApiRequest, NextApiResponse } from "next";
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const result = await generateText({
-    model: openai("gpt-4o-mini"),
+    model: google("gemini-3.8-flash"),
     prompt: "Write a short creative story about a time-traveling detective.",
-    maxOutputTokens: 300,
-    experimental_telemetry: {
-      isEnabled: true,
+    telemetry: {
       recordInputs: false,
       recordOutputs: false,
     },
@@ -123,8 +135,50 @@ To include prompts and responses, set `recordInputs` and `recordOutputs` to `tru
 
 Run your Next.js application and request `/api/story`. Open **Observe** in Future AGI and select `vercel-project` to inspect the model-call spans. Input and Output content is hidden by the call's settings above.
 
+## AI SDK 6 applications
+
+`@traceai/vercel` 0.1.6 also supports AI SDK 6. Install the AI SDK 6 packages instead of the step 1 command, which installs AI SDK 7. AI SDK 6 does not use `@ai-sdk/otel`, and `@ai-sdk/google` 3.x is its provider line.
+
+<CodeGroup titles={["npm", "yarn", "pnpm"]}>
+
+```bash npm
+npm install @traceai/vercel@0.1.6 @opentelemetry/api@1.9.1 \
+  @opentelemetry/sdk-trace-node@1.30.1 @opentelemetry/resources@1.30.1 \
+  @opentelemetry/exporter-trace-otlp-http@0.57.2 \
+  ai@6.0.338 @ai-sdk/google@3.0.152 zod@3.25.76
+```
+
+```bash yarn
+yarn add @traceai/vercel@0.1.6 @opentelemetry/api@1.9.1 \
+  @opentelemetry/sdk-trace-node@1.30.1 @opentelemetry/resources@1.30.1 \
+  @opentelemetry/exporter-trace-otlp-http@0.57.2 \
+  ai@6.0.338 @ai-sdk/google@3.0.152 zod@3.25.76
+```
+
+```bash pnpm
+pnpm add @traceai/vercel@0.1.6 @opentelemetry/api@1.9.1 \
+  @opentelemetry/sdk-trace-node@1.30.1 @opentelemetry/resources@1.30.1 \
+  @opentelemetry/exporter-trace-otlp-http@0.57.2 \
+  ai@6.0.338 @ai-sdk/google@3.0.152 zod@3.25.76
+```
+
+</CodeGroup>
+
+Use the same `instrumentation.ts` but remove the `registerTelemetry` and `@ai-sdk/otel` imports and the `registerTelemetry(...)` call. In each model call, replace the `telemetry` option with `experimental_telemetry` (AI SDK 6 has no `telemetry` option), and enable it:
+
+```typescript
+experimental_telemetry: {
+  isEnabled: true,
+  recordInputs: false,
+  recordOutputs: false,
+},
+```
+
+On AI SDK 6, aborted streams and mid-stream transport errors can leave spans unfinished. Use AI SDK 7 if you need complete traces for those calls.
+
 ## Troubleshooting
 
-- **No spans:** confirm the Node.js server loads `instrumentation.ts`, both Future AGI keys are set, and the call has `experimental_telemetry.isEnabled=true`.
+- **No spans on AI SDK 7:** confirm the Node.js server loads `instrumentation.ts`, both Future AGI keys are set, and `registerTelemetry(new OpenTelemetry())` runs in `register()`. `experimental_telemetry` alone is the AI SDK 6 setup. If calls succeed but nothing is exported, check that tracing is registered with `NodeTracerProvider` as above, not `@vercel/otel`'s `registerOTel()`.
+- **No spans on AI SDK 6:** set `experimental_telemetry.isEnabled` to `true` on the call.
 - **Collector rejects the export:** check both auth headers, the collector URL and the `project_name` resource attribute.
 - **Processor type errors:** keep the OpenTelemetry SDK on the pinned 1.x line; do not install a 2.x span processor alongside this traceAI release.
