@@ -638,7 +638,7 @@ test('Tavily uses the released package and is discoverable through the catalog',
   assert.equal(entry?.href, '/docs/integrations/traceai/tavily');
   assert.equal(entry?.category, 'frameworks');
   assert.equal(entry?.method, 'traceAI SDK');
-  for (const pin of ['traceAI-tavily==0.1.1', 'tavily-python==0.8.5', 'fi-instrumentation-otel==1.2.3']) {
+  for (const pin of ['traceAI-tavily==0.1.1', 'tavily-python==0.8.5', 'fi-instrumentation-otel==1.5.1']) {
     assert.ok(page.includes(pin), pin);
   }
   assert.match(page, /from traceai_tavily import TavilyInstrumentor/);

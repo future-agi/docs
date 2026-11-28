@@ -1,7 +1,7 @@
 # OpenRouter Agent tracing with Future AGI
 
 Runnable example for the docs page `src/pages/docs/integrations/frameworks/openrouter-agent.mdx`
-(TH-8266). It traces [`@openrouter/agent`](https://github.com/OpenRouterTeam/typescript-agent) 0.11.0
+(TH-8266). It traces [`@openrouter/agent`](https://github.com/OpenRouterTeam/typescript-agent) 1.3.0
 `callModel()` runs by turning the package's own lifecycle hooks into OpenTelemetry spans and sending
 them to Future AGI. There is no traceAI package for it and nothing wraps `callModel`.
 
@@ -15,11 +15,11 @@ them to Future AGI. There is no traceAI package for it and nothing wraps `callMo
 
 ```bash
 export FI_API_KEY=... FI_SECRET_KEY=...            # Future AGI
-export FI_BASE_URL=http://localhost:4318           # self-hosted only; default https://api.futureagi.com
+# export FI_BASE_URL=http://localhost:4318         # self-hosted only; default https://api.futureagi.com
 export OPENROUTER_API_KEY=sk-or-...
 MODEL=openai/gpt-4o-mini MAX_OUTPUT_TOKENS=100 ./run_e2e.sh
 ```
 
 Unit tests only: `npm ci && npm test` (Node 22 and 26 tested).
 
-Verified live against openrouter.ai on 2026-10-17 (`openai/gpt-4o-mini`, `MAX_OUTPUT_TOKENS=100`, under $0.001): tree, tokens, cost, ERROR cases and the metadata-only default all passed. `MAX_OUTPUT_TOKENS` is optional; without it OpenRouter reserves credit for the model's maximum output and answers HTTP 402 when your balance is low. Details are in the docs page.
+Verified live against openrouter.ai on 2026-10-17 with `@openrouter/agent` 0.11.0 (`openai/gpt-4o-mini`, `MAX_OUTPUT_TOKENS=100`, under $0.001): tree, tokens, cost, ERROR cases and the metadata-only default all passed. On 1.3.0 the unit tests pass and the three `app.mjs` scenarios ran against the recorded responses in `tests/fake-responses.mjs`, exporting to Future AGI; a live openrouter.ai run on 1.3.0 has not been done. `MAX_OUTPUT_TOKENS` is optional; without it OpenRouter reserves credit for the model's maximum output and answers HTTP 402 when your balance is low. Details are in the docs page.

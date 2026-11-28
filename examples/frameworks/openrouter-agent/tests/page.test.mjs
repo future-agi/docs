@@ -16,9 +16,9 @@ test('the page embeds the helper with the clarified privacy comment', () => {
 
 test('the page states the recipe version and the pinned install', () => {
   const pkg = JSON.parse(read('../package.json')).dependencies;
-  assert.equal(pkg['@openrouter/agent'], '0.11.0');
-  assert.ok(page.includes('`@openrouter/agent` 0.11.0'));
-  assert.ok(page.includes('npm install @openrouter/agent@0.11.0 @openrouter/sdk@0.13.67'));
+  assert.equal(pkg['@openrouter/agent'], '1.3.0');
+  assert.ok(page.includes('`@openrouter/agent` 1.3.0'));
+  assert.ok(page.includes('npm install @openrouter/agent@1.3.0 @openrouter/sdk@1.5.137'));
 });
 
 test('the page states the privacy default and the opt-in', () => {
@@ -30,7 +30,7 @@ test('the page states the privacy default and the opt-in', () => {
 });
 
 test('the page describes its scope without a verification diary', () => {
-  assert.ok(page.includes('self-hosted Future AGI instance'));
+  assert.ok(page.includes('with string input, ordinary tools and non-streaming'));
   assert.ok(page.includes('one hooks object for each `callModel()`'));
   assert.ok(!page.includes('Live vendor verification'));
   assert.ok(!page.includes('How this was checked:'));
@@ -52,7 +52,7 @@ test('the literal install pins every dependency to the qualified set', () => {
   }
 });
 
-test('supported setup is self-hosted and excludes broader execution modes', () => {
-  assert.ok(page.includes('export FI_BASE_URL="http://localhost:4318"'));
+test('setup defaults to Future AGI cloud and excludes broader execution modes', () => {
+  assert.ok(page.includes('export FI_BASE_URL="https://api.futureagi.com"'));
   assert.ok(!/not tested|untested|unverified/i.test(page));
 });

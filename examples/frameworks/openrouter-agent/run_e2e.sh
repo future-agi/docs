@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end run of the OpenRouter Agent recipe against a Future AGI collector.
 #
-#   FI_API_KEY=... FI_SECRET_KEY=... FI_BASE_URL=http://localhost:4318 \
+#   FI_API_KEY=... FI_SECRET_KEY=... \
 #   OPENROUTER_API_KEY=sk-or-... MODEL=openai/gpt-4o-mini ./run_e2e.sh
 #
 # What it does
