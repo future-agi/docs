@@ -1,0 +1,153 @@
+---
+title: "Optimize from a manifest"
+description: "Compare a candidate to your baseline with Agent Learning Kit, replay a frozen quality check, and review which fields would change before you apply anything."
+---
+
+## About
+
+An optimization manifest describes the agent you have now, the changes you want to try, and how to score them. In this guide, you compare two answers from a scripted Ridgeline Outfitters support agent. The result includes a proposed change, not an update to the agent. This is a local Agent Learning Kit run, separate from [hosted Epoch](/docs/environments/concepts/epoch).
+
+## 1. Choose the command for your input
+
+| If you have… | Use | What you compare |
+| --- | --- | --- |
+| An agent, a scenario, and a list of allowed changes | `alk optimize` | Agent configurations on the same task. Use this for the example below. |
+| A promptfoo-style eval suite | `alk optimize-eval` | Candidates against the assertions in that eval suite. |
+| An Agent Learning Kit suite with multiple jobs | `alk optimize-suite` | Candidates across the suite's jobs, which can include simulations, evals, and nested suites. |
+
+Use a fresh directory and Python 3.12. The scripted example needs no model or API key.
+
+```bash
+mkdir ridgeline-returns && cd ridgeline-returns
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7
+```
+
+## 2. Set the baseline, objective, and budget
+
+The shopper needs the return window and receipt requirement for unworn boots. Keep the shopper's question, the expected answer, and the evaluator fixed. Only the agent's reply has an alternative. The run has a budget of two evaluations: one baseline and one candidate. The score to pass is `0.9`.
+
+Write the manifest and freeze a separate acceptance rule **before** searching: `task_completion` must reach `1.0` on this scenario, with these simulation and evaluation settings. The profile records the floor and settings together, so a result measured under a different test doesn't count as a win.
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+from fi.alk import optimize
+
+baseline = "Let me check that for you."
+policy = "Return unworn boots within 30 days with your receipt."
+manifest = optimize.build_whole_agent_optimization_manifest(
+    name="ridgeline-boot-returns",
+    agent_ref="ridgeline-support-fixture",
+    base_agent={"type": "scripted", "responses": [{"content": baseline}]},
+    search_space={"agent.responses.0.content": [baseline, policy]},
+    scenario={"dataset": [{
+        "persona": {"name": "Lee", "role": "shopper"},
+        "situation": "Can I return unworn boots?",
+        "outcome": policy,
+    }]},
+    evaluation_config={
+        "task_description": "Explain the boot return policy.",
+        "expected_result": policy,
+    },
+    threshold=0.9,
+    eval_budget=2,
+    optimizer={"algorithm": "agent", "max_candidates": 2},
+    routing_table={"rows": []},
+    frozen_profile_ref="return-profile.json",
+)
+setting = {key: manifest[key] for key in ("scenario", "simulation", "evaluation")}
+profile = optimize.freeze_capability_profile(
+    {"custom": {"capabilities": ["task_completion"]}},
+    setting=setting,
+    metric_floors={"task_completion": 1.0},
+    source_manifest_ref="returns.json",
+)
+Path("returns.json").write_text(json.dumps(manifest, indent=2))
+Path("return-profile.json").write_text(json.dumps(profile, indent=2))
+PY
+```
+
+Portfolio routing chooses how to search, not which answer wins. Here you choose the `agent` optimizer. In `returns.json`, `optimization.optimizer_routing_evidence.selected_by` is `override`. The empty routing table provides no evidence that one optimizer outperformed another.
+
+If you use `build_task_optimization_manifest` without an explicit optimizer, it can choose a backend from a routing table you supply. It looks up the target kind and, if specified, the framework profile. A usable recommendation records `selected_by: routing_table` and its citations; without one, `cold_start` indicates a fallback. Neither is a score for your agent's reply.
+
+## 3. Run the search and compare candidates
+
+```bash
+alk optimize returns.json --dry-run --output preflight.json
+alk optimize returns.json --output result.json
+```
+
+Open `preflight.json`. For this manifest, `summary.max_candidates` is `2` and `summary.required_env` is empty. The dry run checks required environment variables and counts search paths. It does not evaluate either reply or prove that the search can run: even a path with an empty list of values can pass preflight and fail the full run.
+
+In `result.json`, each row of `optimization_candidate_lineage.rows` records a candidate ID, score, metrics, and patch paths. Use `selected`, not the position of the row, to identify the winner. For this fixture you can use the settings from the source manifest to replay each row because only the agent can change. The check below stops if a patch touches anything outside the agent.
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+from fi.alk import optimize
+
+result = json.loads(Path("result.json").read_text())
+profile = json.loads(Path("return-profile.json").read_text())
+source = result["optimization"]["source_manifest"]
+setting = {key: source[key] for key in ("scenario", "simulation", "evaluation")}
+lineage = result["optimization_candidate_lineage"]
+for row in lineage["rows"]:
+    if any(path != "agent" and not path.startswith("agent.") for path in row["patch_paths"]):
+        raise ValueError("Replay with this candidate's measured settings, not the baseline settings.")
+    evidence = {"setting": setting, "summary": {"metric_averages": row["metrics"]}}
+    replay = optimize.replay_frozen_profile(evidence, profile)
+    acceptable = not replay["veto"] and not replay["non_admissible_wins"]
+    print(row["candidate_id"], "selected:", row["selected"], "score:", row["score"],
+          "task completion:", row["metrics"]["task_completion"], "meets profile:", acceptable)
+print("Score gain over baseline:", lineage["selected_score_delta_from_seed"])
+PY
+```
+
+| Reply | Optimization score | Task completion | Meets frozen profile? |
+| --- | ---: | ---: | --- |
+| “Let me check that for you.” (baseline) | 0.7993 | 0.2 | No |
+| The 30-day return policy (selected) | 0.9312 | 1.0 | Yes |
+
+The gain of `0.1319` is on this one scripted question. To audit it, match the selected `candidate_id` to `optimization.history` for the patch and report that earned the score. The lineage row's `freeze` block contains hashes of the patch and metrics. Those hashes identify the evidence; they don't show that the policy works for other questions.
+
+Replaying the profile checks recorded measurements against its floors and settings. It doesn't run the agent again. Before adopting the reply, test cases such as worn boots and returns without a receipt.
+
+## 4. Review the change before applying it
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+result = json.loads(Path("result.json").read_text())
+plan = result["apply_plan"]
+print("Target:", plan["provider"], plan["agent_ref"])
+print("Selected candidate:", plan["nirnaya_ref"])
+for change in plan["apply_fields"]:
+    print(change["path"], ":", change["from"], "->", change["to"])
+print("Read back:", plan["read_back_checks"])
+print("On mismatch:", plan["mismatch_policy"])
+PY
+```
+
+The plan proposes one edit to `responses.0.content` on `ridgeline-support-fixture`. It references `return-profile.json`, but that reference is not a passing replay. Match the printed candidate ID to the selected row from step 3. If that row failed the profile, stop even if the plan contains an edit.
+
+Nothing needs deploying for this fixture. For a connected agent, confirm that the provider and agent reference identify the intended target and that the current value still matches `from`. Only if you approve, apply `to` through your provider or deployment process. Then read back each field in `read_back_checks` and compare it to `expected`. Stop on a mismatch (`abort`); the kit has not changed or rolled back your target.
+
+## Limits and troubleshooting
+
+| If you see… | What to do |
+| --- | --- |
+| `agent_learning_kit_project_root_not_found` while building a manifest | The builder tried to find a routing table in a source checkout. With the 0.3.7 wheel, pass a `routing_table` explicitly as above; use an empty `rows` list if you are choosing the optimizer yourself. |
+| A better score but a veto or a non-admissible win | Inspect the replay's `rows` for the observed value, floor, and `setting_digest_match`. A higher overall score doesn't make up for a missed floor or a different setting. |
+| No `apply_plan`, or an empty `apply_fields` list | A dry run or a manifest without a `whole_agent` contract doesn't produce this plan. An empty list means the plan proposes no edits. It is not a diff of the entire agent: the planner checks the declared paths and skips values that are unchanged, missing, or `null` in the winner. |
+
+## Next steps
+
+- [Run local evaluations](/docs/sdk/evals/local) to test more customer questions before adopting a change.
+- [Run Epoch](/docs/environments/guides/run-epoch) if you want to start from failures in a hosted environment run instead of a local manifest.

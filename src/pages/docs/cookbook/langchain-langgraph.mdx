@@ -1,12 +1,11 @@
 ---
 title: "LangChain & LangGraph Observability"
 slug: "langchain-langgraph"
-description: "Instrument a LangGraph agent that calls Google Search with traceAI, then score each span for completeness, groundedness, tool calling and hallucination."
+description: "Trace a LangGraph support agent with traceAI and compare the same policy question with and without a tool lookup."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
   - "traceAI"
-  - "fi.evals"
 frameworks:
   - "LangGraph"
   - "LangChain"
@@ -21,288 +20,133 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Build a LangGraph agent that answers questions directly or falls back to a Google Search tool, instrument it with [traceAI](/docs/observe/concepts/traceai), and attach eval tags that score every agent span for completeness, groundedness, tool calling, and hallucination. Run three queries and read the scores in the dashboard.
+Trace the same question twice: once when a Ridgeline Outfitters agent cannot look up a policy, and once when it must. Compare the recorded model and tool calls rather than guessing from the final answer whether retrieval happened.
 </TLDR>
-
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 20 min | Intermediate | `fi-instrumentation-otel` + `traceai-langchain` |
-
-<Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- An `OPENAI_API_KEY`
-- A `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` (see [Google Programmable Search setup](https://python.langchain.com/docs/integrations/tools/google_search/))
-- Python 3.11
-</Prerequisites>
 
 ## Install
 
+Use Bash, Python 3.12, an OpenAI API key and a pair of [Future AGI API keys](/docs/admin-settings).
+
 ```bash
-pip install fi-instrumentation-otel traceai-langchain openai langgraph langchain langchain-openai langchain-core langchain-community langchain-google-community google-api-python-client
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install fi-instrumentation-otel==1.5.1 traceai-langchain==0.1.12 langgraph==1.0.1 langchain-openai==0.3.35 langchain-core==0.3.86
 ```
+
+Replace the example values with your credentials. For self-hosting, use your HTTP trace collector as `FI_TRACES_URL`.
 
 ```bash
 export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
-export FI_BASE_URL="https://api.futureagi.com"
 export OPENAI_API_KEY="your-openai-api-key"
-export GOOGLE_API_KEY="your-google-api-key"
-export GOOGLE_CSE_ID="your-google-cse-id"
+export FI_TRACES_URL="https://api.futureagi.com"
 ```
 
-## Tutorial
+## Instrument the model and tool
 
-<Steps>
-<Step title="Import the agent and instrumentation packages">
+Save this as `policy_agent.py`. Register the provider before enabling LangChain instrumentation. A local tool returns the store's written policy; you don't need a search-service account.
 
 ```python
-import os
-import json
-
-from langgraph.graph import StateGraph, MessagesState, END
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
-from langchain.tools import Tool
-from langchain_google_community import GoogleSearchAPIWrapper
+from uuid import UUID
 
 from fi_instrumentation import register
-from fi_instrumentation.fi_types import (
-    ProjectType,
-    EvalName,
-    EvalTag,
-    EvalTagType,
-    EvalSpanKind,
-    ModelChoices,
-)
-# the PyPI distribution is traceai-langchain; the import path uses an underscore
+from fi_instrumentation.fi_types import ProjectType
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, MessagesState, StateGraph
 from traceai_langchain import LangChainInstrumentor
+
+provider = register(project_type=ProjectType.OBSERVE, project_name="ridgeline-policy-agent",
+                    set_global_tracer_provider=True, verbose=False)
+LangChainInstrumentor().instrument(tracer_provider=provider)
+tracer = provider.get_tracer(__name__)
+model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+@tool
+def repair_policy() -> str:
+    """Look up Ridgeline Outfitters' current buckle repair policy."""
+    return "Buckle repairs are free within 45 days of delivery."
+
+lookup_model = model.bind_tools([repair_policy], tool_choice="repair_policy")
 ```
 
-You should see no import errors. If `traceai_langchain` fails to import, the package isn't installed: run `pip install traceai-langchain`.
+## Assemble the graph
 
-</Step>
-<Step title="Define the eval tags">
-
-Each `EvalTag` scores one span kind against one metric. This agent has an `AGENT` span (the reasoning step) and a `TOOL` span (the Google Search call), so tag both.
+Save this block as `policy_graph.py` in the same directory. For a controlled comparison, the first model call either has no tools or must call `repair_policy`. After a lookup, a plain model reads the tool result and answers. Returning just the new messages lets `MessagesState` append them to the conversation.
 
 ```python
-eval_tags = [
-    # each tag pins one eval to one span kind, so the platform knows which spans to score
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.AGENT,
-        eval_name=EvalName.COMPLETENESS,
-        config={},
-        mapping={"input": "raw.input", "output": "raw.output"},
-        custom_eval_name="Completeness",
-        model=ModelChoices.TURING_LARGE,
-    ),
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.AGENT,
-        eval_name=EvalName.GROUNDEDNESS,
-        config={},
-        mapping={"input": "raw.input", "output": "raw.output"},
-        custom_eval_name="Groundedness",
-        model=ModelChoices.TURING_LARGE,
-    ),
-    # EVALUATE_FUNCTION_CALLING is the only eval here that needs a TOOL span kind
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.TOOL,
-        eval_name=EvalName.EVALUATE_FUNCTION_CALLING,
-        config={},
-        mapping={"input": "raw.input", "output": "raw.output"},
-        custom_eval_name="Tool_Calling",
-        model=ModelChoices.TURING_LARGE,
-    ),
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.AGENT,
-        eval_name=EvalName.DETECT_HALLUCINATION,
-        config={},
-        mapping={"input": "raw.input", "output": "raw.output"},
-        custom_eval_name="Hallucination",
-        model=ModelChoices.TURING_LARGE,
-    ),
-]
-```
-
-`mapping` points each eval's required inputs at span attributes; `raw.input` and `raw.output` are the span's recorded input and output. Browse the full list of [built-in evals](/docs/evaluation/builtin) for other metrics you can substitute in.
-
-You should see this list build with no exception. `EvalTag` validates its eval name, model, config, and mapping keys in `__post_init__`, so a typo in any of them raises a `ValueError` here, not later when the trace is scored.
-
-</Step>
-<Step title="Register the trace provider and instrument LangChain">
-
-```python
-# register() must run first: instrument() needs the tracer_provider it returns
-trace_provider = register(
-    project_type=ProjectType.EXPERIMENT,
-    project_name="LangGraph-Google-Search-App",
-    project_version_name="v1",
-    eval_tags=eval_tags,
-)
-
-LangChainInstrumentor().instrument(tracer_provider=trace_provider)
-```
-
-`register()` wires the eval tags into an OpenTelemetry trace provider. `LangChainInstrumentor().instrument()` patches LangChain and LangGraph so every node call emits a span through that provider. You should see no output here: instrumentation is silent until something runs.
-
-</Step>
-<Step title="Confirm a trace arrives before building the agent">
-
-Prove the pipeline end to end before adding any graph or tool complexity.
-
-```python
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-llm.invoke("Reply with the single word: ready")
-```
-
-Open [app.futureagi.com](https://app.futureagi.com), go to the `LangGraph-Google-Search-App` project, and confirm one trace has arrived. If it has, the keys, `register()`, and `instrument()` are all wired correctly, and the rest of this tutorial only adds the graph and tools around this same call.
-
-</Step>
-<Step title="Build the search tool and the LLM">
-
-```python
-search = GoogleSearchAPIWrapper()
-google_tool = Tool(
-    name="google_search",
-    description="Use this to search Google for current events or factual knowledge.",
-    func=search.run,
-)
-
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools([google_tool])
-```
-
-`bind_tools` gives the model the option to call `google_search`, not the obligation. The router in the next step reads that decision off the model's response. `GoogleSearchAPIWrapper()` reads `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` from the environment and raises immediately if either is missing, so a bad key surfaces here rather than mid-graph.
-
-</Step>
-<Step title="Define the graph nodes and router">
-
-```python
-class AgentState(MessagesState):
-    # LangGraph rejects writes to keys outside the state schema, so this has to be
-    # declared here even though only tool_node writes to it
-    intermediate_steps: list
+from policy_agent import (HumanMessage, ToolMessage, MessagesState, StateGraph, END,
+                          model, lookup_model, repair_policy)
 
 
-def agent_node(state: AgentState) -> AgentState:
+class State(MessagesState):
+    use_lookup: bool
+
+
+def agent_node(state):
     messages = state["messages"]
-    response = llm.invoke(messages)
-    return {"messages": messages + [response], "intermediate_steps": state.get("intermediate_steps", [])}
+    first_turn = isinstance(messages[-1], HumanMessage)
+    llm = lookup_model if state["use_lookup"] and first_turn else model
+    return {"messages": [llm.invoke(messages)]}
 
 
-def tool_node(state: AgentState) -> AgentState:
-    messages = state["messages"]
-    tool_call = messages[-1].tool_calls[0]
-    args = tool_call.get("args") or json.loads(tool_call.get("arguments", "{}"))
-    result = google_tool.invoke(args)
-    # appending a ToolMessage to messages is the scratchpad bind_tools expects back
-    tool_msg = ToolMessage(tool_call_id=tool_call["id"], content=str(result))
-    return {
-        "messages": messages + [tool_msg],
-        "intermediate_steps": state.get("intermediate_steps", []) + [(messages[-1], tool_msg)],
-    }
+def tool_node(state):
+    replies = []
+    for call in state["messages"][-1].tool_calls:
+        result = repair_policy.invoke(call["args"])
+        replies.append(ToolMessage(content=result, tool_call_id=call["id"]))
+    return {"messages": replies}
 
 
-def router(state: AgentState) -> str:
-    msg = state["messages"][-1]
-    if getattr(msg, "tool_calls", None):
-        return "tool"
-    return "final"
-```
+def route(state):
+    return "tool" if state["messages"][-1].tool_calls else END
 
-The **agent node** decides whether to answer or call the tool. The **tool node** runs the Google Search and appends the result. `router` reads `tool_calls` off the model's last message to pick the next node. You should see all three functions and `AgentState` define with no output; nothing runs until the graph is compiled and invoked.
 
-</Step>
-<Step title="Assemble and run the graph">
-
-```python
-graph = StateGraph(AgentState)
+graph = StateGraph(State)
 graph.add_node("agent", agent_node)
 graph.add_node("tool", tool_node)
-
 graph.set_entry_point("agent")
-graph.add_conditional_edges("agent", router, {"tool": "tool", "final": END})
+graph.add_conditional_edges("agent", route, {"tool": "tool", END: END})
 graph.add_edge("tool", "agent")
-
-memory = MemorySaver()
-app = graph.compile(checkpointer=memory)
-
-example_queries = [
-    "What is the current status of the AWS us-east-1 region?",
-    "What is Stripe's current per-transaction fee for US card payments?",
-    "What is Zendesk's current refund policy for annual plan cancellations?",
-]
-
-for i, query in enumerate(example_queries):
-    print(f"\nQUERY {i + 1}: {query}\n")
-    # each conversation needs its own thread_id, or MemorySaver replays the previous run's messages
-    config = {"configurable": {"thread_id": f"multi-tool-agent-{i}"}}
-    output = app.invoke({"messages": [HumanMessage(content=query)]}, config)
-    output["messages"][-1].pretty_print()
+app = graph.compile()
 ```
 
-You should see three answers printed, each preceded by its query. Every node call in each run generated a span under the `LangGraph-Google-Search-App` project.
+## Run the comparison
 
-</Step>
-<Step title="Reproduce a real failure, then fix it">
-
-The tool's description is what makes the model decide to search. Bind a deliberately vague one and rerun a query that a live search should answer:
+Save the following as `compare_policy.py` alongside `policy_agent.py`, then run `python compare_policy.py`. Each outer span groups all the nodes from one graph invocation under a single trace ID.
 
 ```python
-weak_tool = Tool(
-    name="google_search",
-    description="Use this to search Google.",
-    func=search.run,
-)
+from policy_agent import UUID, HumanMessage, SystemMessage, ToolMessage, provider, tracer
+from policy_graph import app
 
-# reassigning the module-level `llm` is enough: agent_node reads it by name on every call
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools([weak_tool])
-
-failure_query = "What is Stripe's current per-transaction fee for US card payments?"
-config = {"configurable": {"thread_id": "failure-demo-weak"}}
-output = app.invoke({"messages": [HumanMessage(content=failure_query)]}, config)
-output["messages"][-1].pretty_print()
+question = "Within how many days does Ridgeline offer free buckle repairs?"
+ids = []
+for use_lookup in (False, True):
+    label = "with-lookup" if use_lookup else "without-lookup"
+    with tracer.start_as_current_span(label) as span:
+        result = app.invoke({"use_lookup": use_lookup, "messages": [
+            SystemMessage(content="Answer from the written policy. If you have no policy, say you don't know."),
+            HumanMessage(content=question),
+        ]})
+        answer = result["messages"][-1].content
+        calls = sum(isinstance(msg, ToolMessage) for msg in result["messages"])
+        print(f"{label}: {calls} tool replies; {answer}")
+        span.set_attribute("raw.input", question)
+        span.set_attribute("raw.output", answer)
+        ids.append(str(UUID(int=span.get_span_context().trace_id)))
+provider.force_flush()
+print(*ids)
 ```
 
-With the vague description, the model tends to answer from training data instead of calling the tool. Open this trace: there is a single **agent** span and no **tool** span, and Completeness and Groundedness on that span score low, because the answer isn't grounded in anything the trace actually retrieved.
+## Read the traces
 
-Rebind the original, specific tool description and rerun the same query on a new thread:
+Open **Observe** and select `ridgeline-policy-agent`. Look up the two printed trace IDs in order. The first run has no tool reply. In the second run, expand the `repair_policy` call and compare its output (45 days) with the final model response. Wording varies. A tool span proves a lookup ran; it does not prove the model used the returned policy correctly.
 
-```python
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools([google_tool])
-
-config = {"configurable": {"thread_id": "failure-demo-fixed"}}
-output = app.invoke({"messages": [HumanMessage(content=failure_query)]}, config)
-output["messages"][-1].pretty_print()
-```
-
-This time the trace shows **agent → tool → agent**: Tool_Calling on the tool span passes, and Completeness and Groundedness on the final agent span score noticeably higher than the first run, because the answer is now grounded in the search result. The tool's description, not just its presence, decides whether the model uses it.
-
-</Step>
-<Step title="Read the traces and eval scores">
-
-Open [app.futureagi.com](https://app.futureagi.com) and go to the `LangGraph-Google-Search-App` project. Each of the three queries from Step 6 is a separate trace: an **agent** span shows the model's reasoning, a **tool** span shows the `google_search` call and its result, and a second **agent** span shows the model turning that result into an answer.
-
-Open a trace and check the eval scores attached to each span: Completeness and Groundedness on the agent spans, Tool_Calling on the tool span, Hallucination on the last agent span.
-
-</Step>
-</Steps>
+For ongoing quality scores rather than a manual check, [configure an Observe Eval Task](/docs/cookbook/observe-langgraph-agent-and-obtain-insights). Registering this Observe project does not by itself schedule evaluations.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `ImportError: No module named 'traceai_langchain'` | Package not installed, or installed into a different interpreter than the one running the script | `pip install traceai-langchain` (the import path uses underscores: `traceai_langchain`) |
-| `AttributeError: EVALUATE_LLM_FUNCTION_CALLING` | Used the TypeScript SDK's enum name in Python | Use `EvalName.EVALUATE_FUNCTION_CALLING` |
-| No spans appear in the dashboard | `register()` was called after `LangChainInstrumentor().instrument()`, or `FI_API_KEY`/`FI_SECRET_KEY` are unset | Call `register()` first and pass its `trace_provider` into `instrument()`; verify both keys are exported |
-| `google_tool.invoke()` raises a 403 | `GOOGLE_API_KEY` isn't enabled for the Custom Search API, or `GOOGLE_CSE_ID` is wrong | Enable the Custom Search API on the Google Cloud project tied to the key, and confirm the CSE ID matches the search engine you created |
-| Eval scores show as `null` on a span | The `mapping` keys don't match the span's actual attribute names for that span kind | Confirm `raw.input`/`raw.output` exist on the span kind you tagged |
-| Agent always answers without calling the tool | The tool's description doesn't signal when to use it, or the query is something the model already knows from training | Tighten the tool description (see Step 7), or ask about current pricing, live status, or a policy that changes often |
-| Same `thread_id` across runs returns stale conversation state | `MemorySaver` checkpoints by `thread_id`; reusing one carries over prior messages | Use a unique `thread_id` per independent conversation, as the example loop does with `multi-tool-agent-{i}` |
-
-Continue to [Observing a LangGraph agent and obtaining insights](/docs/cookbook/observe-langgraph-agent-and-obtain-insights) to group these traces by session and user and set up an Eval Task that scores them automatically.
+- **No tool span:** Check that you opened `with-lookup` and that `LangChainInstrumentor().instrument()` ran before the graph was invoked.
+- **No traces:** Check both Future AGI credentials and the collector URL. Flush the provider before exiting a short script.
+- **`traceai_langchain` not found:** Check that the active Python environment has `traceai-langchain` installed; the import name uses an underscore.

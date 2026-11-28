@@ -1,7 +1,7 @@
 ---
 title: "PDF RAG Chatbot with MongoDB Atlas and Future AGI"
 slug: "mongodb"
-description: "Build a PDF RAG chatbot on MongoDB Atlas vector search, instrument it with traceAI, and score every answer with Observe evals."
+description: "Build a PDF RAG chatbot on MongoDB Atlas vector search, instrument it with traceAI, and inspect retrieval and grounding with Observe evals."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -21,7 +21,7 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Build a PDF RAG chatbot that stores chunks and embeddings in [MongoDB Atlas](https://www.mongodb.com/products/platform/atlas-database) vector search and answers with a LangChain `RetrievalQA` chain. Instrument it with [traceAI](/docs/integrations/traceai) so every question produces a trace, attach an Observe Eval Task that scores retrieval and grounding, and read a trace where the score catches a wrong answer a healthy-looking pipeline would otherwise hide.
+Build a PDF RAG chatbot that stores chunks and embeddings in [MongoDB Atlas](https://www.mongodb.com/products/platform/atlas-database) vector search and answers with a LangChain `RetrievalQA` chain. Instrument it with [traceAI](/docs/integrations/traceai) so every question produces a trace, attach an Observe Eval Task that scores retrieval and grounding, and compare the answer with the actual chunk the model saw.
 </TLDR>
 
 | Time | Difficulty | Package |
@@ -32,21 +32,23 @@ Build a PDF RAG chatbot that stores chunks and embeddings in [MongoDB Atlas](htt
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
 - An `OPENAI_API_KEY`
-- A MongoDB Atlas cluster with a connection string (a free M0 cluster works)
-- Python 3.11
+- A MongoDB Atlas cluster with Vector Search and permission to create a collection and search index, or Docker on Linux for Atlas Local
+- Bash, Python 3.12 and a fresh working directory
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install fi-instrumentation-otel traceAI-langchain langchain langchain-community langchain-openai langchain-text-splitters langchain-mongodb pymongo pypdf
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install fi-instrumentation-otel==1.5.1 traceAI-langchain==0.1.12 langchain-core==0.3.86 langchain-openai==0.3.35 langchain-mongodb==0.7.2 langchain-text-splitters==0.3.11 pypdf reportlab
 ```
 
 ```bash
 export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
 export OPENAI_API_KEY="your-openai-api-key"
-export MONGODB_ATLAS_URI="your-mongodb-connection-string"
+export FI_TRACES_URL="https://api.futureagi.com"  # use your HTTP collector when self-hosting
 ```
 
 ## Tutorial
@@ -55,120 +57,134 @@ export MONGODB_ATLAS_URI="your-mongodb-connection-string"
 
 <Step title="Instrument the pipeline with traceAI">
 
-Register a trace provider and instrument LangChain before you build anything else, so every chain call you write from here on is traced automatically.
+Save as `tracing.py`. Register the Observe provider before running the chain. The outer span will record the question, retrieved policy and final answer together so an eval can use all three.
 
 ```python
+from uuid import UUID
 from fi_instrumentation import register
 from fi_instrumentation.fi_types import ProjectType
 from traceai_langchain import LangChainInstrumentor
 
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
-    project_name="langchain_mongodb_project",
-)
-
+trace_provider = register(project_type=ProjectType.OBSERVE,
+                          project_name="langchain_mongodb_project",
+                          set_global_tracer_provider=True, verbose=False)
 LangChainInstrumentor().instrument(tracer_provider=trace_provider)
+tracer = trace_provider.get_tracer(__name__)
 ```
-
-- `register()` sets up an OpenTelemetry tracer that ships spans to Future AGI.
-- `LangChainInstrumentor().instrument()` auto-instruments LangChain so every embedding, retriever, and LLM call in the chain becomes a span with model name, token usage, prompt, and latency attached.
-
-**You should see** no errors on import, and the `langchain_mongodb_project` project appear under **Observe → Traces** once you run the first query in step 4.
 
 </Step>
+<Step title="Store the policy and create the vector index">
 
-<Step title="Point MongoDB Atlas at your embedding dimension">
-
-MongoDB Atlas needs to know the exact vector length before it can index it, and that length depends on the embedding model. Detect it at runtime instead of hardcoding it, so switching models later doesn't silently break the index.
-
-```python
-from langchain_openai import OpenAIEmbeddings
-
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-dimension = len(embeddings.embed_query("dimension probe"))
-print(f"embedding dimension: {dimension}")
-```
-
-Use that `dimension` value when you create the Atlas Vector Search index (`vector` on current Atlas clusters, `knnVector` as a legacy fallback on older ones), with cosine similarity as the metric. Create the index in the Atlas UI's Search tab or with the Atlas CLI, using this definition:
-
-```json
-{
-  "name": "vector_index",
-  "type": "vectorSearch",
-  "fields": [
-    {
-      "type": "vector",
-      "path": "embedding",
-      "numDimensions": 1536,
-      "similarity": "cosine"
-    }
-  ]
-}
-```
-
-**You should see** `embedding dimension: 1536` printed for `text-embedding-3-small`. If Atlas rejects the index definition, the dimension in the index doesn't match this value.
-
-</Step>
-
-<Step title="Ingest a PDF into the vector store">
-
-Extract the document, split it into overlapping chunks so context survives page boundaries, embed each chunk, and write it to the Atlas collection you indexed in step 2.
+Save as `policy_store.py`. The example writes a two-page Ridgeline policy PDF and creates a **new collection** in `rag_demo` for each run. `PyPDFLoader` keeps page metadata, and the splitter adds overlap within each page. The vector index definition uses the dimension reported by the actual embedding model. Insert the chunks before building the index, then wait for it to become queryable.
 
 ```python
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_mongodb import MongoDBAtlasVectorSearch
-from pymongo import MongoClient
 import os
+import time
+from uuid import uuid4
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_mongodb import MongoDBAtlasVectorSearch
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pymongo import MongoClient
+from pymongo.operations import SearchIndexModel
+from reportlab.pdfgen.canvas import Canvas
 
-client = MongoClient(os.environ["MONGODB_ATLAS_URI"])
-collection = client["rag_demo"]["pdf_chunks"]
 
-pages = PyPDFLoader("refund-policy.pdf").load()
-splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-chunks = splitter.split_documents(pages)
+def build_store():
+    pdf = "ridgeline-refund-policy.pdf"
+    canvas = Canvas(pdf)
+    for text in ("Final-sale items cannot be refunded, even within 30 days.",
+                 "Full-price boots can be returned unworn within 30 days of delivery."):
+        canvas.drawString(50, 760, text)
+        canvas.showPage()
+    canvas.save()
+    pages = PyPDFLoader(pdf).load()
+    chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150).split_documents(pages)
 
-vector_store = MongoDBAtlasVectorSearch.from_documents(
-    documents=chunks,
-    embedding=embeddings,
-    collection=collection,
-    index_name="vector_index",
-)
-print(f"indexed {len(chunks)} chunks")
+    client = MongoClient(os.environ["MONGODB_ATLAS_URI"], serverSelectionTimeoutMS=30000)
+    collection = client["rag_demo"].create_collection("policy_" + uuid4().hex[:12])
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", check_embedding_ctx_length=False)
+    dimension = len(embeddings.embed_query("dimension probe"))
+    store = MongoDBAtlasVectorSearch(collection, embeddings, index_name="vector_index",
+                                     auto_create_index=False)
+    ids = store.add_documents(chunks)
+    print(f"{collection.full_name}: stored {len(ids)} chunks with {dimension} dimensions")
+    collection.create_search_index(SearchIndexModel(name="vector_index", type="vectorSearch",
+        definition={"fields": [{"type": "vector", "path": "embedding",
+                                "numDimensions": dimension, "similarity": "cosine"}]}))
+    for _ in range(120):
+        status = list(collection.list_search_indexes("vector_index"))
+        if status and status[0].get("queryable"):
+            return store
+        if status and status[0].get("status") == "FAILED":
+            raise RuntimeError("Vector index build failed; check the index definition")
+        time.sleep(2)
+    raise TimeoutError("Vector index is not yet queryable")
 ```
 
-**You should see** `indexed N chunks` printed, and that many documents in the `rag_demo.pdf_chunks` collection in Atlas.
-
 </Step>
+<Step title="Retrieve a chunk and answer the question">
 
-<Step title="Answer a question with RetrievalQA">
-
-Retrieve the top matching chunks for a question and pass them to the model through a `RetrievalQA` chain, so answers stay grounded in the document instead of the model's own knowledge.
+Save as `ask_policy.py`. Ask for one source so you can check exactly which policy was supplied. The chain returns both the answer and its source documents. Inspect the evidence rather than assuming that retrieval guarantees a correct answer.
 
 ```python
+from tracing import UUID, trace_provider, tracer
+from policy_store import build_store
 from langchain.chains import RetrievalQA
 from langchain_openai import ChatOpenAI
 
-retriever = vector_store.as_retriever(search_kwargs={"k": 6})
-qa_chain = RetrievalQA.from_chain_type(
+store = build_store()
+qa = RetrievalQA.from_chain_type(
     llm=ChatOpenAI(model="gpt-4o-mini", temperature=0),
-    retriever=retriever,
-    return_source_documents=True,
+    retriever=store.as_retriever(search_kwargs={"k": 1}), return_source_documents=True,
 )
-
-response = qa_chain.invoke({"query": "Can I get a refund on a final-sale item?"})
-print(response["result"])
-
+question = "Can I get a refund for a final-sale item?"
+with tracer.start_as_current_span("answer-policy-question") as span:
+    response = qa.invoke({"query": question})
+    context = "\n".join(doc.page_content for doc in response["source_documents"])
+    if not context:
+        raise RuntimeError("No policy was retrieved; check the index before evaluating the answer")
+    answer = response["result"]
+    span.set_attribute("raw.input", question)
+    span.set_attribute("raw.context", context)
+    span.set_attribute("raw.output", answer)
+    trace_id = UUID(int=span.get_span_context().trace_id)
+    print("Retrieved:", context)
+    print("Answer:", answer)
 trace_provider.force_flush()
+print(trace_id)
 ```
 
-**You should see** an answer printed, and a new trace in **Observe → Traces → `langchain_mongodb_project`** with an embedding span, a retriever span, and an LLM span underneath it.
+</Step>
+<Step title="Run on Atlas or Atlas Local">
+
+**Hosted Atlas:** Set `MONGODB_ATLAS_URI` in your environment using your cluster's connection string, allow your client IP in Atlas, and run `python ask_policy.py`. The collection printed by the script remains in your cluster. Remove only your demo collection when you no longer need it.
+
+**Atlas Local:** If you don't have a hosted cluster, save the following as `run_local.sh` and run `bash run_local.sh`. Docker starts MongoDB with Vector Search, binds it to a temporary loopback port and removes the demo container when the script exits. The Future AGI trace remains available in either case.
+
+```bash
+set -eu
+container=$(docker run --detach --rm -p 127.0.0.1::27017 mongodb/mongodb-atlas-local:8.0)
+trap 'docker stop "$container" >/dev/null' EXIT
+for attempt in {1..120}; do
+  health=$(docker inspect --format '{{.State.Health.Status}}' "$container")
+  if [[ $health == healthy ]]; then break; fi
+  if [[ $health == unhealthy ]]; then break; fi
+  sleep 2
+done
+if [[ $health != healthy ]]; then printf 'Atlas Local did not start\n' >&2; exit 1; fi
+address=$(docker port "$container" 27017/tcp)
+export MONGODB_ATLAS_URI="mongodb://${address}/?directConnection=true"
+python ask_policy.py
+```
+
+Look for `2 chunks with 1536 dimensions`, the final-sale policy and the answer. Open the last printed ID in **Observe → Traces → `langchain_mongodb_project`** and expand the retriever and model spans.
 
 </Step>
 
 <Step title="Score retrieval and grounding with an Eval Task">
 
-Configure evals in the platform as an **Eval Task**, not from the SDK, so every future question through this chain gets scored the same way. Create the task on `langchain_mongodb_project` and pick evals that isolate each layer of the pipeline:
+Configure evals in the platform as an **Eval Task**, not from the SDK, if you want matching questions through this chain scored consistently. Filter for the `answer-policy-question` span and map question, retrieved context and answer to its `raw.input`, `raw.context` and `raw.output` fields. Create the task on `langchain_mongodb_project` and pick evals that isolate each layer of the pipeline:
 
 - **Context Relevance**: did retrieval fetch chunks that answer the question?
 - **Context Adherence**: did the answer stay inside the retrieved chunks?
@@ -193,9 +209,7 @@ Open a trace and compare the retrieved chunk against the answer directly. This i
 
 *Span hierarchy, input/output, and per-span eval scores on one trace*
 
-On the final-sale question, Context Relevance scores high (the refund policy chunk was retrieved) but Context Adherence scores low: the retrieved policy says final-sale items aren't refundable, and the answer promises a refund anyway. Task Completion alone would have called this a good answer; Context Adherence is what catches it.
-
-**You should see** a low Context Adherence score on that specific trace, with Context Relevance staying high on the same trace, pointing the failure at generation rather than retrieval.
+For the final-sale question, the retrieved chunk should rule out a refund. If the answer nevertheless promises one, retrieval found the relevant policy but generation contradicted it. A relevance score alone would miss that distinction. Compare the actual scores and reasons on a sampled span; no particular score is guaranteed.
 
 </Step>
 
@@ -225,8 +239,8 @@ Triggered alerts land in a single dashboard across projects, so you can see whic
 |---|---|---|
 | No trace in Observe after step 4 | `register()` or `.instrument()` ran after building the chain, or the script exited before flush | Instrument before any chain call; call `trace_provider.force_flush()` before exit |
 | `LangChainInstrumentor` import error | Ran without `traceAI-langchain` installed, or imported `LangChainInstrumentor` from `fi_instrumentation` instead of `traceai_langchain` | `pip install traceAI-langchain`; import from `traceai_langchain`, not `fi_instrumentation` |
-| Atlas rejects the vector index definition | Index `dimensions` doesn't match the embedding model's output length | Re-run the dimension probe from step 2 and use that exact value |
-| `MongoDBAtlasVectorSearch.from_documents` hangs or times out | Cluster network access doesn't allow your IP, or the URI is missing the database name | Add your IP in Atlas Network Access; confirm `MONGODB_ATLAS_URI` includes a database name |
+| Atlas rejects the vector index definition | Index `numDimensions` doesn't match the embedding model's output length | Use the printed vector dimension as `numDimensions` |
+| `MongoClient` fails to connect | The cluster is unreachable, or the connection credentials are incorrect | Add your IP in Atlas Network Access; check the URI, cluster permissions and credentials |
 | Retrieval returns 0 chunks | `index_name` in the retriever doesn't match the Atlas Search index name | Use the exact index name you created in Atlas, not the collection name |
 | Eval Task shows no scores after several minutes | It ran before any trace existed, or the span didn't carry `INPUT_VALUE` / `OUTPUT_VALUE` | Send at least one traced query first; confirm the LLM span has input and output set |
 | Context Adherence is high but the answer is still wrong | The eval is mapped to the wrong span or the wrong context field | Re-check the Eval Task's field mapping against the retriever span's output |

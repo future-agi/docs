@@ -9,11 +9,15 @@ description: "Run evaluations at scale with blocking, async, or distributed exec
 - Built-in resilience: circuit breakers, rate limiting, retries, graceful degradation
 </TLDR>
 
-The `FrameworkEvaluator` runs evaluations across execution modes — synchronous for development, async for low-latency production, or distributed across workers for scale. Wrap any evaluation (built-in or custom) and the framework handles orchestration, error recovery, and OpenTelemetry span enrichment.
+The `FrameworkEvaluator` runs evaluations in three ways: wait for results, collect them later from a future, or submit work to a backend. Local scorers return in-memory results; calling a hosted evaluation from a scorer also creates a hosted evaluation record.
 
-<Note>
-  Requires `pip install ai-evaluation`. For distributed backends, also install: `ai-evaluation[celery]`, `ai-evaluation[ray]`, or `ai-evaluation[temporal]`.
-</Note>
+Start in a fresh Python environment. Run the interactive examples in order; the Celery client and hosted example below are separate scripts.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7
+```
 
 ## Quick Example
 
@@ -26,7 +30,8 @@ def check_length(inputs):
     return {"score": min(length / 100, 1.0), "passed": length > 20}
 
 evaluator = blocking_evaluator(check_length)
-result = evaluator.run({"response": "This is a detailed answer with enough content."})
+reply = {"response": "You can return an unused pack within 30 days of delivery."}
+result = evaluator.run(reply)
 
 print(result.batch.success_rate)  # 1.0
 for r in result.batch.results:
@@ -48,8 +53,8 @@ Runs evaluations and waits for results.
 ```python
 from fi.evals.framework import blocking_evaluator
 
-evaluator = blocking_evaluator(eval1, eval2, eval3, fail_fast=True)
-result = evaluator.run({"response": "...", "context": "..."})
+evaluator = blocking_evaluator(check_length, fail_fast=True)
+result = evaluator.run(reply)
 
 print(result.batch.success_rate)
 for r in result.batch.results:
@@ -63,79 +68,102 @@ Returns immediately with a future. Results compute in background threads.
 ```python
 from fi.evals.framework import async_evaluator
 
-evaluator = async_evaluator(eval1, eval2, max_workers=8)
-result = evaluator.run({"response": "..."})
-
-# Do other work...
-batch = result.wait(timeout=30)
-print(batch.success_rate)
+with async_evaluator(check_length, max_workers=8) as evaluator:
+    result = evaluator.run(reply)
+    # Do other work before collecting the result.
+    batch = result.wait(timeout=30)
+    print(batch.success_rate)  # 1.0
 ```
 
 ### Distributed
 
-Sends evaluations to a backend for execution across workers.
+`distributed_evaluator()` submits one task per evaluation and collects the results before `run()` returns. Start with the same contract on a local thread pool:
 
 ```python
 from fi.evals.framework import distributed_evaluator
-from fi.evals.framework.backends import CeleryBackend, CeleryConfig
+from fi.evals.framework.backends import ThreadPoolBackend, ThreadPoolConfig
 
-backend = CeleryBackend(CeleryConfig(broker_url="redis://localhost:6379"))
-evaluator = distributed_evaluator(eval1, eval2, backend=backend)
-result = evaluator.run({"response": "..."})
+backend = ThreadPoolBackend(ThreadPoolConfig(max_workers=2, timeout_seconds=30))
+with distributed_evaluator(check_length, backend=backend) as evaluator:
+    batch = evaluator.run(reply).batch
+    print(batch.results[0].value.passed)  # True
 ```
 
 ## Backends
 
-### ThreadPool (default)
+### ThreadPool
 
-Used by `async_evaluator()`. No extra dependencies.
-
-```python
-from fi.evals.framework.backends import ThreadPoolBackend, ThreadPoolConfig
-
-backend = ThreadPoolBackend(ThreadPoolConfig(max_workers=8, timeout_seconds=60))
-```
+The explicit backend above runs in your process. For `async_evaluator()`, set `max_workers` on the factory instead; the result is a future. Neither option requires a queue or another service.
 
 ### Celery
 
-Distributed task queue. Requires `pip install ai-evaluation[celery]`.
+To run the scorer in a **separate worker process**, install Celery and its SQLAlchemy transport. This single-machine example uses private SQLite files as a disposable broker and result store. For multiple machines, use a shared, access-controlled broker and result backend. Only trusted clients should have write access: the worker deserializes Python callables.
+
+```bash
+python -m pip install 'celery[sqlalchemy]>=5.4,<6' cloudpickle
+```
+
+Save this client as `distributed_check.py`. The worker and client must use the same kit version, queue and connection settings.
 
 ```python
+import os
+from fi.evals.framework import distributed_evaluator, simple_eval
 from fi.evals.framework.backends import CeleryBackend, CeleryConfig
 
+check_length = simple_eval("min_length", lambda x: float(len(x["response"]) >= 20))
 backend = CeleryBackend(CeleryConfig(
-    broker_url="redis://localhost:6379",
-    max_workers=16,
-    timeout_seconds=300,
+    broker_url=os.environ["CELERY_BROKER_URL"],
+    result_backend=os.environ["CELERY_RESULT_BACKEND"],
+    task_queue="pack_checks",
+    timeout_seconds=60,
 ))
+with distributed_evaluator(check_length, backend=backend) as evaluator:
+    row = evaluator.run({"response": "Your pack is ready for pickup."}).batch.results[0]
+    if row.error:
+        raise RuntimeError(row.error)
+    print(f"{row.eval_name}: passed={row.value.passed}")  # min_length: passed=True
+```
+
+Run this in Bash from the directory containing the client. The subshell stops its worker and removes its temporary queue files when the client exits.
+
+```bash
+(
+  set -eu
+  queue_dir=$(mktemp -d)
+  export CELERY_BROKER_URL="sqla+sqlite:///$queue_dir/broker.sqlite"
+  export CELERY_RESULT_BACKEND="db+sqlite:///$queue_dir/results.sqlite"
+  celery -A fi.evals.framework.backends.celery_worker worker --pool=solo \
+    --without-gossip --without-mingle --without-heartbeat -Q pack_checks \
+    > "$queue_dir/worker.log" 2>&1 &
+  worker_pid=$!
+  trap 'kill "$worker_pid" 2>/dev/null || :; wait "$worker_pid" || :; rm -rf "$queue_dir"' EXIT
+  python distributed_check.py
+)
 ```
 
 ### Ray
 
-Distributed computing. Requires `pip install ai-evaluation[ray]`.
+`RayConfig` describes how to connect to Ray; it does not start a cluster. For an existing Ray deployment, install the compatible `ray` client before constructing `RayBackend(config)`.
 
 ```python
-from fi.evals.framework.backends import RayBackend, RayConfig
+from fi.evals.framework.backends import RayConfig
 
-backend = RayBackend(RayConfig(max_workers=32))
+config = RayConfig(address="auto", num_cpus=1, namespace="pack-checks")
 ```
 
 ### Temporal
 
-Durable workflow execution. Requires `pip install ai-evaluation[temporal]`.
+`TemporalConfig` names the server, namespace and queue. To submit work, you also need `temporalio`, a reachable Temporal server and a worker polling that queue. Creating the config below makes no network call.
 
 ```python
-from fi.evals.framework.backends import TemporalBackend, TemporalConfig
+from fi.evals.framework.backends import TemporalConfig
 
-backend = TemporalBackend(TemporalConfig(
-    host="localhost:7233",
-    namespace="evaluations",
-))
+config = TemporalConfig(host="localhost:7233", namespace="default", task_queue="pack-checks")
 ```
 
 ## Resilience
 
-Wrap any backend with circuit breakers, rate limiting, retries, and graceful degradation.
+Apply a circuit breaker, rate limit and retries to task submission. These settings do not turn a failing score into a pass. If you add a fallback backend, use a different backend name from the primary: version 0.3.7 uses that name to route result lookups.
 
 ```python
 from fi.evals.framework import resilient_evaluator
@@ -144,16 +172,17 @@ from fi.evals.framework.resilience import (
 )
 
 evaluator = resilient_evaluator(
-    eval1, eval2,
+    check_length,
     resilience=ResilienceConfig(
         circuit_breaker=CircuitBreakerConfig(failure_threshold=5, timeout_seconds=30),
         rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
         retry=RetryConfig(max_retries=3, exponential_base=2.0, jitter=True),
     ),
-    fallback_backend=ThreadPoolBackend(),
 )
 
-result = evaluator.run({"response": "..."})
+with evaluator:
+    result = evaluator.run(reply)
+    print(result.batch.results[0].value.passed)  # True
 ```
 
 ### Presets
@@ -201,18 +230,24 @@ from fi.evals.framework import EvalBuilder
 my_eval = (
     EvalBuilder("custom_relevance")
     .version("2.0.0")
-    .require("response", "query")
+    .required_fields(["response", "query"])
     .threshold(0.8)
     .evaluator(lambda inputs: {
-        "score": 0.9,
-        "passed": True,
-        "details": {"method": "keyword_overlap"},
+        "score": float(inputs["query"].lower() in inputs["response"].lower()),
+        "passed": inputs["query"].lower() in inputs["response"].lower(),
     })
     .build()
 )
+
+with blocking_evaluator(check_tone, length_check, my_eval) as evaluator:
+    batch = evaluator.run({**reply, "query": "pack"}).batch
+    for row in batch.results:
+        print(row.eval_name, row.value.passed)
 ```
 
 ### Mixing custom + built-in
+
+Set `FI_API_KEY` and `FI_SECRET_KEY` for your Future AGI account. Save this as `mixed_checks.py` and run `python mixed_checks.py`. The toxicity check uses the hosted API; the length check stays local. The last line is the hosted evaluation ID.
 
 ```python
 from fi.evals.framework import blocking_evaluator, custom_eval, simple_eval
@@ -221,12 +256,19 @@ from fi.evals import evaluate as run_eval
 @custom_eval(name="toxicity_wrapper", required_fields=["response"])
 def toxicity_check(inputs):
     result = run_eval("toxicity", output=inputs["response"], model="turing_flash")
-    return {"score": result.score, "passed": result.passed}
+    if result.score is None or result.error:
+        raise RuntimeError("The hosted toxicity check did not return a score")
+    return {"score": result.score, "passed": result.passed, "eval_id": result.metadata["eval_id"]}
 
 length_check = simple_eval("min_length", lambda i: min(len(i["response"]) / 100, 1.0))
 
 evaluator = blocking_evaluator(toxicity_check, length_check)
-result = evaluator.run({"response": "This is a helpful answer."})
+result = evaluator.run({"response": "You can exchange the hiking pack at any of our stores."})
+for row in result.batch.results:
+    if row.error:
+        raise RuntimeError(row.error)
+    print(row.eval_name, row.value.score, row.value.passed)
+print(result.batch.get_by_name("toxicity_wrapper")[0].value.details["eval_id"])
 ```
 
 ## Result Types
@@ -237,7 +279,7 @@ Returned by `evaluator.run()`.
 
 | Field/Method | Type | Description |
 |-------------|------|-------------|
-| `.batch` | BatchEvalResult | Results (blocking mode) |
+| `.batch` | BatchEvalResult | Results (blocking and distributed modes) |
 | `.future` | BatchEvalFuture | Future (non-blocking mode) |
 | `.is_future` | bool | Whether result is a future |
 | `.wait(timeout)` | BatchEvalResult | Block until done |
@@ -246,13 +288,13 @@ Returned by `evaluator.run()`.
 
 | Field/Method | Type | Description |
 |-------------|------|-------------|
-| `.success_rate` | float | 0.0 to 1.0 |
+| `.success_rate` | float | Fraction that completed, not fraction with a passing score |
 | `.avg_latency_ms` | float | Average per-evaluation time |
 | `.total_count` | int | Number of evaluations |
-| `.success_count` | int | Passed evaluations |
-| `.failure_count` | int | Failed evaluations |
+| `.success_count` | int | Evaluations that completed, regardless of verdict |
+| `.failure_count` | int | Execution failures |
 | `.get_by_name(name)` | list | Results for a specific evaluation |
-| `.get_failures()` | list | Only failed results |
+| `.get_failures()` | list | Only results with a failed execution status |
 
 ## Related
 
@@ -264,7 +306,7 @@ Returned by `evaluator.run()`.
     Real-time token-level evaluation.
   </Card>
   <Card title="Cloud Evals" icon="bolt" href="/docs/sdk/evals/cloud-evals">
-    100+ pre-built Turing templates.
+    Hosted Turing templates.
   </Card>
   <Card title="Feedback Loops" icon="arrows-rotate" href="/docs/sdk/evals/feedback">
     Improve scoring accuracy over time.

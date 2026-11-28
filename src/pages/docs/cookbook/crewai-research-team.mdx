@@ -1,7 +1,7 @@
 ---
 title: "Trace and evaluate a CrewAI research crew"
 slug: "crewai-research-team"
-description: "Instrument a CrewAI multi-agent research crew with traceAI and read completeness, groundedness, and context relevance scores off its spans in Observe."
+description: "Trace four CrewAI tasks in Observe, inspect the evidence passed to the report writer, and configure evals for future runs."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -20,263 +20,131 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Build a four-agent CrewAI research crew (market researcher, competitive analyst, report writer, quality analyst), auto-instrument it with traceAI, and attach a platform Eval Task so completeness, groundedness, and context relevance scores land on every span in Observe.
+Trace a four-agent research crew as it turns a Ridgeline Outfitters field brief into a recommendation. Inspect the report writer's inputs in Observe before you decide which spans to evaluate.
 </TLDR>
 
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 25 min | Intermediate | `traceai-crewai` |
-
 <Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- OpenAI API key
-- SerperDev API key for web search ([serper.dev](https://serper.dev))
-- Python 3.11+
+- A Future AGI account with `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
+- An OpenAI API key
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
+Run these commands in an empty directory. Save all three Python files below in that directory.
+
 ```bash
-pip install crewai crewai_tools traceai-crewai fi-instrumentation-otel openai
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install crewai==1.15.44 traceai-crewai==0.1.11 fi-instrumentation-otel==1.5.1
 ```
 
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
 export FI_API_KEY="your-futureagi-api-key"
 export FI_SECRET_KEY="your-futureagi-secret-key"
-export SERPER_API_KEY="your-serper-api-key"
+export CREWAI_DISABLE_TELEMETRY=true
+export CREWAI_TRACING_ENABLED=false
 ```
+
+Only if you self-host, set `export FI_TRACES_URL=https://your-collector.example.com` to the base URL of your trace collector.
 
 ## Tutorial
 
 <Steps>
 <Step title="Register the trace provider and instrument CrewAI">
 
-`CrewAIInstrumentor` wraps CrewAI's internal execution methods so every agent run, tool call, and task produces a span automatically. Because this project is registered as `ProjectType.OBSERVE`, you configure evals as a platform Eval Task attached to those spans later, rather than calling an evaluator from code.
+Save this as `crew_tracing.py`. The instrumentor wraps `Crew.kickoff` and task execution. Register it before running the crew.
 
 ```python
-from crewai import LLM, Agent, Crew, Process, Task
-from crewai_tools import SerperDevTool, FileReadTool
-from fi_instrumentation import register, FITracer
+from fi_instrumentation import register
 from fi_instrumentation.fi_types import ProjectType
 from traceai_crewai import CrewAIInstrumentor
 
-trace_provider = register(
-    project_type=ProjectType.OBSERVE,
+provider = register(
     project_name="crewai-research-team",
-    set_global_tracer_provider=True,
+    project_type=ProjectType.OBSERVE,
+    verbose=False,
 )
-
-# Auto-instruments crewai.Task._execute_core and crewai.Crew.kickoff.
-# No manual spans needed for the crew's own execution.
-CrewAIInstrumentor().instrument(tracer_provider=trace_provider)
-
-tracer = FITracer(trace_provider.get_tracer(__name__))
+CrewAIInstrumentor().instrument(tracer_provider=provider)
 ```
 
-You should see no output here beyond a clean exit. The instrumentor is now active for every CrewAI call in the process.
-
 </Step>
-<Step title="Define the research team agents">
+<Step title="Define the research team and its sources">
 
-Four specialized agents, each with a narrow role. `allow_delegation=False` keeps the sequential process predictable: each agent runs once, in order.
+Save this as `research_team.py`. Each specialist uses the same model. The two labeled notes are the crew's entire evidence base; no search account or embeddings are needed.
 
 ```python
-llm = LLM(model="gpt-4o", temperature=0.7, max_tokens=2000)
+from crewai import Agent, LLM, Task
 
-market_researcher = Agent(
-    role="Senior Market Research Analyst",
-    goal="Research and analyze emerging technology trends and market dynamics",
-    backstory=(
-        "You are a market research analyst with 15 years in technology markets. "
-        "You favor data-backed claims over speculation."
-    ),
-    llm=llm,
-    tools=[SerperDevTool()],
-    allow_delegation=False,
-)
+llm = LLM(model="gpt-4o-mini", temperature=0)
 
-competitive_analyst = Agent(
-    role="Competitive Intelligence Specialist",
-    goal="Analyze competitive landscapes and identify market opportunities",
-    backstory=(
-        "You analyze competitor strategies and market positioning to find gaps "
-        "a new entrant could exploit."
-    ),
-    llm=llm,
-    tools=[SerperDevTool()],
-    allow_delegation=False,
-)
+def specialist(role, goal):
+    return Agent(role=role, goal=goal, backstory="You advise Ridgeline Outfitters. Cite only the supplied notes.",
+                 llm=llm, allow_delegation=False)
 
-report_writer = Agent(
-    role="Technical Report Writer",
-    goal="Create a comprehensive, well-structured research report",
-    backstory="You turn raw research into executive summaries and recommendations.",
-    llm=llm,
-    tools=[FileReadTool()],
-    allow_delegation=False,
-)
+researcher = specialist("Market researcher", "Identify what shoppers asked for.")
+analyst = specialist("Competitive analyst", "Identify differences between the two offers.")
+writer = specialist("Report writer", "Recommend one action supported by the evidence.")
+reviewer = specialist("Quality analyst", "Flag unsupported claims in the recommendation.")
 
-quality_analyst = Agent(
-    role="Research Quality Assurance Specialist",
-    goal="Verify accuracy and completeness of the research findings",
-    backstory="You fact-check claims and flag logical gaps before a report ships.",
-    llm=llm,
-    allow_delegation=False,
+brief = (
+    "Note A: In 40 Ridgeline store interviews, 19 shoppers asked for a lighter daypack. "
+    "Note B: Ridgeline's pack weighs 680 g; the comparison pack weighs 560 g. "
+    "No sales or pricing data was collected."
 )
+market = Task(agent=researcher, description=f"Summarize demand using only this brief: {brief}",
+              expected_output="One sentence citing Note A.")
+competition = Task(agent=analyst, description=f"Compare pack weights using only this brief: {brief}",
+                   expected_output="One sentence citing Note B.")
+report = Task(agent=writer, description="Use both findings to recommend a next step. Name one unknown.",
+              expected_output="A two-sentence recommendation with note labels.", context=[market, competition])
+review = Task(agent=reviewer, description=f"Check the report against this brief: {brief}",
+              expected_output="A pass/fail verdict and a reason.", context=[report])
 ```
 
-You should see the four `Agent` objects construct without error. Nothing runs yet.
+`context=[market, competition]` explicitly selects the findings the writer receives. It does not guarantee a grounded answer; compare the recommendation with those findings.
 
 </Step>
-<Step title="Build the crew's tasks">
+<Step title="Run the crew and locate its trace">
 
-Each task names its agent and its expected output. `report_generation_task` and `quality_assurance_task` don't yet declare `context=`, so CrewAI has no explicit link telling them which upstream task output to build on. The next step shows why that matters.
+Save this as `run_crew.py` and run `python run_crew.py`. The outer span gives you one trace ID for the entire crew. The crew's final output is the quality review, not the report, so print the report task's output separately.
 
 ```python
-def create_research_tasks(research_topic: str) -> list[Task]:
-    market_research_task = Task(
-        description=(
-            f"Research the market for: {research_topic}. Cover market size, "
-            "growth drivers, major players, and regulatory landscape. Cite sources."
-        ),
-        agent=market_researcher,
-        expected_output="A market research summary with cited data points",
-    )
+from uuid import UUID
+from crewai import Crew, Process
+from crew_tracing import provider
+from research_team import researcher, analyst, writer, reviewer, market, competition, report, review
 
-    competitive_analysis_task = Task(
-        description=(
-            f"Analyze the competitive landscape for: {research_topic}. "
-            "Cover top competitors, positioning, and market gaps."
-        ),
-        agent=competitive_analyst,
-        expected_output="A competitive analysis with named competitors",
-    )
-
-    report_generation_task = Task(
-        description=(
-            f"Write a research report on: {research_topic} with an executive "
-            "summary, market overview, competitive landscape, and recommendations."
-        ),
-        agent=report_writer,
-        expected_output="A structured research report",
-    )
-
-    quality_assurance_task = Task(
-        description=(
-            "Review the report for factual accuracy, logical consistency, and "
-            "completeness. List any issues found."
-        ),
-        agent=quality_analyst,
-        expected_output="A quality review with a pass/fail verdict",
-    )
-
-    return [
-        market_research_task,
-        competitive_analysis_task,
-        report_generation_task,
-        quality_assurance_task,
-    ]
+crew = Crew(agents=[researcher, analyst, writer, reviewer], tasks=[market, competition, report, review],
+            process=Process.sequential, memory=False)
+with provider.get_tracer(__name__).start_as_current_span("daypack research") as span:
+    result = crew.kickoff()
+    trace_id = UUID(int=span.get_span_context().trace_id)
+print("Recommendation:", report.output.raw)
+print("Quality review:", result.raw)
+provider.force_flush()
+print(trace_id)
 ```
-
-You should see a list of four `Task` objects. `Process.sequential` in the next step runs them in this order.
 
 </Step>
-<Step title="Run the crew, then fix a weak groundedness score">
+<Step title="Inspect the report and configure an Eval Task">
 
-```python
-def run_research_crew(research_topic: str) -> str:
-    tasks = create_research_tasks(research_topic)
+In **Observe**, open `crewai-research-team` and the trace matching the printed ID. Expand the kickoff span and inspect the third task: its input contains the task description and the upstream context; its output contains the recommendation.
 
-    research_crew = Crew(
-        agents=[market_researcher, competitive_analyst, report_writer, quality_analyst],
-        tasks=tasks,
-        process=Process.sequential,
-        memory=True,
-    )
+<img src="/images/docs/cookbook-crewai-research-team/image2.png" alt="Example of a CrewAI trace tree in Observe" style={{ borderRadius: '5px' }} />
 
-    result = research_crew.kickoff()
-    return str(result)
+For future runs, configure an **Eval Task** on the matching agent spans. Choose a [built-in eval](/docs/evaluation/builtin) whose required fields you can map. For groundedness, supply both the actual evidence and the generated answer; a topic string alone is not evidence. Rerun `python run_crew.py` after enabling the task and inspect the matching spans for scores when evaluation finishes.
 
-
-if __name__ == "__main__":
-    topic = "Generative AI in Healthcare: Market Opportunities and Challenges"
-    report = run_research_crew(topic)
-    print(report[:500])
-```
-
-Output shape (illustrative):
-```
-## Executive Summary
-Generative AI is reshaping healthcare diagnostics and...
-```
-
-You should see the crew's four agents run in sequence in your terminal (CrewAI's own verbose logging), followed by the printed report excerpt. Once the Eval Task from the next step is attached, open the `report_generation_task` span in Observe: without an explicit link to the upstream research, `report_writer` only sees its own task description as input, so groundedness scores low. There's nothing in that span's captured context for the eval to check the report against.
-
-Fix it by wiring the dependency explicitly, so CrewAI feeds the upstream outputs into the report task and quality-assurance task instead of leaving them to infer it:
-
-```python
-    report_generation_task = Task(
-        description=(
-            f"Write a research report on: {research_topic} with an executive "
-            "summary, market overview, competitive landscape, and recommendations."
-        ),
-        agent=report_writer,
-        expected_output="A structured research report",
-        context=[market_research_task, competitive_analysis_task],
-    )
-
-    quality_assurance_task = Task(
-        description=(
-            "Review the report for factual accuracy, logical consistency, and "
-            "completeness. List any issues found."
-        ),
-        agent=quality_analyst,
-        expected_output="A quality review with a pass/fail verdict",
-        context=[market_research_task, competitive_analysis_task, report_generation_task],
-    )
-```
-
-Rerun the same topic. The `report_generation_task` span now carries the market and competitive findings as input, and the groundedness score on that span moves up from the first run: the report has actual source material to be grounded against instead of just the topic string.
-
-</Step>
-<Step title="Configure a platform Eval Task for completeness, groundedness, and context relevance">
-
-In the dashboard, define evals as an Eval Task and attach them to the crew's span types rather than calling an evaluator from code. This scores every run as it's generated, including the two you just made.
-
-Open [app.futureagi.com](https://app.futureagi.com) → **Observe** → the `crewai-research-team` project → **Eval Task**, and attach Completeness, Groundedness, and Context Relevance to the task span type. Each of the three resolves on the [built-in evals reference](/docs/evaluation/builtin).
-
-You should see the new Eval Task listed against the span type you selected, and it starts scoring the next trace that hits that span.
-
-</Step>
-<Step title="Inspect the trace and eval scores in Observe">
-
-Open the `crewai-research-team` project. Each run appears as a trace with one span per agent task.
-
-<img src="/images/docs/cookbook-crewai-research-team/image2.png" alt="Trace view showing spans for the market researcher, competitive analyst, report writer, and quality analyst tasks in sequence" style={{ borderRadius: '5px' }} />
-
-*The trace view shows the four agent tasks in execution order, with tool calls nested under the market researcher and competitive analyst spans*
-
-Open the `report_generation_task` span to see the three eval scores attached to it directly by the Eval Task.
-
-<img src="/images/docs/cookbook-crewai-research-team/image3.png" alt="Span detail panel showing completeness, groundedness, and relevance eval scores attached to the final report span" style={{ borderRadius: '5px' }} />
-
-*Each eval score sits on the span it was computed from, so you can correlate a low score with the exact agent output that produced it*
+<img src="/images/docs/cookbook-crewai-research-team/image3.png" alt="Example span detail with evaluation scores" style={{ borderRadius: '5px' }} />
 
 </Step>
 </Steps>
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| No spans appear in Observe | `CrewAIInstrumentor().instrument()` was never called, or was called after the crew already ran | Call `instrument()` immediately after `register()`, before constructing any `Agent` or `Crew` |
-| `TypeError: unexpected keyword argument 'debug'` from `register()` | `register()` has no `debug` parameter | Use `verbose=True` (it's the default) to increase log output instead |
-| Evals never run | No Eval Task is attached to the span type yet, or it's attached to a project that isn't `ProjectType.OBSERVE` | Attach an Eval Task to the relevant span type in the project's Observe settings, and confirm the project was registered with `project_type=ProjectType.OBSERVE` |
-| `crewai_tools` import fails on `SerperDevTool` | `SERPER_API_KEY` isn't set, or `crewai_tools` version mismatch with `crewai` | Set `SERPER_API_KEY` before constructing the tool, and pin `crewai` and `crewai_tools` to compatible versions |
-| Agents produce inconsistent or incomplete task output | Task `description` is vague, or the agent has no tool for the information it needs | Make task descriptions explicit about required sections, and equip agents only with the tools their role needs |
-| `Crew.kickoff()` hangs or times out on a task | A tool call (typically the web search tool) is stalling on a rate limit or network issue | Check the SerperDev dashboard for rate limits, and add a task-level timeout if your CrewAI version supports it |
-| Groundedness scores are consistently low on a downstream task's span | The task has no `context=[...]` list, so CrewAI never feeds it the upstream tasks' output and the span only captures the task's own description | Add the upstream `Task` objects to `context=[...]` on the downstream task, as shown in the "Run the crew" step |
-
-Next: [Attach inline evals to production traces](/docs/cookbook/quickstart/inline-evals-tracing) to see the same pattern applied outside a multi-agent framework.
+| Symptom | What to check |
+|---|---|
+| No crew spans appear | Check the project and credentials. For self-hosted installs, `FI_TRACES_URL` must point to the collector, not the dashboard. |
+| The report contains unsupported numbers | Inspect the writer's captured input. Compare its output with the two notes, not just with the quality agent's verdict. |
+| A span has no score | Confirm the task is enabled, the span matches its filters, and the required eval inputs are mapped. |

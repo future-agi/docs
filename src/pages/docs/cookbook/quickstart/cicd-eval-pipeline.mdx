@@ -1,7 +1,7 @@
 ---
 title: "CI/CD Eval Pipeline"
 slug: "cicd-eval-pipeline"
-description: "Run automated faithfulness and toxicity eval gates on every pull request using fi.evals. Block merges when scores fall below configured thresholds."
+description: "Run automated faithfulness and toxicity eval gates on each trusted pull request using fi.evals. Block merges when scores fall below configured thresholds."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -20,7 +20,7 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Wire faithfulness and toxicity evals into a GitHub Actions workflow so every pull request runs a fixed test set, posts a pass/fail summary as a PR comment, and fails the check when a score crosses threshold.
+Wire faithfulness and toxicity evals into a GitHub Actions workflow so each trusted pull request runs a fixed test set, posts a pass/fail summary as a PR comment, and fails the check when a score crosses threshold.
 </TLDR>
 
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
@@ -30,23 +30,25 @@ Wire faithfulness and toxicity evals into a GitHub Actions workflow so every pul
 
 | Time | Difficulty | Package |
 |------|-----------|---------|
-| 15 min | Intermediate | `ai-evaluation` |
+| 15 min | Intermediate | `agent-learning-kit` |
 
 <Prerequisites>
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
 - An `OPENAI_API_KEY` for the agent under test
 - A GitHub repository with Actions enabled
-- Python 3.11+
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install 'ai-evaluation[nli]' openai
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7 openai==2.54.0
 ```
 
-The `[nli]` extra installs the local NLI model `faithfulness` uses; without it the metric silently falls back to a less accurate word-overlap heuristic, which is not what you want gating merges.
+Both judges run on Future AGI. `context_adherence` measures how closely the answer follows the supplied policy; `toxicity` returns a pass/fail verdict. Each full run makes five OpenAI calls and ten evaluations.
 
 ```bash
 export FI_API_KEY="your-api-key"
@@ -59,7 +61,7 @@ export OPENAI_API_KEY="your-openai-key"
 <Steps>
 <Step title="Write the eval script">
 
-Create `scripts/evaluate_pipeline.py`. It runs the agent against a fixed test set, scores each response with `fi.evals`, and exits non-zero if any case fails threshold, which fails the GitHub Actions step.
+Save this as `scripts/evaluate_pipeline.py` and run `python scripts/evaluate_pipeline.py` from the repository root. It runs the agent against a fixed test set, scores each response with `fi.evals`, and exits non-zero if any case fails threshold, which fails the GitHub Actions step.
 
 ```python
 #!/usr/bin/env python3
@@ -67,24 +69,27 @@ Create `scripts/evaluate_pipeline.py`. It runs the agent against a fixed test se
 Evaluation pipeline for CI/CD.
 Exit code 0 = all evals passed. Exit code 1 = one or more evals failed.
 """
+import json
 import os
 import sys
+from pathlib import Path
 from openai import OpenAI
 from fi.evals import evaluate
 
 # Fail fast with a clear error if either secret is missing, instead of a
 # confusing traceback further down the script.
-assert os.environ.get("FI_API_KEY"), "FI_API_KEY is not set"
-assert os.environ.get("FI_SECRET_KEY"), "FI_SECRET_KEY is not set"
+for key in ("FI_API_KEY", "FI_SECRET_KEY", "OPENAI_API_KEY"):
+    if not os.environ.get(key):
+        raise RuntimeError(f"{key} is not set")
 
 client = OpenAI()
 
 # Threshold: adjust to match your quality bar
 FAITHFULNESS_THRESHOLD = 0.85
 
-SYSTEM_PROMPT = """You are a customer support agent for an electronics retailer.
+SYSTEM_PROMPT = """You are a customer support agent for Ridgeline Outfitters.
 Answer questions accurately using only the information provided in the context below.
-Be concise and helpful. If you are unsure, say so rather than guessing.
+Answer with the relevant policy sentence(s), without adding details. If the policy does not answer the question, say so.
 
 Context:
 {context}"""
@@ -92,8 +97,8 @@ Context:
 # Test dataset: question + expected grounding context
 TEST_CASES = [
     {
-        "question": "What is the return window for electronics?",
-        "context": "Electronics may be returned within 30 days of purchase with original packaging.",
+        "question": "What is the return window for GPS devices?",
+        "context": "GPS devices may be returned within 30 days of purchase with original packaging.",
     },
     {
         "question": "How long does standard shipping take?",
@@ -117,6 +122,7 @@ TEST_CASES = [
 def run_evals() -> bool:
     all_passed = True
     results = []
+    receipts = []
 
     print(f"\n{'Question':<45} {'Faithfulness':>14} {'Toxicity':>10} {'Status':>8}")
     print("-" * 81)
@@ -126,6 +132,7 @@ def run_evals() -> bool:
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
+            temperature=0,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": case["question"]},
@@ -133,8 +140,11 @@ def run_evals() -> bool:
         )
         output = response.choices[0].message.content
 
+        if not output:
+            raise RuntimeError("Agent returned an empty reply")
         faithfulness = evaluate(
-            "faithfulness",
+            "context_adherence",
+            model="turing_small",
             output=output,
             context=case["context"],
         )
@@ -144,6 +154,10 @@ def run_evals() -> bool:
             model="turing_small",
         )
 
+        for check in (faithfulness, toxicity):
+            if check.status != "completed" or check.score is None or not check.metadata.get("eval_id"):
+                raise RuntimeError(f"No usable {check.eval_name} result for {case['question']}")
+            receipts.append({"id": check.metadata["eval_id"], "metric": check.eval_name, "score": check.score})
         faith_pass = faithfulness.score >= FAITHFULNESS_THRESHOLD
         toxic_pass = toxicity.passed
         row_passed = faith_pass and toxic_pass
@@ -174,6 +188,7 @@ def run_evals() -> bool:
     print(f"Faithfulness threshold: >= {FAITHFULNESS_THRESHOLD}")
     print("Toxicity gate: SDK verdict (toxicity.passed)")
 
+    Path("eval-receipts.json").write_text(json.dumps(receipts, indent=2), encoding="utf-8")
     return all_passed
 
 
@@ -187,7 +202,7 @@ Running it locally with `FI_API_KEY`, `FI_SECRET_KEY`, and `OPENAI_API_KEY` expo
 ```
 Question                                        Faithfulness   Toxicity   Status
 ---------------------------------------------------------------------------------
-What is the return window for electronics?             0.94       True     PASS
+What is the return window for GPS devices?             0.94       True     PASS
 How long does standard shipping take?                   0.91       True     PASS
 Can I return a product bought on sale?                  0.61       True     FAIL
     reason: the response says a full refund is available on sale items, but the context states sale items are exchange-only
@@ -204,7 +219,7 @@ Exit code `0` means every case passed; `1` means at least one failed threshold, 
 </Step>
 <Step title="Add the GitHub Actions workflow">
 
-Create `.github/workflows/eval.yml`:
+Save this as `.github/workflows/eval.yml`. Use it in a repository where people who can push branches are trusted with the evaluation secrets. Fork and Dependabot PRs do not receive those secrets; the gate fails closed rather than running untrusted code with credentials. Do not switch to `pull_request_target` to work around that boundary.
 
 ```yaml
 name: Eval Pipeline
@@ -212,28 +227,23 @@ name: Eval Pipeline
 on:
   pull_request:
     branches: [main, dev]
-    paths:
-      - "prompts/**"       # run evals when prompts change
-      - "scripts/**"       # run evals when eval scripts change
+
+permissions: {}
 
 jobs:
   evaluate:
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
-
+      contents: read
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
         with:
-          python-version: "3.11"
-
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install dependencies
-        run: pip install 'ai-evaluation[nli]' openai
-
+        run: python -m pip install agent-learning-kit==0.3.7 openai==2.54.0
       - name: Run eval pipeline
         env:
           FI_API_KEY: ${{ secrets.FI_API_KEY }}
@@ -241,18 +251,23 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python scripts/evaluate_pipeline.py
 
-      - name: Post results as PR comment
-        if: always()   # post even if the eval step failed
-        uses: actions/github-script@v7
+  comment:
+    needs: evaluate
+    if: ${{ always() && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          EVAL_RESULT: ${{ needs.evaluate.result }}
         with:
           script: |
-            const outcome = '${{ job.status }}';
-            const status = outcome === 'success' ? 'All evals passed' : 'Evals failed, merge blocked';
-            github.rest.issues.createComment({
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              ...context.repo,
               issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `## Eval Pipeline Results\n\n${status}\n\nSee the [Actions run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for full output.`,
+              body: `Eval pipeline: ${process.env.EVAL_RESULT}. [See per-case results](${run}).`,
             });
 ```
 
@@ -273,7 +288,7 @@ You should see all three listed under **Repository secrets** with their values h
 </Step>
 <Step title="Trigger the pipeline">
 
-Open a pull request that touches a file under `prompts/`. The workflow starts automatically because of the `paths` filter in the trigger.
+Open a same-repository pull request into `main` or `dev`. To change what the agent says, edit `SYSTEM_PROMPT` in `scripts/evaluate_pipeline.py`: the example uses that prompt, not a separate `prompts/` directory.
 
 You should see an **Eval Pipeline / evaluate** check appear on the PR, running the script from step 1 against the live `TEST_CASES` set. A prompt change that drops a score below threshold turns the check red and the run log shows which question failed.
 
@@ -284,7 +299,7 @@ Go to your GitHub repository, then **Settings** > **Branches** > **Add rule**.
 
 - **Branch name pattern**: `main`
 - Check **Require status checks to pass before merging**
-- Add `Eval Pipeline / evaluate` to the required checks list
+- Add the `evaluate` job from this workflow to the required checks list
 
 You should see the merge button greyed out on any PR where the eval check is still red or pending.
 
@@ -295,11 +310,11 @@ You should see the merge button greyed out on any PR where the eval check is sti
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Workflow never triggers on a PR | The changed files don't match the `paths` filter | Confirm the diff touches `prompts/**` or `scripts/**`, or widen the filter for your repo layout |
-| `AssertionError: FI_API_KEY is not set` in the Actions log | The secret wasn't added, or its name doesn't match `env:` in the workflow | Re-check the repository secret name against the `FI_API_KEY` / `FI_SECRET_KEY` keys used in `eval.yml` |
+| Workflow never triggers on a PR | The PR targets a different branch | Check the workflow's `pull_request.branches` list |
+| `RuntimeError: FI_API_KEY is not set` in the Actions log | The secret wasn't added, or its name doesn't match `env:` in the workflow | Re-check the repository secret name against the `FI_API_KEY` / `FI_SECRET_KEY` keys used in `eval.yml` |
 | `openai.AuthenticationError` during the run | `OPENAI_API_KEY` missing or invalid | Add or rotate the secret, and confirm it's passed in the `env:` block of the eval step |
-| Script exits 0 locally but the Action reports failure | A pinned `ai-evaluation` version differs between your machine and the runner | Pin the same version in both places, or drop the pin and reproduce against `pip install -U ai-evaluation` |
+| Script exits 0 locally but the Action reports failure | The installed `agent-learning-kit` version differs between your machine and the runner | Compare `python -m pip show agent-learning-kit` in both places and pin the same version |
 | Check stays pending indefinitely | The `Eval Pipeline / evaluate` job name in branch protection doesn't match the workflow's job name | Match the required check name exactly to the `jobs:` key in `eval.yml` |
-| PR comment step fails with a permissions error | Your organization's policy caps `GITHUB_TOKEN` permissions below what the workflow requests | Ask an org admin to allow `pull-requests: write` for `GITHUB_TOKEN`, or post the summary through a PAT/app token instead |
+| PR comment step fails with a permissions error | Your organization's policy caps `GITHUB_TOKEN` permissions below what the workflow requests | Check the comment job permissions; the per-case results are still available in the evaluate job log |
 
-This pipeline runs a fixed test set on every PR. Register a custom rubric for cases these two evals don't cover next with [Custom Eval Metrics](/docs/cookbook/quickstart/custom-eval-metrics).
+This pipeline runs a fixed test set on PRs into the configured branches. Register a custom rubric for cases these two evals don't cover next with [Custom Eval Metrics](/docs/cookbook/quickstart/custom-eval-metrics).

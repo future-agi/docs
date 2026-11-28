@@ -18,7 +18,7 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Score a batch with a built-in eval, find the rows where it scored differently than you would, and rewrite the criteria as a custom eval that includes your corrections as few-shot examples. Re-run on the same batch and watch eval-human agreement climb.
+Score a batch with a built-in eval, find the rows where it scored differently than you would, and rewrite the criteria as a custom eval that includes your corrections as few-shot examples. Re-score the same batch to measure agreement, then check the rubric on fresh examples.
 </TLDR>
 
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
@@ -28,18 +28,20 @@ Score a batch with a built-in eval, find the rows where it scored differently th
 
 | Time | Difficulty | Package |
 |------|-----------|---------|
-| 15 min | Intermediate | `ai-evaluation` |
+| 15 min | Intermediate | `agent-learning-kit` |
 
 <Prerequisites>
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- Python 3.11
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install ai-evaluation
+python3.12 -m venv .correction-venv
+source .correction-venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7
 ```
 
 ```bash
@@ -49,7 +51,7 @@ export FI_SECRET_KEY="your-fi-secret-key"
 
 ## Tutorial
 
-The example below uses SaaS customer-support replies. The trick: pick failure modes a generic eval can't catch. A reply that pitches an upsell, commits a front-line agent to a refund, or recommends disabling 2FA can sound polished and on-topic. A generic helpfulness eval rates the surface form. Your team's rules rate what the reply should not do. The correction loop closes that gap.
+Run the Python blocks in order in one session. The example uses synthetic SaaS customer-support replies. The trick: pick failure modes a generic eval can't catch. A reply that pitches an upsell, commits a front-line agent to a refund, or recommends disabling 2FA can sound polished and on-topic. A generic helpfulness eval rates the surface form. Your team's rules rate what the reply should not do. The correction loop closes that gap.
 
 <Steps>
 <Step title="Score the batch with a built-in eval">
@@ -57,7 +59,10 @@ The example below uses SaaS customer-support replies. The trick: pick failure mo
 Start with a built-in template like `is_helpful`. It gives you a baseline plus the explanations the evaluator model used. The explanations are what you inspect in step 2.
 
 ```python
+import json
 import os
+from pathlib import Path
+from uuid import uuid4
 from fi.evals import Evaluator
 
 evaluator = Evaluator(
@@ -65,7 +70,7 @@ evaluator = Evaluator(
     fi_secret_key=os.environ["FI_SECRET_KEY"],
 )
 
-# Real support replies from your agent. The bad ones look helpful but
+# Synthetic support replies. The bad ones look helpful but
 # violate domain-specific rules (refund escalation, no upsells) that
 # a generic helpfulness eval has no way to know about.
 samples = [
@@ -104,6 +109,7 @@ for s in samples:
     )
     baseline_results.append({
         "id": s["id"],
+        "eval_id": r.eval_results[0].eval_id,
         "eval_score": r.eval_results[0].output,
         "eval_reason": r.eval_results[0].reason,
         "human_verdict": s["human_verdict"],
@@ -113,7 +119,7 @@ for row in baseline_results:
     print(f"{row['id']}: eval={row['eval_score']!s:>5} | human={row['human_verdict']:>4} | {row['eval_reason'][:80]}")
 ```
 
-You should see `is_helpful` return `Passed` for `r2` and `r3`. Both replies are on-topic, well-formed, and offer a concrete action, so nothing about the surface form gives the generic evaluator model a reason to fail them. Your team flags them as bad because they violate domain rules the evaluator model has no way to know about. That's the disagreement signal the correction loop fixes.
+A generic helpfulness verdict can pass an off-policy refund promise or a sales pitch. Compare the actual verdict and reason with the human label rather than assuming either model decision.
 
 </Step>
 <Step title="Identify the disagreements">
@@ -122,7 +128,10 @@ A disagreement is any row where the eval and the human reach different verdicts.
 
 ```python
 def passed(score):
-    return str(score).strip().lower() == "passed"
+    verdict = str(score).strip().lower()
+    if verdict not in {"passed", "failed", "true", "false"}:
+        raise ValueError(f"Expected a pass/fail result, got {score!r}")
+    return verdict in {"passed", "true"}
 
 disagreements = [
     r for r in baseline_results
@@ -135,7 +144,7 @@ for r in disagreements:
     print(f"    reason: {r['eval_reason'][:120]}")
 ```
 
-You should see 2 disagreements: `r2` and `r3`. Pick the rows that capture distinct failure modes (here: an off-policy refund promise and an in-support upsell). Those become your few-shot examples in the next step.
+Look for distinct failure modes in the disagreements. Here the reviewer flags an off-policy refund promise (`r2`) and an in-support upsell (`r3`), whether or not the baseline catches them.
 
 </Step>
 <Step title="Encode the corrections as a custom eval">
@@ -176,13 +185,12 @@ template_manager = EvalTemplateManager(
 )
 
 response = template_manager.create_template(
-    name="support_reply_quality_v1",
+    name=f"support_reply_quality_v1_{uuid4().hex[:8]}",
     instructions=rule_prompt,
     model="turing_flash",
     output_type="pass_fail",
 )
 print(response)
-# TemplateCreateResponse(id="<uuid>", name="support_reply_quality_v1", version="1")
 # `name` is what you pass to `evaluator.evaluate(eval_templates=...)` in the next step.
 # The required keys (user_query, agent_response) are inferred from the {{...}}
 # placeholders in `instructions`, you don't declare them separately.
@@ -207,11 +215,13 @@ Run the new eval on the same samples and compare against your human verdicts.
 calibrated_results = []
 for s in samples:
     r = evaluator.evaluate(
-        eval_templates="support_reply_quality_v1",
+        eval_templates=response.name,
+        model_name="turing_flash",
         inputs={"user_query": s["user_query"], "agent_response": s["agent_response"]},
     )
     calibrated_results.append({
         "id": s["id"],
+        "eval_id": r.eval_results[0].eval_id,
         "eval_score": r.eval_results[0].output,
         "human_verdict": s["human_verdict"],
     })
@@ -220,13 +230,17 @@ agreement = sum(
     1 for r in calibrated_results
     if passed(r["eval_score"]) == (r["human_verdict"] == "good")
 )
+Path("support-eval-results.json").write_text(json.dumps({
+    "template": {"id": response.id, "name": response.name},
+    "baseline": baseline_results, "calibrated": calibrated_results,
+}, indent=2))
 print(f"agreement: {agreement} / {len(samples)} ({100 * agreement / len(samples):.0f}%)")
 for r in calibrated_results:
     match = "OK" if passed(r["eval_score"]) == (r["human_verdict"] == "good") else "MISS"
     print(f"  {match} {r['id']}: eval={r['eval_score']} human={r['human_verdict']}")
 ```
 
-Expect agreement to jump from around 50% baseline toward 100% on this set (illustrative for this 4-row batch, your own numbers depend on the batch and model). `r2` and `r3` now fail correctly because the instructions explicitly forbid out-of-policy refund commits and in-support upsells. `is_helpful` had no way to know either rule existed.
+Compare this count with the baseline number of agreements (four minus the disagreements in step 2). This is a calibration check, not a held-out accuracy estimate: the rubric quotes some of the replies. The JSON file keeps each evaluation ID and verdict for later inspection.
 
 </Step>
 <Step title="Iterate when agreement plateaus below your bar">
@@ -234,7 +248,7 @@ Expect agreement to jump from around 50% baseline toward 100% on this set (illus
 If agreement is still below where you need it (pick your own bar; teams commonly land around 85% on a held-out batch), the loop continues.
 
 1. Pull a fresh sample of 20 to 30 rows the eval hasn't seen
-2. Re-score with the latest version (`support_reply_quality_v1`)
+2. Re-score with the latest template name (`response.name`)
 3. Find the new disagreements. These are failure modes your instructions didn't cover
 4. Rev to `_v2`: add 1 or 2 new few-shot examples or sharpen one of the rules. Avoid bloating. Every example added trades calibration for prompt length and inference cost.
 
@@ -251,13 +265,13 @@ Additional FAIL example (learn from this):
 # and compare scores side-by-side.
 ```
 
-Most evals stop moving after two or three iterations on a batch this size. Stop when fresh batches stay above your agreement bar. Adding more examples beyond that hurts more than it helps.
+Keep calibration examples separate from the fresh replies you use to decide whether the rubric is ready.
 
 </Step>
 </Steps>
 
 <Check>
-You ran a built-in eval, found rows where it disagreed with human judgment, encoded those corrections as a custom eval with explicit rules and few-shot failure examples, then re-scored to confirm the eval now matches how your team defines quality.
+You ran a built-in eval, found rows where it disagreed with human judgment, encoded those corrections as a custom eval with explicit rules and few-shot failure examples, then re-scored to measure how closely the eval matches how your team defines quality.
 </Check>
 
 ## Troubleshooting
@@ -267,7 +281,7 @@ You ran a built-in eval, found rows where it disagreed with human judgment, enco
 | `KeyError: 'FI_API_KEY'` | The env var wasn't exported in the shell running the script | Re-run the export block, or `source` your `.env` file, in the same session |
 | `401`/`403` from `Evaluator(...)` or `create_template(...)` | `FI_API_KEY` and `FI_SECRET_KEY` swapped or copied from the wrong project | Verify both keys against the pair shown on your dashboard |
 | `create_template()` raises a validation error on `output_type` | Passed `"Pass/Fail"` instead of the lowercase literal | Use `output_type="pass_fail"` (or `"percentage"` / `"deterministic"`) |
-| `evaluator.evaluate(eval_templates="support_reply_quality_v1")` fails with "template not found" | The `create_template` call didn't finish, or used a different `name` | Print `response.name` and confirm it matches the string you pass to `evaluate()` |
+| `evaluator.evaluate(eval_templates=response.name, ...)` fails with "template not found" | The `create_template` call didn't finish, or used a different `name` | Print `response.name` and confirm it matches the string you pass to `evaluate()` |
 | Agreement doesn't reach 100% after step 4 | The instructions don't cover the failure mode behind that disagreement | Return to step 2, read `eval_reason`, and add a matching few-shot example |
 | Eval scores flip between runs on the same row | Model sampling variance on borderline replies | Rerun 2-3 times before treating a single mismatch as a real disagreement |
 

@@ -1,7 +1,7 @@
 ---
 title: "Falcon AI End-to-End Workflow"
 slug: "end-to-end"
-description: "Chain four Falcon AI skills in one chat to find a failing trace, lock it into a regression dataset, score it, and ship a verified prompt fix."
+description: "Chain four Falcon AI skills in one chat to find a failing trace, lock it into a regression dataset, score it, and compare a proposed prompt edit against the same inputs."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -36,19 +36,22 @@ Trace a support agent, then chain four Falcon AI skills in one chat (`/analyze-t
 <Prerequisites>
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings/api-keys))
-- Python 3.11
+- Python 3.12 and an `OPENAI_API_KEY`
 - A traced project with mixed-quality traces. Step 1 below instruments one if you don't have it yet
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install fi-instrumentation-otel traceai-openai openai
+python3.12 -m venv .trace-venv
+source .trace-venv/bin/activate
+python -m pip install fi-instrumentation-otel traceai-openai openai
 ```
 
 ```bash
 export FI_API_KEY="your-fi-api-key"
 export FI_SECRET_KEY="your-fi-secret-key"
+export FI_TRACES_URL="https://api.futureagi.com"  # or your self-hosted trace collector
 export OPENAI_API_KEY="your-openai-key"
 ```
 
@@ -57,7 +60,7 @@ export OPENAI_API_KEY="your-openai-key"
 <Steps>
 <Step title="Trace a support agent">
 
-Falcon AI reads your agent's **traces**: the structured record of one request, broken into **spans** for each LLM call, tool invocation, or sub-step inside it. `OpenAIInstrumentor` patches the OpenAI SDK so every call is captured automatically, and `@tracer.agent` wraps your agent's entry point so each request lands as one parent span with the OpenAI calls nested underneath.
+Run the tracing and replay blocks in one Python session. Falcon AI reads your agent's **traces**: the structured record of one request, broken into **spans** for each LLM call, tool invocation, or sub-step inside it. `OpenAIInstrumentor` patches the OpenAI SDK so every call is captured automatically, and `@tracer.agent` wraps your agent's entry point so each request lands as one parent span with the OpenAI calls nested underneath.
 
 ```python
 from fi_instrumentation import register, FITracer
@@ -65,6 +68,7 @@ from fi_instrumentation.fi_types import ProjectType
 from traceai_openai import OpenAIInstrumentor
 
 trace_provider = register(
+    verbose=False,
     project_type=ProjectType.OBSERVE,
     project_name="falcon-ai-end-to-end",
 )
@@ -73,33 +77,42 @@ tracer = FITracer(trace_provider.get_tracer("falcon-ai-end-to-end"))
 ```
 
 ```python
+import csv
+from uuid import UUID
 from openai import OpenAI
+from opentelemetry.trace import get_current_span
 
 client = OpenAI()
+cases = [
+    ("Where is order RO-12345?", "RO-12345 has shipped. Tracking is not yet available."),
+    ("Can I return opened trail shoes?", "Trail shoes are returnable within 30 days if unworn."),
+]
+rows = []
 
+@tracer.agent(name="support_reply")
+def my_agent(query, prompt):
+    reply = client.chat.completions.create(
+        model="gpt-4o-mini", messages=[{"role": "system", "content": prompt},
+                                      {"role": "user", "content": query}],
+    ).choices[0].message.content
+    return str(UUID(int=get_current_span().get_span_context().trace_id)), reply
 
-# Replace this with your own agent's entry point.
-# @tracer.agent makes each call show up as one parent span in your
-# Future AGI Tracing project, with the OpenAI calls nested underneath.
-@tracer.agent(name="my_agent")
-def my_agent(user_message: str) -> str:
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a customer support assistant for an electronics store. Answer questions about products and orders."},
-            {"role": "user", "content": user_message},
-        ],
-    )
-    return response.choices[0].message.content
+def run_cases(version, instructions, include_source=False):
+    for query, source in cases:
+        prompt = instructions + ("\nSource: " + source if include_source else "")
+        trace_id, answer = my_agent(query, prompt)
+        if not answer:
+            raise ValueError("The model returned no answer")
+        rows.append(dict(version=version, query=query, context=source,
+                         agent_output=answer, trace_id=trace_id))
+        print(version, trace_id, answer)
+    trace_provider.force_flush()
+    with open("support-replays.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
 
-
-# A support agent with no grounding tool tends to fabricate specifics
-# (tracking numbers, return windows, warranty lengths) when asked about
-# them. That gives Falcon AI a failing trace to analyze next.
-print(my_agent("Where is order ORD-12345?"))
-print(my_agent("What's your return policy for opened wireless headphones?"))
-
-trace_provider.force_flush()
+run_cases("baseline", "You answer product and order questions for Ridgeline Outfitters.")
 ```
 
 You should see two new traces in **Tracing** → your project within a few seconds. If nothing appears, see Troubleshooting below.
@@ -109,11 +122,11 @@ You should see two new traces in **Tracing** → your project within a few secon
 
 Falcon AI picks up whatever page you're viewing as context, so opening the sidebar from your project's Tracing page scopes every question and skill to that project automatically.
 
-`/analyze-trace-errors` runs across every trace in the project, classifies each issue against an error taxonomy (Hallucinated Content, Wrong Intent, Tool Misuse, and others), and scores every trace 1 to 5.
+`/analyze-trace-errors` looks for issues such as unsupported claims. Give it the two baseline trace IDs, not your entire project, and review the evidence before labeling an answer as a failure.
 
 Stay on the Tracing page, open the sidebar, and type:
 
-> Analyze trace errors in this project
+> /analyze-trace-errors Review these two baseline traces. Which specific claims about the order or the return policy lacked a source?
 
 <Tip>
 `Cmd+K` (Mac) or `Ctrl+K` (Windows) opens Falcon AI from anywhere in the dashboard, with the current page auto-attached as a context chip.
@@ -126,9 +139,9 @@ You should see a completion card listing per-trace scores and the dominant error
 
 Same conversation. `/build-dataset` reads the findings from the previous turn and writes the matching rows to a new dataset. This locks the bad traces as a **regression dataset**, a fixed snapshot you can re-run anytime: when you try a fix later, you score it against the exact same failing inputs instead of new traffic that may not reproduce the same problem.
 
-> Build me a dataset called `falcon-demo-failures` with the queries from the traces flagged with Hallucinated Content. Columns: `query` (text), `agent_output` (text), `context` (text), `failure_category` (text).
+> Build me a dataset called `falcon-demo-failures` from my two baseline trace IDs. Include both as regression examples even if neither hallucinated. Columns: `query` (text), `agent_output` (text), `context` (text), `trace_id` (text). I will provide the two reference facts from `cases`; do not infer policy from the generated replies.
 
-You should see a completion card with a link to the new dataset. Open **Datasets** → `falcon-demo-failures` to confirm the rows.
+You should see a completion card with a link to the new dataset. Use a new dataset name if this one exists. Open **Datasets** to confirm each row has the correct trace ID, answer and reference fact.
 
 </Step>
 <Step title="Score the baseline">
@@ -137,7 +150,7 @@ Same conversation. `/run-evaluations` runs Future AGI evals (LLM-as-judge metric
 
 > Run `factual_accuracy` and `completeness` evals on the `falcon-demo-failures` dataset.
 
-You should see `factual_accuracy` low and `completeness` high: the agent fully addresses each question, but the answers are invented.
+Inspect each judgment: map `query` to input, `agent_output` to output and `context` to the reference for factual accuracy. A polite refusal and a fabricated order status may both be incomplete, but they fail for different reasons.
 
 </Step>
 <Step title="Generate the prompt fix">
@@ -155,21 +168,65 @@ You should see sections for *What happened*, *Root cause in the agent*, *The fix
 </Step>
 <Step title="Apply the fix and verify scores recover">
 
-Paste the *Replace with* block as your new system prompt and re-run the same queries through your traced agent. Back in Falcon AI:
+Use the reviewed edit or try this version. A prompt cannot recover order details it never received, so this replay also supplies the reference fact for each request:
 
-> Re-run the same evals on `falcon-demo-failures` and compare to the previous run.
+```python
+run_cases("revised", "Answer only from the supplied source. If a detail is missing, say so.",
+          include_source=True)
+```
 
-Sample after-fix scores, illustrative, your numbers will vary:
-
-| Eval | Before | After |
-|---|---|---|
-| **factual_accuracy** | 0.2 | 0.9 |
-| **completeness** | 0.9 | 0.9 |
-
-You should see `factual_accuracy` recover because the agent no longer fabricates, while `completeness` stays high because the refusal still addresses the question.
+Add the revised outputs beside the baseline outputs for the same two queries. Ask Falcon to score the **revised output column** with the same templates and references. Re-running evals against the unchanged baseline column does not test a fix. Compare each row's answers, reasons and scores. Improvement is not guaranteed.
 
 </Step>
 </Steps>
+
+## Save a scored snapshot from Python
+
+If you want a reproducible alternative to assembling the dataset in chat, use `support-replays.csv` from the replay above. This creates a separate snapshot of all four answers, not a new version of the dataset you created in Falcon. Use separate environments: Agent Learning Kit scores replies, while the `futureagi` platform SDK uploads datasets. Both packages install modules under `fi`.
+
+```bash
+python3.12 -m venv .judges
+.judges/bin/python -m pip install agent-learning-kit==0.3.7
+python3.12 -m venv .datasets
+.datasets/bin/python -m pip install futureagi==0.7.0
+```
+
+Save as `score_replays.py` and run `.judges/bin/python score_replays.py`.
+
+```python
+import csv
+from fi.evals import evaluate
+
+with open("support-replays.csv", newline="") as f:
+    rows = list(csv.DictReader(f))
+for row in rows:
+    for metric in ("factual_accuracy", "completeness"):
+        inputs = {"input": row["query"], "output": row["agent_output"]}
+        if metric == "factual_accuracy":
+            inputs["context"] = row["context"]
+        judge = evaluate(metric, model="turing_flash", **inputs)
+        if judge.score is None:
+            raise RuntimeError(judge.error or judge.reason)
+        row[metric] = judge.score
+        row[metric + "_id"] = judge.metadata["eval_id"]
+with open("scored-replays.csv", "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+```
+
+Save as `upload_replays.py` and run `.datasets/bin/python upload_replays.py`. Use the printed ID to find the snapshot in Datasets. The score columns are recorded values, not live evaluation configurations.
+
+```python
+from uuid import uuid4
+from fi.datasets import Dataset, DatasetConfig
+from fi.utils.types import ModelTypes
+
+name = f"falcon-support-replays-{uuid4().hex[:8]}"
+dataset = Dataset(dataset_config=DatasetConfig(name=name, model_type=ModelTypes.GENERATIVE_LLM))
+dataset.create(source="scored-replays.csv")
+print(dataset.dataset_config.id)
+```
 
 ## Troubleshooting
 

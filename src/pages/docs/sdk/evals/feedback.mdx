@@ -1,21 +1,27 @@
 ---
 title: "Feedback Loops: Calibrate and Improve Evaluation Scores"
-description: "Submit corrections to scoring results, calibrate thresholds over time, and store feedback in ChromaDB for continuous improvement."
+description: "Record reviewer corrections, estimate a pass/fail threshold, and use past reviews as examples for an LLM judge."
 ---
 
 <TLDR>
-- Submit corrections when a score is wrong — the system learns from them
-- Calibrate thresholds per metric using accumulated feedback
-- In-memory store for development, ChromaDB for production
+- Record the original inputs alongside the score and label you would assign.
+- Calibrate a pass/fail threshold from at least five scored reviews of the same metric.
+- Keep reviews in memory for one session or persist them with ChromaDB.
 </TLDR>
 
-When a metric gives a wrong score, submit a correction. Corrections are stored and used in two ways: they feed into threshold calibration (tuning the pass/fail cutoff per metric), and when using LLM-as-Judge with a feedback store, past corrections are injected as few-shot examples to guide the LLM.
-
-<Note>
-  Requires `pip install ai-evaluation`. For persistent storage, install `pip install ai-evaluation[feedback]` (adds ChromaDB).
-</Note>
+A correction does not retrain the metric or change a past score. You can use it to choose a cutoff for future scores or as a worked example when a judge reviews another answer.
 
 ## Quick Example
+
+Install the kit with its optional ChromaDB dependency in a fresh Python environment. Run the Python blocks in order in the same session.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install "agent-learning-kit[feedback]==0.3.7"
+```
+
+Suppose Ridgeline Outfitters' support agent quotes the wrong return window. The policy and reply share many words, but the number changes the answer. Record the reviewer's judgment:
 
 ```python
 from fi.evals import evaluate
@@ -23,128 +29,108 @@ from fi.evals.feedback import FeedbackCollector, InMemoryFeedbackStore
 
 store = InMemoryFeedbackStore()
 feedback = FeedbackCollector(store)
-
-# Run a check
-result = evaluate("faithfulness", output="Paris is in Germany.", context="Paris is the capital of France.")
-
-# The score looks wrong — submit a correction
-feedback.submit(
-    result,
-    inputs={"output": "Paris is in Germany.", "context": "Paris is the capital of France."},
-    correct_score=0.0,
-    correct_reason="Output contradicts context — Paris is in France, not Germany.",
+policy = "Ridgeline Outfitters accepts unused packs within 30 days of delivery."
+inputs = {"response": "Ridgeline Outfitters accepts unused packs within 90 days of delivery.", "context": policy}
+result = evaluate("faithfulness", **inputs)
+entry = feedback.submit(
+    result, inputs=inputs, correct_score=0.0, correct_passed=False,
+    correct_reason="The reply promises 90 days; the policy allows 30.",
 )
+print(entry.eval_name, entry.original_score, entry.correct_score)
 ```
 
 ## FeedbackCollector
 
 ### Submitting corrections
 
+Pass the exact inputs you scored. Tags and metadata can record why an example belongs in a review set. Here are four more labeled replies for the same policy:
+
 ```python
-from fi.evals.feedback import FeedbackCollector, InMemoryFeedbackStore
-
-store = InMemoryFeedbackStore()
-feedback = FeedbackCollector(store)
-
-feedback.submit(
-    result,                          # EvalResult from evaluate()
-    inputs={"output": "...", "context": "..."},  # the inputs used
-    correct_score=0.95,              # what the score should have been
-    correct_passed=True,             # what passed should have been
-    correct_reason="explanation",    # why the correction is right
-    tags=["production", "rag"],      # optional tags for filtering
-    metadata={"reviewer": "alice"},  # optional metadata
-)
+reviews = [
+    ("You can return an unused pack within 30 days of delivery.", 1.0, "Matches both conditions."),
+    ("You can return a used pack within 30 days of delivery.", 0.0, "The pack must be unused."),
+    ("The return window for unused packs is one week.", 0.0, "The window is 30 days."),
+    ("Unused packs qualify for return within a month (30 days) of delivery.", 1.0, "Preserves the policy."),
+]
+for reply, score, reason in reviews:
+    case = {"response": reply, "context": policy}
+    feedback.submit(
+        evaluate("faithfulness", **case), inputs=case,
+        correct_score=score, correct_passed=bool(score), correct_reason=reason,
+        tags=["returns"], metadata={"review_team": "support"},
+    )
 ```
 
 ## Threshold Calibration
 
-After collecting corrections (minimum 5 per metric, aim for 20+ for reliable results), calibrate the pass/fail threshold. The calibrator sweeps across threshold values and finds the one that best matches your corrections.
+`calibrate()` compares the original metric scores against your pass/fail labels at different thresholds. It needs at least five entries with both an original and a corrected score. It returns a recommendation; it does not change the metric. Check the cutoff on new examples before adopting it.
 
 ```python
-from fi.evals.feedback import FeedbackCollector, ChromaFeedbackStore
-
-store = ChromaFeedbackStore()
-feedback = FeedbackCollector(store)
-
-# After collecting 20+ corrections...
 profile = feedback.calibrate("faithfulness")
-
-# CalibrationProfile fields:
-print(profile.optimal_threshold)      # float — recommended threshold
-print(profile.accuracy_at_threshold)  # float — % of corrections that agree
-print(profile.sample_size)            # int — number of corrections used
-print(profile.score_mean)             # float — average corrected score
-print(profile.score_std)              # float — score standard deviation
+print(f"Reviewed: {profile.sample_size}")
+print(f"Threshold: {profile.optimal_threshold:.2f}")
+print(f"Agreement on these reviews: {profile.accuracy_at_threshold:.0%}")
 ```
 
 ## Feedback Retrieval
 
-Find similar past corrections to inform current scoring.
+`retrieve_few_shot_examples()` returns examples with the original inputs and a JSON-encoded review. The in-memory store returns recent entries for the metric; ChromaDB uses vector similarity.
 
 ```python
+import json
 from fi.evals.feedback import FeedbackRetriever
 
-retriever = FeedbackRetriever(store)
-
-similar = retriever.retrieve_similar(
-    metric_name="faithfulness",
-    inputs={"output": "...", "context": "..."},
-    top_k=3,
-)
-
-for entry in similar:
-    print(f"Score: {entry.correct_score}, Reason: {entry.correct_reason}")
+retriever = FeedbackRetriever(store, max_examples=3)
+examples = retriever.retrieve_few_shot_examples("faithfulness", inputs)
+print(f"Examples: {len(examples)}")
+for example in examples:
+    review = json.loads(example["output"])
+    print(example["inputs"]["response"], review["score"], review["reason"])
 ```
 
 ## Storage Options
 
 ### InMemoryFeedbackStore
 
-For development and testing. Data is lost when the process exits.
+Use the in-memory store from the quick example when you only need feedback for the current process. You can check how many reviews you have for a metric:
 
 ```python
-from fi.evals.feedback import InMemoryFeedbackStore
-
-store = InMemoryFeedbackStore()
+print(f"In-memory reviews: {store.count('faithfulness')}")
 ```
 
 ### ChromaFeedbackStore
 
-For production. Persists to disk, uses vector search for semantic retrieval of similar corrections.
-
-```bash
-pip install ai-evaluation[feedback]
-```
+For feedback you want to keep, choose a local directory. The first write can download ChromaDB's default embedding model. Reopening the directory gives you access to earlier reviews.
 
 ```python
 from fi.evals.feedback import ChromaFeedbackStore
 
-store = ChromaFeedbackStore()  # defaults to local disk
+on_disk = ChromaFeedbackStore(persist_directory="./ridgeline-feedback")
+on_disk.add(entry)
+reopened = ChromaFeedbackStore(persist_directory="./ridgeline-feedback")
+print("Saved review:", any(item.id == entry.id for item in reopened.get_by_metric("faithfulness")))
 ```
 
 ## Integrating with evaluate()
 
-Pass a feedback store to `evaluate()` when using LLM-as-Judge or augmented metrics. The SDK retrieves similar past corrections from the store and injects them as few-shot examples into the LLM prompt, steering the judge toward scores that match your corrections.
+Set `OPENAI_API_KEY` for the following example. With `augment=True`, a supported metric runs locally first; the LLM judge receives the heuristic result and examples retrieved from the supplied feedback store. Here you reuse the five in-memory reviews to score a new reply.
 
 ```python
-from fi.evals import evaluate
-from fi.evals.feedback import ChromaFeedbackStore
-
-store = ChromaFeedbackStore()
-
-result = evaluate(
+judged = evaluate(
     "faithfulness",
-    output="The Earth orbits the Sun.",
-    context="The Earth revolves around the Sun in an elliptical orbit.",
-    model="gemini/gemini-2.5-flash",
+    response="Unused packs can be returned within 30 days of delivery.",
+    context=policy,
+    model="gpt-4o-mini",
     augment=True,
-    feedback_store=store,  # similar corrections injected as few-shot examples
+    feedback_store=store,
 )
+print("Engine:", judged.metadata.get("engine"))
+print("Reviews used:", judged.metadata.get("feedback_examples_used", 0))
+print("Score:", judged.score, judged.reason)
 ```
 
 <Note>
-  `feedback_store` works with `augment=True` and `engine="llm"` modes. For purely local metrics (no model), corrections don't influence scoring directly — use `calibrate()` to adjust the threshold instead.
+  Passing `feedback_store` alone does not change a purely local score. If you want a different pass/fail rule, compare the score with your chosen threshold.
 </Note>
 
 ## Related
@@ -154,7 +140,7 @@ result = evaluate(
     The core function that feedback integrates with.
   </Card>
   <Card title="LLM-as-Judge" icon="wand-magic-sparkles" href="/docs/sdk/evals/llm-judge">
-    Custom criteria that benefit most from feedback calibration.
+    Define your own grading criteria.
   </Card>
   <Card title="Overview" icon="chart-mixed" href="/docs/sdk/evals">
     All approaches at a glance.

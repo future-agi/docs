@@ -1,7 +1,7 @@
 ---
 title: "Reduce LLM Costs With Semantic Caching"
 slug: "semantic-caching"
-description: "Turn on exact and semantic response caching at the gateway so paraphrased duplicate prompts return cached answers instead of paying for the same call twice."
+description: "Compare exact repeats and similar FAQ questions at the gateway. Use response headers to count cache hits and distinguish reported cost from missing data."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -20,7 +20,7 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Enable caching once in the Agent Command Center dashboard, turn on the L2 semantic cache, and your existing OpenAI SDK code starts returning cached answers for paraphrased prompts. The `x-agentcc-cache: hit_semantic` response header confirms it, with no application-code rewrites.
+Ask a Ridgeline Outfitters FAQ twice, then change its wording. The `x-agentcc-cache` header distinguishes an exact hit, a similarity hit, and a new provider call. Similar wording can qualify for a hit; similar intent alone is not enough.
 </TLDR>
 
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
@@ -36,19 +36,25 @@ Enable caching once in the Agent Command Center dashboard, turn on the L2 semant
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - Agent Command Center API key starting with `sk-agentcc-` (Settings → API Keys)
 - At least one LLM provider configured in [Agent Command Center → Providers](/docs/command-center/features/providers)
-- Python 3.11+
+- A gateway with the response cache and L2 semantic cache available; use a development gateway, not one serving live traffic
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
-Install the OpenAI SDK and set your Agent Command Center API key.
+Install the OpenAI SDK in a fresh environment.
 
 ```bash
-pip install openai
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install openai
 ```
 
+If your shell already has `AGENTCC_API_KEY`, keep it. Otherwise, replace `/path/to/your/gateway-key` with the path to a private file containing just your gateway key. In Bash:
+
 ```bash
-export AGENTCC_API_KEY="sk-agentcc-your-key"
+export AGENTCC_API_KEY="${AGENTCC_API_KEY:-$(<"/path/to/your/gateway-key")}"
+: "${AGENTCC_API_KEY:?Set a valid gateway key before continuing}"
 ```
 
 ## Tutorial
@@ -56,29 +62,38 @@ export AGENTCC_API_KEY="sk-agentcc-your-key"
 <Steps>
 <Step title="Send a baseline request and note the cost">
 
-Point the OpenAI SDK at the gateway and send a request. The response headers tell you exactly what it cost and whether it came from cache.
+Run the Python blocks in order in one session. Use a fresh namespace and a public FAQ, not a personalized order lookup. Supply the policy in a system message so the model does not have to invent one. The first request uses `no-store` to get an uncached baseline without warming either cache.
 
 ```python
 import os
+from uuid import uuid4
 from openai import OpenAI
 
-API_KEY = os.environ["AGENTCC_API_KEY"]
-
 client = OpenAI(
-    api_key=API_KEY,
+    api_key=os.environ["AGENTCC_API_KEY"],
     base_url="https://gateway.futureagi.com/v1",
+    default_headers={"x-agentcc-cache-namespace": f"returns-{uuid4().hex}"},
 )
+policy = (
+    "You help Ridgeline Outfitters shoppers. Unused gear can be returned within "
+    "30 days. A prepaid label is included. Answer in one sentence; do not invent details."
+)
+question = "How long do I have to return unused gear to Ridgeline Outfitters?"
 
-r = client.chat.completions.with_raw_response.create(
-    model="gpt-4o-mini",
-    messages=[{"role": "user", "content": "What is your return policy?"}],
-)
-print(f"cache:   {r.headers.get('x-agentcc-cache')}")
-print(f"cost:    ${r.headers.get('x-agentcc-cost')}")
-print(f"latency: {r.headers.get('x-agentcc-latency-ms')}ms")
+def ask(text, headers=None):
+    return client.chat.completions.with_raw_response.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": policy}, {"role": "user", "content": text}],
+        extra_headers=headers or {},
+    )
+
+baseline = ask(question, {"Cache-Control": "no-store"})
+print("baseline:", baseline.headers.get("x-agentcc-cache", "not reported"))
+print("cost (USD):", baseline.headers.get("x-agentcc-cost", "not reported"))
+print("latency (ms):", baseline.headers.get("x-agentcc-latency-ms", "not reported"))
 ```
 
-You should see `x-agentcc-cache` empty or `miss` on a fresh call. The cost and latency are what you'd pay every time without caching.
+With caching active, `no-store` reports `skip`. If your organization has not enabled the cache yet, you may see `skip_org_disabled`; a gateway without the cache plugin may omit the header. A missing cost is not the same as zero cost.
 
 </Step>
 <Step title="Turn on exact caching in the dashboard">
@@ -88,123 +103,83 @@ In the dashboard, go to **Gateway → Providers → Cache** and click **Configur
 - **Enable Response Cache**: on
 - **Default TTL**: `1h` (or whatever fits your data freshness needs)
 
-Save. Caching is now active for every request through the gateway. The dashboard shows `Enabled: Yes` with `L1 Backend: memory`, and `Semantic Cache: Disabled` confirms only exact matches are served right now. No client change required.
-
-<Note>
-L1 is always exact-match; `memory` just means it's stored in-process. Switch to Redis or disk for a multi-instance gateway.
-</Note>
-
-Run the same prompt twice:
+Save the settings. On a self-hosted gateway, the cache plugin must also be enabled at startup (`cache.enabled`). The in-memory backend keeps entries on one gateway instance, so direct this example to the same instance throughout.
 
 ```python
-prompt = [{"role": "user", "content": "What is your return policy?"}]
-
-r1 = client.chat.completions.with_raw_response.create(model="gpt-4o-mini", messages=prompt)
-print(f"call 1: {r1.headers.get('x-agentcc-cache')} | ${r1.headers.get('x-agentcc-cost')}")
-
-r2 = client.chat.completions.with_raw_response.create(model="gpt-4o-mini", messages=prompt)
-print(f"call 2: {r2.headers.get('x-agentcc-cache')} | ${r2.headers.get('x-agentcc-cost')}")
+r1 = ask(question)
+r2 = ask(question)
+print("call 1:", r1.headers.get("x-agentcc-cache", "not reported"))
+print("call 2:", r2.headers.get("x-agentcc-cache", "not reported"))
+print("same completion:", r1.parse().id == r2.parse().id)
 ```
 
-You should see call 1 come back `miss`. Call 2 comes back `hit_exact`, instant, with `$0` provider cost. Exact caching is fast and free, but only helps when prompts are byte-identical.
-
-<Tip>
-Use cache **namespaces** to isolate environments or experiments. Set `x-agentcc-cache-namespace: staging` on a request to keep its cache separate from production. Each namespace is independent. A `prod` hit won't leak into `staging`.
-</Tip>
+Expect `miss`, then `hit_exact` and the same completion ID. The cached response did not need another provider completion.
 
 </Step>
 <Step title="Switch to semantic caching for paraphrased prompts">
 
-Real customers don't ask the same question the same way twice. Semantic caching matches prompts by meaning rather than exact text. It runs as an L2 fallback after the L1 exact-match check.
+In **Configure Cache**, turn on **L2 Semantic Cache → Enable Semantic Cache**, set **Similarity Threshold** to `0.92`, and save. On a self-hosted gateway, the L2 store and its threshold come from startup configuration: set `cache.semantic.enabled` to `true` and `cache.semantic.threshold` to `0.92`. Changing the organization settings alone does not create or retune that store.
 
-In the same **Configure Cache** dialog, enable:
-
-- **Enable Semantic Cache**: on
-- **Similarity Threshold**: `0.92` (similarity, 0 to 1, higher is stricter)
-
-The same client code now matches paraphrases:
+The gateway checks L1 first. On a miss it compares character sequences in the last user message, with case and punctuation normalized. Keep the system message, model, namespace and request options fixed. Force a fresh answer first so L2 has an entry even if you enabled it after the previous step.
 
 ```python
-prompts = [
-    "What is your return policy?",
-    "Can I return a product I bought?",
-    "How do refunds work at your store?",
-    "Tell me about returning items.",
-]
-for p in prompts:
-    r = client.chat.completions.with_raw_response.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": p}],
-    )
-    print(f"{(r.headers.get('x-agentcc-cache') or 'miss'):14} | ${r.headers.get('x-agentcc-cost')} | {p}")
+anchor = ask(question, {"x-agentcc-cache-force-refresh": "true"})
+near = ask("How long do I have to return unused gear to Ridgeline Outfitters, please?")
+other = ask("Is a prepaid shipping label included?")
+for label, reply in [("anchor", anchor), ("near match", near), ("shipping label", other)]:
+    print(label, reply.headers.get("x-agentcc-cache", "not reported"))
+print("near match reused completion:", near.parse().id == anchor.parse().id)
 ```
 
-You should see the first prompt come back `miss`. The rest are paraphrases above the 0.92 similarity threshold and come back as `hit_semantic` with near-zero cost.
-
-<Tip>
-Tune the threshold carefully. Too low (e.g., 0.7) and unrelated questions collide; too high (e.g., 0.99) and you only catch near-exact matches. Start at 0.92 and adjust based on your hit rate vs false-positive rate.
-</Tip>
+At this threshold, look for `hit_semantic` on the near match and `miss` on the shipping-label question. Do not assume every paraphrase qualifies. Check that the reused answer is *right*, not just that the request cost less. Avoid similarity caching for account-specific answers or questions where a small wording change reverses the meaning.
 
 </Step>
 <Step title="Measure the savings">
 
-Loop over a realistic mixed batch and tally cache hits, total cost, and latency.
+Tally the headers for a mixed batch. Cost is only comparable if the gateway reports it for every request.
 
 ```python
-import time
 from collections import Counter
+from decimal import Decimal
+from time import perf_counter
 
-batch = [
-    "What is your return policy?",
-    "Can I return a product?",
-    "How do I get a refund?",
-    "What's the shipping cost?",
-    "How long does shipping take?",
-    "Do you ship internationally?",
-] * 5  # 30 calls total
-
+batch = [question, "How long do I have to return unused gear to Ridgeline Outfitters, please?",
+         "Is a prepaid shipping label included?"] * 5
 tally = Counter()
-total_cost = 0.0
-start = time.time()
-
-for p in batch:
-    r = client.chat.completions.with_raw_response.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": p}],
-    )
-    tally[r.headers.get("x-agentcc-cache") or "miss"] += 1
-    total_cost += float(r.headers.get("x-agentcc-cost") or 0)
-
-print(f"cache results: {tally}")
-print(f"total cost:    ${total_cost:.5f}")
-print(f"wall time:     {time.time() - start:.1f}s")
+costs = []
+start = perf_counter()
+for text in batch:
+    headers = ask(text).headers
+    tally[headers.get("x-agentcc-cache", "not reported")] += 1
+    if "x-agentcc-cost" in headers:
+        costs.append(Decimal(headers["x-agentcc-cost"]))
+print("requests:", sum(tally.values()), "cache results:", dict(tally))
+print("total reported cost (USD):", sum(costs) if len(costs) == len(batch) else "incomplete")
+print(f"wall time: {perf_counter() - start:.1f}s")
 ```
 
-For this illustrative batch, expect most calls to land as `hit_exact` or `hit_semantic` after the first pass over each unique question, with only the six first-seen prompts costing full price. Compare the total cost against the same batch with caching disabled. That's your savings, and it scales with how repetitive your real traffic is.
+The batch has 15 requests. Count `hit_exact` and `hit_semantic` to see how many completions the gateway reused. For a cost comparison, run the same batch with `Cache-Control: no-store` and compare complete cost totals; that second batch incurs provider charges.
 
 </Step>
 <Step title="Bypass or invalidate the cache when you need fresh answers">
 
-When you change a system prompt or want a fresh response for a specific call, send `x-agentcc-cache-force-refresh: true` on that request. The gateway skips the cache read but still writes the new response back, so subsequent calls hit the refreshed entry.
+When you need a fresh completion for the *same* request, bypass the read and refresh its entry:
 
 ```python
-r = client.chat.completions.with_raw_response.create(
-    model="gpt-4o-mini",
-    messages=[{"role": "user", "content": "What is your return policy?"}],
-    extra_headers={"x-agentcc-cache-force-refresh": "true"},
-)
-print(f"forced refresh: {r.headers.get('x-agentcc-cache')}")
+fresh = ask(question, {"x-agentcc-cache-force-refresh": "true"})
+repeat = ask(question)
+print("forced refresh:", fresh.headers.get("x-agentcc-cache", "not reported"))
+print("after refresh:", repeat.headers.get("x-agentcc-cache", "not reported"))
+print("refreshed completion reused:", repeat.parse().id == fresh.parse().id)
 ```
 
-You should see `miss` on the forced call.
-
-For a global wipe after a prompt-template update, route your traffic to a fresh namespace by setting `x-agentcc-cache-namespace: support-v2` instead of `support`. The old cache stays available to anything still pointed at `support`.
+Expect `miss` on the refresh and `hit_exact` on the next read. For a clean set of entries, start a new namespace. This does not delete existing entries.
 
 </Step>
 </Steps>
 
 <Check>
-You enabled exact then semantic caching in the dashboard, watched paraphrased prompts return cached responses with `x-agentcc-cache: hit_semantic`, and measured the cost drop on a realistic batch, without changing application code beyond pointing at the gateway.
+You can now tell whether the gateway called the provider, returned an exact match, or reused a similar FAQ response. Compare completion IDs as well as cache headers when checking a refresh.
 </Check>
 
 ## Troubleshooting
@@ -212,7 +187,7 @@ You enabled exact then semantic caching in the dashboard, watched paraphrased pr
 | Symptom | Cause | Fix |
 |---|---|---|
 | `x-agentcc-cache` header is missing on every response | Requests aren't going through the gateway, or `base_url` points somewhere else | Confirm `base_url="https://gateway.futureagi.com/v1"` and that `AGENTCC_API_KEY` is set |
-| Call 2 with the identical prompt still shows `miss` | Response Cache isn't enabled, or the TTL already expired | Check **Gateway → Providers → Cache** shows `Enabled: Yes`, and confirm the TTL covers your test window |
+| Call 2 with the identical prompt still shows `miss` | Response Cache isn't enabled, or the TTL already expired, or the requests reached different in-memory gateways | Check **Gateway → Providers → Cache** shows `Enabled: Yes`, and confirm the TTL covers your test window |
 | Two calls with the same text return `miss` twice | The request bodies aren't byte-identical: different `temperature`, `max_tokens`, or message order breaks an exact match | Keep every parameter identical across calls, or rely on semantic caching for near-duplicates |
 | Paraphrases never come back as `hit_semantic` | L2 Semantic Cache is still toggled off, or the similarity threshold is set too high for the paraphrase | Enable **L2 Semantic Cache** in the Configure Cache dialog and lower the threshold, e.g. from `0.99` to `0.92` |
 | Unrelated questions return the same cached answer | Similarity threshold is set too low, so distinct prompts collide | Raise the threshold (e.g. `0.92` to `0.97`) and re-run your batch to confirm hits still land where expected |

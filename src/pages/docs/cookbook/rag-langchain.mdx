@@ -1,7 +1,7 @@
 ---
 title: "Evaluate a LangChain RAG Pipeline with Future AGI"
 slug: "rag-langchain"
-description: "Build a LangChain RAG pipeline over three chunking strategies, trace it with traceAI, and score retrieval and groundedness with fi.evals."
+description: "Build a LangChain RAG pipeline with three retrieval strategies, trace it with traceAI, and score retrieval and groundedness with fi.evals."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -20,24 +20,25 @@ canonical: "https://docs.futureagi.com/docs/cookbook/rag-langchain"
 ---
 
 <TLDR>
-Build a LangChain RAG pipeline over three Wikipedia pages, trace it with traceAI, and score every answer on context relevance, chunk utilization, and groundedness with `fi.evals`. Swap the chunking and retrieval strategy three times and compare the scores to see which one actually helps.
+Does splitting a return policy differently help an assistant answer the same question? Build three LangChain retrieval strategies over the same Ridgeline Outfitters policies. Trace each answer in Observe, then use Agent Learning Kit to compare context relevance, chunk utilization, and groundedness.
 </TLDR>
 
-| Time | Difficulty | Package |
-|------|-----------|---------|
-| 30 min | Intermediate | `futureagi` + `ai-evaluation` |
+| Time | Difficulty | Packages |
+|------|------------|----------|
+| 30 min | Intermediate | Agent Learning Kit, LangChain, Chroma, traceAI |
 
 <Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
-- An `OPENAI_API_KEY` (used for the LLM, embeddings, and eval judge calls)
-- Python 3.11+
+- Python 3.12 and a terminal with Bash or Zsh
+- `FI_API_KEY` and `FI_SECRET_KEY` from your [Future AGI workspace](/docs/admin-settings) for tracing and Turing evaluations
+- An `OPENAI_API_KEY` with access to `gpt-4o-mini` and `text-embedding-3-small` for answers and embeddings
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install langchain langchain-core langchain-community langchain-experimental langchain-openai beautifulsoup4 chromadb futureagi ai-evaluation fi-instrumentation-otel traceai-langchain
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7 fi-instrumentation-otel==1.5.1 traceai-langchain==0.2.4 langchain-openai==1.8.5 langchain-chroma==1.1.0 langchain-text-splitters==1.1.3 langchain-experimental==0.4.2 matplotlib
 ```
 
 ```bash
@@ -46,335 +47,207 @@ export FI_SECRET_KEY="your-secret-key"
 export OPENAI_API_KEY="your-openai-key"
 ```
 
+For a self-hosted installation, set `FI_BASE_URL` to your API base URL and `export FI_TRACES_URL=https://your-collector.example.com` to your collector base URL.
+
 ## Tutorial
+
+Run the Python blocks in order in the same Python session.
 
 <Steps>
 <Step title="Build the baseline RAG pipeline">
 
-Load three Wikipedia pages on transformer architectures, split them into fixed-size chunks, and index them in Chroma.
+Use three short policies as a fixed corpus. A new collection name for each run keeps chunks from earlier runs out of the comparison.
 
 ```python
+from uuid import UUID, uuid4
+
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_community.vectorstores import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-llm = ChatOpenAI(model_name="gpt-4o-mini")
-embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small", check_embedding_ctx_length=False)
+policies = {
+    "returns": "Unused boots can be returned within 30 days of delivery. Put both boots in their original box. Returns are free if you use the prepaid label. Refunds take five business days after inspection.",
+    "repairs": "A broken buckle on a daypack qualifies for repair. Send a photo of the buckle with your request. A buckle repair takes ten business days after the pack arrives. Repairs ship back at no charge.",
+    "shipping": "Standard delivery takes five business days. Express delivery takes two business days. Orders over $75 qualify for free standard delivery. Express delivery always costs $12.",
+}
+docs = [Document(page_content=text, metadata={"source": source}) for source, text in policies.items()]
+run_id = uuid4().hex
 
-urls = [
-    "https://en.wikipedia.org/wiki/Attention_Is_All_You_Need",
-    "https://en.wikipedia.org/wiki/BERT_(language_model)",
-    "https://en.wikipedia.org/wiki/Generative_pre-trained_transformer",
-]
 
-docs = []
-for url in urls:
-    docs.extend(WebBaseLoader(url).load())
+def index_chunks(chunks, name):
+    store = Chroma.from_documents(chunks, embeddings, collection_name=f"{name}-{run_id}")
+    return store.as_retriever(search_kwargs={"k": 2})
 
-# Fixed-size chunking: the baseline every other strategy is measured against
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-recursive_splits = text_splitter.split_documents(docs)
 
-vectorstore = Chroma.from_documents(
-    documents=recursive_splits,
-    embedding=embeddings,
-    persist_directory="chroma_recursive",
-)
-recursive_retriever = vectorstore.as_retriever()
-
-print(f"Indexed {len(recursive_splits)} chunks from {len(docs)} pages")
-```
-
-You should see:
-```
-Indexed 187 chunks from 3 pages
+splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=20)
+recursive_splits = splitter.split_documents(docs)
+recursive_retriever = index_chunks(recursive_splits, "recursive")
+print(f"Indexed {len(recursive_splits)} chunks from {len(docs)} policies")
 ```
 
 </Step>
 <Step title="Configure tracing and evaluation">
 
-Register a trace provider with `traceai-langchain` so every LLM call, retrieval, and chain step is captured, and set up an `Evaluator` to score answers after the fact.
+Register the LangChain instrumentor before you invoke the retriever or the chat model. Each answer will have a parent span in Observe with its retrieval and model calls underneath it.
 
 ```python
-from getpass import getpass
-import os
+import json
+from pathlib import Path
+from statistics import mean
 
-from fi.evals import Evaluator
+from fi.evals import evaluate
 from fi_instrumentation import register
-from fi_instrumentation.fi_types import (
-    ProjectType,
-    EvalName,
-    EvalSpanKind,
-    EvalTag,
-    EvalTagType,
-    ModelChoices,
-)
+from fi_instrumentation.fi_types import ProjectType
 from traceai_langchain import LangChainInstrumentor
 
-os.environ["FI_API_KEY"] = os.environ.get("FI_API_KEY") or getpass("Enter your FI API key: ")
-os.environ["FI_SECRET_KEY"] = os.environ.get("FI_SECRET_KEY") or getpass("Enter your FI API secret: ")
-
-evaluator = Evaluator(fi_base_url="https://api.futureagi.com")
-
-# Tag every LLM span for context adherence and groundedness as it's traced
-eval_tags = [
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.LLM,
-        eval_name=EvalName.CONTEXT_ADHERENCE,
-        model=ModelChoices.TURING_FLASH,
-    ),
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.LLM,
-        eval_name=EvalName.GROUNDEDNESS,
-        model=ModelChoices.TURING_FLASH,
-    ),
-]
-
-trace_provider = register(
-    project_type=ProjectType.EXPERIMENT,
-    project_name="RAG-Cookbook",
-    project_version_name="v1",
-    eval_tags=eval_tags,
-)
-
-LangChainInstrumentor().instrument(tracer_provider=trace_provider)
+provider = register(project_type=ProjectType.OBSERVE, project_name="ridgeline-rag-strategies", verbose=False)
+LangChainInstrumentor().instrument(tracer_provider=provider)
+tracer = provider.get_tracer("rag-cookbook")
 ```
 
-Confirm the wiring works end to end before building the full comparison: retrieve for one question, answer it, and score the answer with `fi.evals`.
+The relevance judge needs the question and passages, utilization needs the passages and answer, and groundedness needs all three. Keep the evaluation IDs alongside the scores so you can look up a surprising result later.
 
 ```python
-from fi.evals.templates import ContextRelevance
+metrics = ("context_relevance", "chunk_utilization", "groundedness")
 
-sample_docs = recursive_retriever.invoke("What is a transformer?")
-sample_context = "\n\n".join(doc.page_content for doc in sample_docs)
-sample_answer = llm.invoke(
-    [{"role": "user", "content": f"Question: What is a transformer?\n\nContext: {sample_context}"}]
-).content
 
-check = evaluator.evaluate(
-    eval_templates=[ContextRelevance(config={"check_internet": False})],
-    inputs=[{"input": "What is a transformer?", "context": sample_context}],
-    model_name="turing_flash",
-)
-print(check.eval_results[0].metrics[0].value)
+def score(question, context, answer):
+    inputs = (
+        {"input": question, "context": context},
+        {"context": context, "output": answer},
+        {"input": question, "context": context, "output": answer},
+    )
+    scores, eval_ids = {}, {}
+    for name, fields in zip(metrics, inputs):
+        result = evaluate(name, model="turing_flash", **fields)
+        if result.score is None or not 0 <= result.score <= 1:
+            raise ValueError(f"No valid {name} score: {result.error or result.reason}")
+        scores[name] = result.score
+        eval_ids[name] = result.metadata["eval_id"]
+    return scores, eval_ids
 ```
-
-You should see a single score between 0 and 1, for example `0.9`. That confirms the chain, the tracer, and the evaluator are all wired correctly before the three-strategy comparison in the next steps.
 
 </Step>
 <Step title="Run the baseline and score it">
 
-Define a small, fixed test set and a retrieve-then-answer function, then score every answer on context relevance, chunk utilization, and groundedness.
+Use the same questions, answer prompt, and judges for every strategy. Keep the passages, answer, and trace ID for each question, not just the average.
 
 ```python
-from fi.evals.templates import ContextRelevance, ChunkUtilization, Groundedness
-
-test_questions = [
-    "What are the key differences between the transformer architecture in "
-    "'Attention Is All You Need' and the bidirectional approach used in BERT?",
-    "Explain the positional encoding mechanism in the original transformer "
-    "paper and why it was necessary.",
-    "How does GPT differ from BERT in terms of pretraining objective?",
+questions = [
+    "When can I return unused boots, and when will I get my refund?",
+    "What should I send for a daypack buckle repair and how long does repair take?",
+    "Is two-business-day shipping free on an $80 order?",
 ]
+rows = []
 
 
-def answer_question(question, retriever):
-    retrieved_docs = retriever.invoke(question)
-    context = "\n\n".join(doc.page_content for doc in retrieved_docs)
-    messages = [{"role": "user", "content": f"Question: {question}\n\nContext: {context}"}]
-    response = llm.invoke(messages)
-    return context, response.content
-
-
-def run_pipeline(retriever, questions):
-    rows = []
+def compare(name, get_docs):
+    group = []
     for question in questions:
-        context, answer = answer_question(question, retriever)
-        rows.append({"query": question, "context": context, "answer": answer})
-    return rows
+        with tracer.start_as_current_span(f"RAG answer: {name}") as span:
+            retrieved = get_docs(question)
+            context = "\n\n".join(doc.page_content for doc in retrieved)
+            answer = llm.invoke([
+                ("system", "Answer in one or two sentences using only the provided policies. "
+                           "Say what is unknown if the policies do not answer the question."),
+                ("human", f"Policies:\n{context}\n\nQuestion: {question}"),
+            ]).content
+            scores, eval_ids = score(question, context, answer)
+            for metric, value in scores.items():
+                span.set_attribute(f"rag.{metric}", value)
+            group.append(dict(strategy=name, question=question, context=context, answer=answer,
+                              scores=scores, eval_ids=eval_ids,
+                              trace_id=str(UUID(int=span.get_span_context().trace_id))))
+    rows.extend(group)
+    return {key: mean(row["scores"][key] for row in group) for key in metrics}
 
 
-def score_pipeline(rows, model="turing_flash"):
-    relevance_template = ContextRelevance(config={"check_internet": False})
-    utilization_template = ChunkUtilization(config={"check_internet": False})
-    groundedness_template = Groundedness(config={"check_internet": False})
-
-    scored = []
-    for row in rows:
-        inputs = {"input": row["query"], "context": row["context"], "output": row["answer"]}
-        relevance = evaluator.evaluate(eval_templates=[relevance_template], inputs=[inputs], model_name=model)
-        utilization = evaluator.evaluate(eval_templates=[utilization_template], inputs=[inputs], model_name=model)
-        grounded = evaluator.evaluate(eval_templates=[groundedness_template], inputs=[inputs], model_name=model)
-        scored.append({
-            **row,
-            "context_relevance": relevance.eval_results[0].metrics[0].value,
-            "chunk_utilization": utilization.eval_results[0].metrics[0].value,
-            "groundedness": grounded.eval_results[0].metrics[0].value,
-        })
-    return scored
-
-
-def average_scores(scored):
-    keys = ["context_relevance", "chunk_utilization", "groundedness"]
-    return {key: sum(row[key] for row in scored) / len(scored) for key in keys}
-
-
-recursive_results = run_pipeline(recursive_retriever, test_questions)
-recursive_scored = score_pipeline(recursive_results)
-recursive_avg = average_scores(recursive_scored)
+recursive_avg = compare("Recursive", recursive_retriever.invoke)
 print(recursive_avg)
 ```
 
-You should see three scores between 0 and 1 (illustrative, your run will vary):
-```
-{'context_relevance': 0.44, 'chunk_utilization': 0.80, 'groundedness': 0.33}
-```
-
-A low `groundedness` score here means the answer states things the retrieved context doesn't support, usually because the chunk boundaries split a fact away from the sentence that needed it.
+Context relevance asks whether retrieval found useful evidence. Groundedness asks whether the answer stays within that evidence. An answer can be grounded but incomplete if retrieval missed a relevant passage.
 
 </Step>
 <Step title="Switch to semantic chunking">
 
-Fixed-size chunks cut mid-idea. `SemanticChunker` splits on embedding-distance breakpoints instead, keeping related sentences in the same chunk.
+`SemanticChunker` looks for changes in meaning between sentences using embeddings. Re-index the same three policies and retrieve two chunks per question, just as in the baseline.
 
 ```python
 from langchain_experimental.text_splitter import SemanticChunker
 
 semantic_chunker = SemanticChunker(embeddings, breakpoint_threshold_type="percentile")
-semantic_splits = semantic_chunker.create_documents([doc.page_content for doc in docs])
-
-semantic_vectorstore = Chroma.from_documents(
-    documents=semantic_splits,
-    embedding=embeddings,
-    persist_directory="chroma_semantic",
-)
-semantic_retriever = semantic_vectorstore.as_retriever()
-
-semantic_results = run_pipeline(semantic_retriever, test_questions)
-semantic_scored = score_pipeline(semantic_results)
-semantic_avg = average_scores(semantic_scored)
+semantic_splits = semantic_chunker.split_documents(docs)
+semantic_retriever = index_chunks(semantic_splits, "semantic")
+semantic_avg = compare("Semantic", semantic_retriever.invoke)
 print(semantic_avg)
-```
-
-You should see an improvement on at least one metric over the baseline (illustrative):
-```
-{'context_relevance': 0.48, 'chunk_utilization': 0.86, 'groundedness': 0.67}
 ```
 
 </Step>
 <Step title="Add sub-question decomposition">
 
-Some questions need more than one retrieval pass. Break the question into sub-questions first, retrieve for each, then answer from the combined context.
+Use the semantic index again, but ask the model to split each question first. Retrieve up to two chunks per sub-question and remove duplicates before passing them to the same answer prompt. This variant costs an extra chat call per question and may retrieve more context; better scores are not guaranteed.
 
 ```python
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
-from langchain_core.prompts import PromptTemplate
+def decomposed_docs(question):
+    message = llm.invoke([
+        ("system", "Split the question into at most two standalone search questions. "
+                   "Return only the questions, one per line."),
+        ("human", question),
+    ])
+    parts = [line.strip() for line in message.content.splitlines() if line.strip()][:2]
+    unique = {}
+    for part in parts or [question]:
+        for doc in semantic_retriever.invoke(part):
+            unique[(doc.metadata["source"], doc.page_content)] = doc
+    return list(unique.values())
 
-subq_prompt = PromptTemplate.from_template(
-    "Break this question into 2-3 sub-questions needed to answer it fully.\n"
-    "Question: {input}\n"
-    "Format: one sub-question per line, prefixed with 'SUBQ:'"
-)
 
-
-def parse_subquestions(message):
-    return [line.split("SUBQ:")[1].strip() for line in message.content.split("\n") if "SUBQ:" in line]
-
-
-subquestion_chain = subq_prompt | llm | RunnableLambda(parse_subquestions)
-
-answer_prompt = PromptTemplate.from_template(
-    "Answer using all context below, connecting information across sub-questions.\n"
-    "CONTEXTS:\n{contexts}\n\nQuestion: {input}\nFinal answer:"
-)
-
-subq_chain = (
-    RunnablePassthrough.assign(subqs=lambda x: subquestion_chain.invoke(x["input"]))
-    .assign(contexts=lambda x: "\n\n".join(
-        doc.page_content for q in x["subqs"] for doc in semantic_retriever.invoke(q)
-    ))
-    .assign(answer=answer_prompt | llm)
-)
-
-subq_rows = []
-for question in test_questions:
-    result = subq_chain.invoke({"input": question})
-    subq_rows.append({
-        "query": question,
-        "context": result["contexts"],
-        "answer": result["answer"].content,
-    })
-
-subq_scored = score_pipeline(subq_rows)
-subq_avg = average_scores(subq_scored)
+subq_avg = compare("Sub-question", decomposed_docs)
 print(subq_avg)
 ```
-
-You should see the sub-question variant lead on chunk utilization and groundedness, at some cost to relevance (illustrative):
-```
-{'context_relevance': 0.46, 'chunk_utilization': 0.92, 'groundedness': 1.0}
-```
-
-Sub-question decomposition retrieves more targeted context per question, which raises `chunk_utilization` and `groundedness`. It costs an extra LLM call per question, so it's slower and more expensive than the other two strategies.
 
 </Step>
 <Step title="Compare the three strategies">
 
-Plot the three averages side by side to see the actual tradeoff, not just the printed numbers.
+Print the exact averages and save the comparison chart and question-level records. Groundedness is a pass/fail judgment, so its average is the fraction of answers that passed. Three questions illustrate the method; they do not establish which strategy is best for your support traffic.
 
 ```python
 import matplotlib.pyplot as plt
-import pandas as pd
 
-summary = pd.DataFrame({
-    "Recursive": recursive_avg,
-    "Semantic": semantic_avg,
-    "SubQ": subq_avg,
-})
-print(summary)
-
-summary.plot(kind="bar", figsize=(10, 5))
-plt.title("Context relevance, chunk utilization, and groundedness by chunking strategy")
-plt.ylabel("Score (0-1)")
-plt.xticks(rotation=0)
-plt.tight_layout()
-plt.show()
+strategies = {"Recursive": recursive_avg, "Semantic": semantic_avg, "Sub-question": subq_avg}
+print("Metric             Recursive   Semantic   Sub-question")
+fig, axes = plt.subplots(1, 3, figsize=(10, 3.5), sharey=True, layout="constrained")
+for ax, metric in zip(axes, metrics):
+    values = [scores[metric] for scores in strategies.values()]
+    print(f"{metric:<18}" + "".join(f"{value:11.2f}" for value in values))
+    ax.barh(list(strategies), values, height=0.45, color="0.35")
+    ax.set(xlim=(0, 1), title=metric.replace("_", " "), xlabel="Mean score")
+axes[0].invert_yaxis()
+fig.savefig("rag-comparison.png", dpi=150)
+plt.close(fig)
+Path("rag-answers.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+provider.force_flush()
 ```
-
-You should see a bar chart with three groups (illustrative values, from the runs above):
-
-<img src="/images/docs/cookbook-rag-langchain/output.png" alt="Bar chart comparing context relevance, chunk utilization, and groundedness scores across recursive, semantic, and sub-question RAG strategies" style={{ borderRadius: '5px' }} />
-
-*Context relevance stays nearly flat across all three strategies; chunk utilization and groundedness are what actually move*
 
 </Step>
 <Step title="Inspect the traces in the dashboard">
 
-Every `llm.invoke()` and `retriever.invoke()` call from the three runs was captured by `LangChainInstrumentor`. Open the Future AGI dashboard to inspect them.
-
-Open the **Prototype** tab and find the `RAG-Cookbook` project → open any trace to see the retrieval span, the LLM call, and the `context_adherence` and `groundedness` eval scores attached to it. This span-attached `groundedness` score is computed independently of the printed averages from Step 3-5, so the two don't need to match.
-
-<img src="/images/docs/cookbook-rag-langchain/experiment.webp" alt="Future AGI dashboard showing traced spans for the RAG-Cookbook experiment with retrieval and LLM steps" style={{ borderRadius: '5px' }} />
-
-*Each row is one trace: expand it to see the exact chunks retrieved and the eval score attached to the LLM span*
+Open **Observe** and select `ridgeline-rag-strategies`. Match a `trace_id` in `rag-answers.json` to its trace. Inspect the retrieved chunks and model answer, then check the three `rag.*` scores on the parent span. These are attributes you recorded from the kit's evaluations, not a second set of dashboard judgments.
 
 </Step>
 </Steps>
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `ModuleNotFoundError: No module named 'fi.evals'` | `ai-evaluation` not installed, `futureagi` alone doesn't ship it | `pip install ai-evaluation` |
-| `ModuleNotFoundError: No module named 'fi_instrumentation'` | `fi-instrumentation-otel` not installed | `pip install fi-instrumentation-otel` |
-| `ModuleNotFoundError: No module named 'traceai_langchain'` | `traceai-langchain` not installed | `pip install traceai-langchain` |
-| `ImportError: cannot import name 'ContextRelevance' from 'fi.evals'` | Eval template classes live under `fi.evals.templates`, not `fi.evals` | Import as `from fi.evals.templates import ContextRelevance, ChunkUtilization, Groundedness` |
-| `score_pipeline` scores look identical across `recursive_avg`, `semantic_avg`, and `subq_avg` | `chroma_recursive` or `chroma_semantic` already had vectors from a previous run, so the new documents were appended instead of replacing them | Delete the `chroma_recursive/` and `chroma_semantic/` directories before each fresh comparison run |
-| `openai.RateLimitError` mid-run on `run_pipeline` | Three questions run back to back against the OpenAI API with no delay | Add `time.sleep(1)` between questions, or lower `test_questions` to 1-2 while iterating |
-| `evaluator.evaluate(...)` raises an authentication error | `FI_API_KEY` or `FI_SECRET_KEY` missing or unexported | Re-run the `export` block, then re-run the script |
-| No traces appear under the `RAG-Cookbook` project | `LangChainInstrumentor().instrument()` ran after the chain was already built | Call `instrument()` right after `register()`, before defining or invoking any chain |
+| Symptom | What to check |
+|---|---|
+| An embedding or chat call fails | Check that your OpenAI key has access to both models. |
+| No score for a metric | Check the Future AGI keys and the metric's required fields. A missing score is not zero. |
+| The averages tie | Compare the passages and answers for the same question. Both strategies can find the same evidence. |
+| No traces in Observe | Check the workspace, project name, and collector URL. Run the last block to flush buffered spans. |
 
-Next: read how the platform scores retrieval and groundedness in [Evaluate a RAG pipeline](/docs/cookbook/evaluate-rag).
+Next: [Evaluate a RAG pipeline](/docs/cookbook/evaluate-rag).

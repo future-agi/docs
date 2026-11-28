@@ -21,7 +21,7 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Trace a live classifier, then drive one [Falcon AI](/docs/falcon-ai/concepts/understanding-falcon-ai) conversation through triage, dataset curation, ground truthing, and an exact-match eval. The result is a balanced, ground-truthed regression dataset built from your own production traces.
+Trace a live classifier, then drive one [Falcon AI](/docs/falcon-ai/concepts/understanding-falcon-ai) conversation through triage, dataset curation, ground truthing, and an exact-match eval. You keep trace IDs beside the labels and exclude unresolved examples from the scored baseline.
 </TLDR>
 
 <div style={{display: "flex", gap: "8px", flexWrap: "wrap", margin: "0.5rem 0 1rem"}}>
@@ -37,18 +37,21 @@ Trace a live classifier, then drive one [Falcon AI](/docs/falcon-ai/concepts/und
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
 - A traced project with traces of varied quality. If you don't have one, instrument any agent with the first step below.
-- Python 3.11
+- Python 3.12 and an `OPENAI_API_KEY`
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install fi-instrumentation-otel traceai-openai openai
+python3.12 -m venv .trace-venv
+source .trace-venv/bin/activate
+python -m pip install fi-instrumentation-otel traceai-openai openai
 ```
 
 ```bash
 export FI_API_KEY="your-fi-api-key"
 export FI_SECRET_KEY="your-fi-secret-key"
+export FI_TRACES_URL="https://api.futureagi.com"  # or your self-hosted trace collector
 export OPENAI_API_KEY="your-openai-key"
 ```
 
@@ -57,7 +60,7 @@ export OPENAI_API_KEY="your-openai-key"
 <Steps>
 <Step title="Add tracing to your agent">
 
-Falcon AI reads your agent's **traces**, so the agent has to be sending traces to Future AGI before any later step can run. `OpenAIInstrumentor` patches the OpenAI SDK so every API call is captured automatically. The `@tracer.agent` decorator on your agent's entry point makes each classification appear as one parent span Falcon AI can filter on.
+Run the two Python blocks below in one session. Falcon AI reads your agent's **traces**, so the agent has to be sending traces to Future AGI before any later step can run. `OpenAIInstrumentor` patches the OpenAI SDK so every API call is captured automatically. The `@tracer.agent` decorator on your agent's entry point makes each classification appear as one parent span Falcon AI can filter on.
 
 ```python
 from fi_instrumentation import register, FITracer
@@ -65,46 +68,55 @@ from fi_instrumentation.fi_types import ProjectType
 from traceai_openai import OpenAIInstrumentor
 
 trace_provider = register(
+    verbose=False,
     project_type=ProjectType.OBSERVE,
-    project_name="email-triage-prod",
+    project_name="ridgeline-email-triage-demo",
 )
 OpenAIInstrumentor().instrument(tracer_provider=trace_provider)
-tracer = FITracer(trace_provider.get_tracer("email-triage-prod"))
+tracer = FITracer(trace_provider.get_tracer("ridgeline-email-triage-demo"))
 ```
 
 ```python
+import csv
+from uuid import UUID
 from openai import OpenAI
+from opentelemetry.trace import get_current_span
 
 client = OpenAI()
 
-
-# Replace this with your own agent's entry point.
-# The @tracer.agent decorator makes each call show up as one parent span
-# in your Future AGI Tracing project, with the OpenAI calls nested underneath.
 @tracer.agent(name="triage_email")
-def triage_email(email_text: str) -> str:
-    response = client.chat.completions.create(
+def triage_email(email_text):
+    reply = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Classify this email into one of: urgent, billing, technical, general, spam. Reply with just the category name."},
+            {"role": "system", "content": "Route support email to urgent, billing, technical, general, or spam. Reply with just the label."},
             {"role": "user", "content": email_text},
         ],
-    )
-    return response.choices[0].message.content
+    ).choices[0].message.content
+    if not reply:
+        raise ValueError("Empty classification")
+    return str(UUID(int=get_current_span().get_span_context().trace_id)), reply.strip()
 
-
-# A classifier with a thin prompt will misclassify ambiguous emails (hostile tone
-# over a small issue, multi-issue emails, etc.). Run a varied batch so Falcon AI
-# has both clean classifications and likely misclassifications in the next step.
-print(triage_email("Production is down. Payment processing has been failing for 30 minutes."))
-print(triage_email("WORST SERVICE EVER. I have been on hold for 2 hours. CALL ME BACK."))
-print(triage_email("I have a billing question and also my login is not working since yesterday."))
-print(triage_email("Why am I being charged $499 when I signed up for the $49 plan? Please fix this or I am canceling."))
-
+# Reviewer's routing labels. Only email_text goes into the classifier.
+cases = [
+    ("The checkout system is down for every store.", "urgent"),
+    ("I see two charges for my sleeping bag. Please refund the duplicate.", "billing"),
+    ("The app crashes when I open my saved hiking routes.", "technical"),
+    ("What time does your shop open on Sunday?", "general"),
+    ("Buy bulk advertising lists now! Limited offer!", "spam"),
+    ("My receipt is wrong and my login no longer works.", "NEEDS_REVIEW"),
+]
+with open("triage-traces.csv", "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["email_text", "predicted_category", "expected_category", "trace_id"])
+    for email, expected in cases:
+        trace_id, label = triage_email(email)
+        writer.writerow([email, label, expected, trace_id])
+        print(trace_id, label)
 trace_provider.force_flush()
 ```
 
-You should see four printed category labels and no errors. `force_flush()` blocks until the spans reach Future AGI, so once it returns, the traces are visible in your project's Tracing tab. For broader instrumentation patterns see [Manual Tracing](/docs/cookbook/quickstart/manual-tracing).
+You should see six trace IDs and predicted labels. `force_flush()` asks the exporter to send pending spans; storage and indexing can take a little longer. For broader instrumentation patterns see [Manual Tracing](/docs/cookbook/quickstart/manual-tracing).
 
 </Step>
 <Step title="Explore failures with Falcon AI">
@@ -117,7 +129,7 @@ Falcon AI picks up whatever page you're viewing as context. Open it from your pr
 `Cmd+K` (Mac) or `Ctrl+K` (Windows) opens Falcon AI from anywhere in the dashboard, with the current page auto-attached as a context chip.
 </Tip>
 
-You should see a category histogram and a list of traces where the category looks off given the email content (your wording and counts will vary). These flagged misclassifications are a strong starting point, not ground truth. You'll confirm them in a later step.
+Compare the returned counts and suspected misclassifications with the six IDs in `triage-traces.csv`. These flagged misclassifications are a strong starting point, not ground truth. You'll confirm them in a later step.
 
 </Step>
 <Step title="Build the dataset with curation criteria">
@@ -126,12 +138,12 @@ You should see a category histogram and a list of traces where the category look
 
 > /build-dataset
 >
-> Build a dataset called `email-triage-eval-v1`. Pull rows from the traces in this project. Selection criteria: include at least 2 traces from each category (urgent, billing, technical, general, spam) plus the likely misclassifications you flagged in the previous turn. Total target: 12-15 rows. Columns:
+> Build a new dataset called `email-triage-eval-v1` using only the six trace IDs I provide. Include one row per ID, even if a label repeats. Do not invent emails to fill a category quota. Columns:
 > - `email_text` (text): the email body the agent classified
 > - `predicted_category` (text): what the agent chose
 > - `trace_id` (text): so we can trace any failure back
 
-You should see a completion card linking to the new dataset, with 12-15 rows and every category represented. A dataset that is 90% successes won't catch regressions; one that is 90% failures won't catch false positives. The "at least 2 from each category plus the misclassifications" rule gives both classes meaningful coverage.
+Choose a fresh name if that dataset already exists and use it throughout the chat. Open the resulting dataset. Compare the six saved IDs, input texts and predictions with your CSV; stop if any are missing or duplicated. With more traffic, sample more than one example per category rather than inventing missing cases.
 
 </Step>
 <Step title="Add a ground truth column">
@@ -149,12 +161,63 @@ You should see both columns populated on every row, with a split between confide
 
 > /run-evaluations
 >
-> Run an evaluation on `email-triage-eval-v1` that checks whether `predicted_category` exactly matches `expected_category` for each row. Use the eval template from this workspace that best fits a string-equality check between two columns.
+> Score only the reviewed rows. Use `equals` to compare `predicted_category` (`text`) with `expected_category` (`expected_text`). Leave `NEEDS_REVIEW` out of the denominator. If the run cannot exclude pending rows, make a reviewed-only dataset before running it.
 
-You should see a per-row pass/fail/skip verdict and an aggregate pass rate that is neither 0% nor 100%. Both the pass pattern and the fail pattern are what you want: a regression test where every row passes is not testing anything, and one where every row fails is just noisy. The dataset now has compounding value: any future prompt change can be re-scored against it in one chat message.
+Review each verdict. With the example labels, the denominator is five, not six. Both 0% and 100% are possible. For a later prompt revision, classify the same emails again and compare the new predictions against the frozen human labels.
 
 </Step>
 </Steps>
+
+## Save the reviewed example from Python
+
+For these six synthetic emails, the `cases` list already contains the reviewer's labels. If you prefer a scripted snapshot to the chat steps, score the five resolved rows and upload the results with their source trace IDs. Use separate environments for Agent Learning Kit and the `futureagi` platform SDK because both install `fi` modules.
+
+```bash
+python3.12 -m venv .judges
+.judges/bin/python -m pip install agent-learning-kit==0.3.7
+python3.12 -m venv .datasets
+.datasets/bin/python -m pip install futureagi==0.7.0
+```
+
+Save as `score_triage.py` and run `.judges/bin/python score_triage.py`.
+
+```python
+import csv
+from fi.evals import Evaluator
+
+evaluator = Evaluator()
+with open("triage-traces.csv", newline="") as f:
+    rows = list(csv.DictReader(f))
+for row in rows:
+    row.update(verdict="Pending review", eval_id="")
+    if row["expected_category"] == "NEEDS_REVIEW":
+        continue
+    result = evaluator.evaluate(eval_templates="equals", inputs={
+        "text": row["predicted_category"], "expected_text": row["expected_category"],
+    }).eval_results[0]
+    if result.output not in ("Passed", "Failed"):
+        raise RuntimeError(result.reason or "Missing exact-match verdict")
+    row.update(verdict=result.output, eval_id=result.eval_id)
+scored = [row for row in rows if row["eval_id"]]
+print(f"{sum(row['verdict'] == 'Passed' for row in scored)} of {len(scored)} reviewed emails matched")
+with open("reviewed-triage.csv", "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+```
+
+Save as `upload_triage.py` and run `.datasets/bin/python upload_triage.py`. This creates a new dataset with the frozen predictions, labels and verdicts. It does not overwrite the one from chat.
+
+```python
+from uuid import uuid4
+from fi.datasets import Dataset, DatasetConfig
+from fi.utils.types import ModelTypes
+
+name = f"reviewed-email-triage-{uuid4().hex[:8]}"
+dataset = Dataset(dataset_config=DatasetConfig(name=name, model_type=ModelTypes.GENERATIVE_LLM))
+dataset.create(source="reviewed-triage.csv")
+print(dataset.dataset_config.id)
+```
 
 ## Troubleshooting
 
@@ -162,10 +225,10 @@ You should see a per-row pass/fail/skip verdict and an aggregate pass rate that 
 |---|---|---|
 | Falcon AI's context chip shows no project, or the wrong one | The sidebar was opened from a page outside the traced project | Open Falcon AI from inside the project's Tracing tab, not the global dashboard |
 | Falcon AI says it found no traces | Spans haven't reached Future AGI yet | Call `trace_provider.force_flush()` and wait a few seconds before opening the sidebar |
-| `/build-dataset` returns fewer than 12-15 rows | The project doesn't have enough traces in one or more categories | Run more classification calls to fill the gap, or relax the "at least 2 per category" criteria |
+| `/build-dataset` returns fewer than six rows | A trace was not indexed, selected or exported | Locate each ID from the CSV, then ask Falcon to add only the missing rows |
 | `expected_category` disagrees with an obviously correct `predicted_category` | The row's email text is genuinely ambiguous, or the selection criteria in the prompt was too vague | Re-run with a more specific rule, or edit the row directly in the dataset UI |
 | `/run-evaluations` picks a template that isn't an exact-match check | The workspace has no string-equality template, or the prompt didn't name the columns explicitly | Name `predicted_category` and `expected_category` directly in the prompt, or create a matching template in the Evaluations settings |
-| The eval run shows a 0% or 100% pass rate | The dataset lacks category coverage or contains only clean or only failing rows | Rebuild the dataset with the per-category coverage rule from the dataset step |
+| The eval run shows a 0% or 100% pass rate | All reviewed examples may actually agree or disagree | Check the mappings and denominator before adding examples that improve coverage |
 | `OpenAIInstrumentor` captures no spans for OpenAI calls | The client was created before `.instrument()` ran | Call `OpenAIInstrumentor().instrument(tracer_provider=trace_provider)` before creating the `OpenAI()` client |
 
 Next: chain trace debugging, dataset curation, and evals into a single fix with [Falcon AI End-to-End Workflow](/docs/cookbook/falcon-ai/end-to-end).

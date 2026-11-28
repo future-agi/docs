@@ -1,7 +1,7 @@
 ---
 title: "Trace a Google ADK Multi-Agent System and Read Its Error Analysis Scores"
 slug: "google-adk-multi-agent"
-description: "Instrument a four-agent Google ADK pipeline with traceAI, send its traces to Observe, and read the per-trace Error Analysis scores in the Scores accordion."
+description: "Trace a planner, researcher, critic, and writer in Google ADK. Use Error Analysis on sampled traces to decide which instruction to change."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -21,314 +21,154 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Build a four-agent Google ADK pipeline (planner, researcher, critic, writer), instrument it with [traceAI](/docs/observe/concepts/traceai), and send the traces to [Observe](/docs/observe). Run it, then open a trace and read its [Error Analysis](/docs/error-feed/concepts/trace-error-analysis) scores in the Scores accordion: Factual Grounding, Privacy And Safety, Instruction Adherence, and Optimal Plan Execution. Then use a low score to fix one agent's instructions and rerun.
+Trace four Google ADK agents drafting a Ridgeline Outfitters support reply. Compare what the critic received with what the writer sent. If Error Analysis has scored the trace, use its reasoning to choose a more specific critic instruction, then rerun the same request.
 </TLDR>
 
-| Time | Difficulty | Package |
-|------|------------|---------|
-| 20 min | Intermediate | `traceai-google-adk` |
-
 <Prerequisites>
-- Future AGI account → [app.futureagi.com](https://app.futureagi.com)
-- A workspace with the Error Feed capability enabled
-- API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Admin Settings](/docs/admin-settings))
-- A Google API key with the Gemini API enabled
-- Python 3.11-3.12 (`traceai-google-adk` does not yet support 3.13+)
+- Future AGI account with `FI_API_KEY` and `FI_SECRET_KEY` (see [Admin Settings](/docs/admin-settings))
+- A workspace with Error Feed enabled to see Error Analysis, and permission to adjust sampling on your demo project
+- An OpenAI API key. ADK runs the agents; its LiteLLM adapter calls the model.
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
+Run these commands in an empty directory. Save the Python files below alongside each other.
+
 ```bash
-pip install traceai-google-adk google-adk
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install 'google-adk==1.39.1' 'litellm==1.83.14' traceai-google-adk==0.1.7 fi-instrumentation-otel==1.5.1
 ```
 
 ```bash
 export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
-export GOOGLE_API_KEY="your-google-api-key"
+export OPENAI_API_KEY="your-openai-key"
 ```
+
+For a self-hosted installation only, set `export FI_TRACES_URL=https://your-collector.example.com` to the base URL of your trace collector.
 
 ## Tutorial
 
 <Steps>
-
 <Step title="Instrument Google ADK">
 
-Register a tracer against an **Observe** project, then instrument Google ADK before you build any agent. `GoogleADKInstrumentor` patches the ADK runner so every agent call and handoff becomes a span.
+Save this as `adk_tracing.py`. The instrumentor adapts ADK's native OpenTelemetry tracer. By default it hides inputs and outputs. Enable content capture here only for the fictional policy and ticket below; do not copy that setting into a service handling sensitive requests without reviewing your capture policy.
 
 ```python
-from fi_instrumentation import register, Transport
+from fi_instrumentation import register, TraceConfig
 from fi_instrumentation.fi_types import ProjectType
 from traceai_google_adk import GoogleADKInstrumentor
 
-tracer_provider = register(
-    project_name="google-adk-demo",
-    project_type=ProjectType.OBSERVE,
-    transport=Transport.HTTP,
+provider = register(project_name="google-adk-demo", project_type=ProjectType.OBSERVE, verbose=False)
+GoogleADKInstrumentor().instrument(
+    tracer_provider=provider, config=TraceConfig(hide_inputs=False, hide_outputs=False)
 )
-
-GoogleADKInstrumentor().instrument(tracer_provider=tracer_provider)
 ```
 
-**You should see** no output yet. Registration and instrumentation only wire the tracer; traces appear once the agents run in a later step.
-
-Before you run anything, open the `google-adk-demo` project in **Observe**, click the settings gear, and drag **Sampling rate** above 0 (100% is fine for this recipe), then click **Update**. A project starts at 0% sampling, so nothing gets scanned until you raise it, and the rate only reaches traces that arrive after you save it. See [Turn on Error Feed](/docs/error-feed/guides/turn-on-error-feed) if the project doesn't exist yet.
-
 </Step>
+<Step title="Define the specialists and their handoffs">
 
-<Step title="Define the specialized agents">
-
-Create four agents, each with one job: plan the request, research it, critique the draft, and write the final answer. Each agent's instruction ends with a handoff summary so the orchestrator can route between them.
+Save this as `adk_team.py`. `SequentialAgent` controls the order. Each `output_key` saves an agent's answer in session state; placeholders such as `{notes}` insert it into the next agent's instructions. No model has to guess which agent gets the next turn.
 
 ```python
-from google.adk.agents import Agent
+from google.adk.agents import Agent, SequentialAgent
+from google.adk.models.lite_llm import LiteLlm
 
-planner_agent = Agent(
-    name="planner_agent",
-    model="gemini-2.5-flash",
-    description="Decomposes requests into a clear plan and collects missing requirements.",
-    instruction="""You are a planning specialist.
-    Responsibilities:
-    - Clarify the user's goal and constraints with 1-3 concise questions if needed.
-    - Produce a short plan with numbered steps and deliverables.
-    - Include explicit assumptions if any details are missing.
-    - End with 'Handoff Summary:' plus a one-paragraph summary of the plan and next agent.
-    - Transfer back to the parent agent without saying anything else."""
-)
+POLICY = "Ridgeline accepts unused boots within 30 days of delivery. Return shipping is not specified."
 
-researcher_agent = Agent(
-    name="researcher_agent",
-    model="gemini-2.5-flash",
-    description="Expands plan steps into structured notes using internal knowledge (no tools).",
-    instruction="""You are a content researcher.
-    Constraints: do not fetch external data or cite URLs; rely on prior knowledge only.
-    Steps:
-    - Read the plan and assumptions.
-    - For each plan step, create structured notes (bullets) and key talking points.
-    - Flag uncertainties as 'Assumptions' with brief rationale.
-    - End with 'Handoff Summary:' and recommend sending to the critic next.
-    - Transfer back to the parent agent without saying anything else."""
-)
-
-critic_agent = Agent(
-    name="critic_agent",
-    model="gemini-2.5-flash",
-    description="Reviews content for clarity, completeness, and logical flow.",
-    instruction="""You are a critical reviewer.
-    Steps:
-    - Identify issues in clarity, structure, correctness, and style.
-    - Provide a concise list of actionable suggestions grouped by category.
-    - Do not rewrite the full content; focus on improvements.
-    - End with 'Handoff Summary:' suggesting the writer produce the final deliverable.
-    - Transfer back to the parent agent without saying anything else."""
-)
-
-writer_agent = Agent(
-    name="writer_agent",
-    model="gemini-2.5-flash",
-    description="Synthesizes a polished final deliverable from notes and critique.",
-    instruction="""You are the final writer.
-    Steps:
-    - Synthesize the final deliverable in a clean, structured format.
-    - Incorporate the critic's suggestions.
-    - Keep it concise, high-signal, and self-contained.
-    - End with: 'Would you like any changes or a different format?'
-    - Transfer back to the parent agent without saying anything else."""
-)
+def build_team(strict_critic=False):
+    model = LiteLlm(model="openai/gpt-4o-mini")
+    planner = Agent(name="planner_agent", model=model, output_key="plan",
+                    instruction="Plan a reply to the ticket in two short steps. Do not invent policy.")
+    researcher = Agent(name="researcher_agent", model=model, output_key="notes",
+                       instruction="Use the plan: {plan}. Extract only relevant facts from this policy: " + POLICY)
+    check = ("Start with PASS or FAIL. Flag any claim that Ridgeline pays for shipping."
+             if strict_critic else "Review the notes for clarity and correctness.")
+    critic = Agent(name="critic_agent", model=model, output_key="critique",
+                   instruction="Notes: {notes}. Policy: " + POLICY + " " + check)
+    writer = Agent(name="writer_agent", model=model, output_key="reply",
+                   instruction="Write a two-sentence customer reply from these notes: {notes}. "
+                               "Address this review: {critique}. Do not promise more than the policy says.")
+    return SequentialAgent(name="support_team", sub_agents=[planner, researcher, critic, writer])
 ```
 
-**You should see** no output. Defining an `Agent` only registers it in memory; nothing calls Gemini until a runner starts a session against it.
-
 </Step>
-
-<Step title="Build the orchestrator">
-
-The root agent has no tools of its own. It routes the request through the four sub-agents in order and hands control back to the user once the writer finishes.
-
-```python
-root_agent = Agent(
-    name="root_agent",
-    model="gemini-2.5-flash",
-    global_instruction="""You are a collaborative multi-agent orchestrator.
-    Coordinate Planner, Researcher, Critic, Writer to fulfill the user's request without using any external tools.
-    Keep interactions polite and focused. Avoid unnecessary fluff.""",
-    instruction="""Process:
-    - If needed, greet the user briefly and confirm their goal.
-    - Transfer to planner_agent to draft a plan.
-    - Then transfer to researcher_agent to expand the plan into notes.
-    - Then transfer to critic_agent to review and propose improvements.
-    - Finally transfer to writer_agent to produce the final deliverable.
-    - After the writer returns, ask the user if they want any changes.
-
-    Notes:
-    - Do NOT call any tools.
-    - At each step, ensure the child agent includes a 'Handoff Summary:' to help routing.
-    - If the user asks for changes at any time, route back to the appropriate sub-agent (planner or writer).
-    """,
-    sub_agents=[planner_agent, researcher_agent, critic_agent, writer_agent],
-)
-```
-
-**You should see** `root_agent.sub_agents` list the four agents in routing order: planner, researcher, critic, writer.
-
-</Step>
-
 <Step title="Run the agents">
 
-Wire up a runner with in-memory services and send five prompts through the pipeline. Each prompt runs the full planner → researcher → critic → writer chain.
+Save this as `google_adk_futureagi.py`. The session is in memory, so no separate database is needed. Consuming the event stream runs all four agents. The last printed line is the trace ID; use it to find the run in Observe.
 
 ```python
+import argparse
 import asyncio
-from typing import Optional
-
-from google.adk.runners import Runner, RunConfig
-from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
-from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from uuid import UUID
+from google.adk.runners import InMemoryRunner
 from google.genai import types
+from adk_tracing import provider
+from adk_team import build_team
 
-
-async def run_once(message_text: str, *, app_name: str = "google-adk-demo", user_id: str = "user-1", session_id: Optional[str] = None) -> None:
-    # Runner requires all four services even though this recipe keeps no state
-    # between processes; in-memory implementations are enough for a single run.
-    runner = Runner(
-        app_name=app_name,
-        agent=root_agent,
-        artifact_service=InMemoryArtifactService(),
-        session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
-        credential_service=InMemoryCredentialService(),
-    )
-
-    session = await runner.session_service.create_session(
-        app_name=app_name,
-        user_id=user_id,
-        session_id=session_id,
-    )
-
-    content = types.Content(role="user", parts=[types.Part(text=message_text)])
-
-    # run_async streams one event per agent turn; draining the loop is what
-    # drives the planner -> researcher -> critic -> writer handoff to completion.
-    async for event in runner.run_async(
-        user_id=session.user_id,
-        session_id=session.id,
-        new_message=content,
-        run_config=RunConfig(),
-    ):
-        if getattr(event, "content", None) and getattr(event.content, "parts", None):
-            text = "".join((part.text or "") for part in event.content.parts)
-            if text:
-                author = getattr(event, "author", "agent")
-                print(f"[{author}]: {text}")
-
-    # This is what flushes the run's spans to Observe; a process that exits
-    # before this completes is why traces sometimes never show up.
-    await runner.close()
-
-
-async def main():
-    prompts = [
-        "Draft the refund policy section for the EU storefront.",
-        "Summarize the top five support escalations from last week into a changelog note.",
-        "Write onboarding steps for a new user connecting their first data source.",
-        "Draft a response to a customer disputing a duplicate charge.",
-        "Summarize this quarter's uptime incidents for the status page.",
-    ]
-
-    for prompt in prompts:
-        await run_once(prompt)
-
+async def run(strict):
+    app = "ridgeline_support"
+    runner = InMemoryRunner(app_name=app, agent=build_team(strict))
+    try:
+        session = await runner.session_service.create_session(app_name=app, user_id="demo-shopper")
+        ticket = "My unused boots arrived 20 days ago. Can I return them? Will you pay for shipping?"
+        with provider.get_tracer(__name__).start_as_current_span("review return policy") as span:
+            trace_id = UUID(int=span.get_span_context().trace_id)
+            async for event in runner.run_async(
+                user_id=session.user_id, session_id=session.id,
+                new_message=types.Content(role="user", parts=[types.Part(text=ticket)]),
+            ):
+                if event.is_final_response() and event.content:
+                    text = "".join(p.text or "" for p in event.content.parts or [])
+                    if text:
+                        print(f"[{event.author}] {text}")
+    finally:
+        await runner.close()
+        provider.force_flush()
+    print(trace_id)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--strict-critic", action="store_true")
+    asyncio.run(run(parser.parse_args().strict_critic))
 ```
 
-Run the script:
-
-```bash
-python google_adk_futureagi.py
-```
-
-**You should see** each agent's response printed to the console in order, ending with the writer's final deliverable and its closing question.
+Run `python google_adk_futureagi.py`. You should see the planner, researcher, critic, and writer responses in that order.
 
 </Step>
+<Step title="Inspect a sampled trace">
 
-<Step title="Read the traces">
+Open **Observe** → `google-adk-demo` and select the printed trace ID. Expand the trace tree and follow the four agents. Did the researcher preserve the 30-day limit? Did the writer promise free shipping? The supplied policy does not say who pays.
 
-Open the **Observe** tab. The `google-adk-demo` project lists one trace per prompt you sent.
+<img src="/images/docs/agent-compass-quickstart/observe_llm_tracing.png" alt="Example of the project's trace list in Observe" style={{ borderRadius: '5px' }} />
 
-<img src="/images/docs/agent-compass-quickstart/observe_list.png" alt="Observe tab listing the google-adk-demo project" style={{ borderRadius: '5px' }} />
-
-*The project appears as soon as the first trace lands*
-
-Click into it to see every trace in the LLM Tracing view: one row per prompt, with the planner-to-writer handoff visible as child spans.
-
-<img src="/images/docs/agent-compass-quickstart/observe_llm_tracing.png" alt="LLM Tracing view listing traces from the google-adk-demo project" style={{ borderRadius: '5px' }} />
-
-*Each row expands into the planner, researcher, critic, writer span chain*
-
-**You should see** one trace per prompt you sent, each expandable into the four-agent span tree.
+Trace collection and Error Analysis are separate. If the demo project is new, open its settings, set the Error Feed sampling rate above zero, and save. Use 100% only if you intend all demo traces to be eligible for analysis. Run `python google_adk_futureagi.py` again after enabling sampling. See [Turn on Error Feed](/docs/error-feed/guides/turn-on-error-feed).
 
 </Step>
+<Step title="Read the scores and change one instruction">
 
-<Step title="Read its Error Analysis scores">
+Once a sampled trace has been analyzed, open its **Scores** accordion. The four dimensions answer different questions:
 
-Click a trace to open its span tree, then open the **Scores** accordion at the top. This is **Error Analysis**: four per-trace quality dimensions, scored automatically, with no eval task or threshold configuration to set up. It's a separate read on the trace from the Error Feed scanner: the two don't feed each other, so a low score here doesn't create a feed issue and doesn't show up if you filter the feed.
+- **Factual Grounding:** Are claims about returns and shipping supported by the supplied policy?
+- **Privacy And Safety:** Does the reply handle the customer's information appropriately?
+- **Instruction Adherence:** Does the writer follow the requested format and respect the policy boundary?
+- **Optimal Plan Execution:** Did the sequence of agents help resolve the ticket?
 
-- **Factual Grounding**: whether the response holds up against the evidence and context the agent actually had
-- **Privacy And Safety**: whether the response handles sensitive data and follows safe practices
-- **Instruction Adherence**: whether the response follows the instructions the agent was given
-- **Optimal Plan Execution**: whether the agent's sequence of decisions and tool calls was the right one for the task
+<img src="/images/docs/agent-compass-quickstart/agent_compass_expanded.png" alt="Example of the four Error Analysis scores on a trace" style={{ borderRadius: '5px' }} />
 
-<img src="/images/docs/agent-compass-quickstart/agent_compass_expanded.png" alt="Scores accordion expanded at the top of a trace, showing Factual Grounding, Privacy And Safety, Instruction Adherence, and Optimal Plan Execution" style={{ borderRadius: '5px' }} />
-
-*The recommendation names `critic_agent`, so the fix belongs in that agent's instruction, not the orchestrator's*
-
-**You should see** a chip per dimension with a score out of 5, and, where a dimension scores low, a recommendation naming which agent or step it applies to.
+For example, if the review overlooked an unsupported shipping promise, run `python google_adk_futureagi.py --strict-critic`. It sends the same ticket through a new session and changes only the critic's instruction. Compare the critique and final answer, then compare scores if both traces have analysis. A new instruction does not guarantee a better score. A missing score is not a zero.
 
 </Step>
-
-<Step title="Fix the low score and rerun">
-
-A trace scoring low on **Optimal Plan Execution** with a recommendation pointing at `critic_agent` means the critic accepted a plan or draft it should have pushed back on. Harden its instruction to require an explicit pass/fail check before handoff:
-
-```python
-critic_agent = Agent(
-    name="critic_agent",
-    model="gemini-2.5-flash",
-    description="Reviews content for clarity, completeness, and logical flow.",
-    instruction="""You are a critical reviewer.
-    Steps:
-    - Identify issues in clarity, structure, correctness, and style.
-    - Provide a concise list of actionable suggestions grouped by category.
-    - Explicitly state PASS or FAIL against the original request before anything else.
-    - If FAIL, list the specific gaps the writer must close; do not let a FAIL pass silently.
-    - Do not rewrite the full content; focus on improvements.
-    - End with 'Handoff Summary:' suggesting the writer produce the final deliverable.
-    - Transfer back to the parent agent without saying anything else."""
-)
-```
-
-Redefine `critic_agent` with this instruction, rebuild `root_agent` with the updated `sub_agents` list, and rerun the same prompt that produced the low score with `run_once()`.
-
-**You should see** a new trace for that prompt. Open its Scores accordion and compare: the explicit PASS/FAIL check gives the critic a concrete decision to make instead of an open-ended review, which is what the low score was pointing at.
-
-</Step>
-
 </Steps>
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| No trace in Observe | `GoogleADKInstrumentor().instrument()` ran after the agents were built, or the process exited before spans flushed | Instrument before building any agent; keep the script running until `runner.close()` completes |
-| `ImportError` on `traceai_google_adk` | `pip install traceai-google-adk` targeted a Python 3.13+ interpreter, which the package doesn't support | Reinstall under Python 3.11 or 3.12 |
-| Agents never respond | `GOOGLE_API_KEY` isn't exported, or the Gemini API isn't enabled on that key's project | Export `GOOGLE_API_KEY` and confirm the Gemini API is enabled in Google Cloud |
-| Trace shows only the root agent, no sub-agent spans | `GoogleADKInstrumentor().instrument()` was never called, or was called on a different `tracer_provider` | Call `.instrument(tracer_provider=tracer_provider)` with the same provider from `register()` |
-| Orchestrator loops or skips an agent | A sub-agent's response is missing the `Handoff Summary:` line the orchestrator routes on | Keep the handoff line in each agent's instruction, verbatim |
-| Scores accordion is empty | The trace hasn't finished analysis yet, sampling excluded it, or the workspace lacks the Error Feed capability | Wait a few seconds and refresh; check the project's sampling rate; confirm the capability is on for this workspace |
-| `401` or `403` from the Future AGI API | `FI_API_KEY` or `FI_SECRET_KEY` is missing or wrong | Re-export both keys from [Admin Settings](/docs/admin-settings) |
+| Symptom | What to check |
+|---|---|
+| No trace in Observe | Confirm both Future AGI credentials and the collector endpoint. Instrument ADK before the run and flush the provider at the end. |
+| Agents never respond | Check the OpenAI key and chat-model access. This example does not use the Gemini API. |
+| The trace appears but has no scores | Confirm the workspace capability and project sampling settings. Exporting a trace does not mean analysis has finished. |
 
-For more on what Error Analysis does and doesn't feed, see [Trace error analysis](/docs/error-feed/concepts/trace-error-analysis).
+For more on how to interpret scores, see [Trace error analysis](/docs/error-feed/concepts/trace-error-analysis).

@@ -1,249 +1,175 @@
 ---
 title: "Datasets: Future AGI Python SDK Evaluation Data Reference"
-description: "Create, populate, and manage datasets for evaluation. Upload CSV/JSON files, import from HuggingFace, add LLM-generated columns, and run evals at scale."
+description: "Create a support dataset, import rows from a file or Hugging Face, generate a reply for each row, and download the evaluation results."
 ---
 
-<TLDR>
-- `pip install futureagi` (or comes with `ai-evaluation`)
-- Create datasets from scratch, CSV/JSON files, or HuggingFace
-- Chain operations: create → add columns → add rows → run evals → download results
-</TLDR>
+Use the `futureagi` platform SDK to manage the same tables you see in [Datasets](/docs/dataset). In this example you generate short replies to Ridgeline Outfitters shoppers and check whether each reply fits a 30-word limit.
 
-Datasets hold your test data and evaluation scores. For the full platform guide, see [Dataset docs](/docs/dataset). Create one, fill it with data, run evals across every row, and download the results.
+Use a fresh directory. Set `FI_API_KEY` and `FI_SECRET_KEY` to your [workspace credentials](/docs/admin-settings/api-keys), then install the platform SDK. Keep this environment separate from Agent Learning Kit: both packages install files under `fi/`.
 
-<Note>
-  Requires `pip install futureagi` and `FI_API_KEY` + `FI_SECRET_KEY` in your environment. If you installed `ai-evaluation`, you already have `futureagi`.
-</Note>
-
-## Quick Example
-
-```python
-from fi.datasets import Dataset, DatasetConfig
-
-# Create a dataset
-config = DatasetConfig(name="my-eval-data", model_type="GenerativeLLM")
-dataset = Dataset(dataset_config=config)
-dataset.create()
-
-# Add columns and rows
-dataset.add_columns([
-    {"name": "question", "data_type": "text"},
-    {"name": "answer", "data_type": "text"},
-])
-
-dataset.add_rows([
-    {"cells": [{"column_name": "question", "value": "What is Python?"}, {"column_name": "answer", "value": "A programming language."}]},
-    {"cells": [{"column_name": "question", "value": "What is 2+2?"}, {"column_name": "answer", "value": "4"}]},
-])
-
-# Download as a pandas DataFrame
-df = dataset.download(load_to_pandas=True)
-print(df)
-#           question                   answer
-# 0  What is Python?  A programming language.
-# 1     What is 2+2?                        4
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install futureagi==0.7.0
 ```
 
-## DatasetConfig
+Run `python` and run the Python snippets in order in the same session. The suffix gives each new dataset a distinct name. The prompt step also needs access to the selected model in your workspace.
 
-Every dataset needs a config with a name and model type.
+## Quick example: create an empty dataset and add a row
+
+`DatasetConfig` takes a name and model type. Use `GenerativeLLM` for these text examples. `create()` returns the dataset; `get_config().id` identifies the table for subsequent API calls.
 
 ```python
-from fi.datasets import DatasetConfig
+from uuid import uuid4
+from fi.datasets import Dataset, DatasetConfig
+from fi.platform import Client
 
-config = DatasetConfig(
-    name="my-dataset",          # required, max 255 chars
-    model_type="GenerativeLLM", # "GenerativeLLM" or "GenerativeImage"
+suffix = uuid4().hex[:12]
+def config(label):
+    return DatasetConfig(name=f"ridgeline-{label}-{suffix}", model_type="GenerativeLLM")
+
+dataset = Dataset(dataset_config=config("returns")).create()
+dataset_id = str(dataset.get_config().id)
+client = Client()
+dataset.add_columns([{"name": "question", "data_type": "text"}])
+client.datasets.rows.add(dataset_id, rows=[{"cells": [
+    {"column_name": "question", "value": "Can I return unworn boots?"},
+]}])
+print(dataset_id, dataset.download(load_to_pandas=True)["question"].tolist())
+```
+
+You should see the new dataset ID and one shopper question. `load_to_pandas=True` returns a DataFrame and also writes a CSV locally. Use a fresh output path for each download so repeated exports don't append to an earlier file.
+
+## Other ways to create datasets
+
+### From a CSV file
+
+Import the one-row CSV you just downloaded into a separate dataset. The return value identifies the new dataset; the upload can still be processing when the call returns.
+
+```python
+csv_dataset = Dataset(dataset_config=config("from-file")).create(
+    source=f"{dataset.get_config().name}.csv"
 )
+print("CSV import:", csv_dataset.get_config().id)
 ```
 
-## Creating Datasets
+### From Hugging Face
 
-### Empty dataset
+Import two synthetic support exchanges from the public Bitext training split. The repository name identifies the source; `name` is what you'll see in your workspace. You can keep using the original `dataset_id` while this import finishes.
 
 ```python
-from fi.datasets import Dataset, DatasetConfig
-
-config = DatasetConfig(name="my-dataset", model_type="GenerativeLLM")
-dataset = Dataset(dataset_config=config).create()
+imported = client.datasets.create_from_huggingface(
+    name=f"ridgeline-support-sample-{suffix}", model_type="GenerativeLLM",
+    huggingface_dataset_name="bitext/Bitext-customer-support-llm-chatbot-training-dataset",
+    huggingface_dataset_config="default", huggingface_dataset_split="train", num_rows=2,
+)
+print("Hugging Face import:", imported.dataset_id)
 ```
 
-### From a CSV or JSON file
+## Columns and rows
+
+Add a text column to the original returns dataset. Existing rows keep their values; the new field starts empty.
 
 ```python
-dataset = Dataset(dataset_config=DatasetConfig(name="from-file", model_type="GenerativeLLM"))
-dataset.create(source="path/to/data.csv")
-# Supported: .csv, .json, .jsonl, .xlsx, .xls
+dataset.add_columns([{"name": "channel", "data_type": "text"}])
 ```
 
-### From HuggingFace
+Use the column **names** in `rows.add`. A row is a dictionary with a `cells` list; you don't need to supply row or cell IDs.
 
 ```python
-from fi.datasets.types import HuggingfaceDatasetConfig
-
-hf = HuggingfaceDatasetConfig(name="squad", subset="default", split="train", num_rows=100)
-dataset = Dataset(dataset_config=DatasetConfig(name="squad-sample", model_type="GenerativeLLM"))
-dataset.create(source=hf)
+client.datasets.rows.add(dataset_id, rows=[{"cells": [
+    {"column_name": "question", "value": "Do I need a receipt for a return?"},
+    {"column_name": "channel", "value": "chat"},
+]}])
 ```
 
-## Columns and Rows
+## Run a prompt on each row
 
-### Adding columns
-
-Pass a list of dicts with `name` and `data_type`.
+`add_run_prompt` resolves `{{question}}` against your dataset columns and starts generating a `reply` for each row. The shared policy in the system message is the source of truth for both questions. Wait for both cells before scoring them: a successful submission is not a completed generation.
 
 ```python
-dataset.add_columns([
-    {"name": "input", "data_type": "text"},
-    {"name": "output", "data_type": "text"},
-    {"name": "score", "data_type": "float"},
-    {"name": "metadata", "data_type": "json"},
-])
-```
+import time
 
-Column types: `text`, `boolean`, `integer`, `float`, `json`, `array`, `image`, `datetime`, `audio`.
-
-### Adding rows
-
-Each row is a dict with a `cells` list. Each cell maps a column name to a value.
-
-```python
-dataset.add_rows([
-    {"cells": [
-        {"column_name": "input", "value": "Summarize this article"},
-        {"column_name": "output", "value": "The article discusses..."},
-        {"column_name": "score", "value": 0.85},
-    ]},
-])
-```
-
-<Tip>
-  You can also use typed `Column`, `Row`, and `Cell` objects from `fi.datasets.types` instead of dicts. Both work the same way — dicts are simpler for most cases.
-</Tip>
-
-## Running LLM Prompts on a Dataset
-
-Run an LLM on every row to generate outputs. Use `{{column_name}}` in your messages to reference column values.
-
-```python
 dataset.add_run_prompt(
-    name="gpt4o_response",
-    model="gpt-4o-mini",
+    name="reply", model="gpt-4o-mini",
     messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Answer this question: {{question}}"},
+        {"role": "system", "content": "Ridgeline accepts unworn boots within 30 days with a receipt. Answer using this policy in at most 30 words."},
+        {"role": "user", "content": "{{question}}"},
     ],
-    max_tokens=500,
-    temperature=0.7,
 )
+
+def wait_for_column(name, timeout=300):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        table = client.datasets.get(dataset_id)
+        columns = {c.name: c.id for c in table.column_config}
+        if name in columns:
+            cells = [row.model_dump().get(columns[name]) or {} for row in table.table or []]
+            if any(cell.get("status") == "error" for cell in cells):
+                raise RuntimeError(f"Inspect the failed {name} cell in dataset {dataset_id}")
+            if len(cells) == 2 and all(cell.get("cell_value") for cell in cells):
+                return [cell["cell_value"] for cell in cells]
+        time.sleep(2)
+    raise TimeoutError(f"Still waiting for {name} in dataset {dataset_id}")
+
+print(wait_for_column("reply"))
 ```
 
-A new column `gpt4o_response` appears with the LLM output for each row.
+## Run an evaluation on the replies
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `name` | str | required | Column name for the generated outputs |
-| `model` | str | required | LLM model name (e.g. `"gpt-4o-mini"`) |
-| `messages` | list | required | Chat messages with `{{column}}` placeholders |
-| `max_tokens` | int | 500 | Maximum tokens per response |
-| `temperature` | float | 0.5 | Sampling temperature |
-| `concurrency` | int | 5 | Parallel requests |
-| `top_p` | float | 1 | Top-p sampling |
-| `tools` | list or None | None | Tool definitions for function calling |
-| `response_format` | dict or None | None | Structured output format |
-
-## Running Evaluations on a Dataset
-
-Score every row using an evaluation template. Map the template's required inputs to your dataset columns.
+Choose the system template `word_count_in_range`. For `client.datasets.evals.add`, map its `text` input to the reply column's **ID**, not its name. `min_words` and `max_words` are literal parameters. This check measures length, not whether a reply follows the return policy.
 
 ```python
-dataset.add_evaluation(
-    name="tone_check",
-    eval_template="tone",
-    model="turing_flash",
-    required_keys_to_column_names={
-        "output": "gpt4o_response",
-    },
+templates = client.evals.templates.list(owner_filter="system", search="word_count_in_range")
+template = next(t for t in templates.items if t.name == "word_count_in_range")
+reply_id = next(c.id for c in client.datasets.get(dataset_id).column_config if c.name == "reply")
+client.datasets.evals.add(
+    dataset_id, name="short-reply", template_id=template.id, run=True,
+    config={"mapping": {"text": reply_id}, "params": {"min_words": 1, "max_words": 30}},
 )
+print(wait_for_column("short-reply"))
 ```
 
-This adds a `tone_check` column with the evaluation score for each row.
+## Download results
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `name` | str | required | Column name for the scores |
-| `eval_template` | str | required | Template name (see [Cloud Evals](/docs/sdk/evals/cloud-evals)) |
-| `model` | str | required | Turing model (`turing_flash`, `turing_small`, `turing_large`) |
-| `required_keys_to_column_names` | dict | required | Maps template inputs to column names |
-| `reason_column` | bool | False | Add a column with the reasoning |
-| `config` | dict or None | None | Template-specific config |
-
-## Downloading Results
+For this two-row table, read the selected fields into a DataFrame and write them to a new CSV. The `short-reply` values in the table are `Passed` or `Failed`. For large datasets, request subsequent pages while `table.metadata.has_more` is true.
 
 ```python
-# As a pandas DataFrame
-df = dataset.download(load_to_pandas=True)
-print(df.head())
+import pandas as pd
 
-# To a file
-dataset.download(file_path="results.csv")
-# Supported: .csv, .json, .xlsx
+table = client.datasets.get(dataset_id)
+columns = {c.name: c.id for c in table.column_config}
+fields = ["question", "reply", "short-reply"]
+results = pd.DataFrame([
+    {name: row.model_dump()[columns[name]]["cell_value"] for name in fields}
+    for row in table.table
+])
+results.to_csv(f"scored-{dataset_id}.csv", index=False)
+print(results.to_string(index=False))
 ```
 
-## Deleting Datasets
+## Chaining and deleting a dataset
+
+`create()` and `add_columns()` return the same `Dataset` object, so you can chain them. Create a separate scratch table if you want to try deletion without touching your support data.
 
 ```python
-dataset.delete()
-```
-
-## Chaining
-
-Most methods return `self`, so you can chain them:
-
-```python
-from fi.datasets import Dataset, DatasetConfig
-
-dataset = (
-    Dataset(dataset_config=DatasetConfig(name="pipeline", model_type="GenerativeLLM"))
-    .create(source="questions.csv")
-    .add_run_prompt(
-        name="response",
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": "Answer: {{question}}"}],
-    )
-    .add_evaluation(
-        name="helpfulness",
-        eval_template="is_helpful",
-        model="turing_flash",
-        required_keys_to_column_names={"input": "question", "output": "response"},
-    )
-    .download(file_path="scored.csv")
+scratch = (
+    Dataset(dataset_config=config("scratch"))
+    .create()
+    .add_columns([{"name": "note", "data_type": "text"}])
 )
+print("Scratch dataset:", scratch.get_config().name, scratch.get_config().id)
 ```
 
-## Class Methods
+Delete **only** the scratch table you just created. The original dataset and both imports remain available in your workspace.
 
-For one-off operations by dataset name, without creating an instance first:
-
-| Method | What it does |
-|--------|-------------|
-| `Dataset.create_dataset(config, source)` | Create a dataset |
-| `Dataset.download_dataset(name, load_to_pandas=True)` | Download by name |
-| `Dataset.delete_dataset(name)` | Delete by name |
-| `Dataset.get_dataset_config(name)` | Get config by name (cached) |
-| `Dataset.add_dataset_columns(name, columns)` | Add columns by name |
-| `Dataset.add_dataset_rows(name, rows)` | Add rows by name |
+```python
+scratch.delete()
+client.close()
+```
 
 ## Related
 
-<CardGroup cols={3}>
-  <Card title="Evaluations" icon="chart-mixed" href="/docs/sdk/evals">
-    Run evaluations on individual inputs.
-  </Card>
-  <Card title="Cloud Evals" icon="bolt" href="/docs/sdk/evals/cloud-evals">
-    100+ templates for dataset evaluation.
-  </Card>
-  <Card title="Knowledge Base" icon="book" href="/docs/sdk/knowledgebase">
-    Upload documents for RAG context.
-  </Card>
-</CardGroup>
+- [Dataset client reference](/docs/sdk/reference/datasets) lists operations by resource.
+- [Import and evaluate a Hugging Face dataset](/docs/cookbook/quickstart/huggingface-dataset-import) shows how to wait for an import and evaluate the imported rows.
+- [Cloud evaluations](/docs/sdk/evals/cloud-evals) shows how to score individual inputs with Agent Learning Kit.

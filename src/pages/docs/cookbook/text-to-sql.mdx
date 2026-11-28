@@ -1,7 +1,7 @@
 ---
 title: "Text-to-SQL Agent"
 slug: "text-to-sql"
-description: "Build a LangChain SQL agent over an e-commerce database, trace it with traceAI, and score every run with built-in and custom evals."
+description: "Build a LangChain SQL agent over an e-commerce database, trace it with traceAI, and check which tables its queries mention with Agent Learning Kit."
 date: "2026-08-18"
 author: "futureagi-engineering"
 products:
@@ -21,7 +21,7 @@ page-type: "cookbook"
 ---
 
 <TLDR>
-Build a LangChain SQL agent over a seven-table e-commerce schema, trace every step with traceAI, and attach built-in evals (`completeness`, `groundedness`, `text_to_sql`, `detect_hallucination`) plus a custom `table_checker` eval to score each generated query.
+Ask a LangChain agent questions about Ridgeline Outfitters orders. Inspect the SQL tool calls in Observe, then use a local Agent Learning Kit eval to check which table names appear in the final query.
 </TLDR>
 
 | Time | Difficulty | Package |
@@ -32,21 +32,25 @@ Build a LangChain SQL agent over a seven-table e-commerce schema, trace every st
 - Future AGI account → [app.futureagi.com](https://app.futureagi.com)
 - API keys: `FI_API_KEY` and `FI_SECRET_KEY` (see [Get your API keys](/docs/admin-settings))
 - OpenAI API key: `OPENAI_API_KEY`
-- Python 3.11
+- Python 3.12
 </Prerequisites>
 
 ## Install
 
 ```bash
-pip install langchain langchain-community langchain-openai sqlalchemy traceai-langchain fi-instrumentation-otel
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install agent-learning-kit==0.3.7 langchain-community==0.4.2 langchain-openai==1.8.5 sqlalchemy==2.1.9 traceai-langchain==0.2.4 fi-instrumentation-otel==1.5.1
 ```
 
 ```bash
 export FI_API_KEY="your-api-key"
 export FI_SECRET_KEY="your-secret-key"
-export FI_BASE_URL="https://api.futureagi.com"
+export FI_TRACES_URL="https://api.futureagi.com"
 export OPENAI_API_KEY="your-openai-key"
 ```
+
+Replace the key placeholders with your own values. On a self-hosted installation, set `FI_TRACES_URL` to your HTTP trace collector. Run the Python blocks in order in one notebook or interactive Python session.
 
 ## Tutorial
 
@@ -57,6 +61,7 @@ Use a seven-table schema with joins, aggregations, and nullable foreign keys, so
 
 ```python
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import StaticPool
 from langchain_community.utilities import SQLDatabase
 
 COMPLEX_DB_SCHEMA = """
@@ -76,9 +81,9 @@ COMPLEX_SAMPLE_DATA = {
         {"user_id": 2, "username": "ben_k", "email": "ben@example.com", "first_name": "Ben", "last_name": "Kim", "account_type": "standard"},
     ],
     "product_categories": [
-        {"category_id": 1, "parent_category_id": None, "name": "Electronics"},
-        {"category_id": 2, "parent_category_id": 1, "name": "Headphones"},
-        {"category_id": 3, "parent_category_id": None, "name": "Home & Kitchen"},
+        {"category_id": 1, "parent_category_id": None, "name": "Hiking"},
+        {"category_id": 2, "parent_category_id": 1, "name": "Trail Audio"},
+        {"category_id": 3, "parent_category_id": None, "name": "Camp Kitchen"},
     ],
     "products": [
         {"product_id": 1, "sku": "ELE-001", "name": "Noise-Cancelling Headphones", "price": 149.99, "inventory_count": 40, "is_active": True},
@@ -108,7 +113,8 @@ COMPLEX_SAMPLE_DATA = {
 
 def setup_database():
     """Creates an in-memory SQLite database with the schema and sample rows."""
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine("sqlite://", poolclass=StaticPool,
+                           connect_args={"check_same_thread": False})
 
     with engine.connect() as conn:
         for statement in COMPLEX_DB_SCHEMA.split(";"):
@@ -126,6 +132,8 @@ def setup_database():
             for row in rows:
                 conn.execute(text(insert_query), row)
             conn.commit()
+
+        conn.exec_driver_sql("PRAGMA query_only = ON")
 
     return SQLDatabase(engine=engine)
 ```
@@ -152,96 +160,51 @@ def create_improved_sql_agent(llm, db):
         llm=llm,
         db=db,
         agent_type="tool-calling",
-        verbose=True,
-        max_iterations=5,
-        handle_parsing_errors=True,
-        return_intermediate_steps=True,
+        max_iterations=10,
+        agent_executor_kwargs={
+            "handle_parsing_errors": True,
+            "return_intermediate_steps": True,
+        },
     )
 ```
 
 You should see no output here. `create_improved_sql_agent()` returns a LangChain `AgentExecutor` bound to the SQLite database from Step 1.
 
 </Step>
-<Step title="Instrument tracing and attach evals">
+<Step title="Trace the agent in Observe">
 
-Register a trace provider with five `EvalTag` entries: four built-in evals (`completeness`, `groundedness`, `text_to_sql`, `detect_hallucination`) and one custom eval (`table_checker`) that checks the agent picked the right tables. Each `EvalTag` maps evaluation inputs to specific span attributes, so Future AGI knows what data to score.
+Register the provider before invoking the agent. A trace connects the spans for one run; a span records one operation, such as a model or database call.
 
 ```python
 from traceai_langchain import LangChainInstrumentor
 from fi_instrumentation import register
-from fi_instrumentation.fi_types import (
-    EvalName,
-    EvalSpanKind,
-    EvalTag,
-    EvalTagType,
-    ModelChoices,
-    ProjectType,
-)
-
-# Generated from a table instead of four near-identical EvalTag blocks.
-BUILTIN_EVALS = [
-    (EvalSpanKind.AGENT, EvalName.COMPLETENESS, "Completeness"),
-    (EvalSpanKind.AGENT, EvalName.GROUNDEDNESS, "Groundedness"),
-    (EvalSpanKind.TOOL, EvalName.TEXT_TO_SQL, "Text-to-SQL"),
-    (EvalSpanKind.AGENT, EvalName.DETECT_HALLUCINATION, "Hallucination"),
-]
-
-eval_tags = [
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=span_kind,
-        eval_name=eval_name,
-        config={},
-        mapping={"input": "raw.input", "output": "raw.output"},
-        custom_eval_name=label,
-        model=ModelChoices.TURING_LARGE,
-    )
-    for span_kind, eval_name, label in BUILTIN_EVALS
-]
-eval_tags.append(
-    EvalTag(
-        type=EvalTagType.OBSERVATION_SPAN,
-        value=EvalSpanKind.TOOL,
-        eval_name="table_checker",
-        config={},
-        mapping={"query": "raw.input", "tables": "raw.output"},
-        custom_eval_name="table_checker",
-        model=ModelChoices.TURING_LARGE,
-    )
-)
+from fi_instrumentation.fi_types import ProjectType
 
 trace_provider = register(
-    project_type=ProjectType.EXPERIMENT,
+    project_type=ProjectType.OBSERVE,
     project_name="text-to-sql-agent",
-    eval_tags=eval_tags,
+    verbose=False,
 )
-
 LangChainInstrumentor().instrument(tracer_provider=trace_provider)
 ```
-
-You should see no output here, but every LangChain call made after this point is captured as a span in the `text-to-sql-agent` project, with all five evals queued to run against it. A **span** records one operation (one tool call, one LLM call); a **trace** connects the spans for one full agent run.
-
-<Tip>
-`project_type=ProjectType.EXPERIMENT` scopes this run for pre-production testing, and lets `register()` take the `eval_tags` list above directly. Switch to `ProjectType.OBSERVE` once the agent is live and you want to monitor real traffic, but drop `eval_tags` from `register()` when you do: `OBSERVE` projects reject them, and evals are configured instead as a platform Eval Task in the Future AGI dashboard.
-</Tip>
 
 Run one question through the instrumented agent to confirm tracing is wired up before running the full set:
 
 ```python
-model = get_model("gpt-4o")
+model = get_model("gpt-4o-mini")
 db = setup_database()
 agent_executor = create_improved_sql_agent(model, db)
 
-first_run = agent_executor.invoke({"input": "How many products are in each category?"})
+first_run = agent_executor.invoke({"input": "How many products are directly mapped to each category with at least one product?"})
 print(first_run["output"])
 ```
 
 Expected output (SQL and phrasing vary by model):
 ```
-Headphones has 2 products, and Home & Kitchen has 1 product.
+Trail Audio: 2 products; Camp Kitchen: 1 product.
 ```
 
-This call flows through the `LangChainInstrumentor` from above and lands as a trace in your Future AGI project, with the completeness, groundedness, text-to-sql, hallucination, and table_checker scores attached to it.
+In Observe, open `text-to-sql-agent` and inspect the trace to see which SQL the agent sent to SQLite.
 
 </Step>
 <Step title="Run the agent against a fixed question set">
@@ -250,57 +213,43 @@ Run the agent from Step 2 against a fixed set of questions, extracting the SQL i
 
 ```python
 import time
+from fi.evals.local import LocalEvaluator
 
-TEXT2SQL_QUESTIONS = [
-    "How many products are in each category?",
-    "What is the total amount spent by each user?",
-    "Which products have an average rating below 4?",
-    "List all orders that still have a pending payment.",
-    "What is the top-selling product by quantity ordered?",
-]
-
-
-def execute_sql_query(agent_executor, question):
-    """Runs one question through the agent and extracts the SQL it executed."""
-    start_time = time.time()
-    try:
-        agent_result = agent_executor.invoke({"input": question})
-        sql_query = ""
-        for step in agent_result.get("intermediate_steps", []):
-            tool_input = step[0].tool_input
-            if isinstance(tool_input, str) and any(kw in tool_input.upper() for kw in ["SELECT", "INSERT", "UPDATE"]):
-                sql_query = tool_input
-                break
-        return {
-            "execution_success": True,
-            "sql_query": sql_query,
-            "result": agent_result["output"],
-            "error": "",
-            "latency": time.time() - start_time,
-        }
-    except Exception as e:
-        return {
-            "execution_success": False,
-            "sql_query": "",
-            "result": "",
-            "error": str(e),
-            "latency": time.time() - start_time,
-        }
+evaluator = LocalEvaluator()
+QUESTIONS = {
+    "How many products are directly mapped to each category with at least one product?": ["product_category_mappings"],
+    "What is the total paid amount for each user who has paid orders?": ["orders"],
+    "Which products have an average rating below 4?": ["reviews"],
+    "List all orders that still have a pending payment.": ["orders"],
+    "What is the top-selling product by quantity ordered?": ["order_items"],
+}
 
 
-def run_complex_text2sql_experiment(model_name):
-    model = get_model(model_name)
-    db = setup_database()
-    agent_executor = create_improved_sql_agent(model, db)
+def execute_sql_query(question, expected_tables):
+    start = time.perf_counter()
+    result = agent_executor.invoke({"input": question})
+    latency = time.perf_counter() - start
+    # Ignore schema lookups and the query checker; inspect the last query actually run.
+    query, observation = "", ""
+    for action, response in result["intermediate_steps"]:
+        if action.tool == "sql_db_query":
+            args = action.tool_input
+            query = args["query"] if isinstance(args, dict) else args
+            observation = str(response)
+    check = evaluator.evaluate("contains_all", [{"response": query}],
+                               config={"keywords": expected_tables})
+    score = check.results.eval_results[0].output
+    if score is None:
+        raise RuntimeError("Table-name eval did not return a score")
+    return {
+        "question": question, "sql_query": query, "answer": result["output"],
+        "execution_success": bool(query) and not observation.startswith("Error:"),
+        "table_name_score": float(score), "latency": latency,
+    }
 
-    results = []
-    for question in TEXT2SQL_QUESTIONS:
-        query_result = execute_sql_query(agent_executor, question)
-        results.append({"model": model_name, "question": question, **query_result})
-    return results
 
-
-results = run_complex_text2sql_experiment("gpt-4o")
+results = [execute_sql_query(q, tables) for q, tables in QUESTIONS.items()]
+trace_provider.force_flush()
 print(f"Ran {len(results)} questions against the agent.")
 ```
 
@@ -324,6 +273,7 @@ def collect_metrics(results):
     return {
         "success_rate": len(successes) / total if total else 0.0,
         "failure_count": total - len(successes),
+        "avg_table_name_score": sum(r["table_name_score"] for r in results) / total if total else 0.0,
         "avg_latency_s": sum(latencies) / total if total else 0.0,
         "min_latency_s": min(latencies) if latencies else 0.0,
         "max_latency_s": max(latencies) if latencies else 0.0,
@@ -339,12 +289,13 @@ Expected output (values vary by model and run):
 ```
 success_rate: 1.0
 failure_count: 0
+avg_table_name_score: 1.0
 avg_latency_s: 3.8
 min_latency_s: 2.1
 max_latency_s: 6.4
 ```
 
-These numbers are illustrative: run the cookbook against your own database and model to get real figures. Open your project in the [Future AGI dashboard](https://app.futureagi.com). The trace explorer shows each of the 5 runs as a trace, with the SQL agent's tool calls nested underneath as spans, and the completeness, groundedness, text-to-sql, hallucination, and table_checker scores attached to each one.
+`execution_success` means the last query tool call did not report a SQL error. The local score checks only for expected substrings: a query can mention the right table and still join or aggregate incorrectly. To investigate, compare the tool results and the final answer in the `text-to-sql-agent` project in [Observe](https://app.futureagi.com).
 
 </Step>
 </Steps>
@@ -353,12 +304,8 @@ These numbers are illustrative: run the cookbook against your own database and m
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `sql_query` is always empty in `execute_sql_query` | `return_intermediate_steps=True` was not set on the agent executor | Add `return_intermediate_steps=True` to `create_sql_agent(...)` |
-| `sqlalchemy.exc.OperationalError: no such table` | `setup_database()` was called after the agent already opened a connection, or a statement in `COMPLEX_DB_SCHEMA` didn't execute | Confirm each `CREATE TABLE` statement ran without error before inserting rows; split on `;` can silently drop a malformed final statement |
-| `KeyError: 'FI_API_KEY'` when calling `register()` | Environment variables were not exported before the Python process started | Export `FI_API_KEY`, `FI_SECRET_KEY`, and `FI_BASE_URL` in the same shell, or load them with `python-dotenv` before importing `fi_instrumentation` |
-| No spans appear in the dashboard | `LangChainInstrumentor().instrument()` was called after the agent already made its first call, or `trace_provider` was never registered | Call `register()` and `.instrument()` before constructing or invoking the agent executor |
-| Agent loops until `max_iterations` and returns a partial answer | The question can't be answered from the schema, or the LLM keeps retrying a malformed query | Set `handle_parsing_errors=True` (already on in `create_improved_sql_agent`), and check the failing tool call in the trace |
-| `table_checker` eval never shows a score | The custom eval name string doesn't match one registered against your Future AGI project | Custom evals must be created in the dashboard first; `eval_name="table_checker"` only works once that eval exists on your account |
-| `IntegrityError: FOREIGN KEY constraint failed` on insert | Sample rows were inserted out of order, referencing a row that doesn't exist yet | Insert `users`, `product_categories`, and `products` before any table that references them (the dict order in `COMPLEX_SAMPLE_DATA` already does this) |
+| No `intermediate_steps` in the result | The executor did not retain tool calls | Put `return_intermediate_steps` inside `agent_executor_kwargs` when you create the agent. |
+| `sql_query` is empty | The agent answered without calling `sql_db_query` | Inspect the trace and check that the question requires a database lookup. |
+| No spans appear in Observe | The collector URL or credentials are incorrect | Check `FI_TRACES_URL`, `FI_API_KEY`, and `FI_SECRET_KEY` before starting the Python session. |
 
 Score every generated query with more built-in metrics, including local string comparison and execution-based validation, in [Text-to-SQL LLM Evaluation](/docs/cookbook/quickstart/text-to-sql-eval).
