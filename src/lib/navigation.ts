@@ -941,6 +941,7 @@ export const tabNavigation: NavTab[] = [
               { title: 'Debug failures', href: '/docs/environments/guides/debug-failures' },
               { title: 'Run Epoch', href: '/docs/environments/guides/run-epoch' },
               { title: 'Review an epoch', href: '/docs/environments/guides/review-an-epoch' },
+              { title: 'Fix with your coding agent', href: '/docs/environments/guides/fix-with-your-coding-agent' },
             ]
           },
           {
