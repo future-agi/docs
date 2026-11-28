@@ -1,7 +1,11 @@
 # OpenRouter Broadcast tracing: examples and tests
 
-Runnable assets behind the page
+Internal fixtures and regression tests for
 [OpenRouter Broadcast tracing with Future AGI](../../../src/pages/docs/integrations/gateways/openrouter-broadcast.mdx).
+The customer guide uses the native direct destination. The collector configuration and scripts below
+remain test assets for the older collector route, not prerequisites for that guide.
+`tests/test_page_snippet.py` checks the direct endpoint, project-header contract, privacy guidance and
+catalog wording; `tests/test_otelcol_config.py` retains the separate collector-filter coverage.
 
 OpenRouter does not run here. One stand-in takes its place and is named as such in every file:
 
@@ -11,13 +15,17 @@ OpenRouter does not run here. One stand-in takes its place and is named as such 
 
 What is real: the OpenTelemetry Collector container (`otelcol.yaml`), the Future AGI collector and storage you point it at, and the model calls behind `--live`.
 
-Live check, 2026-10-19: real OpenRouter Broadcast traffic was captured on Cloud Run and replayed through `otelcol.yaml`; see the page's "Live vendor verification" section. `broadcast_fixture.py` itself was written from OpenRouter's documentation, before that run, and differs from the real payload (no separate root span, `gen_ai.usage.total_cost`, `span.status_message`). Where OpenRouter's pages leave something open, the file says `ASSUMED` or `SYNTHETIC`: the span tree, the shape of the prompt and completion strings, how a failure is expressed in OTLP, and the exception event used to exercise the privacy rule. No cost attribute is written, because OpenRouter does not publish its key.
+These fixtures are synthetic, not captured Broadcast traffic. Their span hierarchy and content shapes
+are assumptions; they must not be used to claim live delivery or current provider privacy behavior.
+The fixture deliberately writes no cost attribute. Keep real destination-delivery evidence in the PR
+rather than in the customer page. A successful model API request or a synthetic Cloud replay alone
+does not prove that OpenRouter Broadcast delivered a trace.
 
 ## Files
 
 | Path | What it is |
 | --- | --- |
-| `otelcol.yaml` | The collector recipe from the page |
+| `otelcol.yaml` | Legacy collector-route fixture; not the direct destination configuration |
 | `standin_openrouter.py` | The stand-in sender: `probe` (Test Connection) and `send` |
 | `broadcast_fixture.py` | The OTLP/JSON request builder, with the sources of every key |
 | `tools/wire_tap.py` | Records what the collector exports to Future AGI, then forwards it unchanged |
